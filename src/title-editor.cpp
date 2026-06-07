@@ -1972,7 +1972,7 @@ void TitleEditor::load_editor_layout()
 
 void TitleEditor::save_editor_layout() const
 {
-    if (restoring_editor_layout_)
+    if (restoring_editor_layout_ || editor_layout_save_suppressed_)
         return;
 
     QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
@@ -1981,6 +1981,7 @@ void TitleEditor::save_editor_layout() const
     settings.setValue(QString::fromUtf8(kEditorWindowStateKey), saveState());
     settings.setValue(QString::fromUtf8(kEditorPanelsLockedKey), panels_locked_);
     settings.endGroup();
+    settings.sync();
 }
 
 void TitleEditor::reset_default_layout()
@@ -2076,8 +2077,6 @@ void TitleEditor::update_panel_lock_state()
 
     for (auto *dock : {graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
         if (!dock) continue;
-        if (panels_locked_ && dock->isFloating())
-            dock->setFloating(false);
         dock->setFeatures(panels_locked_ ? locked_features : unlocked_features);
         dock->setAllowedAreas(panels_locked_ ? Qt::NoDockWidgetArea
                                              : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
@@ -2094,6 +2093,8 @@ void TitleEditor::update_panel_lock_state()
 
 void TitleEditor::build_ui()
 {
+    restoring_editor_layout_ = true;
+
     auto *central = new QWidget(this);
     setCentralWidget(central);
 
@@ -3862,6 +3863,7 @@ void TitleEditor::closeEvent(QCloseEvent *ev)
 {
     if (confirm_save_before_close()) {
         save_editor_layout();
+        editor_layout_save_suppressed_ = true;
         ev->accept();
     } else {
         ev->ignore();

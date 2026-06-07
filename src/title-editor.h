@@ -198,6 +198,7 @@ private:
     bool             live_editing_ = false;
     bool             panels_locked_ = false;
     bool             restoring_editor_layout_ = false;
+    bool             editor_layout_save_suppressed_ = false;
     std::shared_ptr<Layer> layer_clipboard_;
 };
 
