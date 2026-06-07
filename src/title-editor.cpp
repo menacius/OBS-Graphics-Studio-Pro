@@ -3035,7 +3035,6 @@ void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPo
     title_->add_layer(layer);
     layers_->refresh();
     on_layer_selected(layer->id);
-    if (canvas_) canvas_->refresh_preview();
 }
 
 
@@ -3055,7 +3054,6 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
     title_->add_layer(layer);
     layers_->refresh();
     on_layer_selected(layer->id);
-    if (canvas_) canvas_->refresh_preview();
 }
 
 void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
@@ -3079,7 +3077,6 @@ void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
     if (layer->shape_type == ShapeType::RoundedRectangle)
         layer->corner_radius = (float)std::min(width, height) * 0.12f;
 
-    if (canvas_) canvas_->refresh_preview();
     update_layer_panels(layer, playhead_);
 }
 
@@ -5929,7 +5926,7 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     if (!title_) return;
 
-    if (title_has_dynamic_text_layer(title_)) dirty_ = true;
+    if (!drawing_shape_ && title_has_dynamic_text_layer(title_)) dirty_ = true;
     if (dirty_) render_to_pixmap();
     if (frame_pixmap_.isNull()) return;
 
@@ -6068,6 +6065,8 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         }
     }
 
+    draw_toolbar_preview(p);
+
     if (drag_mode_ == DragMode::Rotate) {
         QPointF pivot = canvas_to_view(drag_rotation_pivot_canvas_);
         double start_angle = std::atan2(drag_start_view_.y() - pivot.y(), drag_start_view_.x() - pivot.x());
@@ -6141,14 +6140,71 @@ QRectF CanvasPreview::toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardMo
     return rect;
 }
 
+QRect CanvasPreview::toolbar_preview_update_rect() const
+{
+    if (!title_ || !drawing_shape_)
+        return QRect();
+
+    QRectF canvas_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+    QRectF view_rect(canvas_to_view(canvas_rect.topLeft()), canvas_to_view(canvas_rect.bottomRight()));
+    view_rect = view_rect.normalized();
+    return view_rect.adjusted(-24.0, -24.0, 24.0, 24.0).toAlignedRect();
+}
+
+void CanvasPreview::draw_toolbar_preview(QPainter &p)
+{
+    if (!title_ || !drawing_shape_)
+        return;
+
+    QRectF canvas_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+    QRectF view_rect(canvas_to_view(canvas_rect.topLeft()), canvas_to_view(canvas_rect.bottomRight()));
+    view_rect = view_rect.normalized();
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const bool text_preview = active_tool_ == CanvasTool::Text;
+    const QColor accent = text_preview ? layer_type_color(active_text_layer_type_) : layer_type_color(LayerType::Shape);
+    QColor fill = accent;
+    fill.setAlpha(text_preview ? 38 : (active_shape_type_ == ShapeType::Line ? 0 : 42));
+    QColor stroke = accent.lighter(135);
+    stroke.setAlpha(235);
+
+    QPen pen(stroke, active_shape_type_ == ShapeType::Line && !text_preview ? 2.0 : 1.6, Qt::DashLine);
+    pen.setCosmetic(true);
+    p.setPen(pen);
+    p.setBrush(text_preview ? QColor(20, 20, 20, 90) : fill);
+
+    if (text_preview) {
+        p.drawRoundedRect(view_rect, 4.0, 4.0);
+        QString label = text_tool_display_name(active_text_layer_type_);
+        p.setPen(stroke);
+        QFont label_font = p.font();
+        label_font.setBold(true);
+        p.setFont(label_font);
+        p.drawText(view_rect.adjusted(8.0, 6.0, -8.0, -6.0), Qt::AlignLeft | Qt::AlignTop, label);
+    } else {
+        p.drawPath(tool_shape_path(active_shape_type_, view_rect));
+    }
+
+    p.restore();
+}
+
 void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
     if (!drawing_shape_) return;
+
+    const QRect old_update_rect = last_toolbar_preview_update_rect_;
     shape_draw_current_canvas_ = view_to_canvas(view_pt);
-    QRectF rect = toolbar_draw_rect(shape_draw_current_canvas_, modifiers);
+    shape_draw_modifiers_ = modifiers;
+    QRectF rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
     drawing_shape_changed_ = rect.width() >= 2.0 || rect.height() >= 2.0;
-    emit shape_drawing_changed(rect);
-    update();
+
+    last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
+    QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
+    if (repaint_rect.isEmpty())
+        repaint_rect = this->rect();
+    update(repaint_rect);
 }
 
 
@@ -6325,12 +6381,11 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         drag_mode_ = DragMode::None;
         shape_draw_start_canvas_ = view_to_canvas(ev->pos());
         shape_draw_current_canvas_ = shape_draw_start_canvas_;
+        shape_draw_modifiers_ = ev->modifiers();
+        last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
         selected_layer_ids_.clear();
         sel_layer_id_.clear();
-        if (active_tool_ == CanvasTool::Shape)
-            emit shape_drawing_started(active_shape_type_, shape_draw_start_canvas_);
-        else
-            emit text_drawing_started(active_text_layer_type_, shape_draw_start_canvas_);
+        update(last_toolbar_preview_update_rect_.isEmpty() ? rect() : last_toolbar_preview_update_rect_);
         ev->accept();
         return;
     }
@@ -6519,13 +6574,33 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     }
 
     if (ev->button() == Qt::LeftButton && drawing_shape_) {
+        const QRect old_update_rect = last_toolbar_preview_update_rect_;
         const QPointF release_canvas = view_to_canvas(ev->pos());
-        if (drawing_shape_changed_ || QLineF(shape_draw_start_canvas_, release_canvas).length() >= 2.0)
+        const bool dragged_far_enough = QLineF(shape_draw_start_canvas_, release_canvas).length() >= 2.0;
+        if (drawing_shape_changed_ || dragged_far_enough)
             update_shape_drawing(ev->pos(), ev->modifiers());
-        const bool keep_layer = true;
+
+        const QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
+        const QRectF final_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+        const bool has_drawn_size = drawing_shape_changed_ || dragged_far_enough;
+        const bool was_text_tool = active_tool_ == CanvasTool::Text;
+        const ShapeType final_shape_type = active_shape_type_;
+        const LayerType final_text_type = active_text_layer_type_;
+        const QPointF start_canvas = shape_draw_start_canvas_;
+
         drawing_shape_ = false;
         drawing_shape_changed_ = false;
-        emit shape_drawing_finished(keep_layer);
+        last_toolbar_preview_update_rect_ = QRect();
+        update(repaint_rect.isEmpty() ? rect() : repaint_rect);
+
+        if (was_text_tool)
+            emit text_drawing_started(final_text_type, start_canvas);
+        else
+            emit shape_drawing_started(final_shape_type, start_canvas);
+        if (has_drawn_size)
+            emit shape_drawing_changed(final_rect);
+        emit shape_drawing_finished(true);
+
         setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : (active_tool_ == CanvasTool::Text ? Qt::IBeamCursor : Qt::ArrowCursor));
         ev->accept();
         return;
