@@ -6109,7 +6109,25 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
 void CanvasPreview::render_to_pixmap()
 {
     if (!title_) { frame_pixmap_ = QPixmap(); return; }
-    frame_pixmap_ = QPixmap::fromImage(render_title_to_image(*title_, playhead_));
+
+    if (!inline_text_layer_id_.empty()) {
+        Title preview = *title_;
+        preview.layers.clear();
+        preview.layers.reserve(title_->layers.size());
+        for (const auto &layer : title_->layers) {
+            if (!layer) {
+                preview.layers.push_back(nullptr);
+                continue;
+            }
+            auto preview_layer = std::make_shared<Layer>(*layer);
+            if (preview_layer->id == inline_text_layer_id_)
+                preview_layer->visible = false;
+            preview.layers.push_back(std::move(preview_layer));
+        }
+        frame_pixmap_ = QPixmap::fromImage(render_title_to_image(preview, playhead_));
+    } else {
+        frame_pixmap_ = QPixmap::fromImage(render_title_to_image(*title_, playhead_));
+    }
     dirty_ = false;
 }
 
