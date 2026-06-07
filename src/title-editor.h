@@ -347,6 +347,8 @@ private:
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     QRectF toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardModifiers modifiers) const;
     double toolbar_draw_aspect_ratio() const;
+    QRect toolbar_preview_update_rect() const;
+    void draw_toolbar_preview(QPainter &p);
     void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
     void commit_text_edit(bool accept_changes = true);
@@ -378,6 +380,8 @@ private:
     bool committing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
+    Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;
+    QRect last_toolbar_preview_update_rect_;
 
     struct SnapSettings {
         bool enabled = true;
