@@ -5652,7 +5652,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->setLineWrapMode(QTextEdit::FixedPixelWidth);
     inline_text_editor_->setCursorWidth(2);
     inline_text_editor_->setContentsMargins(0, 0, 0, 0);
-    inline_text_editor_->setViewportMargins(0, 0, 0, 0);
+    inline_text_editor_->viewport()->setContentsMargins(0, 0, 0, 0);
     inline_text_editor_->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
