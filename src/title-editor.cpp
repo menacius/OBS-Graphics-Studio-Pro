@@ -78,6 +78,9 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QTextEdit>
+#include <QTextDocument>
+#include <QTextCursor>
+#include <QTextCharFormat>
 #include <QTextLayout>
 #include <QTextOption>
 #include <QDateTime>
@@ -597,6 +600,88 @@ static QIcon cursor_tool_icon()
     return QIcon(pixmap);
 }
 
+
+static QString text_tool_display_name(LayerType type)
+{
+    if (type == LayerType::Clock) return obsgs_tr("OBSTitles.Clock");
+    if (type == LayerType::Ticker) return obsgs_tr("OBSTitles.Ticker");
+    return obsgs_tr("OBSTitles.Text");
+}
+
+static QIcon text_tool_icon(LayerType type)
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(QColor(230, 230, 230), 1.7));
+    painter.setBrush(Qt::NoBrush);
+
+    if (type == LayerType::Clock) {
+        painter.drawEllipse(QRectF(5.0, 5.0, 14.0, 14.0));
+        painter.drawLine(QPointF(12.0, 12.0), QPointF(12.0, 7.5));
+        painter.drawLine(QPointF(12.0, 12.0), QPointF(15.8, 14.2));
+    } else if (type == LayerType::Ticker) {
+        painter.setPen(QPen(QColor(230, 230, 230), 1.6));
+        painter.drawText(QRectF(4.0, 2.0, 16.0, 12.0), Qt::AlignCenter, QStringLiteral("T"));
+        painter.drawLine(QPointF(4.0, 15.0), QPointF(20.0, 15.0));
+        painter.drawLine(QPointF(7.0, 19.0), QPointF(20.0, 19.0));
+        painter.drawLine(QPointF(4.0, 15.0), QPointF(7.0, 12.0));
+        painter.drawLine(QPointF(4.0, 15.0), QPointF(7.0, 18.0));
+    } else {
+        QFont font = painter.font();
+        font.setBold(true);
+        font.setPixelSize(18);
+        painter.setFont(font);
+        painter.drawText(QRectF(3.0, 2.0, 18.0, 20.0), Qt::AlignCenter, QStringLiteral("T"));
+    }
+    return QIcon(pixmap);
+}
+
+class HoldMenuToolButton : public QToolButton {
+public:
+    explicit HoldMenuToolButton(QWidget *parent = nullptr) : QToolButton(parent)
+    {
+        hold_timer_.setSingleShot(true);
+        hold_timer_.setInterval(500);
+        QObject::connect(&hold_timer_, &QTimer::timeout, this, [this]() {
+            if (!menu() || !isDown() || !underMouse()) return;
+            menu_opened_by_hold_ = true;
+            menu()->popup(mapToGlobal(QPoint(width() + 2, 0)));
+        });
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        menu_opened_by_hold_ = false;
+        if (event->button() == Qt::LeftButton && menu())
+            hold_timer_.start();
+        QToolButton::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        hold_timer_.stop();
+        if (menu_opened_by_hold_) {
+            setDown(false);
+            event->accept();
+            return;
+        }
+        QToolButton::mouseReleaseEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        if (!isDown()) hold_timer_.stop();
+        QToolButton::leaveEvent(event);
+    }
+
+private:
+    QTimer hold_timer_;
+    bool menu_opened_by_hold_ = false;
+};
+
 static std::string editor_text_std(const char *key)
 {
     return obsgs_tr(key).toStdString();
@@ -625,7 +710,7 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     tool_group_->setExclusive(true);
 
     auto make_tool_button = [this, layout](const QString &text, const QIcon &icon, const QString &tip) {
-        auto *button = new QToolButton(this);
+        auto *button = new HoldMenuToolButton(this);
         button->setText(text);
         button->setAccessibleName(text);
         button->setToolTip(tip);
@@ -644,27 +729,38 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
                                          QStringLiteral("Selection/Cursor Tool: normal object selection mode"));
     shape_button_ = make_tool_button(QStringLiteral("Shape Tool"), shape_tool_icon(selected_shape_),
                                      QStringLiteral("Shape Tool: choose a shape, then click and drag on the canvas"));
-    shape_button_->setPopupMode(QToolButton::MenuButtonPopup);
+    text_button_ = make_tool_button(QStringLiteral("Text Tool"), text_tool_icon(selected_text_layer_type_),
+                                    QStringLiteral("Text Tool: choose text, clock, or ticker, then click and drag on the canvas"));
 
     auto *selection_action = new QAction(cursor_tool_icon(), QStringLiteral("Selection Tool"), this);
     selection_action->setCheckable(true);
     selection_action->setChecked(true);
     auto *shape_action = new QAction(shape_tool_icon(selected_shape_), QStringLiteral("Shape Tool"), this);
     shape_action->setCheckable(true);
+    auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), QStringLiteral("Text Tool"), this);
+    text_action->setCheckable(true);
     tool_group_->addAction(selection_action);
     tool_group_->addAction(shape_action);
+    tool_group_->addAction(text_action);
     selection_button_->setDefaultAction(selection_action);
     shape_button_->setDefaultAction(shape_action);
+    text_button_->setDefaultAction(text_action);
 
     shape_menu_ = new QMenu(shape_button_);
     shape_button_->setMenu(shape_menu_);
     rebuild_shape_menu();
+    text_menu_ = new QMenu(text_button_);
+    text_button_->setMenu(text_menu_);
+    rebuild_text_menu();
 
     connect(selection_action, &QAction::triggered, this, [this]() {
         emit selection_tool_requested();
     });
     connect(shape_action, &QAction::triggered, this, [this]() {
         emit shape_tool_requested(selected_shape_);
+    });
+    connect(text_action, &QAction::triggered, this, [this]() {
+        emit text_tool_requested(selected_text_layer_type_);
     });
 
     layout->addStretch(1);
@@ -705,6 +801,40 @@ void ToolsSidebar::rebuild_shape_menu()
         connect(action, &QAction::triggered, this, [this, shape]() {
             set_selected_shape(shape);
             emit shape_tool_requested(shape);
+        });
+    }
+}
+
+
+void ToolsSidebar::set_selected_text_layer_type(LayerType type)
+{
+    if (type != LayerType::Text && type != LayerType::Clock && type != LayerType::Ticker)
+        type = LayerType::Text;
+    selected_text_layer_type_ = type;
+    const QIcon icon = text_tool_icon(type);
+    const QString name = text_tool_display_name(type);
+    if (text_button_) {
+        text_button_->setIcon(icon);
+        if (auto *action = text_button_->defaultAction()) {
+            action->setIcon(icon);
+            action->setText(name);
+            action->setChecked(true);
+        }
+        text_button_->setToolTip(QStringLiteral("Text Tool: %1. Click and drag on the canvas to draw a text box.").arg(name));
+        text_button_->setChecked(true);
+    }
+}
+
+void ToolsSidebar::rebuild_text_menu()
+{
+    if (!text_menu_) return;
+    text_menu_->clear();
+    const std::vector<LayerType> types = {LayerType::Text, LayerType::Clock, LayerType::Ticker};
+    for (LayerType type : types) {
+        QAction *action = text_menu_->addAction(text_tool_icon(type), text_tool_display_name(type));
+        connect(action, &QAction::triggered, this, [this, type]() {
+            set_selected_text_layer_type(type);
+            emit text_tool_requested(type);
         });
     }
 }
@@ -2903,6 +3033,30 @@ void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPo
     if (canvas_) canvas_->refresh_preview();
 }
 
+
+void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt)
+{
+    if (!title_) return;
+    if (type != LayerType::Text && type != LayerType::Clock && type != LayerType::Ticker)
+        type = LayerType::Text;
+
+    auto layer = create_basic_layer(type, text_tool_display_name(type));
+    if (!layer) return;
+    layer->pos_x.static_value = canvas_pt.x();
+    layer->pos_y.static_value = canvas_pt.y();
+    layer->rect_width = 1.0f;
+    layer->rect_height = 1.0f;
+    layer->box_width.static_value = layer->rect_width;
+    layer->box_height.static_value = layer->rect_height;
+    layer->rich_text_html.clear();
+
+    canvas_created_shape_layer_id_ = layer->id;
+    title_->add_layer(layer);
+    layers_->refresh();
+    on_layer_selected(layer->id);
+    if (canvas_) canvas_->refresh_preview();
+}
+
 void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
 {
     if (!title_ || canvas_created_shape_layer_id_.empty()) return;
@@ -3557,6 +3711,13 @@ void TitleEditor::build_ui()
                         update_layer_panels(layer, playhead_);
                 }
             });
+    connect(canvas_, &CanvasPreview::text_edit_committed,
+            this, [this](const std::string &layer_id) {
+                if (!title_) return;
+                on_title_modified();
+                if (auto layer = title_->find_layer(layer_id))
+                    update_layer_panels(layer, playhead_);
+            });
     connect(canvas_, &CanvasPreview::layer_structure_changed,
             this, [this]() {
                 layers_->refresh();
@@ -3564,6 +3725,8 @@ void TitleEditor::build_ui()
             });
     connect(canvas_, &CanvasPreview::shape_drawing_started,
             this, &TitleEditor::create_shape_layer_from_canvas);
+    connect(canvas_, &CanvasPreview::text_drawing_started,
+            this, &TitleEditor::create_text_layer_from_canvas);
     connect(canvas_, &CanvasPreview::shape_drawing_changed,
             this, &TitleEditor::update_canvas_created_shape);
     connect(canvas_, &CanvasPreview::shape_drawing_finished,
@@ -3575,6 +3738,10 @@ void TitleEditor::build_ui()
         connect(tools_sidebar_, &ToolsSidebar::shape_tool_requested, this, [this](ShapeType shape_type) {
             if (tools_sidebar_) tools_sidebar_->set_selected_shape(shape_type);
             if (canvas_) canvas_->set_shape_tool_active(shape_type);
+        });
+        connect(tools_sidebar_, &ToolsSidebar::text_tool_requested, this, [this](LayerType type) {
+            if (tools_sidebar_) tools_sidebar_->set_selected_text_layer_type(type);
+            if (canvas_) canvas_->set_text_tool_active(type);
         });
     }
 }
@@ -4803,20 +4970,32 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setStyleSheet("background:#111;");
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+
+    inline_text_editor_ = new QTextEdit(this);
+    inline_text_editor_->hide();
+    inline_text_editor_->setAcceptRichText(true);
+    inline_text_editor_->setFrameShape(QFrame::NoFrame);
+    inline_text_editor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    inline_text_editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    inline_text_editor_->setStyleSheet("QTextEdit{background:rgba(20,20,20,38);border:1px dashed rgba(0,140,255,210);color:white;selection-background-color:rgba(0,120,215,160);}");
+    inline_text_editor_->installEventFilter(this);
 }
+
 
 void CanvasPreview::set_title(std::shared_ptr<Title> t)
 {
+    commit_text_edit(true);
     title_ = t;
     dirty_ = true;
     pan_offset_ = QPointF(0, 0);
     if (title_) fit_canvas(fit_zoom_up_to_100_);
     else update();
+    position_text_editor();
 }
 
 void CanvasPreview::set_playhead(double t)
 {
-    playhead_ = t; dirty_ = true; update();
+    playhead_ = t; dirty_ = true; position_text_editor(); update();
 }
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
@@ -4824,6 +5003,7 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
     sel_layer_id_ = lid;
     selected_layer_ids_.clear();
     if (!lid.empty()) selected_layer_ids_.push_back(lid);
+    position_text_editor();
     update();
 }
 
@@ -4831,6 +5011,7 @@ void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
 {
     selected_layer_ids_ = ids;
     sel_layer_id_ = ids.empty() ? std::string() : ids.back();
+    position_text_editor();
     update();
 }
 
@@ -4843,6 +5024,7 @@ void CanvasPreview::set_safe_guides_visible(bool visible)
 void CanvasPreview::refresh_preview()
 {
     dirty_ = true;
+    position_text_editor();
     update();
 }
 
@@ -4931,6 +5113,18 @@ void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
     active_shape_type_ = shape_type;
     drawing_shape_ = false;
     setCursor(Qt::CrossCursor);
+    update();
+}
+
+
+void CanvasPreview::set_text_tool_active(LayerType type)
+{
+    if (type != LayerType::Text && type != LayerType::Clock && type != LayerType::Ticker)
+        type = LayerType::Text;
+    active_tool_ = CanvasTool::Text;
+    active_text_layer_type_ = type;
+    drawing_shape_ = false;
+    setCursor(Qt::IBeamCursor);
     update();
 }
 
@@ -5897,8 +6091,160 @@ void CanvasPreview::update_shape_drawing(const QPointF &view_pt)
     update();
 }
 
+
+std::shared_ptr<Layer> CanvasPreview::text_layer_at_view_pos(const QPointF &view_pt) const
+{
+    if (!title_) return nullptr;
+    QPointF canvas = view_to_canvas(view_pt);
+    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer || !is_canvas_text_layer(*layer) || layer->type == LayerType::Clock) continue;
+        if (!layer->visible || layer->locked) continue;
+        if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
+        if (layer_local_rect(*layer).contains(canvas_to_layer(*layer, canvas)))
+            return layer;
+    }
+    return nullptr;
+}
+
+void CanvasPreview::position_text_editor()
+{
+    if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return;
+    auto layer = title_->find_layer(inline_text_layer_id_);
+    if (!layer) {
+        inline_text_editor_->hide();
+        return;
+    }
+
+    QRectF local = layer_local_rect(*layer);
+    QPolygonF poly;
+    poly << canvas_to_view(layer_to_canvas(*layer, local.topLeft()))
+         << canvas_to_view(layer_to_canvas(*layer, local.topRight()))
+         << canvas_to_view(layer_to_canvas(*layer, local.bottomRight()))
+         << canvas_to_view(layer_to_canvas(*layer, local.bottomLeft()));
+    QRectF bounds = poly.boundingRect().adjusted(-2.0, -2.0, 2.0, 2.0);
+    inline_text_editor_->setGeometry(bounds.toAlignedRect().intersected(rect()));
+}
+
+void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
+{
+    if (!layer || !inline_text_editor_) return;
+    if (!inline_text_layer_id_.empty() && inline_text_layer_id_ != layer->id)
+        commit_text_edit(true);
+
+    inline_text_layer_id_ = layer->id;
+    QSignalBlocker blocker(inline_text_editor_);
+    QFont font = font_for_layer(*layer);
+    inline_text_editor_->setFont(font);
+    inline_text_editor_->setTextColor(color_from_argb(eval_text_color(*layer, std::max(0.0, playhead_ - layer->in_time))));
+    inline_text_editor_->document()->setDefaultFont(font);
+    if (!layer->rich_text_html.empty())
+        inline_text_editor_->setHtml(QString::fromStdString(layer->rich_text_html));
+    else
+        inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
+
+    QTextCursor cursor = inline_text_editor_->textCursor();
+    cursor.select(QTextCursor::Document);
+    inline_text_editor_->setTextCursor(cursor);
+    position_text_editor();
+    inline_text_editor_->show();
+    inline_text_editor_->raise();
+    inline_text_editor_->setFocus(Qt::MouseFocusReason);
+    update();
+}
+
+void CanvasPreview::commit_text_edit(bool accept_changes)
+{
+    if (committing_inline_text_ || !inline_text_editor_ || inline_text_layer_id_.empty()) return;
+    committing_inline_text_ = true;
+    const std::string layer_id = inline_text_layer_id_;
+    inline_text_layer_id_.clear();
+    inline_text_editor_->hide();
+
+    bool changed = false;
+    if (accept_changes && title_) {
+        auto layer = title_->find_layer(layer_id);
+        if (layer) {
+            const std::string plain = inline_text_editor_->toPlainText().toStdString();
+            const std::string html = inline_text_editor_->toHtml().toStdString();
+            changed = layer->text_content != plain || layer->rich_text_html != html;
+            layer->text_content = plain;
+            layer->rich_text_html = html;
+            dirty_ = true;
+        }
+    }
+    committing_inline_text_ = false;
+    update();
+    if (changed) emit text_edit_committed(layer_id);
+}
+
+bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == inline_text_editor_) {
+        if (event->type() == QEvent::FocusOut) {
+            commit_text_edit(true);
+            return false;
+        }
+        if (event->type() == QEvent::KeyPress) {
+            auto *key_event = static_cast<QKeyEvent *>(event);
+            auto merge_char_format = [this](const QTextCharFormat &format) {
+                QTextCursor cursor = inline_text_editor_->textCursor();
+                cursor.mergeCharFormat(format);
+                inline_text_editor_->mergeCurrentCharFormat(format);
+            };
+            if (key_event->key() == Qt::Key_B && key_event->modifiers().testFlag(Qt::ControlModifier)) {
+                QTextCharFormat format;
+                format.setFontWeight(inline_text_editor_->fontWeight() == QFont::Bold ? QFont::Normal : QFont::Bold);
+                merge_char_format(format);
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_I && key_event->modifiers().testFlag(Qt::ControlModifier)) {
+                QTextCharFormat format;
+                format.setFontItalic(!inline_text_editor_->fontItalic());
+                merge_char_format(format);
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_U && key_event->modifiers().testFlag(Qt::ControlModifier)) {
+                QTextCharFormat format;
+                format.setFontUnderline(!inline_text_editor_->fontUnderline());
+                merge_char_format(format);
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_Escape) {
+                commit_text_edit(true);
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_Return && key_event->modifiers().testFlag(Qt::ControlModifier)) {
+                commit_text_edit(true);
+                key_event->accept();
+                return true;
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
+{
+    if (ev->button() == Qt::LeftButton) {
+        auto layer = text_layer_at_view_pos(ev->pos());
+        if (layer) {
+            emit layer_clicked(layer->id);
+            begin_text_edit(layer);
+            ev->accept();
+            return;
+        }
+    }
+    QWidget::mouseDoubleClickEvent(ev);
+}
+
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
+    if (!inline_text_layer_id_.empty()) commit_text_edit(true);
     setFocus(Qt::MouseFocusReason);
     if (!title_) return;
 
@@ -5913,7 +6259,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 
     if (ev->button() != Qt::LeftButton) return;
 
-    if (active_tool_ == CanvasTool::Shape) {
+    if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
         drawing_shape_ = true;
         drawing_shape_changed_ = false;
         drag_mode_ = DragMode::None;
@@ -5921,7 +6267,10 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         shape_draw_current_canvas_ = shape_draw_start_canvas_;
         selected_layer_ids_.clear();
         sel_layer_id_.clear();
-        emit shape_drawing_started(active_shape_type_, shape_draw_start_canvas_);
+        if (active_tool_ == CanvasTool::Shape)
+            emit shape_drawing_started(active_shape_type_, shape_draw_start_canvas_);
+        else
+            emit text_drawing_started(active_text_layer_type_, shape_draw_start_canvas_);
         ev->accept();
         return;
     }
@@ -6054,6 +6403,10 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         setCursor(Qt::CrossCursor);
         return;
     }
+    if (active_tool_ == CanvasTool::Text) {
+        setCursor(Qt::IBeamCursor);
+        return;
+    }
 
     DragMode mode = hit_test_selected(ev->pos());
     if (mode == DragMode::Move) setCursor(Qt::OpenHandCursor);
@@ -6111,7 +6464,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         drawing_shape_ = false;
         drawing_shape_changed_ = false;
         emit shape_drawing_finished(keep_layer);
-        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : Qt::ArrowCursor);
+        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : (active_tool_ == CanvasTool::Text ? Qt::IBeamCursor : Qt::ArrowCursor));
         ev->accept();
         return;
     }
@@ -6173,6 +6526,7 @@ void CanvasPreview::resizeEvent(QResizeEvent *)
 {
     dirty_ = true;
     if (fit_zoom_active_) fit_canvas(fit_zoom_up_to_100_);
+    position_text_editor();
 }
 
 /* ══════════════════════════════════════════════════════════════════

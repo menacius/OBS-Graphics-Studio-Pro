@@ -71,6 +71,7 @@ class QMenuBar;
 class QMenu;
 class QActionGroup;
 class QVBoxLayout;
+class QTextEdit;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -141,6 +142,7 @@ private:
     void delete_selected_layer();
     std::shared_ptr<Layer> create_basic_layer(LayerType type, const QString &name_override = QString());
     void create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt);
+    void create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt);
     void update_canvas_created_shape(const QRectF &canvas_rect);
     void finish_canvas_created_shape(bool keep_layer);
     void push_undo_snapshot();
@@ -229,18 +231,25 @@ public:
     explicit ToolsSidebar(QWidget *parent = nullptr);
     void set_selected_shape(ShapeType shape_type);
     ShapeType selected_shape() const { return selected_shape_; }
+    void set_selected_text_layer_type(LayerType type);
+    LayerType selected_text_layer_type() const { return selected_text_layer_type_; }
 
 signals:
     void selection_tool_requested();
     void shape_tool_requested(ShapeType shape_type);
+    void text_tool_requested(LayerType type);
 
 private:
     void rebuild_shape_menu();
+    void rebuild_text_menu();
     QToolButton *selection_button_ = nullptr;
     QToolButton *shape_button_ = nullptr;
+    QToolButton *text_button_ = nullptr;
     QActionGroup *tool_group_ = nullptr;
     QMenu *shape_menu_ = nullptr;
+    QMenu *text_menu_ = nullptr;
     ShapeType selected_shape_ = ShapeType::Rectangle;
+    LayerType selected_text_layer_type_ = LayerType::Text;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -271,6 +280,7 @@ public:
     void set_checkerboard_pattern(int pattern);
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
+    void set_text_tool_active(LayerType type);
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -279,21 +289,25 @@ signals:
     void layer_structure_changed();
     void zoom_percent_changed(int percent);
     void shape_drawing_started(ShapeType shape_type, const QPointF &canvas_pt);
+    void text_drawing_started(LayerType type, const QPointF &canvas_pt);
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
+    void text_edit_committed(const std::string &layer_id);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
     enum class DragMode { None, Marquee, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin, Rotate };
-    enum class CanvasTool { Selection, Shape };
+    enum class CanvasTool { Selection, Shape, Text };
 
     void render_to_pixmap();
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
@@ -323,6 +337,10 @@ private:
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void update_shape_drawing(const QPointF &view_pt);
+    void begin_text_edit(const std::shared_ptr<Layer> &layer);
+    void commit_text_edit(bool accept_changes = true);
+    void position_text_editor();
+    std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -341,8 +359,12 @@ private:
     int checkerboard_pattern_ = 1;
     CanvasTool active_tool_ = CanvasTool::Selection;
     ShapeType active_shape_type_ = ShapeType::Rectangle;
+    LayerType active_text_layer_type_ = LayerType::Text;
     bool drawing_shape_ = false;
     bool drawing_shape_changed_ = false;
+    QTextEdit *inline_text_editor_ = nullptr;
+    std::string inline_text_layer_id_;
+    bool committing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
 
