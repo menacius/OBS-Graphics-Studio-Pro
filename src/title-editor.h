@@ -593,6 +593,12 @@ private:
     QCheckBox       *chk_expose_text_ = nullptr;
     QButtonGroup    *grp_text_align_ = nullptr;
     QButtonGroup    *grp_text_valign_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_left_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_right_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_first_line_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_space_before_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_space_after_ = nullptr;
+    QCheckBox       *chk_paragraph_hyphenate_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
 
     /* Text/shape outline controls */
