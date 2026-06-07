@@ -10524,7 +10524,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->max_text_box_height = (float)v; emit_change(); }
             });
     connect(cmb_font_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change](const QString &s){
+            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
                 if (!can_edit()) return;
                 populate_font_style_combo(cmb_font_style_, s, QString::fromStdString(layer_->font_style));
                 layer_->font_family = s.toStdString();
@@ -10537,7 +10537,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(cmb_font_style_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change](const QString &s){
+            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
                 if (!can_edit()) return;
                 layer_->font_style = s.toStdString();
                 QFontDatabase fdb;
@@ -10549,15 +10549,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](int v){
+            this, [this, can_edit, emit_change, apply_text_char_format](int v){
                 if (can_edit()) { layer_->font_size = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharFontSize); emit_change(); }
             });
     connect(chk_bold_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change](bool v){
+            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
                 if (can_edit()) { layer_->font_bold = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharBold); emit_change(); }
             });
     connect(chk_italic_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change](bool v){
+            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
                 if (can_edit()) { layer_->font_italic = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharItalic); emit_change(); }
             });
     connect(chk_font_kerning_, &QToolButton::toggled,
@@ -10582,19 +10582,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->text_leading = (float)v; emit_change(); }
             });
     connect(spn_char_tracking_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v){
+            this, [this, can_edit, emit_change, apply_text_char_format](double v){
                 if (can_edit()) { layer_->char_tracking = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharTracking); emit_change(); }
             });
     connect(spn_char_scale_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v){
+            this, [this, can_edit, emit_change, apply_text_char_format](double v){
                 if (can_edit()) { layer_->char_scale_x = (float)(v / 100.0); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharScaleX); emit_change(); }
             });
     connect(spn_char_scale_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v){
+            this, [this, can_edit, emit_change, apply_text_char_format](double v){
                 if (can_edit()) { layer_->char_scale_y = (float)(v / 100.0); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharScaleY); emit_change(); }
             });
     connect(spn_baseline_shift_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v){
+            this, [this, can_edit, emit_change, apply_text_char_format](double v){
                 if (can_edit()) { layer_->baseline_shift = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharBaselineShift); emit_change(); }
             });
     connect(cmb_language_, &QComboBox::currentTextChanged,
@@ -10611,8 +10611,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(btn_small_caps_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(2, v); });
     connect(btn_superscript_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(3, v); });
     connect(btn_subscript_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(4, v); });
-    connect(btn_underline_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_underline = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharUnderline); emit_change(); }});
-    connect(btn_strikethrough_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_strikethrough = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStrikethrough); emit_change(); }});
+    connect(btn_underline_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_underline = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharUnderline); emit_change(); }});
+    connect(btn_strikethrough_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_strikethrough = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStrikethrough); emit_change(); }});
     connect(btn_ligatures_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_ligatures = v; emit_change(); }});
     connect(btn_stylistic_alternates_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_stylistic_alternates = v; emit_change(); }});
     connect(btn_fractions_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_fractions = v; emit_change(); }});
@@ -10693,7 +10693,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->paragraph_hyphenate = v; emit_change(); }
             });
     connect(btn_text_color_, &QPushButton::clicked,
-            this, [this, can_edit, local_time, emit_change]() {
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format]() {
                 if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_text_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, obsgs_tr("OBSTitles.TextColor"),
