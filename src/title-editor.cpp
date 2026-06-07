@@ -384,19 +384,9 @@ static QIcon keyframe_diamond_icon(bool active, bool outlined = false)
 {
     if (active)
         return obsgs_icon("keyframe-active.svg");
-    if (!outlined)
-        return obsgs_icon("keyframe-inactive.svg");
-
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(0xff, 0xd2, 0x3f), 2));
-    QPolygon diamond;
-    diamond << QPoint(12, 5) << QPoint(19, 12) << QPoint(12, 19) << QPoint(5, 12);
-    painter.drawPolygon(diamond);
-    return QIcon(pixmap);
+    if (outlined)
+        return obsgs_icon("keyframe-outline.svg", C_KF_DOT);
+    return obsgs_icon("keyframe-inactive.svg");
 }
 
 
