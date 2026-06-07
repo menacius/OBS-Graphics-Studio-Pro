@@ -963,6 +963,7 @@ struct ShadowRenderParams {
     double blur = 0.0;
     double spread = 0.0;
     int blur_type = (int)ShadowBlurType::StackFast;
+    bool drop_enabled = false;
     uint32_t color = 0x99000000;
     double opacity = 1.0;
     bool long_enabled = false;
@@ -987,10 +988,11 @@ static QString image_content_hash(const QImage &image)
 
 static QString shadow_param_key(const Layer &layer, const ShadowRenderParams &p, const QString &shape_key)
 {
-    return QStringLiteral("%1|%2|%3|%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15")
+    return QStringLiteral("%1|%2|%3|%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16")
         .arg(QString::fromStdString(layer.id), shape_key)
         .arg(p.dx, 0, 'f', 2).arg(p.dy, 0, 'f', 2).arg(p.blur, 0, 'f', 2)
-        .arg(p.spread, 0, 'f', 2).arg(p.blur_type).arg(p.color).arg(p.opacity, 0, 'f', 3)
+        .arg(p.spread, 0, 'f', 2).arg(p.blur_type).arg(p.drop_enabled ? 1 : 0)
+        .arg(p.color).arg(p.opacity, 0, 'f', 3)
         .arg(p.long_enabled ? 1 : 0).arg(p.long_color).arg(p.long_opacity, 0, 'f', 3)
         .arg(p.long_length, 0, 'f', 2).arg(p.long_angle, 0, 'f', 2).arg(p.long_falloff, 0, 'f', 3);
 }
@@ -1004,11 +1006,12 @@ static ShadowRenderParams evaluated_shadow_params(const Layer &layer, double t)
     p.blur = eval_shadow_blur(layer, t);
     p.spread = eval_shadow_spread(layer, t);
     p.blur_type = (int)layer.shadow_blur_type;
+    p.drop_enabled = eval_shadow_enabled(layer, t);
     p.color = eval_shadow_color(layer, t);
-    p.opacity = eval_shadow_opacity(layer, t);
+    p.opacity = eval_shadow_opacity(layer, t) * (((p.color >> 24) & 0xFF) / 255.0);
     p.long_enabled = layer.long_shadow_enabled && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
     p.long_color = layer.long_shadow_color;
-    p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0);
+    p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0) * (((p.long_color >> 24) & 0xFF) / 255.0);
     p.long_length = std::max(0.0, (double)layer.long_shadow_length);
     p.long_angle = layer.long_shadow_angle;
     p.long_falloff = std::clamp((double)layer.long_shadow_falloff, 0.0, 4.0);
@@ -1135,8 +1138,10 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
         }
         blur_alpha_for_type(long_alpha, w, h, std::min(p.blur, 24.0), p.blur_type);
     }
-    add_alpha(drop_alpha, p.opacity, p.dx, p.dy);
-    blur_alpha_for_type(drop_alpha, w, h, p.blur, p.blur_type);
+    if (p.drop_enabled && p.opacity > 0.0) {
+        add_alpha(drop_alpha, p.opacity, p.dx, p.dy);
+        blur_alpha_for_type(drop_alpha, w, h, p.blur, p.blur_type);
+    }
 
     QColor dc = color_from_argb(p.color);
     QColor lc = color_from_argb(p.long_color);
@@ -1151,7 +1156,10 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
             int pr = (lc.red() * la + dc.red() * da * (255 - la) / 255) / 255;
             int pg = (lc.green() * la + dc.green() * da * (255 - la) / 255) / 255;
             int pb = (lc.blue() * la + dc.blue() * da * (255 - la) / 255) / 255;
-            line[x] = qRgba(std::clamp(pr, 0, 255), std::clamp(pg, 0, 255), std::clamp(pb, 0, 255), out_a);
+            pr = std::clamp(pr, 0, 255);
+            pg = std::clamp(pg, 0, 255);
+            pb = std::clamp(pb, 0, 255);
+            line[x] = qRgba(pr, pg, pb, out_a);
         }
     }
     CachedShadowImage out{image, QPointF(min_x, min_y)};
@@ -1562,7 +1570,8 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (box_w <= 0.0 || box_h <= 0.0) return;
 
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
-    int pad = eval_shadow_enabled(layer, t)
+    const bool render_shadow = shadow_params.drop_enabled || shadow_params.long_enabled;
+    int pad = render_shadow
         ? (int)std::ceil(std::max({std::abs(shadow_params.dx), std::abs(shadow_params.dy), shadow_params.long_length}) + shadow_params.blur * 3.0 + shadow_params.spread + 4.0)
         : 0;
     if (eval_background_enabled(layer, t))
@@ -1611,7 +1620,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (std::abs(layer.baseline_shift) > 0.0001)
         text_path.translate(0.0, -layer.baseline_shift);
 
-    if (eval_shadow_enabled(layer, t)) {
+    if (render_shadow) {
         QImage shadow_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
         shadow_mask.fill(Qt::transparent);
         QPainter mask_painter(&shadow_mask);
@@ -1623,7 +1632,10 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         const QString shape_key = QStringLiteral("text|%1x%2|%3")
             .arg(img_w).arg(img_h).arg(image_content_hash(shadow_mask));
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, shadow_mask);
+        painter.save();
+        painter.setClipping(false);
         painter.drawImage(shadow.origin, shadow.image);
+        painter.restore();
     }
 
     double outline_width = eval_outline_width(layer, t);
@@ -1685,8 +1697,8 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     apply_layer_world_transform(cr, title, layer, title_time);
     cairo_translate(cr, x, y);
 
-    if (eval_shadow_enabled(layer, t)) {
-        ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+    ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+    if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         const int mw = std::max(1, (int)std::ceil(w));
         const int mh = std::max(1, (int)std::ceil(h));
         QImage mask(mw, mh, QImage::Format_ARGB32_Premultiplied);
@@ -1769,11 +1781,11 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     apply_layer_world_transform(cr, title, layer, title_time);
     const double origin_x = eval_origin_x(layer, t);
     const double origin_y = eval_origin_y(layer, t);
-    if (eval_shadow_enabled(layer, t)) {
+    ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+    if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         QImage mask = argb.scaled(std::max(1, (int)std::ceil(w)), std::max(1, (int)std::ceil(h)),
                                   Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
                           .convertToFormat(QImage::Format_ARGB32_Premultiplied);
-        ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
         QFileInfo shadow_image_info(QString::fromStdString(layer.image_path));
         const QString shape_key = QStringLiteral("image|%1|%2x%3|%4|%5")
             .arg(QString::fromStdString(layer.image_path)).arg(mask.width()).arg(mask.height())

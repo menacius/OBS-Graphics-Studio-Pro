@@ -7774,6 +7774,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(chk_long_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, emit_change](bool v) {
         if (!can_edit()) return;
         layer_->long_shadow_enabled = v;
+        if (v && layer_->long_shadow_length <= 0.0f) {
+            layer_->long_shadow_length = 120.0f;
+            if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(layer_->long_shadow_length);
+        }
+        if (v && layer_->long_shadow_opacity <= 0.0f) {
+            layer_->long_shadow_opacity = 0.45f;
+            if (spn_long_shadow_opacity_) spn_long_shadow_opacity_->setValue(layer_->long_shadow_opacity);
+        }
         emit_change();
     });
     connect(btn_long_shadow_color_, &QPushButton::clicked, this, [this, can_edit, emit_change]() {
