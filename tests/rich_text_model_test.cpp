@@ -49,10 +49,29 @@ int main()
     gradient.fill.type = 1;
     gradient.fill.gradient_start_color = 0xFFFFAA00;
     gradient.fill.gradient_end_color = 0xFF0033FF;
+    gradient.fill.gradient_start_opacity = 0.75f;
+    gradient.fill.gradient_end_opacity = 0.5f;
+    gradient.fill.gradient_opacity = 0.8f;
+    gradient.fill.gradient_center_x = 0.25f;
+    gradient.fill.gradient_center_y = 0.75f;
+    gradient.fill.gradient_scale = 1.5f;
+    gradient.fill.gradient_focal_x = 0.2f;
+    gradient.fill.gradient_focal_y = 0.8f;
     rich_text_document_replace_text(doc, "Hello Big Wide World", &gradient);
     bool has_gradient = false;
-    for (const auto &range : doc.ranges)
+    for (const auto &range : doc.ranges) {
         has_gradient = has_gradient || (range.format.fill.type == 1);
+        if (range.format.fill.type == 1) {
+            assert(range.format.fill.gradient_start_opacity == 0.75f);
+            assert(range.format.fill.gradient_end_opacity == 0.5f);
+            assert(range.format.fill.gradient_opacity == 0.8f);
+            assert(range.format.fill.gradient_center_x == 0.25f);
+            assert(range.format.fill.gradient_center_y == 0.75f);
+            assert(range.format.fill.gradient_scale == 1.5f);
+            assert(range.format.fill.gradient_focal_x == 0.2f);
+            assert(range.format.fill.gradient_focal_y == 0.8f);
+        }
+    }
     assert(has_gradient);
 
     RichTextDocument undo_snapshot = doc;

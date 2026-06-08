@@ -728,7 +728,11 @@ static json rich_fill_to_json(const RichTextFill &f)
     return {{"type", f.type}, {"color", f.color}, {"gradient_type", f.gradient_type},
             {"gradient_start_color", f.gradient_start_color}, {"gradient_end_color", f.gradient_end_color},
             {"gradient_start_pos", f.gradient_start_pos}, {"gradient_end_pos", f.gradient_end_pos},
-            {"gradient_angle", f.gradient_angle}};
+            {"gradient_start_opacity", f.gradient_start_opacity}, {"gradient_end_opacity", f.gradient_end_opacity},
+            {"gradient_opacity", f.gradient_opacity}, {"gradient_angle", f.gradient_angle},
+            {"gradient_center_x", f.gradient_center_x}, {"gradient_center_y", f.gradient_center_y},
+            {"gradient_scale", f.gradient_scale}, {"gradient_focal_x", f.gradient_focal_x},
+            {"gradient_focal_y", f.gradient_focal_y}};
 }
 
 static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallback = {})
@@ -742,7 +746,15 @@ static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallb
     f.gradient_end_color = json_color(j, "gradient_end_color", f.gradient_end_color);
     f.gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "gradient_start_pos", f.gradient_start_pos), f.gradient_start_pos), 0.0, 1.0);
     f.gradient_end_pos = (float)std::clamp(finite_or(json_double(j, "gradient_end_pos", f.gradient_end_pos), f.gradient_end_pos), 0.0, 1.0);
+    f.gradient_start_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_start_opacity", f.gradient_start_opacity), f.gradient_start_opacity), 0.0, 1.0);
+    f.gradient_end_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_end_opacity", f.gradient_end_opacity), f.gradient_end_opacity), 0.0, 1.0);
+    f.gradient_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_opacity", f.gradient_opacity), f.gradient_opacity), 0.0, 1.0);
     f.gradient_angle = (float)finite_or(json_double(j, "gradient_angle", f.gradient_angle), f.gradient_angle);
+    f.gradient_center_x = (float)std::clamp(finite_or(json_double(j, "gradient_center_x", f.gradient_center_x), f.gradient_center_x), 0.0, 1.0);
+    f.gradient_center_y = (float)std::clamp(finite_or(json_double(j, "gradient_center_y", f.gradient_center_y), f.gradient_center_y), 0.0, 1.0);
+    f.gradient_scale = (float)std::clamp(finite_or(json_double(j, "gradient_scale", f.gradient_scale), f.gradient_scale), 0.01, 10.0);
+    f.gradient_focal_x = (float)std::clamp(finite_or(json_double(j, "gradient_focal_x", f.gradient_focal_x), f.gradient_focal_x), 0.0, 1.0);
+    f.gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "gradient_focal_y", f.gradient_focal_y), f.gradient_focal_y), 0.0, 1.0);
     return f;
 }
 

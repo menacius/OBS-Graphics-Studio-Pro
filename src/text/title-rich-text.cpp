@@ -37,7 +37,15 @@ static RichTextCharFormat layer_char_format(const Layer &layer)
     f.fill.gradient_end_color = layer.gradient_end_color;
     f.fill.gradient_start_pos = layer.gradient_start_pos;
     f.fill.gradient_end_pos = layer.gradient_end_pos;
+    f.fill.gradient_start_opacity = layer.gradient_start_opacity;
+    f.fill.gradient_end_opacity = layer.gradient_end_opacity;
+    f.fill.gradient_opacity = layer.gradient_opacity;
     f.fill.gradient_angle = layer.gradient_angle;
+    f.fill.gradient_center_x = layer.gradient_center_x;
+    f.fill.gradient_center_y = layer.gradient_center_y;
+    f.fill.gradient_scale = layer.gradient_scale;
+    f.fill.gradient_focal_x = layer.gradient_focal_x;
+    f.fill.gradient_focal_y = layer.gradient_focal_y;
     return f;
 }
 
@@ -74,7 +82,15 @@ static bool same_format(const RichTextCharFormat &a, const RichTextCharFormat &b
            a.fill.gradient_end_color == b.fill.gradient_end_color &&
            a.fill.gradient_start_pos == b.fill.gradient_start_pos &&
            a.fill.gradient_end_pos == b.fill.gradient_end_pos &&
-           a.fill.gradient_angle == b.fill.gradient_angle;
+           a.fill.gradient_start_opacity == b.fill.gradient_start_opacity &&
+           a.fill.gradient_end_opacity == b.fill.gradient_end_opacity &&
+           a.fill.gradient_opacity == b.fill.gradient_opacity &&
+           a.fill.gradient_angle == b.fill.gradient_angle &&
+           a.fill.gradient_center_x == b.fill.gradient_center_x &&
+           a.fill.gradient_center_y == b.fill.gradient_center_y &&
+           a.fill.gradient_scale == b.fill.gradient_scale &&
+           a.fill.gradient_focal_x == b.fill.gradient_focal_x &&
+           a.fill.gradient_focal_y == b.fill.gradient_focal_y;
 }
 
 void RichTextDocument::normalize()
