@@ -30,6 +30,7 @@
 #include <vector>
 
 class TitleEditor;
+class QString;
 
 class TitleDock : public QDockWidget {
     Q_OBJECT
@@ -100,6 +101,7 @@ private:
     void select_title(const std::string &id);
     void create_title_from_template(const std::string &name, int template_id);
     std::vector<int> selected_live_text_rows() const;
+    void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
 
     QWidget      *container_  = nullptr;
     QSplitter    *sections_   = nullptr;
