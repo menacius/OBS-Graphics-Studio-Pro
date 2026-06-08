@@ -1827,6 +1827,16 @@ std::vector<int> TitleDock::selected_live_text_rows() const
     }
 
     if (rows.empty()) {
+        if (auto *selection = text_table_->selectionModel()) {
+            for (const QModelIndex &index : selection->selectedRows()) {
+                const int row = index.row();
+                if (std::find(rows.begin(), rows.end(), row) == rows.end())
+                    rows.push_back(row);
+            }
+        }
+    }
+
+    if (rows.empty()) {
         for (const auto *item : text_table_->selectedItems()) {
             if (!item) continue;
             int row = item->row();
@@ -1837,6 +1847,52 @@ std::vector<int> TitleDock::selected_live_text_rows() const
 
     std::sort(rows.begin(), rows.end());
     return rows;
+}
+
+void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
+                                           int row, int col, const QString &text)
+{
+    if (!title || !text_table_) return;
+    if (row < 0 || row >= (int)title->live_text_rows.size()) return;
+    if (col < 0 || col >= (int)title->live_text_rows[row].size()) return;
+
+    std::vector<int> target_rows = selected_live_text_rows();
+    if (target_rows.size() <= 1 ||
+        std::find(target_rows.begin(), target_rows.end(), row) == target_rows.end()) {
+        target_rows = {row};
+    }
+
+    const std::string new_value = text.toStdString();
+    bool changed = false;
+    for (int target_row : target_rows) {
+        if (target_row < 0 || target_row >= (int)title->live_text_rows.size())
+            continue;
+        auto &live_row = title->live_text_rows[target_row];
+        if (col < 0 || col >= (int)live_row.size())
+            continue;
+        if (live_row[col] == new_value)
+            continue;
+
+        live_row[col] = new_value;
+        changed = true;
+    }
+    if (!changed) return;
+
+    updating_exposed_text_ = true;
+    for (int target_row : target_rows) {
+        if (target_row < 0 || target_row >= text_table_->rowCount())
+            continue;
+        auto *edit = qobject_cast<QLineEdit *>(text_table_->cellWidget(target_row, col + 1));
+        if (!edit || edit->text() == text)
+            continue;
+        QSignalBlocker block(edit);
+        edit->setText(text);
+    }
+
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().touch_runtime_change();
+    seen_store_revision_ = TitleDataStore::instance().revision();
+    updating_exposed_text_ = false;
 }
 
 void TitleDock::apply_persistence_settings_to_title(const std::shared_ptr<Title> &title)
@@ -2244,15 +2300,8 @@ void TitleDock::populate_exposed_text()
             auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
             edit->setStyleSheet("QLineEdit{padding:3px;}");
-            connect(edit, &QLineEdit::textEdited, this, [this, title, row, col](const QString &text) {
-                if (row < 0 || row >= (int)title->live_text_rows.size() ||
-                    col < 0 || col >= (int)title->live_text_rows[row].size()) return;
-                updating_exposed_text_ = true;
-                title->live_text_rows[row][col] = text.toStdString();
-                TitleDataStore::instance().save();
-                TitleDataStore::instance().touch_runtime_change();
-                seen_store_revision_ = TitleDataStore::instance().revision();
-                updating_exposed_text_ = false;
+            connect(edit, &QLineEdit::editingFinished, this, [this, title, row, col, edit]() {
+                commit_live_text_cell_edit(title, row, col, edit->text());
             });
             text_table_->setCellWidget(row, col + 1, edit);
         }
