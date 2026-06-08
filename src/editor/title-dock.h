@@ -80,7 +80,8 @@ private:
     void install_obs_state_callbacks();
     void remove_obs_state_callbacks();
     void refresh_for_obs_source_state_change();
-    void handle_scene_changed();
+    void handle_scene_changed(bool force_auto_select);
+    QString current_obs_scene_name() const;
     QSet<QString> active_title_source_ids() const;
     std::vector<std::string> current_scene_title_source_ids() const;
     bool should_show_title(const std::shared_ptr<Title> &title, const QSet<QString> &active_ids) const;
@@ -112,7 +113,7 @@ private:
     std::string selected_id() const;
     std::vector<std::string> selected_title_ids() const;
     std::shared_ptr<Title> create_template_title(const std::string &name, int template_id);
-    void select_title(const std::string &id);
+    bool select_title(const std::string &id);
     bool select_first_available_title_for_current_scene();
     void restore_persisted_selection();
     void persist_current_selection();
@@ -157,6 +158,7 @@ private:
     bool          obs_state_callbacks_installed_ = false;
     bool          suppress_selection_persistence_ = false;
     QString       persisted_selected_title_id_;
+    QString       current_scene_name_;
     int           persisted_current_cue_row_ = -1;
     int           persisted_pending_cue_row_ = -1;
     std::map<int, QByteArray> live_text_header_states_;
