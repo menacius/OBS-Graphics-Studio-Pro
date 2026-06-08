@@ -11072,7 +11072,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->font_kerning = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
             });
     connect(cmb_kerning_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
+            this, [this, can_edit, emit_change, apply_text_char_format](int idx) {
                 if (!can_edit()) return;
                 layer_->kerning_mode = cmb_kerning_mode_->itemData(idx).toInt();
                 layer_->font_kerning = layer_->kerning_mode != 2;
