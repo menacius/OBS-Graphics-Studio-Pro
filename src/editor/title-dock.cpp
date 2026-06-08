@@ -26,6 +26,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QIODevice>
 #include <QItemSelectionModel>
 #include <QMenu>
@@ -50,6 +51,7 @@
 #include <QSettings>
 #include <QWidgetAction>
 #include <QPushButton>
+#include <QPoint>
 #include <QListView>
 #include <QListWidget>
 #include <QTreeWidget>
@@ -64,6 +66,7 @@
 #include <QTextOption>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QSet>
 #include <QPixmap>
 #include <QSignalBlocker>
@@ -2295,6 +2298,73 @@ std::vector<int> TitleDock::selected_live_text_rows() const
     return rows;
 }
 
+int TitleDock::append_live_text_row(bool clone_selected_row)
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return -1;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) return -1;
+
+    auto selected_rows = selected_live_text_rows();
+    std::vector<std::string> row(exposed.size());
+    if (clone_selected_row && selected_rows.size() == 1) {
+        const int source_row = selected_rows.front();
+        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
+            row = title->live_text_rows[source_row];
+    }
+    row.resize(exposed.size());
+
+    title->live_text_rows.push_back(std::move(row));
+    const int added_row = (int)title->live_text_rows.size() - 1;
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    return added_row;
+}
+
+void TitleDock::focus_live_text_cell(int row, int col)
+{
+    if (!text_table_) return;
+    if (row < 0 || row >= text_table_->rowCount()) return;
+    if (col < 0 || col >= text_table_->columnCount()) return;
+
+    text_table_->setCurrentCell(row, col);
+    text_table_->scrollTo(text_table_->model()->index(row, col), QAbstractItemView::PositionAtCenter);
+    if (auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(row, col))) {
+        edit->setFocus(Qt::TabFocusReason);
+        QTextCursor cursor = edit->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        edit->setTextCursor(cursor);
+    }
+}
+
+void TitleDock::handle_live_text_cell_tab(int row, int col, bool backwards)
+{
+    if (!text_table_) return;
+    const int editable_cols = text_table_->columnCount();
+    if (editable_cols <= 0) return;
+
+    int next_index = row * editable_cols + col + (backwards ? -1 : 1);
+    if (next_index < 0)
+        return;
+
+    const int editable_count = text_table_->rowCount() * editable_cols;
+    if (next_index >= editable_count) {
+        if (backwards)
+            return;
+        QTimer::singleShot(0, this, [this]() {
+            const int added_row = append_live_text_row(false);
+            if (added_row >= 0)
+                focus_live_text_cell(added_row, 0);
+        });
+        return;
+    }
+
+    const int next_row = next_index / editable_cols;
+    const int next_col = next_index % editable_cols;
+    focus_live_text_cell(next_row, next_col);
+}
+
 void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
                                            int row, int col, const QString &text)
 {
@@ -2964,26 +3034,9 @@ void TitleDock::on_refresh_external_data()
 
 void TitleDock::on_add_live_text_row()
 {
-    auto title = TitleDataStore::instance().get_title(selected_id());
-    if (!title) return;
-    auto exposed = exposed_text_layers(title);
-    if (exposed.empty()) return;
-
-    auto selected_rows = selected_live_text_rows();
-    std::vector<std::string> row(exposed.size());
-    if (selected_rows.size() == 1) {
-        const int source_row = selected_rows.front();
-        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
-            row = title->live_text_rows[source_row];
-    }
-    row.resize(exposed.size());
-
-    title->live_text_rows.push_back(std::move(row));
-    const int added_row = (int)title->live_text_rows.size() - 1;
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
-    populate_exposed_text();
-    apply_live_text_row_selection({added_row}, false);
+    const int added_row = append_live_text_row(true);
+    if (added_row >= 0)
+        apply_live_text_row_selection({added_row}, false);
 }
 
 void TitleDock::on_delete_live_text_rows()
