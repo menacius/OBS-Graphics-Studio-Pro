@@ -32,7 +32,6 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QTextEdit>
-#include <QTextCursor>
 #include <QTextDocument>
 #include <QMessageBox>
 #include <QVBoxLayout>
@@ -432,170 +431,6 @@ static LiveTextCueHeader *live_text_cue_header(QTableWidget *table)
     return table ? dynamic_cast<LiveTextCueHeader *>(table->horizontalHeader()) : nullptr;
 }
 
-
-class LiveTextCueRowHeader : public QHeaderView {
-public:
-    explicit LiveTextCueRowHeader(QWidget *parent = nullptr)
-        : QHeaderView(Qt::Vertical, parent)
-    {
-        setSectionsClickable(true);
-        setDefaultAlignment(Qt::AlignCenter);
-        setFixedWidth(row_header_width());
-        setToolTip(QStringLiteral("Live text cue row controls"));
-    }
-
-    void set_row_count(int count)
-    {
-        checked_rows_.assign(std::max(0, count), false);
-        viewport()->update();
-    }
-
-    void set_row_checked(int row, bool checked)
-    {
-        if (row < 0 || row >= (int)checked_rows_.size()) return;
-        if (checked_rows_[(size_t)row] == checked) return;
-        checked_rows_[(size_t)row] = checked;
-        viewport()->update();
-    }
-
-    bool row_checked(int row) const
-    {
-        return row >= 0 && row < (int)checked_rows_.size() && checked_rows_[(size_t)row];
-    }
-
-    std::vector<int> checked_rows() const
-    {
-        std::vector<int> rows;
-        for (int row = 0; row < (int)checked_rows_.size(); ++row) {
-            if (checked_rows_[(size_t)row])
-                rows.push_back(row);
-        }
-        return rows;
-    }
-
-    void set_all_checked(bool checked)
-    {
-        std::fill(checked_rows_.begin(), checked_rows_.end(), checked);
-        viewport()->update();
-    }
-
-    void set_select_controls_visible(bool visible)
-    {
-        if (select_controls_visible_ == visible) return;
-        select_controls_visible_ = visible;
-        viewport()->update();
-    }
-
-    void set_cue_rows(int current_row, int pending_row)
-    {
-        current_cue_row_ = current_row;
-        pending_cue_row_ = pending_row;
-        viewport()->update();
-    }
-
-    std::function<void(int, bool)> row_check_toggled;
-    std::function<void(int)> cue_clicked;
-
-protected:
-    QSize sectionSizeFromContents(int logicalIndex) const override
-    {
-        QSize size = QHeaderView::sectionSizeFromContents(logicalIndex);
-        size.setWidth(row_header_width());
-        return size;
-    }
-
-    void paintSection(QPainter *painter, const QRect &rect, int logicalIndex) const override
-    {
-        QHeaderView::paintSection(painter, rect, logicalIndex);
-        if (!painter || !rect.isValid()) return;
-
-        painter->save();
-        painter->drawText(number_rect(rect), Qt::AlignCenter, QString::number(logicalIndex + 1));
-        painter->restore();
-
-        if (select_controls_visible_) {
-            QStyleOptionButton checkbox;
-            checkbox.state = QStyle::State_Enabled | (row_checked(logicalIndex) ? QStyle::State_On : QStyle::State_Off);
-            checkbox.rect = checkbox_rect(rect);
-            style()->drawControl(QStyle::CE_CheckBox, &checkbox, painter, this);
-        }
-
-        QStyleOptionButton cue;
-        cue.state = QStyle::State_Enabled;
-        if (logicalIndex == current_cue_row_)
-            cue.palette.setColor(QPalette::Button, QColor(176, 32, 32));
-        else if (logicalIndex == pending_cue_row_)
-            cue.palette.setColor(QPalette::Button, QColor(29, 143, 58));
-        cue.rect = cue_rect(rect);
-        cue.text = QStringLiteral("▶");
-        style()->drawControl(QStyle::CE_PushButton, &cue, painter, this);
-    }
-
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        if (event && event->button() == Qt::LeftButton) {
-            const int row = logicalIndexAt(event->pos());
-            if (row >= 0) {
-                const QRect section_rect(0, sectionViewportPosition(row), width(), sectionSize(row));
-                if (select_controls_visible_ && checkbox_rect(section_rect).contains(event->pos())) {
-                    const bool checked = !row_checked(row);
-                    set_row_checked(row, checked);
-                    if (row_check_toggled)
-                        row_check_toggled(row, checked);
-                    return;
-                }
-                if (cue_rect(section_rect).contains(event->pos())) {
-                    if (cue_clicked)
-                        cue_clicked(row);
-                    return;
-                }
-            }
-        }
-        QHeaderView::mousePressEvent(event);
-    }
-
-private:
-    int row_header_width() const
-    {
-        const int indicator_width = style()->pixelMetric(QStyle::PM_IndicatorWidth, nullptr, this);
-        return 28 + indicator_width + 36;
-    }
-
-    QRect number_rect(const QRect &section_rect) const
-    {
-        return QRect(section_rect.x(), section_rect.y(), 26, section_rect.height());
-    }
-
-    QRect checkbox_rect(const QRect &section_rect) const
-    {
-        const int indicator_width = style()->pixelMetric(QStyle::PM_IndicatorWidth, nullptr, this);
-        const int indicator_height = style()->pixelMetric(QStyle::PM_IndicatorHeight, nullptr, this);
-        return QRect(section_rect.x() + 28 + (indicator_width / 4),
-                     section_rect.y() + (section_rect.height() - indicator_height) / 2,
-                     indicator_width,
-                     indicator_height);
-    }
-
-    QRect cue_rect(const QRect &section_rect) const
-    {
-        const int side = std::min(24, std::max(18, section_rect.height() - 6));
-        return QRect(section_rect.right() - side - 4,
-                     section_rect.y() + (section_rect.height() - side) / 2,
-                     side,
-                     side);
-    }
-
-    std::vector<bool> checked_rows_;
-    bool select_controls_visible_ = true;
-    int current_cue_row_ = -1;
-    int pending_cue_row_ = -1;
-};
-
-static LiveTextCueRowHeader *live_text_cue_row_header(QTableWidget *table)
-{
-    return table ? dynamic_cast<LiveTextCueRowHeader *>(table->verticalHeader()) : nullptr;
-}
-
 class LiveTextCueCellEdit : public QTextEdit {
 public:
     explicit LiveTextCueCellEdit(const QString &text, QWidget *parent = nullptr)
@@ -610,22 +445,20 @@ public:
         setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setLineWrapMode(QTextEdit::WidgetWidth);
         setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        setTabChangesFocus(false);
-        setFocusPolicy(Qt::StrongFocus);
+        setTabChangesFocus(true);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-        viewport()->setCursor(Qt::IBeamCursor);
 
         connect(this, &QTextEdit::textChanged, this, [this]() {
-            setToolTip(toPlainText());
-            viewport()->setToolTip(toPlainText());
+            const QString text = toPlainText();
+            setToolTip(text);
+            viewport()->setToolTip(text);
             document()->adjustSize();
             updateGeometry();
             QTableWidget *table = nullptr;
             for (QWidget *ancestor = parentWidget(); ancestor && !table; ancestor = ancestor->parentWidget())
                 table = qobject_cast<QTableWidget *>(ancestor);
             if (table) {
-                const QPoint viewport_pos = table->viewport()->mapFromGlobal(mapToGlobal(rect().center()));
-                const QModelIndex index = table->indexAt(viewport_pos);
+                const QModelIndex index = table->indexAt(table->viewport()->mapFromGlobal(mapToGlobal(rect().center())));
                 if (index.isValid())
                     table->resizeRowToContents(index.row());
             }
@@ -634,16 +467,14 @@ public:
 
     QSize sizeHint() const override
     {
-        const int document_width = std::max(1, viewport()->width());
         QTextDocument *doc = document();
-        doc->setTextWidth(document_width);
+        doc->setTextWidth(std::max(1, viewport()->width()));
         const int margin = frameWidth() * 2 + contentsMargins().top() + contentsMargins().bottom() + 8;
         const int height = std::max(30, (int)std::ceil(doc->size().height()) + margin);
         return QSize(QTextEdit::sizeHint().width(), height);
     }
 
     std::function<void(const QString &)> commit_requested;
-    std::function<void(bool)> tab_requested;
 
 protected:
     void focusOutEvent(QFocusEvent *event) override
@@ -651,19 +482,6 @@ protected:
         if (commit_requested)
             commit_requested(toPlainText());
         QTextEdit::focusOutEvent(event);
-    }
-
-    void keyPressEvent(QKeyEvent *event) override
-    {
-        if (event && (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab)) {
-            if (commit_requested)
-                commit_requested(toPlainText());
-            if (tab_requested)
-                tab_requested(event->key() == Qt::Key_Backtab || event->modifiers().testFlag(Qt::ShiftModifier));
-            event->accept();
-            return;
-        }
-        QTextEdit::keyPressEvent(event);
     }
 };
 
@@ -2407,7 +2225,7 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(target_row, col));
+        auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(target_row, col + 1));
         if (!edit || edit->toPlainText() == text)
             continue;
         QSignalBlocker block(edit);
@@ -2824,11 +2642,25 @@ void TitleDock::populate_exposed_text()
             edit->commit_requested = [this, title, row, col](const QString &text) {
                 commit_live_text_cell_edit(title, row, col, text);
             };
-            edit->tab_requested = [this, row, col](bool backwards) {
-                handle_live_text_cell_tab(row, col, backwards);
-            };
-            text_table_->setCellWidget(row, col, edit);
+            text_table_->setCellWidget(row, col + 1, edit);
         }
+
+        auto *cue = new QPushButton("▶", text_table_);
+        cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
+        QString cue_style;
+        if (row == title->current_cue_row) {
+            cue_style = "QPushButton{background:#b02020;color:white;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#d03030;}";
+        } else if (row == title->pending_cue_row) {
+            cue_style = "QPushButton{background:#1d8f3a;color:white;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#28b84f;}";
+        } else {
+            cue_style = "QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
+                        "QPushButton:hover{background:#3a3a3a;}";
+        }
+        cue->setStyleSheet(cue_style);
+        connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
+        text_table_->setCellWidget(row, (int)exposed.size() + 1, cue);
         text_table_->resizeRowToContents(row);
     }
     update_playlist_controls();
