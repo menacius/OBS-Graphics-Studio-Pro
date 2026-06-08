@@ -54,11 +54,16 @@
 #include <QUrl>
 #include <QFont>
 #include <QFrame>
+#include <QFocusEvent>
 #include <QSizePolicy>
 #include <QString>
 #include <QStringList>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QSpinBox>
+#include <QTextOption>
+#include <QTextDocument>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSet>
@@ -93,6 +98,9 @@ constexpr const char *kPlaylistReverseKey = "playlistReverse";
 constexpr const char *kPlaylistHoldSecondsKey = "playlistHoldSeconds";
 constexpr const char *kBackgroundPersistenceKey = "backgroundPersistence";
 constexpr const char *kTextPersistenceKey = "textPersistence";
+constexpr const char *kLiveTextLinesPerRowKey = "liveTextLinesPerRow";
+constexpr int kMinLiveTextLinesPerRow = 1;
+constexpr int kMaxLiveTextLinesPerRow = 8;
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -330,6 +338,44 @@ static void set_bold_label(QLabel *label)
     label->setFont(font);
 }
 
+
+class LiveTextCueField : public QPlainTextEdit {
+public:
+    explicit LiveTextCueField(const QString &text, QWidget *parent = nullptr)
+        : QPlainTextEdit(parent)
+    {
+        setPlainText(text);
+        update_tooltip(text);
+        setLineWrapMode(QPlainTextEdit::WidgetWidth);
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setTabChangesFocus(true);
+        document()->setDocumentMargin(0.0);
+        setFrameShape(QFrame::NoFrame);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        connect(this, &QPlainTextEdit::textChanged, this, [this]() {
+            update_tooltip(toPlainText());
+        });
+    }
+
+    void update_tooltip(const QString &text)
+    {
+        setToolTip(text);
+        if (viewport())
+            viewport()->setToolTip(text);
+    }
+
+    std::function<void(const QString &)> editing_finished;
+
+protected:
+    void focusOutEvent(QFocusEvent *event) override
+    {
+        QPlainTextEdit::focusOutEvent(event);
+        if (editing_finished)
+            editing_finished(toPlainText());
+    }
+};
 
 class LiveTextCueTable : public QTableWidget {
 public:
@@ -1237,6 +1283,10 @@ void TitleDock::load_dock_settings()
                                              background_persistence_).toBool();
     text_persistence_ = settings.value(QString::fromUtf8(kTextPersistenceKey),
                                        text_persistence_).toBool();
+    live_text_lines_per_row_ = std::clamp(settings.value(QString::fromUtf8(kLiveTextLinesPerRowKey),
+                                                         live_text_lines_per_row_).toInt(),
+                                          kMinLiveTextLinesPerRow,
+                                          kMaxLiveTextLinesPerRow);
 
     const QByteArray splitter_state = settings.value(QString::fromUtf8(kDockSplitterStateKey)).toByteArray();
     if (!splitter_state.isEmpty() && sections_)
@@ -1259,6 +1309,7 @@ void TitleDock::save_dock_settings() const
     settings.setValue(QString::fromUtf8(kPlaylistHoldSecondsKey), playlist_hold_seconds_);
     settings.setValue(QString::fromUtf8(kBackgroundPersistenceKey), background_persistence_);
     settings.setValue(QString::fromUtf8(kTextPersistenceKey), text_persistence_);
+    settings.setValue(QString::fromUtf8(kLiveTextLinesPerRowKey), live_text_lines_per_row_);
 
     settings.endGroup();
 }
@@ -1451,6 +1502,11 @@ void TitleDock::build_ui()
     btn_data_sources_->setMenu(data_sources_menu);
     btn_data_sources_->setPopupMode(QToolButton::InstantPopup);
     btn_data_sources_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
+    btn_live_text_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.Settings"),
+                                                         obs_icon("settings.svg"),
+                                                         obsgs_tr("OBSTitles.LiveTextSettingsTooltip"));
+    btn_live_text_settings_->setText(obsgs_tr("OBSTitles.Settings"));
+    btn_live_text_settings_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     btn_external_refresh_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.RefreshExternalData"),
                                                       globe_status_icon(false),
                                                       obsgs_tr("OBSTitles.RefreshExternalDataTooltip"));
@@ -1493,6 +1549,7 @@ void TitleDock::build_ui()
     live_toolbar->addWidget(btn_playlist_settings_);
     live_toolbar->addWidget(btn_persistence_settings_);
     live_toolbar->addWidget(toolbar_spacer(live_toolbar));
+    live_toolbar->addWidget(btn_live_text_settings_);
     live_toolbar->addWidget(btn_external_refresh_);
 
     live_header->addWidget(text_editor_lbl_);
@@ -1582,6 +1639,22 @@ void TitleDock::build_ui()
     btn_persistence_settings_->setMenu(persistence_menu);
     btn_persistence_settings_->setPopupMode(QToolButton::InstantPopup);
 
+    auto *live_text_settings_menu = new QMenu(btn_live_text_settings_);
+    auto *lines_widget = new QWidget(live_text_settings_menu);
+    auto *lines_layout = new QHBoxLayout(lines_widget);
+    lines_layout->setContentsMargins(8, 4, 8, 4);
+    lines_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.LiveTextLinesPerRow"), lines_widget));
+    spin_live_text_lines_per_row_ = new QSpinBox(lines_widget);
+    spin_live_text_lines_per_row_->setRange(kMinLiveTextLinesPerRow, kMaxLiveTextLinesPerRow);
+    spin_live_text_lines_per_row_->setValue(live_text_lines_per_row_);
+    lines_layout->addWidget(spin_live_text_lines_per_row_);
+    auto *lines_action = new QWidgetAction(live_text_settings_menu);
+    lines_action->setDefaultWidget(lines_widget);
+    live_text_settings_menu->addAction(lines_action);
+    btn_live_text_settings_->setMenu(live_text_settings_menu);
+    btn_live_text_settings_->setPopupMode(QToolButton::InstantPopup);
+    btn_live_text_settings_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
+
     connect(btn_row_down_, &QToolButton::clicked, this, &TitleDock::on_move_live_text_row_down);
     connect(btn_external_refresh_, &QToolButton::clicked, this, &TitleDock::on_refresh_external_data);
     connect(btn_playlist_, &QToolButton::toggled, this, &TitleDock::on_toggle_playlist);
@@ -1597,6 +1670,8 @@ void TitleDock::build_ui()
         playlist_hold_seconds_ = value;
         save_dock_settings();
     });
+    connect(spin_live_text_lines_per_row_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &TitleDock::on_live_text_lines_per_row_changed);
     connect(act_background_persistence_, &QAction::toggled, this, [this](bool checked) {
         background_persistence_ = checked;
         if (!background_persistence_) {
@@ -1646,6 +1721,10 @@ void TitleDock::build_ui()
     if (act_background_persistence_) act_background_persistence_->setChecked(background_persistence_);
     if (act_text_persistence_) act_text_persistence_->setChecked(text_persistence_);
     hold_spin->setValue(playlist_hold_seconds_);
+    if (spin_live_text_lines_per_row_) {
+        QSignalBlocker block(spin_live_text_lines_per_row_);
+        spin_live_text_lines_per_row_->setValue(live_text_lines_per_row_);
+    }
     update_template_view_mode();
     update_playlist_controls();
     update_persistence_controls();
@@ -2009,11 +2088,12 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = qobject_cast<QLineEdit *>(text_table_->cellWidget(target_row, col + 1));
-        if (!edit || edit->text() == text)
+        auto *edit = dynamic_cast<LiveTextCueField *>(text_table_->cellWidget(target_row, col + 1));
+        if (!edit || edit->toPlainText() == text)
             continue;
         QSignalBlocker block(edit);
-        edit->setText(text);
+        edit->setPlainText(text);
+        edit->update_tooltip(text);
     }
 
     TitleDataStore::instance().save();
@@ -2057,6 +2137,44 @@ void TitleDock::update_persistence_controls()
         apply_persistence_settings_to_title(title);
 }
 
+int TitleDock::live_text_row_height() const
+{
+    const QWidget *font_source = text_table_ ? text_table_->viewport() : nullptr;
+    const QFontMetrics metrics(font_source ? font_source->font() : font());
+    const int line_count = std::clamp(live_text_lines_per_row_,
+                                      kMinLiveTextLinesPerRow,
+                                      kMaxLiveTextLinesPerRow);
+    const int text_height = metrics.lineSpacing() * line_count;
+    const int padding = 12;
+    return std::max(30, text_height + padding);
+}
+
+void TitleDock::apply_live_text_row_heights()
+{
+    if (!text_table_) return;
+
+    const int height = live_text_row_height();
+    text_table_->verticalHeader()->setDefaultSectionSize(height);
+    for (int row = 0; row < text_table_->rowCount(); ++row)
+        text_table_->setRowHeight(row, height);
+}
+
+void TitleDock::on_live_text_lines_per_row_changed(int lines)
+{
+    const int clamped_lines = std::clamp(lines, kMinLiveTextLinesPerRow, kMaxLiveTextLinesPerRow);
+    if (spin_live_text_lines_per_row_ && spin_live_text_lines_per_row_->value() != clamped_lines) {
+        QSignalBlocker block(spin_live_text_lines_per_row_);
+        spin_live_text_lines_per_row_->setValue(clamped_lines);
+    }
+
+    if (live_text_lines_per_row_ == clamped_lines)
+        return;
+
+    live_text_lines_per_row_ = clamped_lines;
+    apply_live_text_row_heights();
+    save_dock_settings();
+}
+
 void TitleDock::update_external_data_controls()
 {
     auto title = TitleDataStore::instance().get_title(selected_id());
@@ -2066,6 +2184,8 @@ void TitleDock::update_external_data_controls()
 
     if (btn_data_sources_)
         btn_data_sources_->setEnabled(has_title && has_exposed);
+    if (btn_live_text_settings_)
+        btn_live_text_settings_->setEnabled(has_title);
     if (btn_external_refresh_) {
         btn_external_refresh_->setEnabled(has_title && has_exposed);
         btn_external_refresh_->setIcon(globe_status_icon(external_enabled));
@@ -2381,6 +2501,7 @@ void TitleDock::populate_exposed_text()
 
         auto *title_item = new QTableWidgetItem(QString::fromStdString(title->name));
         title_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        title_item->setToolTip(title_item->text());
         text_table_->setItem(0, 0, title_item);
 
         auto *cue = new QPushButton("▶", text_table_);
@@ -2389,6 +2510,7 @@ void TitleDock::populate_exposed_text()
                            "QPushButton:hover{background:#3a3a3a;}");
         connect(cue, &QPushButton::clicked, this, [this]() { cue_live_text_row(0, true); });
         text_table_->setCellWidget(0, 1, cue);
+        apply_live_text_row_heights();
         update_playlist_controls();
         update_persistence_controls();
         update_external_data_controls();
@@ -2424,12 +2546,12 @@ void TitleDock::populate_exposed_text()
         select_item->setTextAlignment(Qt::AlignCenter);
         text_table_->setItem(row, 0, select_item);
         for (int col = 0; col < (int)exposed.size(); ++col) {
-            auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+            auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
-            edit->setStyleSheet("QLineEdit{padding:3px;}");
-            connect(edit, &QLineEdit::editingFinished, this, [this, title, row, col, edit]() {
-                commit_live_text_cell_edit(title, row, col, edit->text());
-            });
+            edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
+            edit->editing_finished = [this, title, row, col](const QString &text) {
+                commit_live_text_cell_edit(title, row, col, text);
+            };
             text_table_->setCellWidget(row, col + 1, edit);
         }
 
@@ -2450,6 +2572,7 @@ void TitleDock::populate_exposed_text()
         connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
         text_table_->setCellWidget(row, (int)exposed.size() + 1, cue);
     }
+    apply_live_text_row_heights();
     update_playlist_controls();
     update_persistence_controls();
     update_external_data_controls();
