@@ -264,6 +264,67 @@ static uint32_t rich_text_argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+static std::vector<QRectF> text_edit_selection_viewport_rects(const QTextEdit *editor)
+{
+    std::vector<QRectF> rects;
+    if (!editor || !editor->textCursor().hasSelection())
+        return rects;
+
+    const QTextCursor cursor = editor->textCursor();
+    const int selection_start = cursor.selectionStart();
+    const int selection_end = cursor.selectionEnd();
+    if (selection_start >= selection_end)
+        return rects;
+
+    const QTextDocument *doc = editor->document();
+    const QAbstractTextDocumentLayout *doc_layout = doc ? doc->documentLayout() : nullptr;
+    if (!doc || !doc_layout)
+        return rects;
+
+    const QPointF scroll_offset(editor->horizontalScrollBar() ? editor->horizontalScrollBar()->value() : 0.0,
+                                editor->verticalScrollBar() ? editor->verticalScrollBar()->value() : 0.0);
+
+    for (QTextBlock block = doc->findBlock(selection_start);
+         block.isValid() && block.position() < selection_end;
+         block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (!layout)
+            continue;
+
+        const int block_start = block.position();
+        const int block_text_end = block_start + std::max(0, block.length() - 1);
+        const int block_selection_start = std::max(selection_start, block_start);
+        const int block_selection_end = std::min(selection_end, block_text_end);
+        if (block_selection_start >= block_selection_end)
+            continue;
+
+        const QRectF block_rect = doc_layout->blockBoundingRect(block);
+        for (int line_index = 0; line_index < layout->lineCount(); ++line_index) {
+            const QTextLine line = layout->lineAt(line_index);
+            if (!line.isValid())
+                continue;
+
+            const int line_start = block_start + line.textStart();
+            const int line_end = line_start + line.textLength();
+            const int line_selection_start = std::max(block_selection_start, line_start);
+            const int line_selection_end = std::min(block_selection_end, line_end);
+            if (line_selection_start >= line_selection_end)
+                continue;
+
+            const qreal x1 = line.cursorToX(line_selection_start - block_start);
+            const qreal x2 = line.cursorToX(line_selection_end - block_start);
+            QRectF rect(block_rect.left() + std::min(x1, x2),
+                        block_rect.top() + line.y(),
+                        std::max<qreal>(1.0, std::abs(x2 - x1)),
+                        std::max<qreal>(1.0, line.height()));
+            rect.translate(-scroll_offset);
+            rects.push_back(rect.adjusted(-1.0, 0.0, 1.0, 0.0));
+        }
+    }
+
+    return rects;
+}
+
 enum RichTextCharFormatMask : uint32_t {
     RichTextCharFontFamily = 1u << 0,
     RichTextCharFontSize = 1u << 1,
@@ -5714,8 +5775,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
         "QTextEdit{background:transparent;border:0px;padding:0px;"
-        "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
-        "selection-color:rgba(255,255,255,1);}");
+        "color:rgba(255,255,255,1);selection-background-color:rgba(255,255,255,0);"
+        "selection-color:rgba(255,255,255,0);}");
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
         if (updating_inline_text_editor_ || refreshing_inline_text_) return;
@@ -5736,8 +5797,10 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
         if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
         const std::string layer_id = inline_text_layer_id_;
         sync_inline_text_layer(false);
-        if (inline_text_editor_)
+        if (inline_text_editor_) {
             inline_text_editor_->viewport()->update();
+            update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
+        }
         emit text_edit_cursor_changed(layer_id);
     };
     connect(inline_text_editor_, &QTextEdit::cursorPositionChanged, this, emit_cursor_changed);
@@ -6765,6 +6828,23 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
 
+    if (inline_text_editor_ && inline_text_editor_->isVisible()) {
+        const QPoint viewport_origin = inline_text_editor_->viewport()->mapTo(this, QPoint(0, 0));
+        const std::vector<QRectF> selection_rects = text_edit_selection_viewport_rects(inline_text_editor_);
+        if (!selection_rects.empty()) {
+            p.save();
+            p.setClipRect(inline_text_editor_->viewport()->rect().translated(viewport_origin));
+            p.setCompositionMode(QPainter::CompositionMode_Difference);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            for (QRectF selection_rect : selection_rects) {
+                selection_rect.translate(viewport_origin);
+                p.drawRect(selection_rect);
+            }
+            p.restore();
+        }
+    }
+
     if (safe_guides_visible_) {
         auto draw_guide = [&](double inset, const QColor &color) {
             QRectF r(ox + dw * inset, oy + dh * inset, dw * (1.0 - 2.0 * inset), dh * (1.0 - 2.0 * inset));
@@ -7513,20 +7593,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
 
-    if (!inline_text_layer_id_.empty()) {
-        if (ev->button() == Qt::MiddleButton) {
-            panning_ = true;
-            pan_start_view_ = QPointF(ev->pos());
-            pan_start_offset_ = pan_offset_;
-            setCursor(Qt::ClosedHandCursor);
-            ev->accept();
-            return;
-        }
-        if (inline_text_editor_)
-            inline_text_editor_->setFocus(Qt::MouseFocusReason);
-        ev->accept();
-        return;
-    }
+    if (!inline_text_layer_id_.empty())
+        commit_text_edit(true);
 
     setFocus(Qt::MouseFocusReason);
 
