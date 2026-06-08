@@ -25,6 +25,7 @@
 #include <QHBoxLayout>
 #include <QToolBar>
 #include <QTimer>
+#include <QSpinBox>
 #include <QByteArray>
 #include <QDateTime>
 #include <QSet>
@@ -70,6 +71,7 @@ private slots:
     void on_toggle_external_data_source();
     void on_show_external_data_settings();
     void on_refresh_external_data();
+    void on_live_text_lines_per_row_changed(int lines);
     void on_toggle_playlist(bool enabled);
     void on_playlist_tick();
 
@@ -102,6 +104,8 @@ private:
     void update_playlist_controls();
     void update_persistence_controls();
     void update_external_data_controls();
+    void apply_live_text_row_heights();
+    int live_text_row_height() const;
     void apply_persistence_settings_to_title(const std::shared_ptr<Title> &title);
     void update_playlist_countdown_label();
     void stop_playlist();
@@ -137,6 +141,7 @@ private:
     QToolButton *btn_row_up_ = nullptr;
     QToolButton *btn_row_down_ = nullptr;
     QToolButton *btn_data_sources_ = nullptr;
+    QToolButton *btn_live_text_settings_ = nullptr;
     QToolButton *btn_external_refresh_ = nullptr;
     QToolButton *btn_playlist_ = nullptr;
     QToolButton *btn_playlist_settings_ = nullptr;
@@ -145,6 +150,7 @@ private:
     QAction     *act_playlist_reverse_ = nullptr;
     QAction     *act_background_persistence_ = nullptr;
     QAction     *act_text_persistence_ = nullptr;
+    QSpinBox    *spin_live_text_lines_per_row_ = nullptr;
     bool          updating_exposed_text_ = false;
     bool          template_icon_view_ = false;
     bool          visibility_filter_active_ = false;
@@ -160,6 +166,7 @@ private:
     bool          playlist_reverse_ = false;
     bool          background_persistence_ = false;
     bool          text_persistence_ = false;
+    int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;
     uint64_t      change_callback_id_ = 0;
 
