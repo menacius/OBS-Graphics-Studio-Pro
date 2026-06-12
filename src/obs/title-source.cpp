@@ -13,10 +13,13 @@
 #include "title-data.h"
 #include "plugin-main.h"
 #include "title-localization.h"
+#include "title-gpu-filter-pipeline.h"
+#include "title-preferences.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <graphics/graphics.h>
+#include <graphics/vec4.h>
 #include <util/threading.h>
 
 #include <cairo/cairo.h>
@@ -46,6 +49,7 @@
 #include <QLinearGradient>
 #include <QRadialGradient>
 #include <QCryptographicHash>
+#include <QByteArray>
 
 #include <memory>
 #include <string>
@@ -58,55 +62,10 @@
 #include <limits>
 #include <unordered_map>
 #include <sstream>
-#include <cstdlib>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr uint32_t kMaxSourceDimension = 16384;
-constexpr uint32_t kMaxSceneMasks = 64;
-
-static const char *kSceneMaskEffect = R"(
-uniform texture2d scene_image;
-uniform texture2d mask_image;
-uniform float4x4 ViewProj;
-
-sampler_state linear_sampler {
-    Filter = Linear;
-    AddressU = Clamp;
-    AddressV = Clamp;
-};
-
-struct VertData {
-    float4 pos : POSITION;
-    float2 uv  : TEXCOORD0;
-};
-
-VertData VSDefault(VertData v_in)
-{
-    VertData vert_out;
-    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
-    vert_out.uv = v_in.uv;
-    return vert_out;
-}
-
-float4 PSDrawSceneMask(VertData v_in) : TARGET
-{
-    float4 scene = scene_image.Sample(linear_sampler, v_in.uv);
-    float mask_alpha = mask_image.Sample(linear_sampler, v_in.uv).a;
-    scene.a *= mask_alpha;
-    return scene;
-}
-
-technique Draw
-{
-    pass
-    {
-        vertex_shader = VSDefault(v_in);
-        pixel_shader = PSDrawSceneMask(v_in);
-    }
-}
-)";
-
 
 static uint32_t clamped_source_dimension(int value)
 {
@@ -286,25 +245,6 @@ static Title snapshot_title_for_render(const Title &title)
     return snapshot;
 }
 
-struct SceneMaskConfig {
-    std::string layer_id;
-    std::string scene_name;
-    double zoom = 1.0;
-    double x = 0.0;
-    double y = 0.0;
-    bool follow_position = true;
-    bool follow_size = true;
-};
-
-struct SceneMaskRuntime {
-    SceneMaskConfig config;
-    std::vector<uint8_t> pixels;
-    gs_texture_t *mask_texture = nullptr;
-    gs_texrender_t *scene_texrender = nullptr;
-    uint32_t width = 0;
-    uint32_t height = 0;
-};
-
 struct TitleSourceData {
     obs_source_t *source  = nullptr;
 
@@ -331,7 +271,12 @@ struct TitleSourceData {
     /* GPU texture */
     std::mutex    texture_mutex;
     gs_texture_t *texture    = nullptr;
+    gs_texrender_t *scene_mask_scene_texrender = nullptr;
+    gs_texture_t *scene_mask_alpha_texture = nullptr;
     gs_effect_t  *scene_mask_effect = nullptr;
+    std::unique_ptr<TitleGpuFilterPipeline> gpu_filter_pipeline;
+    uint32_t      scene_mask_alpha_w = 0;
+    uint32_t      scene_mask_alpha_h = 0;
     uint32_t      tex_w      = 0;
     uint32_t      tex_h      = 0;
 
@@ -348,8 +293,16 @@ struct TitleSourceData {
         QPointF origin;
     };
     std::unordered_map<std::string, CachedEffectLayer> effect_layer_cache;
-    std::vector<SceneMaskConfig> scene_mask_configs;
-    std::vector<SceneMaskRuntime> scene_masks;
+
+    struct SceneMaskConfig {
+        std::string layer_id;
+        std::string scene_name;
+        double zoom = 1.0;
+        double x = 0.0;
+        double y = 0.0;
+        bool move_with_mask = true;
+    };
+    std::vector<SceneMaskConfig> scene_masks;
 };
 
 
@@ -477,6 +430,76 @@ static bool title_has_animation(const std::shared_ptr<Title> &title)
                        [](const std::shared_ptr<Layer> &layer) {
                            return layer && layer_has_animation(*layer);
                        });
+}
+
+
+static std::vector<std::shared_ptr<Layer>> scene_mask_layers(const std::shared_ptr<Title> &title)
+{
+    std::vector<std::shared_ptr<Layer>> masks;
+    if (!title) return masks;
+    for (const auto &layer : title->layers) {
+        if (layer && layer->use_as_scene_mask)
+            masks.push_back(layer);
+    }
+    return masks;
+}
+
+static std::vector<const Layer *> scene_mask_layers(const Title &title)
+{
+    std::vector<const Layer *> masks;
+    for (const auto &layer : title.layers) {
+        if (layer && layer->use_as_scene_mask)
+            masks.push_back(layer.get());
+    }
+    return masks;
+}
+
+static std::string scene_mask_key(const std::string &layer_id, const char *suffix)
+{
+    QByteArray encoded = QByteArray(layer_id.c_str(), (int)layer_id.size()).toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+    return std::string(PROP_SCENE_MASK_PREFIX) + encoded.constData() + "_" + suffix;
+}
+
+static void set_scene_mask_property_defaults(obs_data_t *settings, const std::string &title_id)
+{
+    if (!settings)
+        return;
+
+    if (auto title = TitleDataStore::instance().get_title(title_id)) {
+        for (const auto &layer : scene_mask_layers(title)) {
+            obs_data_set_default_double(settings, scene_mask_key(layer->id, "zoom_percent").c_str(), 100.0);
+            obs_data_set_default_double(settings, scene_mask_key(layer->id, "x").c_str(), 0.0);
+            obs_data_set_default_double(settings, scene_mask_key(layer->id, "y").c_str(), 0.0);
+            obs_data_set_default_bool(settings, scene_mask_key(layer->id, "move_with_mask").c_str(), true);
+        }
+    }
+}
+
+static void refresh_scene_mask_configs(TitleSourceData *data, obs_data_t *settings)
+{
+    if (!data || !settings)
+        return;
+
+    data->scene_masks.clear();
+    set_scene_mask_property_defaults(settings, data->title_id);
+    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+        for (const auto &layer : scene_mask_layers(title)) {
+            TitleSourceData::SceneMaskConfig cfg;
+            cfg.layer_id = layer->id;
+            const std::string scene_key = scene_mask_key(layer->id, "scene");
+            const std::string zoom_key = scene_mask_key(layer->id, "zoom_percent");
+            const std::string x_key = scene_mask_key(layer->id, "x");
+            const std::string y_key = scene_mask_key(layer->id, "y");
+            const std::string move_with_mask_key = scene_mask_key(layer->id, "move_with_mask");
+            cfg.scene_name = obs_data_get_string(settings, scene_key.c_str());
+            const double zoom_percent = obs_data_get_double(settings, zoom_key.c_str());
+            cfg.zoom = std::clamp(zoom_percent > 0.0 ? zoom_percent : 100.0, 1.0, 800.0) / 100.0;
+            cfg.x = obs_data_get_double(settings, x_key.c_str());
+            cfg.y = obs_data_get_double(settings, y_key.c_str());
+            cfg.move_with_mask = obs_data_get_bool(settings, move_with_mask_key.c_str());
+            data->scene_masks.push_back(std::move(cfg));
+        }
+    }
 }
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
@@ -681,107 +704,6 @@ static const Layer *find_layer_by_id(const Title &title, const std::string &id)
     return nullptr;
 }
 
-
-static std::string scene_mask_setting_key(const std::string &layer_id, const char *suffix)
-{
-    return std::string(PROP_SCENE_MASK_PREFIX) + layer_id + "_" + suffix;
-}
-
-static std::vector<const Layer *> title_scene_mask_layers(const Title &title)
-{
-    std::vector<const Layer *> masks;
-    masks.reserve(title.layers.size());
-    for (const auto &layer : title.layers) {
-        if (layer && layer->use_as_scene_mask)
-            masks.push_back(layer.get());
-    }
-    return masks;
-}
-
-static std::vector<SceneMaskConfig> read_scene_mask_configs(obs_data_t *settings, const Title *title)
-{
-    std::vector<SceneMaskConfig> configs;
-    if (!settings || !title)
-        return configs;
-
-    const auto mask_layers = title_scene_mask_layers(*title);
-    configs.reserve(std::min(mask_layers.size(), (size_t)kMaxSceneMasks));
-    for (const Layer *layer : mask_layers) {
-        if (!layer || configs.size() >= kMaxSceneMasks)
-            break;
-        SceneMaskConfig cfg;
-        cfg.layer_id = layer->id;
-        cfg.scene_name = obs_data_get_string(settings, scene_mask_setting_key(layer->id, "scene").c_str());
-        const std::string zoom_key = scene_mask_setting_key(layer->id, "zoom");
-        const double stored_zoom = obs_data_get_double(settings, zoom_key.c_str());
-        cfg.zoom = stored_zoom > 0.0 ? std::clamp(stored_zoom, 0.01, 100.0) : 1.0;
-        cfg.x = obs_data_get_double(settings, scene_mask_setting_key(layer->id, "x").c_str());
-        cfg.y = obs_data_get_double(settings, scene_mask_setting_key(layer->id, "y").c_str());
-        const std::string follow_pos_key = scene_mask_setting_key(layer->id, "follow_position");
-        const std::string follow_size_key = scene_mask_setting_key(layer->id, "follow_size");
-        cfg.follow_position = obs_data_has_user_value(settings, follow_pos_key.c_str())
-            ? obs_data_get_bool(settings, follow_pos_key.c_str())
-            : true;
-        cfg.follow_size = obs_data_has_user_value(settings, follow_size_key.c_str())
-            ? obs_data_get_bool(settings, follow_size_key.c_str())
-            : true;
-        configs.push_back(cfg);
-    }
-    return configs;
-}
-
-static void destroy_scene_mask_runtime(SceneMaskRuntime &runtime)
-{
-    obs_enter_graphics();
-    if (runtime.mask_texture)
-        gs_texture_destroy(runtime.mask_texture);
-    if (runtime.scene_texrender)
-        gs_texrender_destroy(runtime.scene_texrender);
-    obs_leave_graphics();
-    runtime.mask_texture = nullptr;
-    runtime.scene_texrender = nullptr;
-}
-
-static void set_scene_mask_configs(TitleSourceData *data, const std::vector<SceneMaskConfig> &configs)
-{
-    if (!data)
-        return;
-    for (auto &runtime : data->scene_masks)
-        destroy_scene_mask_runtime(runtime);
-    data->scene_masks.clear();
-    data->scene_mask_configs = configs;
-    data->scene_masks.reserve(configs.size());
-    for (const auto &cfg : configs) {
-        SceneMaskRuntime runtime;
-        runtime.config = cfg;
-        data->scene_masks.push_back(std::move(runtime));
-    }
-}
-
-static double layer_evaluated_pos_x(const Layer &layer, double title_time)
-{
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    return layer.pos_x.evaluate(lt);
-}
-
-static double layer_evaluated_pos_y(const Layer &layer, double title_time)
-{
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    return layer.pos_y.evaluate(lt);
-}
-
-static double layer_evaluated_scale_x(const Layer &layer, double title_time)
-{
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    return layer.scale_x.evaluate(lt);
-}
-
-static double layer_evaluated_scale_y(const Layer &layer, double title_time)
-{
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    return layer.scale_y.evaluate(lt);
-}
-
 static bool layer_chain_visible(const Title &title, const Layer &layer, double title_time, int depth = 0)
 {
     if (depth > 64 || !layer.visible || title_time < layer.in_time || title_time > layer.out_time)
@@ -833,6 +755,123 @@ static void cairo_add_rounded_rect(cairo_t *cr, double x, double y, double w, do
     cairo_arc(cr, x + w - r, y + h - r, r, 0,          kPi/2);
     cairo_arc(cr, x + r,     y + h - r, r, kPi/2,     kPi);
     cairo_close_path(cr);
+}
+
+static void cairo_add_rounded_rect_corners(cairo_t *cr, double x, double y, double w, double h,
+                                           double top_left, double top_right,
+                                           double bottom_right, double bottom_left,
+                                           CornerType corner_type = CornerType::Round)
+{
+    const double max_radius = std::max(0.0, std::min(w, h) / 2.0);
+    const double tl = std::clamp(top_left, 0.0, max_radius);
+    const double tr = std::clamp(top_right, 0.0, max_radius);
+    const double br = std::clamp(bottom_right, 0.0, max_radius);
+    const double bl = std::clamp(bottom_left, 0.0, max_radius);
+    if (tl <= 0.0 && tr <= 0.0 && br <= 0.0 && bl <= 0.0) {
+        cairo_rectangle(cr, x, y, w, h);
+        return;
+    }
+    auto add_corner = [&](double corner_x, double corner_y, double to_x, double to_y,
+                          double cutout_x, double cutout_y, double radius) {
+        if (radius <= 0.0) {
+            cairo_line_to(cr, corner_x, corner_y);
+            return;
+        }
+        switch (corner_type) {
+        case CornerType::Straight:
+            cairo_line_to(cr, to_x, to_y);
+            break;
+        case CornerType::Cutout:
+            cairo_line_to(cr, cutout_x, cutout_y);
+            cairo_line_to(cr, to_x, to_y);
+            break;
+        case CornerType::Concave:
+            cairo_curve_to(cr, cutout_x, cutout_y, cutout_x, cutout_y, to_x, to_y);
+            break;
+        case CornerType::Round:
+        default:
+            break;
+        }
+    };
+    cairo_new_sub_path(cr);
+    cairo_move_to(cr, x + tl, y);
+    cairo_line_to(cr, x + w - tr, y);
+    if (tr > 0.0 && corner_type == CornerType::Round)
+        cairo_arc(cr, x + w - tr, y + tr, tr, 3 * kPi / 2, 2 * kPi);
+    else
+        add_corner(x + w, y, x + w, y + tr, x + w - tr, y + tr, tr);
+    cairo_line_to(cr, x + w, y + h - br);
+    if (br > 0.0 && corner_type == CornerType::Round)
+        cairo_arc(cr, x + w - br, y + h - br, br, 0, kPi / 2);
+    else
+        add_corner(x + w, y + h, x + w - br, y + h, x + w - br, y + h - br, br);
+    cairo_line_to(cr, x + bl, y + h);
+    if (bl > 0.0 && corner_type == CornerType::Round)
+        cairo_arc(cr, x + bl, y + h - bl, bl, kPi / 2, kPi);
+    else
+        add_corner(x, y + h, x, y + h - bl, x + bl, y + h - bl, bl);
+    cairo_line_to(cr, x, y + tl);
+    if (tl > 0.0 && corner_type == CornerType::Round)
+        cairo_arc(cr, x + tl, y + tl, tl, kPi, 3 * kPi / 2);
+    else
+        add_corner(x, y, x + tl, y, x + tl, y + tl, tl);
+    cairo_close_path(cr);
+}
+
+static QPainterPath painter_rounded_rect_corners(const QRectF &rect, double top_left, double top_right,
+                                                 double bottom_right, double bottom_left,
+                                                 CornerType corner_type = CornerType::Round)
+{
+    const double max_radius = std::max(0.0, std::min(rect.width(), rect.height()) / 2.0);
+    const double tl = std::clamp(top_left, 0.0, max_radius);
+    const double tr = std::clamp(top_right, 0.0, max_radius);
+    const double br = std::clamp(bottom_right, 0.0, max_radius);
+    const double bl = std::clamp(bottom_left, 0.0, max_radius);
+    QPainterPath path;
+    if (tl <= 0.0 && tr <= 0.0 && br <= 0.0 && bl <= 0.0) {
+        path.addRect(rect);
+        return path;
+    }
+    auto add_corner = [&](const QPointF &corner, const QPointF &to, const QPointF &cutout, double radius) {
+        if (radius <= 0.0) {
+            path.lineTo(corner);
+            return;
+        }
+        switch (corner_type) {
+        case CornerType::Straight:
+            path.lineTo(to);
+            break;
+        case CornerType::Cutout:
+            path.lineTo(cutout);
+            path.lineTo(to);
+            break;
+        case CornerType::Concave:
+            path.cubicTo(cutout, cutout, to);
+            break;
+        case CornerType::Round:
+        default:
+            path.quadTo(corner, to);
+            break;
+        }
+    };
+    path.moveTo(rect.left() + tl, rect.top());
+    path.lineTo(rect.right() - tr, rect.top());
+    add_corner(rect.topRight(), QPointF(rect.right(), rect.top() + tr), QPointF(rect.right() - tr, rect.top() + tr), tr);
+    path.lineTo(rect.right(), rect.bottom() - br);
+    add_corner(rect.bottomRight(), QPointF(rect.right() - br, rect.bottom()), QPointF(rect.right() - br, rect.bottom() - br), br);
+    path.lineTo(rect.left() + bl, rect.bottom());
+    add_corner(rect.bottomLeft(), QPointF(rect.left(), rect.bottom() - bl), QPointF(rect.left() + bl, rect.bottom() - bl), bl);
+    path.lineTo(rect.left(), rect.top() + tl);
+    add_corner(rect.topLeft(), QPointF(rect.left() + tl, rect.top()), QPointF(rect.left() + tl, rect.top() + tl), tl);
+    path.closeSubpath();
+    return path;
+}
+
+static QPainterPath painter_layer_rounded_rect_path(const Layer &layer, const QRectF &rect)
+{
+    return painter_rounded_rect_corners(rect, layer.corner_radius_tl, layer.corner_radius_tr,
+                                        layer.corner_radius_br, layer.corner_radius_bl,
+                                        layer.corner_type);
 }
 
 static void cairo_add_regular_polygon(cairo_t *cr, double cx, double cy, double rx, double ry,
@@ -901,10 +940,10 @@ static QPainterPath painter_layer_shape_path(const Layer &layer, double w, doubl
     case ShapeType::Line:
         path.moveTo(0, h / 2.0); path.lineTo(w, h / 2.0); break;
     case ShapeType::RoundedRectangle:
-        path.addRoundedRect(QRectF(0, 0, w, h), layer.corner_radius, layer.corner_radius); break;
+        path = painter_layer_rounded_rect_path(layer, QRectF(0, 0, w, h)); break;
     case ShapeType::Rectangle:
     default:
-        path.addRect(QRectF(0, 0, w, h)); break;
+        path = painter_layer_rounded_rect_path(layer, QRectF(0, 0, w, h)); break;
     }
     return path;
 }
@@ -928,10 +967,14 @@ static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, dou
     case ShapeType::Line:
         cairo_move_to(cr, 0, h / 2.0); cairo_line_to(cr, w, h / 2.0); break;
     case ShapeType::RoundedRectangle:
-        cairo_add_rounded_rect(cr, 0, 0, w, h, layer.corner_radius); break;
+        cairo_add_rounded_rect_corners(cr, 0, 0, w, h, layer.corner_radius_tl, layer.corner_radius_tr,
+                                       layer.corner_radius_br, layer.corner_radius_bl,
+                                       layer.corner_type); break;
     case ShapeType::Rectangle:
     default:
-        cairo_rectangle(cr, 0, 0, w, h); break;
+        cairo_add_rounded_rect_corners(cr, 0, 0, w, h, layer.corner_radius_tl, layer.corner_radius_tr,
+                                       layer.corner_radius_br, layer.corner_radius_bl,
+                                       layer.corner_type); break;
     }
 }
 
@@ -1034,6 +1077,33 @@ static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &b
     return QBrush(gradient);
 }
 
+static QBrush stroke_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
+{
+    const double opacity = std::clamp((double)layer.stroke_gradient_opacity * layer_opacity, 0.0, 1.0);
+    const double cx = box.left() + std::clamp((double)layer.stroke_gradient_center_x, 0.0, 1.0) * box.width();
+    const double cy = box.top() + std::clamp((double)layer.stroke_gradient_center_y, 0.0, 1.0) * box.height();
+    const double scale = std::clamp((double)layer.stroke_gradient_scale, 0.01, 10.0);
+    const double start_pos = std::clamp((double)layer.stroke_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)layer.stroke_gradient_end_pos, 0.0, 1.0);
+    if (layer.stroke_gradient_type == 1) {
+        const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
+        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
+                                 QPointF(box.left() + std::clamp((double)layer.stroke_gradient_focal_x, 0.0, 1.0) * box.width(),
+                                         box.top() + std::clamp((double)layer.stroke_gradient_focal_y, 0.0, 1.0) * box.height()));
+        gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.stroke_gradient_start_color, opacity, layer.stroke_gradient_start_opacity));
+        gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.stroke_gradient_end_color, opacity, layer.stroke_gradient_end_opacity));
+        return QBrush(gradient);
+    }
+    const double length = std::hypot(box.width(), box.height()) * 0.5 * scale;
+    const double angle = layer.stroke_gradient_angle * kPi / 180.0;
+    const double dx = std::cos(angle) * length;
+    const double dy = std::sin(angle) * length;
+    QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
+    gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.stroke_gradient_start_color, opacity, layer.stroke_gradient_start_opacity));
+    gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.stroke_gradient_end_color, opacity, layer.stroke_gradient_end_opacity));
+    return QBrush(gradient);
+}
+
 static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
 {
     const double opacity = std::clamp((double)layer.gradient_opacity * layer_alpha, 0.0, 1.0);
@@ -1061,6 +1131,37 @@ static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double 
     };
     add_stop(start_pos, layer.gradient_start_color, layer.gradient_start_opacity);
     add_stop(end_pos, layer.gradient_end_color, layer.gradient_end_opacity);
+    cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
+    return pattern;
+}
+
+static cairo_pattern_t *create_stroke_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
+{
+    const double opacity = std::clamp((double)layer.stroke_gradient_opacity * layer_alpha, 0.0, 1.0);
+    const double cx = x + std::clamp((double)layer.stroke_gradient_center_x, 0.0, 1.0) * w;
+    const double cy = y + std::clamp((double)layer.stroke_gradient_center_y, 0.0, 1.0) * h;
+    const double scale = std::clamp((double)layer.stroke_gradient_scale, 0.01, 10.0);
+    const double start_pos = std::clamp((double)layer.stroke_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)layer.stroke_gradient_end_pos, 0.0, 1.0);
+    cairo_pattern_t *pattern = nullptr;
+    if (layer.stroke_gradient_type == 1) {
+        const double radius = std::max(w, h) * 0.5 * scale;
+        const double fx = x + std::clamp((double)layer.stroke_gradient_focal_x, 0.0, 1.0) * w;
+        const double fy = y + std::clamp((double)layer.stroke_gradient_focal_y, 0.0, 1.0) * h;
+        pattern = cairo_pattern_create_radial(fx, fy, 0.0, cx, cy, std::max(1.0, radius));
+    } else {
+        const double length = std::hypot(w, h) * 0.5 * scale;
+        const double angle = layer.stroke_gradient_angle * kPi / 180.0;
+        const double dx = std::cos(angle) * length;
+        const double dy = std::sin(angle) * length;
+        pattern = cairo_pattern_create_linear(cx - dx, cy - dy, cx + dx, cy + dy);
+    }
+    auto add_stop = [&](double pos, uint32_t argb, double stop_opacity) {
+        QColor color = gradient_color_with_opacity(argb, opacity, stop_opacity);
+        cairo_pattern_add_color_stop_rgba(pattern, pos, color.redF(), color.greenF(), color.blueF(), color.alphaF());
+    };
+    add_stop(start_pos, layer.stroke_gradient_start_color, layer.stroke_gradient_start_opacity);
+    add_stop(end_pos, layer.stroke_gradient_end_color, layer.stroke_gradient_end_opacity);
     cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
     return pattern;
 }
@@ -1109,7 +1210,8 @@ static bool layer_effect_enabled(const Layer &layer, LayerEffectType type, bool 
 
 static bool eval_outline_enabled(const Layer &layer, double)
 {
-    return layer_effect_enabled(layer, LayerEffectType::Outline, layer.outline_enabled);
+    return layer.stroke_fill_type != 0 &&
+           layer_effect_enabled(layer, LayerEffectType::Outline, layer.outline_enabled);
 }
 
 static uint32_t eval_outline_color(const Layer &layer, double)
@@ -1317,30 +1419,37 @@ static void box_blur_alpha(std::vector<uint8_t> &alpha, int w, int h, int radius
     }
 }
 
-static void blur_alpha_for_type(std::vector<uint8_t> &alpha, int w, int h, double blur, int blur_type)
+static std::vector<int> blur_pass_radii(double blur, int blur_type)
 {
-    int radius = (int)std::round(std::max(0.0, blur));
-    if (radius <= 0) return;
-    switch ((ShadowBlurType)std::clamp(blur_type, 0, (int)ShadowBlurType::AlphaMask)) {
+    const int radius = (int)std::round(std::max(0.0, blur));
+    if (radius <= 0)
+        return {};
+
+    switch ((ShadowBlurType)std::clamp(blur_type, 0, (int)ShadowBlurType::DualKawase)) {
     case ShadowBlurType::Box:
-        box_blur_alpha(alpha, w, h, radius);
-        break;
+        return {radius};
     case ShadowBlurType::Gaussian: {
-        int r = std::max(1, (int)std::round(radius * 0.58));
-        box_blur_alpha(alpha, w, h, r);
-        box_blur_alpha(alpha, w, h, r);
-        box_blur_alpha(alpha, w, h, r);
-        break;
+        const int r = std::max(1, (int)std::round(radius * 0.58));
+        return {r, r, r};
     }
+    case ShadowBlurType::Triangular: {
+        const int r = std::max(1, (int)std::round(radius * 0.5));
+        return {r, r};
+    }
+    case ShadowBlurType::DualKawase:
+        return {std::max(1, radius / 3), std::max(1, radius / 4), std::max(1, radius / 5)};
     case ShadowBlurType::AlphaMask:
-        box_blur_alpha(alpha, w, h, std::max(1, radius / 2));
-        break;
+        return {std::max(1, radius / 2)};
     case ShadowBlurType::StackFast:
     default:
-        box_blur_alpha(alpha, w, h, std::max(1, radius / 2));
-        box_blur_alpha(alpha, w, h, std::max(1, radius / 3));
-        break;
+        return {std::max(1, radius / 2), std::max(1, radius / 3)};
     }
+}
+
+static void blur_alpha_for_type(std::vector<uint8_t> &alpha, int w, int h, double blur, int blur_type)
+{
+    for (int radius : blur_pass_radii(blur, blur_type))
+        box_blur_alpha(alpha, w, h, radius);
 }
 
 static int shadow_blur_type_for_long_shadow(int blur_type)
@@ -2270,10 +2379,14 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     };
     auto draw_text_outline = [&]() {
         if (has_rich_text) return;
-        if (outline_width <= 0.0 || outline.alpha() <= 0) return;
+        if (outline_width <= 0.0) return;
+        if (layer.stroke_fill_type == 1 && outline.alpha() <= 0) return;
         bool previous_aa = painter.testRenderHint(QPainter::Antialiasing);
         painter.setRenderHint(QPainter::Antialiasing, eval_outline_antialias(layer, t));
-        painter.setPen(QPen(outline, outline_width, Qt::SolidLine, Qt::RoundCap, outline_pen_join_style(layer)));
+        const QBrush stroke_brush = layer.stroke_fill_type == 2
+            ? stroke_gradient_fill_brush(layer, text_rect, eval_outline_opacity(layer, t))
+            : QBrush(outline);
+        painter.setPen(QPen(stroke_brush, outline_width, Qt::SolidLine, Qt::RoundCap, outline_pen_join_style(layer)));
         painter.setBrush(Qt::NoBrush);
         painter.drawPath(text_path);
         painter.setRenderHint(QPainter::Antialiasing, previous_aa);
@@ -2304,7 +2417,6 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     double w = eval_box_width(layer, t);
     double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
-    double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
     double x = -eval_origin_x(layer, t) * w;
     double y = -eval_origin_y(layer, t) * h;
 
@@ -2333,8 +2445,13 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
         }
         mp.drawPath(shape_path);
         mp.end();
-        const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6")
-            .arg((int)layer.shape_type).arg(mw).arg(mh).arg(r, 0, 'f', 2)
+        const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6|%7|%8|%9|%10")
+            .arg((int)layer.shape_type).arg(mw).arg(mh)
+            .arg(layer.corner_radius_tl, 0, 'f', 2)
+            .arg(layer.corner_radius_tr, 0, 'f', 2)
+            .arg(layer.corner_radius_br, 0, 'f', 2)
+            .arg(layer.corner_radius_bl, 0, 'f', 2)
+            .arg((int)layer.corner_type)
             .arg(layer.shape_points).arg(layer.shape_sides);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
         paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
@@ -2343,15 +2460,24 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     cairo_add_layer_shape(cr, layer, w, h);
     double outline_width = eval_outline_width(layer, t);
     uint32_t outline_color = eval_outline_color(layer, t);
-    bool has_outline = outline_width > 0.0 && ((outline_color >> 24) & 0xFF) > 0;
+    bool has_outline = outline_width > 0.0 &&
+                       (layer.stroke_fill_type == 2 || ((outline_color >> 24) & 0xFF) > 0);
     auto stroke_outline = [&]() {
-        double sr, sg, sb, sa;
-        unpack_color(outline_color, sr, sg, sb, sa);
         cairo_set_antialias(cr, outline_cairo_antialias(layer));
         cairo_set_line_width(cr, outline_width);
         cairo_set_line_join(cr, outline_cairo_join_style(layer));
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
+        cairo_pattern_t *stroke_gradient = nullptr;
+        if (layer.stroke_fill_type == 2) {
+            stroke_gradient = create_stroke_gradient_pattern(layer, 0.0, 0.0, w, h,
+                                                             alpha * eval_outline_opacity(layer, t));
+            cairo_set_source(cr, stroke_gradient);
+        } else {
+            double sr, sg, sb, sa;
+            unpack_color(outline_color, sr, sg, sb, sa);
+            cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
+        }
         cairo_stroke_preserve(cr);
+        if (stroke_gradient) cairo_pattern_destroy(stroke_gradient);
         cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
     };
     if (has_outline && !eval_outline_on_front(layer, t))
@@ -2488,6 +2614,8 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
     case LayerEffectType::Glow:
     case LayerEffectType::InnerGlow:
     case LayerEffectType::InnerShadow:
+    case LayerEffectType::Blur:
+    case LayerEffectType::MotionBlur:
         return true;
     case LayerEffectType::BrightnessContrast:
         return std::abs(effect.brightness) > 0.0001f || std::abs(effect.contrast - 1.0f) > 0.0001f;
@@ -2507,11 +2635,45 @@ static bool layer_has_stackable_pixel_effects(const Layer &layer)
     return false;
 }
 
+static bool effect_is_motion_blur(const LayerEffect &effect)
+{
+    return effect.enabled && effect.type == LayerEffectType::MotionBlur;
+}
+
+static const LayerEffect *layer_motion_blur_effect(const Layer &layer)
+{
+    for (auto it = layer.effects.rbegin(); it != layer.effects.rend(); ++it) {
+        if (effect_is_motion_blur(*it))
+            return &*it;
+    }
+    return nullptr;
+}
+
+static bool layer_has_motion_blur(const Layer &layer)
+{
+    return layer_motion_blur_effect(layer) != nullptr;
+}
+
+static bool gpu_effects_requested_for_source(const TitleSourceData *data)
+{
+    (void)data;
+    return false;
+}
+
 static Layer layer_without_stackable_pixel_effects(const Layer &layer)
 {
     Layer base_layer = layer;
     base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(),
                                             layer_effect_requires_stack_surface),
+                             base_layer.effects.end());
+    return base_layer;
+}
+
+static Layer layer_without_motion_blur_effects(const Layer &layer)
+{
+    Layer base_layer = layer;
+    base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(),
+                                            effect_is_motion_blur),
                              base_layer.effects.end());
     return base_layer;
 }
@@ -2532,6 +2694,122 @@ static std::vector<uint8_t> surface_alpha(cairo_surface_t *surface)
             alpha[y * width + x] = row[x * 4 + 3];
     }
     return alpha;
+}
+
+static std::vector<uint8_t> surface_pixels(cairo_surface_t *surface)
+{
+    cairo_surface_flush(surface);
+    uint8_t *data = cairo_image_surface_get_data(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    std::vector<uint8_t> pixels((size_t)std::max(0, width) * (size_t)std::max(0, height) * 4, 0);
+    if (!data || width <= 0 || height <= 0 || stride <= 0)
+        return pixels;
+    for (int y = 0; y < height; ++y)
+        std::copy(data + y * stride, data + y * stride + width * 4, pixels.begin() + (size_t)y * width * 4);
+    return pixels;
+}
+
+static void write_surface_pixels(cairo_surface_t *surface, const std::vector<uint8_t> &pixels)
+{
+    uint8_t *data = cairo_image_surface_get_data(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    if (!data || width <= 0 || height <= 0 || stride <= 0 || pixels.size() < (size_t)width * (size_t)height * 4)
+        return;
+    for (int y = 0; y < height; ++y)
+        std::copy(pixels.begin() + (size_t)y * width * 4,
+                  pixels.begin() + (size_t)(y + 1) * width * 4,
+                  data + y * stride);
+    cairo_surface_mark_dirty(surface);
+}
+
+static void clear_surface(cairo_t *cr)
+{
+    cairo_save(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_restore(cr);
+}
+
+static void composite_premultiplied_over(std::vector<uint8_t> &dst, const std::vector<uint8_t> &src)
+{
+    const size_t count = std::min(dst.size(), src.size()) / 4;
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t *d = dst.data() + i * 4;
+        const uint8_t *s = src.data() + i * 4;
+        const int inv_a = 255 - s[3];
+        d[0] = (uint8_t)std::min(255, (int)s[0] + ((int)d[0] * inv_a + 127) / 255);
+        d[1] = (uint8_t)std::min(255, (int)s[1] + ((int)d[1] * inv_a + 127) / 255);
+        d[2] = (uint8_t)std::min(255, (int)s[2] + ((int)d[2] * inv_a + 127) / 255);
+        d[3] = (uint8_t)std::min(255, (int)s[3] + ((int)d[3] * inv_a + 127) / 255);
+    }
+}
+
+static void box_blur_pixels(std::vector<uint8_t> &pixels, int w, int h, int radius)
+{
+    if (radius <= 0 || w <= 0 || h <= 0 || pixels.size() < (size_t)w * (size_t)h * 4)
+        return;
+
+    std::vector<uint8_t> tmp(pixels.size());
+    const int window = radius * 2 + 1;
+
+    for (int y = 0; y < h; ++y) {
+        int sum[4] = {0, 0, 0, 0};
+        for (int x = -radius; x <= radius; ++x) {
+            const uint8_t *px = &pixels[((size_t)y * w + std::clamp(x, 0, w - 1)) * 4];
+            for (int c = 0; c < 4; ++c) sum[c] += px[c];
+        }
+        for (int x = 0; x < w; ++x) {
+            uint8_t *dst = &tmp[((size_t)y * w + x) * 4];
+            for (int c = 0; c < 4; ++c) dst[c] = (uint8_t)(sum[c] / window);
+            const uint8_t *remove = &pixels[((size_t)y * w + std::clamp(x - radius, 0, w - 1)) * 4];
+            const uint8_t *add = &pixels[((size_t)y * w + std::clamp(x + radius + 1, 0, w - 1)) * 4];
+            for (int c = 0; c < 4; ++c) sum[c] += add[c] - remove[c];
+        }
+    }
+
+    for (int x = 0; x < w; ++x) {
+        int sum[4] = {0, 0, 0, 0};
+        for (int y = -radius; y <= radius; ++y) {
+            const uint8_t *px = &tmp[((size_t)std::clamp(y, 0, h - 1) * w + x) * 4];
+            for (int c = 0; c < 4; ++c) sum[c] += px[c];
+        }
+        for (int y = 0; y < h; ++y) {
+            uint8_t *dst = &pixels[((size_t)y * w + x) * 4];
+            for (int c = 0; c < 4; ++c) dst[c] = (uint8_t)(sum[c] / window);
+            const uint8_t *remove = &tmp[((size_t)std::clamp(y - radius, 0, h - 1) * w + x) * 4];
+            const uint8_t *add = &tmp[((size_t)std::clamp(y + radius + 1, 0, h - 1) * w + x) * 4];
+            for (int c = 0; c < 4; ++c) sum[c] += add[c] - remove[c];
+        }
+    }
+}
+
+static void blur_surface_for_type(cairo_surface_t *surface, double blur, int blur_type, double amount)
+{
+    cairo_surface_flush(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    if (width <= 0 || height <= 0)
+        return;
+
+    const auto passes = blur_pass_radii(blur, blur_type);
+    if (passes.empty())
+        return;
+
+    std::vector<uint8_t> original = surface_pixels(surface);
+    std::vector<uint8_t> blurred = original;
+    for (int radius : passes)
+        box_blur_pixels(blurred, width, height, radius);
+
+    const double mix = std::clamp(amount, 0.0, 1.0);
+    if (mix < 1.0) {
+        for (size_t i = 0; i < blurred.size(); ++i)
+            blurred[i] = (uint8_t)std::lround(original[i] * (1.0 - mix) + blurred[i] * mix);
+    }
+    write_surface_pixels(surface, blurred);
 }
 
 static void offset_alpha(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst,
@@ -2643,6 +2921,85 @@ static void composite_solid_alpha(cairo_surface_t *surface, const std::vector<ui
     cairo_surface_mark_dirty(surface);
 }
 
+static void composite_solid_alpha_behind(cairo_surface_t *surface, const std::vector<uint8_t> &mask,
+                                         uint32_t argb, double opacity)
+{
+    cairo_surface_flush(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    if (width <= 0 || height <= 0 || mask.size() < (size_t)width * (size_t)height)
+        return;
+
+    std::vector<uint8_t> original = surface_pixels(surface);
+    std::vector<uint8_t> under_pixels((size_t)width * (size_t)height * 4, 0);
+    CairoSurfacePtr under(cairo_image_surface_create_for_data(
+        under_pixels.data(), CAIRO_FORMAT_ARGB32, width, height, width * 4));
+    if (!under || cairo_surface_status(under.get()) != CAIRO_STATUS_SUCCESS)
+        return;
+
+    composite_solid_alpha(under.get(), mask, argb, opacity, EffectBlendMode::Normal, false);
+    cairo_surface_flush(under.get());
+    composite_premultiplied_over(under_pixels, original);
+    write_surface_pixels(surface, under_pixels);
+}
+
+static void apply_directional_motion_blur(cairo_surface_t *surface, const LayerEffect &effect)
+{
+    cairo_surface_flush(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    if (width <= 0 || height <= 0)
+        return;
+
+    const std::vector<uint8_t> original = surface_pixels(surface);
+    if (original.empty())
+        return;
+
+    const int samples = std::clamp(effect.effect_samples, 2, 64);
+    const double distance = std::max(0.0f, effect.effect_size);
+    const double amount = std::clamp((double)effect.effect_opacity, 0.0, 1.0);
+    if (distance <= 0.0 || amount <= 0.0)
+        return;
+
+    const double radians = effect.effect_angle * kPi / 180.0;
+    const double dx = std::cos(radians) * distance;
+    const double dy = std::sin(radians) * distance;
+    std::vector<uint8_t> blurred(original.size(), 0);
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int sum[4] = {0, 0, 0, 0};
+            int used = 0;
+            for (int s = 0; s < samples; ++s) {
+                const double f = samples == 1 ? 0.0 : (double)s / (double)(samples - 1);
+                const double offset = effect.effect_centered ? (f - 0.5) : -f;
+                const int sx = (int)std::lround(x + dx * offset);
+                const int sy = (int)std::lround(y + dy * offset);
+                if (sx < 0 || sx >= width || sy < 0 || sy >= height)
+                    continue;
+                const uint8_t *src = original.data() + ((size_t)sy * width + sx) * 4;
+                for (int c = 0; c < 4; ++c)
+                    sum[c] += src[c];
+                ++used;
+            }
+            uint8_t *dst = blurred.data() + ((size_t)y * width + x) * 4;
+            if (used <= 0) {
+                const uint8_t *src = original.data() + ((size_t)y * width + x) * 4;
+                std::copy(src, src + 4, dst);
+            } else {
+                for (int c = 0; c < 4; ++c)
+                    dst[c] = (uint8_t)(sum[c] / used);
+            }
+        }
+    }
+
+    if (amount < 1.0) {
+        for (size_t i = 0; i < blurred.size(); ++i)
+            blurred[i] = (uint8_t)std::lround(original[i] * (1.0 - amount) + blurred[i] * amount);
+    }
+    write_surface_pixels(surface, blurred);
+}
+
 static void apply_color_adjustment(cairo_surface_t *surface, const LayerEffect &effect)
 {
     cairo_surface_flush(surface);
@@ -2708,6 +3065,12 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
             alpha = surface_alpha(surface);
             composite_solid_alpha(surface, alpha, effect.effect_color, effect.effect_opacity, effect.blend_mode, true);
             break;
+        case LayerEffectType::Blur:
+            blur_surface_for_type(surface, effect.effect_size, effect.effect_blur_type, effect.effect_opacity);
+            break;
+        case LayerEffectType::MotionBlur:
+            apply_directional_motion_blur(surface, effect);
+            break;
         case LayerEffectType::Glow: {
             alpha = surface_alpha(surface);
             std::vector<uint8_t> glow = alpha;
@@ -2740,33 +3103,36 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
             break;
         }
         case LayerEffectType::DropShadow: {
-            ShadowRenderParams params = evaluated_shadow_params(layer, t);
-            if (!params.drop_enabled || params.opacity <= 0.0) break;
+            if (effect.effect_opacity <= 0.0f) break;
             alpha = surface_alpha(surface);
             std::vector<uint8_t> shadow(alpha.size(), 0);
-            offset_alpha(alpha, shadow, width, height, params.dx, params.dy, 1.0);
-            blur_alpha_for_type(shadow, width, height, params.blur, params.blur_type);
-            composite_solid_alpha(surface, shadow, params.color, params.opacity, effect.blend_mode, false);
+            const double rad = effect.effect_angle * kPi / 180.0;
+            offset_alpha(alpha, shadow, width, height,
+                         std::cos(rad) * effect.effect_distance,
+                         std::sin(rad) * effect.effect_distance, 1.0);
+            if (effect.effect_spread > 0.0f)
+                blur_alpha_for_type(shadow, width, height, effect.effect_spread, (int)ShadowBlurType::AlphaMask);
+            blur_alpha_for_type(shadow, width, height, effect.effect_size, effect.effect_blur_type);
+            composite_solid_alpha_behind(surface, shadow, effect.effect_color, effect.effect_opacity);
             break;
         }
         case LayerEffectType::LongShadow: {
-            ShadowRenderParams params = evaluated_shadow_params(layer, t);
-            if (!params.long_enabled || params.long_opacity <= 0.0) break;
+            if (effect.effect_opacity <= 0.0f || effect.effect_distance <= 0.0f) break;
             alpha = surface_alpha(surface);
             std::vector<uint8_t> long_shadow(alpha.size(), 0);
-            const double rad = params.long_angle * kPi / 180.0;
-            const double dx = std::cos(rad) * params.long_length;
-            const double dy = std::sin(rad) * params.long_length;
-            const int steps = std::clamp((int)std::ceil(params.long_length / 16.0), 1, 32);
+            const double rad = effect.effect_angle * kPi / 180.0;
+            const double dx = std::cos(rad) * effect.effect_distance;
+            const double dy = std::sin(rad) * effect.effect_distance;
+            const int steps = std::clamp((int)std::ceil(effect.effect_distance / 16.0f), 1, 64);
             for (int i = steps; i >= 1; --i) {
                 const double u = (double)i / steps;
-                const double fade = std::pow(1.0 - u, params.long_falloff);
+                const double fade = std::pow(1.0 - u, std::max(0.0f, effect.effect_falloff));
                 offset_alpha(alpha, long_shadow, width, height, dx * u, dy * u, fade);
             }
-            const int mapped_long_blur = shadow_blur_type_for_long_shadow(params.long_blur_type);
-            if (mapped_long_blur >= 0 && params.long_blur > 0.0)
-                blur_alpha_for_type(long_shadow, width, height, params.long_blur, mapped_long_blur);
-            composite_solid_alpha(surface, long_shadow, params.long_color, params.long_opacity, effect.blend_mode, false);
+            const int mapped_long_blur = shadow_blur_type_for_long_shadow(effect.effect_blur_type);
+            if (mapped_long_blur >= 0 && effect.effect_size > 0.0f)
+                blur_alpha_for_type(long_shadow, width, height, effect.effect_size, mapped_long_blur);
+            composite_solid_alpha_behind(surface, long_shadow, effect.effect_color, effect.effect_opacity);
             break;
         }
         default:
@@ -2778,8 +3144,7 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
 
 static bool layer_has_non_transform_animation(const Layer &layer)
 {
-    return layer.opacity.is_animated() ||
-           layer.box_width.is_animated() ||
+    return layer.box_width.is_animated() ||
            layer.box_height.is_animated() ||
            layer.origin_x_prop.is_animated() ||
            layer.origin_y_prop.is_animated() ||
@@ -2850,19 +3215,19 @@ static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opa
 }
 
 static std::string effect_layer_cache_key(const TitleSourceData *data, const Title &title, const Layer &layer,
-                                          double title_time, int canvas_w, int canvas_h)
+                                          double title_time, int canvas_w, int canvas_h,
+                                          bool force_time_key = false)
 {
     const double t = std::max(0.0, title_time - layer.in_time);
     std::ostringstream key;
     key << layer.id << "|rev=" << (data ? data->seen_store_revision : 0)
         << "|canvas=" << canvas_w << 'x' << canvas_h
         << "|type=" << (int)layer.type
-        << "|opacity=" << layer_chain_opacity(title, layer, title_time)
         << "|box=" << eval_box_width(layer, t) << 'x' << eval_box_height(layer, t)
         << "|origin=" << eval_origin_x(layer, t) << ',' << eval_origin_y(layer, t)
         << "|stack=" << layer.effects.size();
 
-    if (layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker)
+    if (force_time_key || layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker)
         key << "|time=" << (int64_t)std::llround(t * 1000.0);
 
     ShadowRenderParams shadow = evaluated_shadow_params(layer, t);
@@ -2884,19 +3249,23 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << effect.brightness << ',' << effect.contrast << ',' << effect.saturation << ','
             << effect.tint_color << ',' << effect.tint_amount << ',' << effect.effect_color << ','
             << effect.effect_opacity << ',' << effect.effect_size << ',' << effect.effect_distance << ','
-            << effect.effect_angle << ',' << effect.effect_blur_type << ',' << (int)effect.blend_mode;
+            << effect.effect_angle << ',' << effect.effect_spread << ',' << effect.effect_falloff << ','
+            << effect.effect_blur_type << ',' << effect.effect_samples << ',' << effect.effect_centered << ','
+            << (int)effect.blend_mode;
     }
     return key.str();
 }
 
-static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
-                                       double title_time, int canvas_w, int canvas_h)
+static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
+    TitleSourceData *data, const Title &title, const Layer &layer, double title_time,
+    int canvas_w, int canvas_h, const std::string &cache_suffix = std::string(),
+    bool force_time_key = false, bool allow_plain_layer = false)
 {
-    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
-        return false;
+    if (!data || layer.type == LayerType::Clock || (!allow_plain_layer && !layer_has_stackable_pixel_effects(layer)))
+        return nullptr;
 
-    const std::string cache_id = layer.id.empty() ? std::string("__anonymous_effect_layer") : layer.id;
-    const std::string key = effect_layer_cache_key(data, title, layer, title_time, canvas_w, canvas_h);
+    const std::string cache_id = (layer.id.empty() ? std::string("__anonymous_effect_layer") : layer.id) + cache_suffix;
+    const std::string key = effect_layer_cache_key(data, title, layer, title_time, canvas_w, canvas_h, force_time_key);
     auto it = data->effect_layer_cache.find(cache_id);
     if (it == data->effect_layer_cache.end() || it->second.key != key) {
         QImage canvas(std::max(1, canvas_w), std::max(1, canvas_h), QImage::Format_ARGB32_Premultiplied);
@@ -2904,7 +3273,7 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
         auto surface = make_image_surface_for_qimage(canvas);
         auto layer_cr = make_cairo_context(surface.get());
         if (!surface || !layer_cr)
-            return false;
+            return nullptr;
         cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
         cairo_paint(layer_cr.get());
         cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
@@ -2912,8 +3281,7 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
         Layer base_layer = layer_without_stackable_pixel_effects(layer);
         const double cache_anchor_x = canvas.width() * 0.5;
         const double cache_anchor_y = canvas.height() * 0.5;
-        neutralize_layer_transform_for_effect_cache(base_layer, layer_chain_opacity(title, layer, title_time),
-                                                    cache_anchor_x, cache_anchor_y);
+        neutralize_layer_transform_for_effect_cache(base_layer, 1.0, cache_anchor_x, cache_anchor_y);
 
         render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
         layer_cr.reset();
@@ -2939,23 +3307,146 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
         it = data->effect_layer_cache.insert_or_assign(cache_id, std::move(cached)).first;
     }
 
-    if (it->second.image.isNull())
+    return &it->second;
+}
+
+static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
+                                       double title_time, int canvas_w, int canvas_h)
+{
+    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
+        return false;
+
+    const auto *cached = ensure_cached_effect_layer(data, title, layer, title_time, canvas_w, canvas_h);
+    if (!cached)
+        return false;
+    if (cached->image.isNull())
         return true;
 
-    auto cached_surface = make_image_surface_for_const_qimage(it->second.image);
+    auto cached_surface = make_image_surface_for_const_qimage(cached->image);
     if (!cached_surface)
         return false;
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
-    cairo_set_source_surface(cr, cached_surface.get(), it->second.origin.x(), it->second.origin.y());
-    cairo_paint(cr);
+    cairo_set_source_surface(cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
+    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
     cairo_restore(cr);
     return true;
+}
+
+static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourceData *data, const Title &title,
+                                                         const Layer &layer, double title_time,
+                                                         int canvas_w, int canvas_h);
+
+static double source_frame_duration()
+{
+    struct obs_video_info ovi = {};
+    if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0)
+        return (double)ovi.fps_den / (double)ovi.fps_num;
+    return 1.0 / 60.0;
+}
+
+static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
+                                        double title_time, int canvas_w, int canvas_h)
+{
+    const LayerEffect *motion = layer_motion_blur_effect(layer);
+    if (!motion || layer.type == LayerType::Clock)
+        return false;
+
+    const int samples = std::clamp(motion->effect_samples, 2, 64);
+    const double amount = std::clamp((double)motion->effect_opacity, 0.0, 1.0);
+    const double shutter_angle = std::clamp((double)motion->effect_size, 0.0, 720.0);
+    Layer base_layer = layer_without_motion_blur_effects(layer);
+
+    auto paint_fast_motion = [&](auto render_sample, auto render_original) -> bool {
+        render_original(cr);
+        const double frame_seconds = std::max(1.0 / 240.0, source_frame_duration());
+        const double shutter_seconds = frame_seconds * shutter_angle / 360.0;
+        const double title_duration = std::max(0.0, title.duration);
+        int used_samples = 0;
+        const double sample_alpha = amount / samples;
+
+        for (int i = 0; i < samples; ++i) {
+            const double f = samples == 1 ? 0.0 : (double)i / (double)(samples - 1);
+            const double shutter_pos = motion->effect_centered ? (f - 0.5) : (f - 1.0);
+            const double sample_time = std::clamp(title_time + shutter_seconds * shutter_pos, 0.0, title_duration);
+            if (!layer_chain_visible(title, layer, sample_time))
+                continue;
+
+            cairo_push_group(cr);
+            render_sample(cr, sample_time);
+            cairo_pop_group_to_source(cr);
+            cairo_paint_with_alpha(cr, sample_alpha);
+            ++used_samples;
+        }
+
+        return true;
+    };
+
+    if (!data) {
+        if (amount <= 0.0 || shutter_angle <= 0.0) {
+            render_layer_unmasked_with_stackable_effects(cr, nullptr, title, base_layer, title_time, canvas_w, canvas_h);
+            return true;
+        }
+
+        return paint_fast_motion(
+            [&](cairo_t *sample_cr, double sample_time) {
+                render_layer_unmasked_with_stackable_effects(sample_cr, nullptr, title, base_layer,
+                                                             sample_time, canvas_w, canvas_h);
+            },
+            [&](cairo_t *sample_cr) {
+                render_layer_unmasked_with_stackable_effects(sample_cr, nullptr, title, base_layer,
+                                                             title_time, canvas_w, canvas_h);
+            });
+    }
+
+    if (amount <= 0.0 || shutter_angle <= 0.0)
+        return render_cached_effect_layer(cr, data, title, base_layer, title_time, canvas_w, canvas_h);
+
+    if (gpu_effects_requested_for_source(data))
+        base_layer = layer_without_stackable_pixel_effects(base_layer);
+
+    const auto *cached = ensure_cached_effect_layer(
+        data, title, base_layer, title_time, canvas_w, canvas_h, "::motion-base", false,
+        gpu_effects_requested_for_source(data));
+    if (!cached)
+        return false;
+    if (cached->image.isNull())
+        return true;
+
+    auto cached_surface = make_image_surface_for_const_qimage(cached->image);
+    if (!cached_surface)
+        return false;
+
+    return paint_fast_motion(
+        [&](cairo_t *sample_cr, double sample_time) {
+            cairo_save(sample_cr);
+            apply_layer_world_transform(sample_cr, title, layer, sample_time);
+            cairo_set_source_surface(sample_cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
+            cairo_paint_with_alpha(sample_cr, std::clamp(layer_chain_opacity(title, layer, sample_time), 0.0, 1.0));
+            cairo_restore(sample_cr);
+        },
+        [&](cairo_t *sample_cr) {
+            cairo_save(sample_cr);
+            apply_layer_world_transform(sample_cr, title, layer, title_time);
+            cairo_set_source_surface(sample_cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
+            cairo_paint_with_alpha(sample_cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+            cairo_restore(sample_cr);
+        });
 }
 
 static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                                          double title_time, int canvas_w, int canvas_h)
 {
+    if (layer_has_motion_blur(layer) &&
+        render_motion_blurred_layer(cr, data, title, layer, title_time, canvas_w, canvas_h))
+        return;
+
+    if (gpu_effects_requested_for_source(data)) {
+        Layer base_layer = layer_without_stackable_pixel_effects(layer);
+        render_layer_unmasked(cr, title, base_layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+
     if (render_cached_effect_layer(cr, data, title, layer, title_time, canvas_w, canvas_h))
         return;
 
@@ -2985,6 +3476,8 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
 static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                    double title_time, int canvas_w, int canvas_h)
 {
+    if (layer.use_as_scene_mask)
+        return;
     if (layer.mask_mode == MaskMode::None || layer.mask_source_id.empty()) {
         render_layer_unmasked_with_stackable_effects(cr, data, title, layer, title_time, canvas_w, canvas_h);
         return;
@@ -3033,60 +3526,6 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
     }
 }
 
-static void update_scene_mask_textures(TitleSourceData *data, const Title &title, double t, int canvas_w, int canvas_h)
-{
-    if (!data || data->scene_masks.empty() || canvas_w <= 0 || canvas_h <= 0)
-        return;
-
-    for (auto &runtime : data->scene_masks) {
-        const Layer *mask_layer = find_layer_by_id(title, runtime.config.layer_id);
-        if (!mask_layer || !layer_chain_visible(title, *mask_layer, t)) {
-            if (runtime.mask_texture) {
-                obs_enter_graphics();
-                gs_texture_destroy(runtime.mask_texture);
-                obs_leave_graphics();
-                runtime.mask_texture = nullptr;
-            }
-            runtime.pixels.clear();
-            runtime.width = runtime.height = 0;
-            continue;
-        }
-
-        const bool mask_size_changed = runtime.width != (uint32_t)canvas_w || runtime.height != (uint32_t)canvas_h;
-        runtime.width = (uint32_t)canvas_w;
-        runtime.height = (uint32_t)canvas_h;
-        runtime.pixels.assign((size_t)canvas_w * (size_t)canvas_h * 4, 0);
-
-        CairoSurfacePtr mask_surface(cairo_image_surface_create_for_data(
-            runtime.pixels.data(), CAIRO_FORMAT_ARGB32, canvas_w, canvas_h, canvas_w * 4));
-        auto mask_cr = make_cairo_context(mask_surface.get());
-        if (!mask_surface || cairo_surface_status(mask_surface.get()) != CAIRO_STATUS_SUCCESS || !mask_cr)
-            continue;
-
-        cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_CLEAR);
-        cairo_paint(mask_cr.get());
-        cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_OVER);
-        render_layer_unmasked(mask_cr.get(), title, *mask_layer, t, canvas_w, canvas_h);
-        mask_cr.reset();
-        cairo_surface_flush(mask_surface.get());
-        mask_surface.reset();
-
-        unpremultiply_bgra_for_obs(runtime.pixels.data(), (size_t)canvas_w * (size_t)canvas_h);
-
-        obs_enter_graphics();
-        if (!runtime.mask_texture || mask_size_changed) {
-            if (runtime.mask_texture)
-                gs_texture_destroy(runtime.mask_texture);
-            runtime.mask_texture = gs_texture_create((uint32_t)canvas_w, (uint32_t)canvas_h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
-        }
-        if (runtime.mask_texture)
-            gs_texture_set_image(runtime.mask_texture, runtime.pixels.data(), (uint32_t)canvas_w * 4, false);
-        if (!runtime.scene_texrender)
-            runtime.scene_texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-        obs_leave_graphics();
-    }
-}
-
 /* Composite a full title frame into pixel_buf */
 static void render_title_frame(TitleSourceData *data,
                                 const Title &title, double t)
@@ -3101,7 +3540,11 @@ static void render_title_frame(TitleSourceData *data,
             std::lock_guard<std::mutex> lock(data->texture_mutex);
             obs_enter_graphics();
             if (data->texture) gs_texture_destroy(data->texture);
+            if (data->scene_mask_alpha_texture) gs_texture_destroy(data->scene_mask_alpha_texture);
             data->texture = gs_texture_create(w, h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+            data->scene_mask_alpha_texture = nullptr;
+            data->scene_mask_alpha_w = 0;
+            data->scene_mask_alpha_h = 0;
             texture_created = data->texture != nullptr;
             obs_leave_graphics();
         }
@@ -3192,8 +3635,6 @@ static void render_title_frame(TitleSourceData *data,
         }
     }
 
-    update_scene_mask_textures(data, title, t, (int)w, (int)h);
-
     data->dirty = false;
 }
 
@@ -3248,10 +3689,8 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     }
     data->last_tick = std::chrono::steady_clock::now();
     data->last_clock_refresh = data->last_tick;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+    if (auto title = TitleDataStore::instance().get_title(data->title_id))
         data->seen_cue_revision = title->cue_revision;
-        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
-    }
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->playing = false;
     data->waiting_for_cue = true;
@@ -3268,14 +3707,20 @@ static void source_destroy(void *priv)
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         obs_enter_graphics();
         if (data->texture) gs_texture_destroy(data->texture);
+        if (data->scene_mask_alpha_texture) gs_texture_destroy(data->scene_mask_alpha_texture);
+        if (data->scene_mask_scene_texrender) gs_texrender_destroy(data->scene_mask_scene_texrender);
         if (data->scene_mask_effect) gs_effect_destroy(data->scene_mask_effect);
+        data->gpu_filter_pipeline.reset();
         obs_leave_graphics();
         data->texture = nullptr;
+        data->scene_mask_alpha_texture = nullptr;
+        data->scene_mask_scene_texrender = nullptr;
+        data->scene_mask_effect = nullptr;
+        data->scene_mask_alpha_w = 0;
+        data->scene_mask_alpha_h = 0;
         data->tex_w = 0;
         data->tex_h = 0;
     }
-    for (auto &runtime : data->scene_masks)
-        destroy_scene_mask_runtime(runtime);
     delete data;
 }
 
@@ -3286,16 +3731,15 @@ static void source_update(void *priv, obs_data_t *settings)
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
     data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
     data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
+    refresh_scene_mask_configs(data, settings);
     data->playhead = 0.0;
     data->playback_reverse = false;
     data->cue_phase = TitleSourceData::CuePhase::FreeRun;
     data->playing = false;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+    if (auto title = TitleDataStore::instance().get_title(data->title_id))
         data->seen_cue_revision = title->cue_revision;
-        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
-    }
     else
         data->seen_cue_revision = 0;
     data->last_clock_refresh = std::chrono::steady_clock::now();
@@ -3498,11 +3942,14 @@ static void source_video_tick(void *priv, float seconds)
     uint64_t revision = TitleDataStore::instance().revision();
     if (revision != data->seen_store_revision) {
         data->seen_store_revision = revision;
+        if (data->source) {
+            obs_data_t *settings = obs_source_get_settings(data->source);
+            if (settings) {
+                refresh_scene_mask_configs(data, settings);
+                obs_data_release(settings);
+            }
+        }
         data->effect_layer_cache.clear();
-        obs_data_t *settings = data->source ? obs_source_get_settings(data->source) : nullptr;
-        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
-        if (settings)
-            obs_data_release(settings);
         data->dirty = true;
     }
 
@@ -3512,92 +3959,306 @@ static void source_video_tick(void *priv, float seconds)
     }
 }
 
-static void ensure_scene_mask_effect(TitleSourceData *data)
+
+
+static void apply_layer_world_transform_gs(const Title &title, const Layer &layer,
+                                           double title_time, int depth = 0)
 {
-    if (!data || data->scene_mask_effect)
+    if (depth > 64)
         return;
-    char *error = nullptr;
-    data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-graphics-studio-pro-scene-mask", &error);
-    if (!data->scene_mask_effect && error)
-        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to create scene mask effect: %s", error);
-    if (error)
-        bfree(error);
+    if (!layer.parent_id.empty()) {
+        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
+            apply_layer_world_transform_gs(title, *parent, title_time, depth + 1);
+    }
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    gs_matrix_translate3f((float)layer.pos_x.evaluate(lt), (float)layer.pos_y.evaluate(lt), 0.0f);
+    gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, (float)(layer.rotation.evaluate(lt) * kPi / 180.0));
+    gs_matrix_scale3f((float)layer.scale_x.evaluate(lt), (float)layer.scale_y.evaluate(lt), 1.0f);
 }
 
-static void render_scene_mask_overlays(TitleSourceData *data)
+static const TitleSourceData::SceneMaskConfig *scene_mask_config_for_layer(
+    const TitleSourceData &data, const std::string &layer_id)
+{
+    for (const auto &cfg : data.scene_masks) {
+        if (cfg.layer_id == layer_id)
+            return &cfg;
+    }
+    return nullptr;
+}
+
+struct HiddenSceneMaskItem {
+    obs_sceneitem_t *item = nullptr;
+    bool visible = false;
+};
+
+struct HideSceneMaskSourceContext {
+    obs_source_t *source = nullptr;
+    std::vector<HiddenSceneMaskItem> hidden_items;
+};
+
+static bool hide_scene_mask_source_item(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+    auto *ctx = static_cast<HideSceneMaskSourceContext *>(param);
+    if (!ctx || !ctx->source || !item)
+        return true;
+
+    if (obs_sceneitem_is_group(item))
+        obs_sceneitem_group_enum_items(item, hide_scene_mask_source_item, param);
+
+    obs_source_t *item_source = obs_sceneitem_get_source(item);
+    if (item_source == ctx->source && obs_sceneitem_visible(item)) {
+        obs_sceneitem_addref(item);
+        ctx->hidden_items.push_back({item, true});
+        obs_sceneitem_set_visible(item, false);
+    }
+
+    return true;
+}
+
+static HideSceneMaskSourceContext hide_scene_mask_source_items(obs_source_t *scene_source, obs_source_t *source)
+{
+    HideSceneMaskSourceContext ctx;
+    ctx.source = source;
+    if (!scene_source || !source)
+        return ctx;
+
+    if (obs_scene_t *scene = obs_scene_from_source(scene_source))
+        obs_scene_enum_items(scene, hide_scene_mask_source_item, &ctx);
+
+    return ctx;
+}
+
+static void restore_scene_mask_source_items(HideSceneMaskSourceContext &ctx)
+{
+    for (auto &hidden : ctx.hidden_items) {
+        if (hidden.item) {
+            obs_sceneitem_set_visible(hidden.item, hidden.visible);
+            obs_sceneitem_release(hidden.item);
+        }
+    }
+    ctx.hidden_items.clear();
+}
+
+static constexpr const char *kSceneMaskEffect = R"(
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d mask;
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float4 PSMaskedScene(VertDataOut v_in) : TARGET
+{
+    float4 rgba = image.Sample(textureSampler, v_in.uv);
+    float mask_alpha = mask.Sample(textureSampler, v_in.uv).a;
+    rgba.rgb *= (rgba.a > 0.0) ? (1.0 / rgba.a) : 0.0;
+    rgba.a *= mask_alpha;
+    rgba.rgb *= rgba.a;
+    return rgba;
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSMaskedScene(v_in);
+    }
+}
+)";
+
+static gs_effect_t *scene_mask_effect_for_data(TitleSourceData *data)
+{
+    if (!data)
+        return nullptr;
+    if (!data->scene_mask_effect)
+        data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-gsp-scene-mask.effect", nullptr);
+    return data->scene_mask_effect;
+}
+
+static bool render_scene_mask_alpha_pixels(const Title &title, const Layer &layer,
+                                           double title_time, int canvas_w, int canvas_h,
+                                           std::vector<uint8_t> &pixels)
+{
+    if (canvas_w <= 0 || canvas_h <= 0)
+        return false;
+
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    const double w = eval_box_width(layer, lt);
+    const double h = eval_box_height(layer, lt);
+    if (w <= 0.0 || h <= 0.0)
+        return false;
+
+    pixels.assign((size_t)canvas_w * (size_t)canvas_h * 4, 0);
+    CairoSurfacePtr surface(cairo_image_surface_create_for_data(
+        pixels.data(), CAIRO_FORMAT_ARGB32, canvas_w, canvas_h, canvas_w * 4));
+    auto cr = make_cairo_context(surface.get());
+    if (!surface || cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS || !cr)
+        return false;
+
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr.get());
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
+
+    if (layer.type == LayerType::SolidRect || layer.type == LayerType::Shape) {
+        cairo_save(cr.get());
+        apply_layer_world_transform(cr.get(), title, layer, title_time);
+        cairo_translate(cr.get(), -eval_origin_x(layer, lt) * w, -eval_origin_y(layer, lt) * h);
+        cairo_add_layer_shape(cr.get(), layer, w, h);
+        cairo_set_source_rgba(cr.get(), 1.0, 1.0, 1.0,
+                              std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+        if (layer.type == LayerType::Shape && layer.shape_type == ShapeType::Line) {
+            cairo_set_line_width(cr.get(), std::max(1.0, eval_outline_width(layer, lt)));
+            cairo_set_line_cap(cr.get(), CAIRO_LINE_CAP_ROUND);
+            cairo_stroke(cr.get());
+        } else {
+            cairo_fill(cr.get());
+        }
+        cairo_restore(cr.get());
+    } else {
+        render_layer_unmasked_with_stackable_effects(cr.get(), nullptr, title, layer, title_time, canvas_w, canvas_h);
+    }
+
+    cr.reset();
+    cairo_surface_flush(surface.get());
+    return true;
+}
+
+static bool ensure_scene_mask_alpha_texture(TitleSourceData *data, uint32_t w, uint32_t h)
+{
+    if (!data || w == 0 || h == 0)
+        return false;
+
+    if (data->scene_mask_alpha_texture &&
+        (data->scene_mask_alpha_w != w || data->scene_mask_alpha_h != h)) {
+        gs_texture_destroy(data->scene_mask_alpha_texture);
+        data->scene_mask_alpha_texture = nullptr;
+        data->scene_mask_alpha_w = 0;
+        data->scene_mask_alpha_h = 0;
+    }
+
+    if (!data->scene_mask_alpha_texture) {
+        data->scene_mask_alpha_texture = gs_texture_create(w, h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+        if (!data->scene_mask_alpha_texture)
+            return false;
+        data->scene_mask_alpha_w = w;
+        data->scene_mask_alpha_h = h;
+    }
+
+    return true;
+}
+
+static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, double title_time)
 {
     if (!data || data->scene_masks.empty())
         return;
-    ensure_scene_mask_effect(data);
-    if (!data->scene_mask_effect)
+
+    if (!data->scene_mask_scene_texrender)
+        data->scene_mask_scene_texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+    if (!data->scene_mask_scene_texrender || !scene_mask_effect_for_data(data))
         return;
 
-    gs_effect_t *effect = data->scene_mask_effect;
-    gs_eparam_t *scene_param = gs_effect_get_param_by_name(effect, "scene_image");
-    gs_eparam_t *mask_param = gs_effect_get_param_by_name(effect, "mask_image");
-    if (!scene_param || !mask_param)
-        return;
-
-    for (auto &runtime : data->scene_masks) {
-        if (!runtime.mask_texture || !runtime.scene_texrender || runtime.config.scene_name.empty())
+    for (const Layer *layer : scene_mask_layers(title)) {
+        if (!layer || !layer_chain_visible(title, *layer, title_time))
+            continue;
+        const auto *cfg = scene_mask_config_for_layer(*data, layer->id);
+        if (!cfg || cfg->scene_name.empty())
             continue;
 
-        obs_source_t *scene = obs_get_source_by_name(runtime.config.scene_name.c_str());
+        obs_source_t *scene = obs_get_source_by_name(cfg->scene_name.c_str());
         if (!scene)
             continue;
 
-        const uint32_t scene_w = std::max(1u, obs_source_get_width(scene));
-        const uint32_t scene_h = std::max(1u, obs_source_get_height(scene));
-
-        const Layer *mask_layer = nullptr;
-        if (auto title = TitleDataStore::instance().get_title(data->title_id))
-            mask_layer = find_layer_by_id(*title, runtime.config.layer_id);
-
-        double draw_x = runtime.config.x;
-        double draw_y = runtime.config.y;
-        double draw_w = (double)scene_w;
-        double draw_h = (double)scene_h;
-        if (mask_layer) {
-            const double lt = data->playhead;
-            const double mask_lt = std::max(0.0, lt - mask_layer->in_time);
-            const double mask_w = eval_box_width(*mask_layer, mask_lt);
-            const double mask_h = eval_box_height(*mask_layer, mask_lt);
-            if (runtime.config.follow_position) {
-                draw_x += layer_evaluated_pos_x(*mask_layer, lt) -
-                    eval_origin_x(*mask_layer, mask_lt) * mask_w * layer_evaluated_scale_x(*mask_layer, lt);
-                draw_y += layer_evaluated_pos_y(*mask_layer, lt) -
-                    eval_origin_y(*mask_layer, mask_lt) * mask_h * layer_evaluated_scale_y(*mask_layer, lt);
-            }
-            if (runtime.config.follow_size) {
-                draw_w = std::max(1.0, mask_w * std::abs(layer_evaluated_scale_x(*mask_layer, lt)));
-                draw_h = std::max(1.0, mask_h * std::abs(layer_evaluated_scale_y(*mask_layer, lt)));
-            }
-        }
-        const double zoom = std::max(0.01, runtime.config.zoom);
-        draw_w *= zoom;
-        draw_h *= zoom;
-
-        if (gs_texrender_begin(runtime.scene_texrender, data->tex_w, data->tex_h)) {
-            gs_clear(GS_CLEAR_COLOR, nullptr, 0.0f, 0);
-            gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
-            gs_matrix_push();
-            gs_matrix_translate3f((float)draw_x, (float)draw_y, 0.0f);
-            gs_matrix_scale3f((float)(draw_w / (double)scene_w), (float)(draw_h / (double)scene_h), 1.0f);
-            obs_source_video_render(scene);
-            gs_matrix_pop();
-            gs_texrender_end(runtime.scene_texrender);
-        }
-
-        gs_texture_t *scene_texture = gs_texrender_get_texture(runtime.scene_texrender);
-        if (!scene_texture) {
+        const double lt = std::max(0.0, title_time - layer->in_time);
+        const double w = eval_box_width(*layer, lt);
+        const double h = eval_box_height(*layer, lt);
+        if (w <= 0.0 || h <= 0.0) {
             obs_source_release(scene);
             continue;
         }
+        const double zoom = std::clamp(cfg->zoom, 0.01, 100.0);
 
-        gs_effect_set_texture(scene_param, scene_texture);
-        gs_effect_set_texture(mask_param, runtime.mask_texture);
-        while (gs_effect_loop(effect, "Draw"))
-            gs_draw_sprite(scene_texture, 0, data->tex_w, data->tex_h);
+        std::vector<uint8_t> mask_pixels;
+        if (!render_scene_mask_alpha_pixels(title, *layer, title_time, (int)data->tex_w, (int)data->tex_h, mask_pixels) ||
+            !ensure_scene_mask_alpha_texture(data, data->tex_w, data->tex_h)) {
+            obs_source_release(scene);
+            continue;
+        }
+        gs_texture_set_image(data->scene_mask_alpha_texture, mask_pixels.data(), data->tex_w * 4, false);
+
+        gs_viewport_push();
+        gs_projection_push();
+        gs_blend_state_push();
+        gs_texrender_reset(data->scene_mask_scene_texrender);
+        if (!gs_texrender_begin(data->scene_mask_scene_texrender, data->tex_w, data->tex_h)) {
+            gs_blend_state_pop();
+            gs_projection_pop();
+            gs_viewport_pop();
+            obs_source_release(scene);
+            continue;
+        }
+        gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
+
+        struct vec4 clear;
+        vec4_zero(&clear);
+        gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
+
+        gs_matrix_push();
+        gs_matrix_identity();
+        if (cfg->move_with_mask) {
+            apply_layer_world_transform_gs(title, *layer, title_time);
+            gs_matrix_translate3f((float)(-eval_origin_x(*layer, lt) * w + cfg->x),
+                                  (float)(-eval_origin_y(*layer, lt) * h + cfg->y), 0.0f);
+        } else {
+            gs_matrix_translate3f((float)cfg->x, (float)cfg->y, 0.0f);
+        }
+        gs_matrix_scale3f((float)zoom, (float)zoom, 1.0f);
+        auto hidden_items = hide_scene_mask_source_items(scene, data->source);
+        obs_source_video_render(scene);
+        restore_scene_mask_source_items(hidden_items);
+        gs_matrix_pop();
+
+        gs_texrender_end(data->scene_mask_scene_texrender);
+        gs_blend_state_pop();
+        gs_projection_pop();
+        gs_viewport_pop();
+
+        gs_texture_t *scene_texture = gs_texrender_get_texture(data->scene_mask_scene_texrender);
+        gs_effect_t *effect = scene_mask_effect_for_data(data);
+        if (scene_texture && effect) {
+            gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+            gs_eparam_t *mask = gs_effect_get_param_by_name(effect, "mask");
+            if (image && mask) {
+                gs_effect_set_texture(image, scene_texture);
+                gs_effect_set_texture(mask, data->scene_mask_alpha_texture);
+                gs_blend_state_push();
+                gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+                while (gs_effect_loop(effect, "Draw"))
+                    gs_draw_sprite(scene_texture, 0, data->tex_w, data->tex_h);
+                gs_blend_state_pop();
+            }
+        }
 
         obs_source_release(scene);
     }
@@ -3607,72 +4268,101 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
-    std::lock_guard<std::mutex> lock(data->texture_mutex);
-    if (!data->texture) return;
 
-    gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-    if (!eff) return;
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    const TitleGpuEffectUsage effect_usage = title ? title_gpu_effect_usage(*title) : TitleGpuEffectUsage{};
 
-    gs_eparam_t *image = gs_effect_get_param_by_name(eff, "image");
-    if (!image) return;
+    {
+        std::lock_guard<std::mutex> lock(data->texture_mutex);
+        if (!data->texture) return;
 
-    gs_effect_set_texture(image, data->texture);
+        bool rendered_with_gpu_pipeline = false;
+        if (TitlePreferences::use_gpu() && TitlePreferences::gpu_available()) {
+            if (!data->gpu_filter_pipeline)
+                data->gpu_filter_pipeline = std::make_unique<TitleGpuFilterPipeline>();
+            rendered_with_gpu_pipeline = data->gpu_filter_pipeline->render(
+                data->texture, data->tex_w, data->tex_h, effect_usage);
+            if (rendered_with_gpu_pipeline) {
+                TitlePreferences::set_gpu_available(true);
+            } else {
+                TitlePreferences::set_gpu_available(
+                    false,
+                    data->gpu_filter_pipeline ? data->gpu_filter_pipeline->last_error() : "GPU effects could not start.");
+                data->effect_layer_cache.clear();
+                data->dirty = true;
+            }
+        }
 
-    while (gs_effect_loop(eff, "Draw"))
-        gs_draw_sprite(data->texture, 0, 0, 0);
+        if (!rendered_with_gpu_pipeline) {
+            gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+            if (!eff) return;
 
-    render_scene_mask_overlays(data);
+            gs_eparam_t *image = gs_effect_get_param_by_name(eff, "image");
+            if (!image) return;
+
+            gs_effect_set_texture(image, data->texture);
+
+            while (gs_effect_loop(eff, "Draw"))
+                gs_draw_sprite(data->texture, 0, 0, 0);
+        }
+    }
+
+    if (title)
+        render_scene_masks_gpu(data, *title, data->playhead);
 }
 
-static bool refresh_source_properties(obs_properties_t *, obs_property_t *, obs_data_t *)
-{
-    return true;
-}
 
 static void add_scene_list_items(obs_property_t *property)
 {
-    if (!property)
-        return;
-    obs_property_list_add_string(property, "None", "");
+    obs_property_list_add_string(property, "", "");
     obs_frontend_source_list scenes = {};
     obs_frontend_get_scenes(&scenes);
     for (size_t i = 0; i < scenes.sources.num; ++i) {
-        obs_source_t *source = scenes.sources.array[i];
-        const char *name = source ? obs_source_get_name(source) : nullptr;
+        obs_source_t *scene = scenes.sources.array[i];
+        const char *name = obs_source_get_name(scene);
         if (name && *name)
             obs_property_list_add_string(property, name, name);
     }
     obs_frontend_source_list_free(&scenes);
 }
 
-static void add_scene_mask_properties(obs_properties_t *props, const TitleSourceData *data)
+static void add_scene_mask_properties_for_title(obs_properties_t *props, const std::string &title_id)
 {
-    if (!props || !data)
-        return;
-    auto title = TitleDataStore::instance().get_title(data->title_id);
-    if (!title)
-        return;
-    const auto mask_layers = title_scene_mask_layers(*title);
-    if (mask_layers.empty())
+    obs_properties_remove_by_name(props, PROP_SCENE_MASKS_GROUP);
+
+    auto title = TitleDataStore::instance().get_title(title_id);
+    auto masks = scene_mask_layers(title);
+    if (masks.empty())
         return;
 
-    obs_properties_add_text(props, "scene_mask_header", "Scene Masks", OBS_TEXT_INFO);
-    size_t index = 0;
-    for (const Layer *layer : mask_layers) {
-        if (!layer || index++ >= kMaxSceneMasks)
-            break;
-        const std::string prefix = std::string(PROP_SCENE_MASK_PREFIX) + layer->id + "_";
-        obs_properties_t *group = obs_properties_create();
-        obs_property_t *scene = obs_properties_add_list(group, (prefix + "scene").c_str(), "Target OBS scene",
+    obs_properties_t *group = obs_properties_create();
+    for (const auto &layer : masks) {
+        if (!layer) continue;
+        obs_properties_t *layer_group = obs_properties_create();
+        obs_property_t *scene = obs_properties_add_list(
+            layer_group, scene_mask_key(layer->id, "scene").c_str(), "Target OBS scene",
             OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
         add_scene_list_items(scene);
-        obs_properties_add_float_slider(group, (prefix + "zoom").c_str(), "Scene Zoom Level", 0.01, 10.0, 0.01);
-        obs_properties_add_float(group, (prefix + "x").c_str(), "Scene X Position", -100000.0, 100000.0, 1.0);
-        obs_properties_add_float(group, (prefix + "y").c_str(), "Scene Y Position", -100000.0, 100000.0, 1.0);
-        obs_properties_add_bool(group, (prefix + "follow_position").c_str(), "Follow Mask Position");
-        obs_properties_add_bool(group, (prefix + "follow_size").c_str(), "Follow Mask Size");
-        obs_properties_add_group(props, (prefix + "group").c_str(), layer->name.c_str(), OBS_GROUP_NORMAL, group);
+        obs_properties_add_float_slider(layer_group, scene_mask_key(layer->id, "zoom_percent").c_str(),
+            "Scene Zoom Level (%)", 1.0, 800.0, 1.0);
+        obs_properties_add_float_slider(layer_group, scene_mask_key(layer->id, "x").c_str(),
+            "Horizontal Position", -9999.0, 9999.0, 1.0);
+        obs_properties_add_float_slider(layer_group, scene_mask_key(layer->id, "y").c_str(),
+            "Vertical Position", -9999.0, 9999.0, 1.0);
+        obs_properties_add_bool(layer_group, scene_mask_key(layer->id, "move_with_mask").c_str(),
+            "Move Scene With Mask");
+        obs_properties_add_group(group, (std::string("scene_mask_group_") + layer->id).c_str(),
+            layer->name.c_str(), OBS_GROUP_NORMAL, layer_group);
     }
+    obs_properties_add_group(props, PROP_SCENE_MASKS_GROUP, "Scene Masks", OBS_GROUP_NORMAL, group);
+}
+
+static bool source_title_property_modified(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
+{
+    const std::string title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+    set_scene_mask_property_defaults(settings, title_id);
+    add_scene_mask_properties_for_title(props, title_id);
+    return true;
 }
 
 /* ── Properties panel ─────────────────────────────────────────────── */
@@ -3689,13 +4379,13 @@ static obs_properties_t *source_get_properties(void *priv)
     obs_property_list_add_string(p, obsgs_tr_c("OBSTitles.NoTitle"), "");
     for (auto &t : TitleDataStore::instance().titles())
         obs_property_list_add_string(p, t->name.c_str(), t->id.c_str());
-    obs_property_set_modified_callback(p, refresh_source_properties);
+    obs_property_set_modified_callback(p, source_title_property_modified);
 
     obs_properties_add_bool(props,   PROP_LOOP,  obsgs_tr_c("OBSTitles.Loop"));
     obs_properties_add_float_slider(props, PROP_SPEED,
         obsgs_tr_c("OBSTitles.Speed"), 0.1, 4.0, 0.05);
 
-    add_scene_mask_properties(props, data);
+    add_scene_mask_properties_for_title(props, data ? data->title_id : std::string());
 
     return props;
 }
@@ -3705,7 +4395,6 @@ static void source_get_defaults(obs_data_t *settings)
     obs_data_set_default_string(settings, PROP_TITLE_ID, "");
     obs_data_set_default_bool(settings,   PROP_LOOP,     true);
     obs_data_set_default_double(settings, PROP_SPEED,    1.0);
-    /* Per-mask defaults are keyed by layer UUID and are initialized when those settings are first read. */
 }
 
 /* ══════════════════════════════════════════════════════════════════

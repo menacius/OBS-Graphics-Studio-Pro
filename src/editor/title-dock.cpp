@@ -53,12 +53,14 @@
 #include <QTreeWidget>
 #include <QUrl>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFrame>
 #include <QFocusEvent>
 #include <QSizePolicy>
 #include <QString>
 #include <QStringList>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QSpinBox>
@@ -92,6 +94,7 @@ constexpr const char *kDockSettingsGroup = "TitleDock";
 constexpr const char *kDockSplitterStateKey = "sectionSplitterState";
 constexpr const char *kTemplateIconViewKey = "templateIconView";
 constexpr const char *kVisibilityFilterKey = "visibilityFilterActive";
+constexpr const char *kLastSelectedTitleIdKey = "lastSelectedTitleId";
 constexpr const char *kTitleSourceId = "obs_graphics_studio_pro_source";
 constexpr const char *kPlaylistLoopKey = "playlistLoop";
 constexpr const char *kPlaylistReverseKey = "playlistReverse";
@@ -101,6 +104,7 @@ constexpr const char *kTextPersistenceKey = "textPersistence";
 constexpr const char *kLiveTextLinesPerRowKey = "liveTextLinesPerRow";
 constexpr int kMinLiveTextLinesPerRow = 1;
 constexpr int kMaxLiveTextLinesPerRow = 8;
+constexpr int kTitleListIconExtent = 16;
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -395,6 +399,29 @@ protected:
     }
 };
 
+class TitleListWidget : public QListWidget {
+public:
+    explicit TitleListWidget(QWidget *parent = nullptr)
+        : QListWidget(parent)
+    {
+    }
+
+    std::function<void()> delete_requested;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event && event->key() == Qt::Key_Delete && hasFocus() && !selectedItems().empty()) {
+            if (delete_requested)
+                delete_requested();
+            event->accept();
+            return;
+        }
+
+        QListWidget::keyPressEvent(event);
+    }
+};
+
 class LiveTextCueHeader : public QHeaderView {
 public:
     explicit LiveTextCueHeader(QWidget *parent = nullptr)
@@ -680,6 +707,90 @@ static QIcon title_cached_screenshot_icon(const Title &title, const QSize &size)
         return QIcon();
 
     return QIcon(pixmap.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+static bool title_has_exposed_text(const std::shared_ptr<Title> &title)
+{
+    return !exposed_text_layers(title).empty();
+}
+
+static bool title_has_scene_mask(const std::shared_ptr<Title> &title)
+{
+    if (!title) return false;
+    for (const auto &layer : title->layers) {
+        if (layer && layer->use_as_scene_mask)
+            return true;
+    }
+    return false;
+}
+
+static QString font_awesome_family()
+{
+    static const QString family = []() {
+        const QStringList preferred = {
+            QStringLiteral("Font Awesome 6 Free"),
+            QStringLiteral("Font Awesome 5 Free"),
+            QStringLiteral("FontAwesome")
+        };
+        const QStringList available = QFontDatabase().families();
+        for (const QString &candidate : preferred) {
+            if (available.contains(candidate, Qt::CaseInsensitive))
+                return candidate;
+        }
+        return QString();
+    }();
+    return family;
+}
+
+static QString font_awesome_glyph(ushort codepoint, const QString &fallback)
+{
+    return font_awesome_family().isEmpty() ? fallback : QString(QChar(codepoint));
+}
+
+static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask)
+{
+    const int dpr_size = kTitleListIconExtent;
+    QPixmap pixmap(dpr_size, dpr_size);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const QColor icon_color(205, 205, 205);
+    const QRect icon_rect = pixmap.rect();
+
+    QString glyph;
+    int glyph_size = 12;
+    if (has_exposed_text) {
+        glyph = font_awesome_glyph(0xf031, QStringLiteral("T")); // fa-font
+        glyph_size = 11;
+        if (has_scene_mask) {
+            painter.setPen(QPen(QColor(160, 160, 160), 1));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRoundedRect(icon_rect.adjusted(1, 1, -2, -2), 2, 2);
+        }
+    } else if (has_scene_mask) {
+        glyph = font_awesome_glyph(0xf6fa, QStringLiteral("M")); // fa-mask
+    } else {
+        glyph = font_awesome_glyph(0xf61f, QStringLiteral("G")); // fa-shapes
+    }
+
+    QFont font;
+    const QString fa_family = font_awesome_family();
+    if (!fa_family.isEmpty()) {
+        font.setFamily(fa_family);
+        font.setWeight(QFont::Black);
+    } else {
+        font.setBold(true);
+    }
+    font.setPixelSize(glyph_size);
+    painter.setFont(font);
+    painter.setPen(icon_color);
+    painter.drawText(icon_rect, Qt::AlignCenter, glyph);
+    painter.end();
+
+    return QIcon(pixmap);
 }
 
 static QPixmap title_preview_pixmap(const Title &title, const QSize &size)
@@ -1274,6 +1385,7 @@ void TitleDock::load_dock_settings()
 
     template_icon_view_ = settings.value(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_).toBool();
     visibility_filter_active_ = settings.value(QString::fromUtf8(kVisibilityFilterKey), visibility_filter_active_).toBool();
+    last_selected_title_id_ = settings.value(QString::fromUtf8(kLastSelectedTitleIdKey)).toString();
     playlist_loop_ = settings.value(QString::fromUtf8(kPlaylistLoopKey), playlist_loop_).toBool();
     playlist_reverse_ = settings.value(QString::fromUtf8(kPlaylistReverseKey), playlist_reverse_).toBool();
     playlist_hold_seconds_ = std::clamp(settings.value(QString::fromUtf8(kPlaylistHoldSecondsKey),
@@ -1304,6 +1416,7 @@ void TitleDock::save_dock_settings() const
         settings.setValue(QString::fromUtf8(kDockSplitterStateKey), sections_->saveState());
     settings.setValue(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_);
     settings.setValue(QString::fromUtf8(kVisibilityFilterKey), visibility_filter_active_);
+    settings.setValue(QString::fromUtf8(kLastSelectedTitleIdKey), last_selected_title_id_);
     settings.setValue(QString::fromUtf8(kPlaylistLoopKey), playlist_loop_);
     settings.setValue(QString::fromUtf8(kPlaylistReverseKey), playlist_reverse_);
     settings.setValue(QString::fromUtf8(kPlaylistHoldSecondsKey), playlist_hold_seconds_);
@@ -1454,7 +1567,9 @@ void TitleDock::build_ui()
     template_layout->addLayout(template_header);
     template_layout->addWidget(template_toolbar);
 
-    list_ = new QListWidget(template_section);
+    auto *title_list = new TitleListWidget(template_section);
+    title_list->delete_requested = [this]() { on_delete(); };
+    list_ = title_list;
     list_->setAlternatingRowColors(true);
     list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     list_->setMinimumHeight(120);
@@ -1483,10 +1598,8 @@ void TitleDock::build_ui()
     btn_row_down_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.MoveDown"), obs_icon("move-down.svg"),
                                               obsgs_tr("OBSTitles.MoveCueDownTooltip"));
     btn_data_sources_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.DataSources"),
-                                                  obs_icon("data-sources.svg"),
+                                                  obs_icon("import.svg"),
                                                   obsgs_tr("OBSTitles.DataSourcesTooltip"));
-    btn_data_sources_->setText(obsgs_tr("OBSTitles.DataSources"));
-    btn_data_sources_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     auto *data_sources_menu = new QMenu(btn_data_sources_);
     data_sources_menu->addAction(obs_icon("import.svg"), obsgs_tr("OBSTitles.ImportData"),
                                  this, &TitleDock::on_import_live_text_data);
@@ -1494,11 +1607,6 @@ void TitleDock::build_ui()
                                  this, &TitleDock::on_import_append_live_text_data);
     data_sources_menu->addAction(obs_icon("export.svg"), obsgs_tr("OBSTitles.ExportData"),
                                  this, &TitleDock::on_export_live_text_data);
-    data_sources_menu->addSeparator();
-    data_sources_menu->addAction(obsgs_tr("OBSTitles.EnableExternalDataSource"),
-                                 this, &TitleDock::on_toggle_external_data_source);
-    data_sources_menu->addAction(obsgs_tr("OBSTitles.Settings"),
-                                 this, &TitleDock::on_show_external_data_settings);
     btn_data_sources_->setMenu(data_sources_menu);
     btn_data_sources_->setPopupMode(QToolButton::InstantPopup);
     btn_data_sources_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -1525,9 +1633,6 @@ void TitleDock::build_ui()
     playlist_countdown_lbl_->setToolTip(obsgs_tr("OBSTitles.PlaylistNextCueTooltip"));
     playlist_countdown_lbl_->setMinimumWidth(44);
     playlist_countdown_lbl_->setAlignment(Qt::AlignCenter);
-    btn_playlist_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.PlaylistSettings"),
-                                                       obs_icon("settings.svg"),
-                                                       obsgs_tr("OBSTitles.PlaylistSettingsTooltip"));
     btn_persistence_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.Persistence"),
                                                           obs_icon("persistence.svg"),
                                                           obsgs_tr("OBSTitles.PersistenceTooltip"));
@@ -1535,18 +1640,19 @@ void TitleDock::build_ui()
     btn_persistence_settings_->setMinimumWidth(obs_toolbar_icon_extent(live_toolbar) + 10);
     btn_persistence_settings_->setCheckable(true);
     btn_persistence_settings_->setStyleSheet(QStringLiteral(
+        "QToolButton[persistenceState=\"background\"]{background:#d6a21b;color:#111;border-radius:3px;}"
+        "QToolButton[persistenceState=\"background\"]:hover{background:#f0b429;}"
         "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
         "QToolButton:checked:hover{background:#28b84f;}"
         "QToolButton::menu-indicator{image:none;width:0px;}"));
     live_toolbar->addWidget(btn_add_text_row_);
     live_toolbar->addWidget(btn_delete_text_row_);
+    live_toolbar->addWidget(btn_data_sources_);
     live_toolbar->addWidget(btn_row_up_);
     live_toolbar->addWidget(btn_row_down_);
-    live_toolbar->addWidget(btn_data_sources_);
     live_toolbar->addSeparator();
     live_toolbar->addWidget(btn_playlist_);
     live_toolbar->addWidget(playlist_countdown_lbl_);
-    live_toolbar->addWidget(btn_playlist_settings_);
     live_toolbar->addWidget(btn_persistence_settings_);
     live_toolbar->addWidget(toolbar_spacer(live_toolbar));
     live_toolbar->addWidget(btn_live_text_settings_);
@@ -1610,27 +1716,6 @@ void TitleDock::build_ui()
     connect(btn_add_text_row_, &QToolButton::clicked, this, &TitleDock::on_add_live_text_row);
     connect(btn_delete_text_row_, &QToolButton::clicked, this, &TitleDock::on_delete_live_text_rows);
     connect(btn_row_up_, &QToolButton::clicked, this, &TitleDock::on_move_live_text_row_up);
-    auto *playlist_menu = new QMenu(btn_playlist_settings_);
-    act_playlist_loop_ = playlist_menu->addAction(obsgs_tr("OBSTitles.PlaylistLoop"));
-    act_playlist_loop_->setCheckable(true);
-    act_playlist_reverse_ = playlist_menu->addAction(obsgs_tr("OBSTitles.PlaylistReverseOrder"));
-    act_playlist_reverse_->setCheckable(true);
-    playlist_menu->addSeparator();
-    auto *hold_widget = new QWidget(playlist_menu);
-    auto *hold_layout = new QHBoxLayout(hold_widget);
-    hold_layout->setContentsMargins(8, 4, 8, 4);
-    hold_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PlaylistHoldSeconds"), hold_widget));
-    auto *hold_spin = new TimecodeSpinBox(hold_widget);
-    hold_spin->setRange(0.0, 3600.0);
-    hold_spin->setValue(playlist_hold_seconds_);
-    hold_layout->addWidget(hold_spin);
-    auto *hold_action = new QWidgetAction(playlist_menu);
-    hold_action->setDefaultWidget(hold_widget);
-    playlist_menu->addAction(hold_action);
-    btn_playlist_settings_->setMenu(playlist_menu);
-    btn_playlist_settings_->setPopupMode(QToolButton::InstantPopup);
-    btn_playlist_settings_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
-
     auto *persistence_menu = new QMenu(btn_persistence_settings_);
     act_background_persistence_ = persistence_menu->addAction(obsgs_tr("OBSTitles.BackgroundPersistence"));
     act_background_persistence_->setCheckable(true);
@@ -1651,6 +1736,29 @@ void TitleDock::build_ui()
     auto *lines_action = new QWidgetAction(live_text_settings_menu);
     lines_action->setDefaultWidget(lines_widget);
     live_text_settings_menu->addAction(lines_action);
+    live_text_settings_menu->addSeparator();
+    act_external_data_source_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.EnableExternalDataSource"),
+                                                                   this, &TitleDock::on_toggle_external_data_source);
+    act_external_data_settings_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.ExternalDataSourceSettings"),
+                                                                     this, &TitleDock::on_show_external_data_settings);
+    live_text_settings_menu->addSeparator();
+    act_playlist_loop_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.PlaylistLoop"));
+    act_playlist_loop_->setCheckable(true);
+    act_playlist_reverse_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.PlaylistReverseOrder"));
+    act_playlist_reverse_->setCheckable(true);
+    live_text_settings_menu->addSeparator();
+    auto *hold_widget = new QWidget(live_text_settings_menu);
+    auto *hold_layout = new QHBoxLayout(hold_widget);
+    hold_layout->setContentsMargins(8, 4, 8, 4);
+    hold_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PlaylistHoldSeconds"), hold_widget));
+    auto *hold_spin = new TimecodeSpinBox(hold_widget);
+    hold_spin->setRange(0.0, 3600.0);
+    hold_spin->setValue(playlist_hold_seconds_);
+    hold_layout->addWidget(hold_spin);
+    auto *hold_action = new QWidgetAction(live_text_settings_menu);
+    hold_action->setDefaultWidget(hold_widget);
+    act_playlist_hold_ = hold_action;
+    live_text_settings_menu->addAction(hold_action);
     btn_live_text_settings_->setMenu(live_text_settings_menu);
     btn_live_text_settings_->setPopupMode(QToolButton::InstantPopup);
     btn_live_text_settings_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -1694,6 +1802,7 @@ void TitleDock::build_ui()
         }
         if (auto title = TitleDataStore::instance().get_title(selected_id()))
             apply_persistence_settings_to_title(title);
+        update_persistence_controls();
         save_dock_settings();
     });
     connect(text_table_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
@@ -1754,7 +1863,7 @@ void TitleDock::update_template_view_mode()
         }
     } else {
         list_->setViewMode(QListView::ListMode);
-        list_->setIconSize(QSize());
+        list_->setIconSize(QSize(kTitleListIconExtent, kTitleListIconExtent));
         list_->setResizeMode(QListView::Fixed);
         list_->setMovement(QListView::Static);
         list_->setSpacing(0);
@@ -1822,6 +1931,8 @@ bool TitleDock::should_show_title(const std::shared_ptr<Title> &title, const QSe
 void TitleDock::populate_list()
 {
     QString prev_id = QString::fromStdString(selected_id());
+    if (prev_id.isEmpty())
+        prev_id = last_selected_title_id_;
     list_->blockSignals(true);
     list_->clear();
 
@@ -1833,6 +1944,8 @@ void TitleDock::populate_list()
         auto *item = new QListWidgetItem(QString::fromStdString(t->name));
         if (template_icon_view_)
             item->setIcon(title_cached_screenshot_icon(*t, QSize(120, 72)));
+        else
+            item->setIcon(title_list_status_icon(title_has_exposed_text(t), title_has_scene_mask(t)));
         item->setData(Qt::UserRole, QString::fromStdString(t->id));
         // Layer count hint as tooltip
         item->setToolTip(
@@ -1840,13 +1953,17 @@ void TitleDock::populate_list()
         list_->addItem(item);
     }
 
-    /* Restore selection */
+    /* Restore selection, or select the first title when the dock/list loads. */
+    bool restored_selection = false;
     for (int i = 0; i < list_->count(); ++i) {
         if (list_->item(i)->data(Qt::UserRole).toString() == prev_id) {
             list_->setCurrentRow(i);
+            restored_selection = true;
             break;
         }
     }
+    if (!restored_selection && list_->count() > 0)
+        list_->setCurrentRow(0);
 
     list_->blockSignals(false);
     on_selection_changed();
@@ -1891,6 +2008,11 @@ void TitleDock::on_selection_changed()
     const int selected_count = (int)ids.size();
     const bool has = selected_count > 0;
     const bool single = selected_count == 1;
+    const QString current_title_id = QString::fromStdString(selected_id());
+    if (!current_title_id.isEmpty()) {
+        last_selected_title_id_ = current_title_id;
+        save_dock_settings();
+    }
 
     btn_dup_->setEnabled(single);
     btn_rename_->setEnabled(single);
@@ -2122,7 +2244,13 @@ void TitleDock::update_persistence_controls()
     if (btn_persistence_settings_) {
         btn_persistence_settings_->setEnabled(has_exposed);
         QSignalBlocker block(btn_persistence_settings_);
-        btn_persistence_settings_->setChecked(has_exposed && background_persistence_);
+        const bool background_only = has_exposed && background_persistence_ && !text_persistence_;
+        const bool full_persistence = has_exposed && background_persistence_ && text_persistence_;
+        btn_persistence_settings_->setProperty("persistenceState",
+                                               background_only ? QStringLiteral("background") : QString());
+        btn_persistence_settings_->style()->unpolish(btn_persistence_settings_);
+        btn_persistence_settings_->style()->polish(btn_persistence_settings_);
+        btn_persistence_settings_->setChecked(full_persistence);
     }
     if (act_background_persistence_)
         act_background_persistence_->setEnabled(has_exposed);
@@ -2196,14 +2324,19 @@ void TitleDock::update_external_data_controls()
             : obsgs_tr("OBSTitles.RefreshExternalDataTooltip"));
     }
 
-    if (btn_data_sources_ && btn_data_sources_->menu() && btn_data_sources_->menu()->actions().size() >= 5) {
+    if (btn_data_sources_ && btn_data_sources_->menu()) {
         auto actions = btn_data_sources_->menu()->actions();
         for (QAction *action : actions)
             action->setEnabled(has_title && has_exposed);
-        if (QAction *toggle = actions.at(4))
-            toggle->setText(external_enabled
-                ? obsgs_tr("OBSTitles.DisableExternalDataSource")
-                : obsgs_tr("OBSTitles.EnableExternalDataSource"));
+    }
+    if (act_external_data_source_) {
+        act_external_data_source_->setEnabled(has_title && has_exposed);
+        act_external_data_source_->setText(external_enabled
+            ? obsgs_tr("OBSTitles.DisableExternalDataSource")
+            : obsgs_tr("OBSTitles.EnableExternalDataSource"));
+    }
+    if (act_external_data_settings_) {
+        act_external_data_settings_->setEnabled(has_title && has_exposed);
     }
 }
 
@@ -2445,8 +2578,12 @@ void TitleDock::update_playlist_controls()
         if (!enabled && btn_playlist_->isChecked())
             stop_playlist();
     }
-    if (btn_playlist_settings_)
-        btn_playlist_settings_->setEnabled(enabled);
+    if (act_playlist_loop_)
+        act_playlist_loop_->setEnabled(enabled);
+    if (act_playlist_reverse_)
+        act_playlist_reverse_->setEnabled(enabled);
+    if (act_playlist_hold_)
+        act_playlist_hold_->setEnabled(enabled);
     update_playlist_countdown_label();
 }
 
@@ -2983,6 +3120,11 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         layer->box_width.static_value = w;
         layer->box_height.static_value = h;
         layer->corner_radius = radius;
+        layer->corner_radius_tl = radius;
+        layer->corner_radius_tr = radius;
+        layer->corner_radius_br = radius;
+        layer->corner_radius_bl = radius;
+        layer->corner_radius_locked = true;
         layer->fill_color = color;
         layer->fill_color_a.static_value = (color >> 24) & 0xFF;
         layer->fill_color_r.static_value = (color >> 16) & 0xFF;
@@ -3461,6 +3603,18 @@ void TitleDock::on_delete()
     const auto ids = selected_title_ids();
     if (ids.empty()) return;
 
+    int target_row = -1;
+    if (list_) {
+        int first_selected_row = list_->count();
+        for (int i = 0; i < list_->count(); ++i) {
+            auto *item = list_->item(i);
+            if (item && item->isSelected())
+                first_selected_row = std::min(first_selected_row, i);
+        }
+        if (first_selected_row < list_->count())
+            target_row = first_selected_row;
+    }
+
     QMessageBox::StandardButton reply = QMessageBox::No;
     if (ids.size() == 1) {
         auto title = TitleDataStore::instance().get_title(ids.front());
@@ -3474,6 +3628,11 @@ void TitleDock::on_delete()
         for (const auto &id : ids)
             TitleDataStore::instance().delete_title(id);
         TitleDataStore::instance().save();
+        populate_list();
+        if (list_ && list_->count() > 0)
+            list_->setCurrentRow(std::clamp(target_row, 0, list_->count() - 1));
+        else if (list_)
+            list_->clearSelection();
     }
 }
 

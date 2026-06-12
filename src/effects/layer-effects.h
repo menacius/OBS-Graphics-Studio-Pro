@@ -10,6 +10,8 @@ enum class ShadowBlurType {
     Gaussian = 1,
     StackFast = 2,
     AlphaMask = 3,
+    Triangular = 4,
+    DualKawase = 5,
 };
 
 enum class LongShadowBlurType {
@@ -30,6 +32,8 @@ enum class LayerEffectType {
     Glow = 7,
     InnerGlow = 8,
     InnerShadow = 9,
+    Blur = 10,
+    MotionBlur = 11,
 };
 
 enum class EffectBlendMode {
@@ -56,6 +60,10 @@ struct LayerEffect {
     float effect_size = 16.0f;
     float effect_distance = 8.0f;
     float effect_angle = 135.0f;
+    float effect_spread = 0.0f;
+    float effect_falloff = 1.0f;
     int effect_blur_type = (int)ShadowBlurType::StackFast;
+    int effect_samples = 8;
+    bool effect_centered = true;
     EffectBlendMode blend_mode = EffectBlendMode::Normal;
 };

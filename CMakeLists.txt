@@ -253,10 +253,12 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ── Sources ─────────────────────────────────────────────────────────
 set(OBS_GSP_CORE_SOURCES
     src/core/title-data.cpp
+    src/core/title-preferences.cpp
 )
 set(OBS_GSP_CORE_HEADERS
     src/core/title-data.h
     src/core/title-localization.h
+    src/core/title-preferences.h
 )
 
 set(OBS_GSP_LAYER_HEADERS
@@ -279,6 +281,13 @@ set(OBS_GSP_TEXT_SOURCES
 )
 set(OBS_GSP_TEXT_HEADERS
     src/text/title-rich-text.h
+)
+
+set(OBS_GSP_RENDERING_SOURCES
+    src/rendering/title-gpu-filter-pipeline.cpp
+)
+set(OBS_GSP_RENDERING_HEADERS
+    src/rendering/title-gpu-filter-pipeline.h
 )
 
 set(OBS_GSP_OBS_SOURCES
@@ -308,6 +317,7 @@ set(PLUGIN_SOURCES
     ${OBS_GSP_CORE_SOURCES}
     ${OBS_GSP_TIMELINE_SOURCES}
     ${OBS_GSP_TEXT_SOURCES}
+    ${OBS_GSP_RENDERING_SOURCES}
     ${OBS_GSP_OBS_SOURCES}
     ${OBS_GSP_EDITOR_SOURCES}
 )
@@ -318,6 +328,7 @@ set(PLUGIN_HEADERS
     ${OBS_GSP_EFFECT_HEADERS}
     ${OBS_GSP_TIMELINE_HEADERS}
     ${OBS_GSP_TEXT_HEADERS}
+    ${OBS_GSP_RENDERING_HEADERS}
     ${OBS_GSP_OBS_HEADERS}
     ${OBS_GSP_EDITOR_HEADERS}
 )
@@ -338,6 +349,7 @@ target_include_directories(obs-graphics-studio-pro PRIVATE
     src/effects
     src/timeline
     src/text
+    src/rendering
     src/obs
     src/editor
     ${CAIRO_INCLUDE_DIRS}

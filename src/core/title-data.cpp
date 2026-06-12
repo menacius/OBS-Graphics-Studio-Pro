@@ -924,7 +924,11 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_size", effect.effect_size},
                            {"effect_distance", effect.effect_distance},
                            {"effect_angle", effect.effect_angle},
+                           {"effect_spread", effect.effect_spread},
+                           {"effect_falloff", effect.effect_falloff},
                            {"effect_blur_type", effect.effect_blur_type},
+                           {"effect_samples", effect.effect_samples},
+                           {"effect_centered", effect.effect_centered},
                            {"blend_mode", (int)effect.blend_mode}});
     }
     j["effects"] = effects;
@@ -977,12 +981,27 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["ticker_direction"] = l.ticker_direction;
     j["text_color"]    = l.text_color;
     j["outline_enabled"] = l.outline_enabled;
+    j["stroke_fill_type"] = l.stroke_fill_type;
     j["stroke_color"]  = l.stroke_color;
     j["stroke_width"]  = l.stroke_width;
     j["outline_opacity"] = l.outline_opacity;
     j["outline_join_style"] = l.outline_join_style;
     j["outline_on_front"] = l.outline_on_front;
     j["outline_antialias"] = l.outline_antialias;
+    j["stroke_gradient_type"] = l.stroke_gradient_type;
+    j["stroke_gradient_start_color"] = l.stroke_gradient_start_color;
+    j["stroke_gradient_end_color"] = l.stroke_gradient_end_color;
+    j["stroke_gradient_start_pos"] = l.stroke_gradient_start_pos;
+    j["stroke_gradient_end_pos"] = l.stroke_gradient_end_pos;
+    j["stroke_gradient_start_opacity"] = l.stroke_gradient_start_opacity;
+    j["stroke_gradient_end_opacity"] = l.stroke_gradient_end_opacity;
+    j["stroke_gradient_opacity"] = l.stroke_gradient_opacity;
+    j["stroke_gradient_angle"] = l.stroke_gradient_angle;
+    j["stroke_gradient_center_x"] = l.stroke_gradient_center_x;
+    j["stroke_gradient_center_y"] = l.stroke_gradient_center_y;
+    j["stroke_gradient_scale"] = l.stroke_gradient_scale;
+    j["stroke_gradient_focal_x"] = l.stroke_gradient_focal_x;
+    j["stroke_gradient_focal_y"] = l.stroke_gradient_focal_y;
     j["align_h"]       = l.align_h;
     j["align_v"]       = l.align_v;
     j["paragraph_indent_left"] = l.paragraph_indent_left;
@@ -1045,6 +1064,12 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["rect_width"]    = l.rect_width;
     j["rect_height"]   = l.rect_height;
     j["corner_radius"] = l.corner_radius;
+    j["corner_radius_tl"] = l.corner_radius_tl;
+    j["corner_radius_tr"] = l.corner_radius_tr;
+    j["corner_radius_br"] = l.corner_radius_br;
+    j["corner_radius_bl"] = l.corner_radius_bl;
+    j["corner_radius_locked"] = l.corner_radius_locked;
+    j["corner_type"] = (int)l.corner_type;
     j["shape_type"] = (int)l.shape_type;
     j["shape_points"] = l.shape_points;
     j["shape_sides"] = l.shape_sides;
@@ -1126,7 +1151,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 9);
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 11);
             effect.enabled = json_bool(effect_json, "enabled", true);
             switch (effect.type) {
             case LayerEffectType::DropShadow:
@@ -1141,6 +1166,14 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             case LayerEffectType::InnerGlow:
                 effect.blend_mode = EffectBlendMode::Additive;
                 break;
+            case LayerEffectType::Blur:
+                effect.effect_opacity = 1.0f;
+                break;
+            case LayerEffectType::MotionBlur:
+                effect.effect_opacity = 1.0f;
+                effect.effect_size = 180.0f;
+                effect.effect_angle = 0.0f;
+                break;
             default:
                 effect.blend_mode = EffectBlendMode::Normal;
                 break;
@@ -1154,8 +1187,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_opacity", effect.tint_amount), effect.tint_amount), 0.0, 1.0);
             effect.effect_size = (float)std::clamp(finite_or(json_double(effect_json, "effect_size", 16.0), 16.0), 0.0, 512.0);
             effect.effect_distance = (float)std::clamp(finite_or(json_double(effect_json, "effect_distance", 8.0), 8.0), 0.0, 4096.0);
-            effect.effect_angle = (float)finite_or(json_double(effect_json, "effect_angle", 135.0), 135.0);
-            effect.effect_blur_type = std::clamp(json_int(effect_json, "effect_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::AlphaMask);
+            const double default_effect_angle = effect.type == LayerEffectType::MotionBlur ? 0.0 : 135.0;
+            effect.effect_angle = (float)finite_or(json_double(effect_json, "effect_angle", default_effect_angle), default_effect_angle);
+            effect.effect_spread = (float)std::clamp(finite_or(json_double(effect_json, "effect_spread", 0.0), 0.0), 0.0, 512.0);
+            effect.effect_falloff = (float)std::clamp(finite_or(json_double(effect_json, "effect_falloff", 1.0), 1.0), 0.0, 8.0);
+            effect.effect_blur_type = std::clamp(json_int(effect_json, "effect_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::DualKawase);
+            effect.effect_samples = std::clamp(json_int(effect_json, "effect_samples", 8), 2, 64);
+            effect.effect_centered = json_bool(effect_json, "effect_centered", true);
             if (effect_json.contains("blend_mode"))
                 effect.blend_mode = (EffectBlendMode)std::clamp(json_int(effect_json, "blend_mode", (int)effect.blend_mode), 0, (int)EffectBlendMode::Color);
             if (effect.type == LayerEffectType::ColorOverlay) {
@@ -1215,6 +1253,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->ticker_line_hold = std::clamp(finite_or(json_double(j, "ticker_line_hold", 2.0), 2.0), 0.0, kMaxDuration);
     l->ticker_direction = std::clamp(json_int(j, "ticker_direction", 1), 0, 1);
     l->text_color    = json_color(j, "text_color", (uint32_t)0xFFFFFFFF);
+    l->stroke_fill_type = std::clamp(json_int(j, "stroke_fill_type", 1), 0, 2);
     l->stroke_color  = json_color(j, "stroke_color", (uint32_t)0xFF000000);
     l->stroke_width  = std::clamp(finite_or(json_double(j, "stroke_width", 0.0), 0.0), 0.0, 512.0);
     l->outline_enabled = json_bool(j, "outline_enabled", l->stroke_width > 0.0f);
@@ -1222,6 +1261,20 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->outline_join_style = std::clamp(json_int(j, "outline_join_style", 1), 0, 2);
     l->outline_on_front = json_bool(j, "outline_on_front", true);
     l->outline_antialias = json_bool(j, "outline_antialias", true);
+    l->stroke_gradient_type = std::clamp(json_int(j, "stroke_gradient_type", 0), 0, 1);
+    l->stroke_gradient_start_color = json_color(j, "stroke_gradient_start_color", (uint32_t)0xFFFFFFFF);
+    l->stroke_gradient_end_color = json_color(j, "stroke_gradient_end_color", l->stroke_color);
+    l->stroke_gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_start_pos", 0.0), 0.0), 0.0, 1.0);
+    l->stroke_gradient_end_pos = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_end_pos", 1.0), 1.0), 0.0, 1.0);
+    l->stroke_gradient_start_opacity = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_start_opacity", 1.0), 1.0), 0.0, 1.0);
+    l->stroke_gradient_end_opacity = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_end_opacity", 1.0), 1.0), 0.0, 1.0);
+    l->stroke_gradient_opacity = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_opacity", 1.0), 1.0), 0.0, 1.0);
+    l->stroke_gradient_angle = (float)finite_or(json_double(j, "stroke_gradient_angle", 0.0), 0.0);
+    l->stroke_gradient_center_x = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_center_x", 0.5), 0.5), 0.0, 1.0);
+    l->stroke_gradient_center_y = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_center_y", 0.5), 0.5), 0.0, 1.0);
+    l->stroke_gradient_scale = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_scale", 1.0), 1.0), 0.01, 10.0);
+    l->stroke_gradient_focal_x = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_focal_x", l->stroke_gradient_center_x), l->stroke_gradient_center_x), 0.0, 1.0);
+    l->stroke_gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_focal_y", l->stroke_gradient_center_y), l->stroke_gradient_center_y), 0.0, 1.0);
     l->align_h       = std::clamp(json_int(j, "align_h", 1), 0, 6);
     l->align_v       = std::clamp(json_int(j, "align_v", 1), 0, 2);
     l->paragraph_indent_left = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_left", 0.0), 0.0), -10000.0, 10000.0);
@@ -1300,10 +1353,19 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->rect_width    = std::clamp(finite_or(json_double(j, "rect_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);
     l->rect_height   = std::clamp(finite_or(json_double(j, "rect_height", 100.0), 100.0), 0.0, (double)kMaxCanvasDimension);
     l->corner_radius = std::clamp(finite_or(json_double(j, "corner_radius", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
+    l->corner_radius_tl = (float)std::clamp(finite_or(json_double(j, "corner_radius_tl", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->corner_radius_tr = (float)std::clamp(finite_or(json_double(j, "corner_radius_tr", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->corner_radius_br = (float)std::clamp(finite_or(json_double(j, "corner_radius_br", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->corner_radius_bl = (float)std::clamp(finite_or(json_double(j, "corner_radius_bl", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->corner_radius_locked = json_bool(j, "corner_radius_locked",
+                                        l->corner_radius_tl == l->corner_radius_tr &&
+                                        l->corner_radius_tl == l->corner_radius_br &&
+                                        l->corner_radius_tl == l->corner_radius_bl);
+    l->corner_type = (CornerType)std::clamp(json_int(j, "corner_type", 0), 0, (int)CornerType::Cutout);
     l->shape_type = (ShapeType)std::clamp(json_int(j, "shape_type", 0), 0, (int)ShapeType::Line);
     l->shape_points = std::clamp(json_int(j, "shape_points", 5), 3, 64);
     l->shape_sides = std::clamp(json_int(j, "shape_sides", 6), 3, 64);
-    l->shape_inner_radius = (float)std::clamp(finite_or(json_double(j, "shape_inner_radius", 0.45), 0.45), 0.0, 1.0);
+    l->shape_inner_radius = (float)std::clamp(finite_or(json_double(j, "shape_inner_radius", 0.20), 0.20), 0.0, 1.0);
     l->shape_outer_radius = (float)std::clamp(finite_or(json_double(j, "shape_outer_radius", 0.5), 0.5), 0.0, 1.0);
     l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
     l->box_width.static_value = l->rect_width;
@@ -1327,7 +1389,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->shadow_angle = finite_or(json_double(j, "shadow_angle", 135.0), 135.0);
     l->shadow_blur = std::clamp(finite_or(json_double(j, "shadow_blur", 4.0), 4.0), 0.0, 512.0);
     l->shadow_spread = std::clamp(finite_or(json_double(j, "shadow_spread", 0.0), 0.0), 0.0, 512.0);
-    l->shadow_blur_type = (ShadowBlurType)std::clamp(json_int(j, "shadow_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::AlphaMask);
+    l->shadow_blur_type = (ShadowBlurType)std::clamp(json_int(j, "shadow_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::DualKawase);
     l->long_shadow_enabled = json_bool(j, "long_shadow_enabled", false);
     l->long_shadow_color = json_color(j, "long_shadow_color", l->shadow_color);
     l->long_shadow_opacity = std::clamp(finite_or(json_double(j, "long_shadow_opacity", 0.45), 0.45), 0.0, 1.0);
@@ -1356,13 +1418,38 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("shadow_color_r")) l->shadow_color_r = aprop_from_json(j["shadow_color_r"], "shadow_color_r");
     if (j.contains("shadow_color_g")) l->shadow_color_g = aprop_from_json(j["shadow_color_g"], "shadow_color_g");
     if (j.contains("shadow_color_b")) l->shadow_color_b = aprop_from_json(j["shadow_color_b"], "shadow_color_b");
-    auto make_legacy_effect = [](LayerEffectType type) {
+    auto seed_shadow_effect_from_layer = [l](LayerEffect &effect) {
+        switch (effect.type) {
+        case LayerEffectType::DropShadow:
+            effect.effect_color = l->shadow_color;
+            effect.effect_opacity = l->shadow_opacity;
+            effect.effect_distance = l->shadow_distance;
+            effect.effect_angle = l->shadow_angle;
+            effect.effect_size = l->shadow_blur;
+            effect.effect_spread = l->shadow_spread;
+            effect.effect_blur_type = (int)l->shadow_blur_type;
+            break;
+        case LayerEffectType::LongShadow:
+            effect.effect_color = l->long_shadow_color;
+            effect.effect_opacity = l->long_shadow_opacity;
+            effect.effect_distance = l->long_shadow_length;
+            effect.effect_angle = l->long_shadow_angle;
+            effect.effect_falloff = l->long_shadow_falloff;
+            effect.effect_size = l->long_shadow_blur;
+            effect.effect_blur_type = (int)l->long_shadow_blur_type;
+            break;
+        default:
+            break;
+        }
+    };
+    auto make_legacy_effect = [seed_shadow_effect_from_layer](LayerEffectType type) {
         LayerEffect effect;
         effect.type = type;
         effect.enabled = true;
-        if (type == LayerEffectType::DropShadow || type == LayerEffectType::LongShadow || type == LayerEffectType::InnerShadow)
+        if (type == LayerEffectType::DropShadow || type == LayerEffectType::LongShadow || type == LayerEffectType::InnerShadow) {
             effect.blend_mode = EffectBlendMode::Multiply;
-        else if (type == LayerEffectType::ColorOverlay)
+            seed_shadow_effect_from_layer(effect);
+        } else if (type == LayerEffectType::ColorOverlay)
             effect.blend_mode = EffectBlendMode::Color;
         else if (type == LayerEffectType::Glow || type == LayerEffectType::InnerGlow)
             effect.blend_mode = EffectBlendMode::Additive;
@@ -1383,6 +1470,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
         }
         if (!has_long_shadow_effect)
             l->effects.push_back(make_legacy_effect(LayerEffectType::LongShadow));
+    }
+    for (auto &effect : l->effects) {
+        if ((effect.type == LayerEffectType::DropShadow || effect.type == LayerEffectType::LongShadow) &&
+            effect.effect_color == 0xFFFFFFFF) {
+            seed_shadow_effect_from_layer(effect);
+        }
     }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);

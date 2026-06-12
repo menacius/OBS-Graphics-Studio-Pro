@@ -46,6 +46,7 @@
 #include <QPointF>
 #include <QPoint>
 #include <QRectF>
+#include <QColor>
 #include <memory>
 #include <string>
 #include <vector>
@@ -111,6 +112,7 @@ protected:
 private slots:
     void tick();
     void show_about();
+    void show_preferences();
     void reject();
 
 private:
@@ -118,11 +120,14 @@ private:
     void build_toolbar();
     void update_title_bar();
     void set_dirty(bool dirty);
+    void begin_title_name_edit();
+    void commit_title_name_edit(bool accept);
     bool confirm_save_before_close();
     void new_title_contents();
     bool save_title();
     bool persist_title_changes(bool update_preview_screenshot, bool show_saved_status);
     void set_live_editing_enabled(bool enabled);
+    void set_gpu_pipeline_enabled(bool enabled);
     void save_live_edit();
     void save_title_as_new();
     void export_title_template(bool save_in_library);
@@ -139,6 +144,7 @@ private:
     void select_after_layer_list_mutation(const std::string &layer_id);
     std::vector<std::string> selected_layer_ids_for_operation() const;
     std::vector<std::shared_ptr<Layer>> clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers, bool suffix_name) const;
+    void apply_picked_color_to_selection(const QColor &color);
     void duplicate_selected_layers();
     void copy_selected_layer();
     void cut_selected_layer();
@@ -189,10 +195,13 @@ private:
     QDockWidget     *effects_dock_ = nullptr;
     QDockWidget     *styles_dock_ = nullptr;
     QDockWidget     *color_swatches_dock_ = nullptr;
+    QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
     ToolsSidebar    *tools_sidebar_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
+    QLineEdit       *title_name_edit_ = nullptr;
+    QLabel          *gpu_warning_lbl_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;
@@ -211,6 +220,7 @@ private:
     QAction         *act_effects_visible_ = nullptr;
     QAction         *act_styles_visible_ = nullptr;
     QAction         *act_color_swatches_visible_ = nullptr;
+    QAction         *act_timeline_visible_ = nullptr;
     QAction         *act_tools_visible_ = nullptr;
     std::string      canvas_created_shape_layer_id_;
     int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */
@@ -242,6 +252,7 @@ signals:
     void selection_tool_requested();
     void shape_tool_requested(ShapeType shape_type);
     void text_tool_requested(LayerType type);
+    void color_picker_tool_requested();
 
 private:
     void rebuild_shape_menu();
@@ -249,6 +260,7 @@ private:
     QToolButton *selection_button_ = nullptr;
     QToolButton *shape_button_ = nullptr;
     QToolButton *text_button_ = nullptr;
+    QToolButton *color_picker_button_ = nullptr;
     QActionGroup *tool_group_ = nullptr;
     QMenu *shape_menu_ = nullptr;
     QMenu *text_menu_ = nullptr;
@@ -294,6 +306,7 @@ public:
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
+    void set_color_picker_tool_active();
     void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
 
@@ -310,6 +323,7 @@ signals:
     void text_edit_changed(const std::string &layer_id);
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
+    void color_picked(const QColor &color);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
@@ -318,13 +332,48 @@ protected:
     void mouseReleaseEvent(QMouseEvent *ev) override;
     void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
+    void leaveEvent(QEvent *ev) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
-    enum class DragMode { None, Marquee, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin, Rotate };
-    enum class CanvasTool { Selection, Shape, Text };
+    enum class DragMode {
+        None,
+        Marquee,
+        Move,
+        ResizeNW,
+        ResizeN,
+        ResizeNE,
+        ResizeE,
+        ResizeSE,
+        ResizeS,
+        ResizeSW,
+        ResizeW,
+        Origin,
+        Rotate,
+        GradientStart,
+        GradientEnd,
+        GradientCenter,
+        GradientRadius,
+        GradientFocal,
+        CornerRadiusTL,
+        CornerRadiusTR,
+        CornerRadiusBR,
+        CornerRadiusBL
+    };
+    enum class CanvasTool { Selection, Shape, Text, ColorPicker };
+
+    struct GradientHandleGeometry {
+        bool valid = false;
+        bool radial = false;
+        QRectF local_rect;
+        QPointF center;
+        QPointF start;
+        QPointF end;
+        QPointF radius;
+        QPointF focal;
+    };
 
     void render_to_pixmap();
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
@@ -340,24 +389,42 @@ private:
     QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
     QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
     DragMode hit_test_selected(const QPointF &view_pt) const;
+    bool layer_supports_gradient_handles(const Layer &layer) const;
+    GradientHandleGeometry gradient_handle_geometry(const Layer &layer) const;
+    DragMode hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt) const;
+    void draw_gradient_handles(QPainter &p, const Layer &layer);
+    void begin_gradient_drag(const Layer &layer);
+    bool apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    bool layer_supports_corner_radius_handles(const Layer &layer) const;
+    QPointF corner_radius_handle_local_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
+    DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
+    void draw_corner_radius_handles(QPainter &p, const Layer &layer);
+    void begin_corner_radius_drag(const Layer &layer);
+    bool apply_corner_radius_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     QRectF layer_canvas_bounds(const Layer &layer) const;
     QRectF selected_canvas_bounds() const;
     void begin_marquee(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     void update_marquee(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool duplicate_selected_layers_for_drag();
     bool nudge_selected_layers(double dx, double dy);
-    QPointF snap_delta_for_bounds(const QRectF &start_bounds, const QPointF &delta, bool snap_x, bool snap_y);
-    QPointF snap_canvas_point(const QPointF &canvas_pt, bool snap_x, bool snap_y);
+    QPointF snap_delta_for_bounds(const QRectF &start_bounds, const QPointF &delta, bool snap_x, bool snap_y,
+                                  bool allow_snap = true);
+    QPointF snap_canvas_point(const QPointF &canvas_pt, bool snap_x, bool snap_y, bool allow_snap = true);
     void collect_snap_targets(bool x_axis, std::vector<double> &targets, std::vector<QString> &labels) const;
     void collect_spacing_targets(bool x_axis, std::vector<double> &targets, std::vector<QString> &labels) const;
     void clear_snap_feedback();
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     QRectF toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardModifiers modifiers) const;
-    QRectF snapped_toolbar_draw_rect(const QRectF &raw_rect);
+    QRectF snapped_toolbar_draw_rect(const QRectF &raw_rect, bool allow_snap = true);
     double toolbar_draw_aspect_ratio() const;
     QRect toolbar_preview_update_rect() const;
     void draw_toolbar_preview(QPainter &p);
+    bool sample_color_at_view(const QPointF &view_pt, QColor &color);
+    void update_color_picker_tooltip(const QPointF &view_pt);
+    void draw_color_picker_tooltip(QPainter &p);
+    QString canvas_drag_tooltip_text() const;
+    void draw_canvas_drag_tooltip(QPainter &p);
     void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
     void commit_text_edit(bool accept_changes = true);
@@ -400,6 +467,9 @@ private:
     QRectF shape_draw_current_rect_;
     Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;
     QRect last_toolbar_preview_update_rect_;
+    bool color_picker_tooltip_visible_ = false;
+    QPointF color_picker_tooltip_pos_;
+    QColor color_picker_tooltip_color_;
 
     struct SnapSettings {
         bool enabled = true;
@@ -438,6 +508,33 @@ private:
     float drag_start_origin_x_ = 0.5f;
     float drag_start_origin_y_ = 0.5f;
     QRectF drag_start_selection_bounds_;
+    struct GradientDragState {
+        bool active = false;
+        bool radial = false;
+        QRectF local_rect;
+        QPointF center;
+        QPointF start;
+        QPointF end;
+        QPointF radius;
+        QPointF focal;
+        float center_x = 0.5f;
+        float center_y = 0.5f;
+        float focal_x = 0.5f;
+        float focal_y = 0.5f;
+        float scale = 1.0f;
+        float angle = 0.0f;
+    };
+    GradientDragState gradient_drag_;
+    struct CornerRadiusDragState {
+        bool active = false;
+        QRectF local_rect;
+        float top_left = 0.0f;
+        float top_right = 0.0f;
+        float bottom_right = 0.0f;
+        float bottom_left = 0.0f;
+        bool locked = true;
+    };
+    CornerRadiusDragState corner_radius_drag_;
     struct LayerDragState {
         std::string id;
         double x = 0.0;
@@ -638,14 +735,19 @@ public:
 signals:
     void title_changed(bool push_undo_snapshot = true);
 
+protected:
+    bool event(QEvent *event) override;
+
 private:
+    void apply_theme_style();
     void load_values();
 
     std::shared_ptr<Title> title_;
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
-    QComboBox      *cmb_playback_mode_ = nullptr;
-    QComboBox      *cmb_loop_type_ = nullptr;
+    bool applying_theme_style_ = false;
+    QButtonGroup   *grp_playback_mode_ = nullptr;
+    QWidget        *loop_area_row_ = nullptr;
     QDoubleSpinBox *spn_pause_frame_ = nullptr;
     QDoubleSpinBox *spn_duration_ = nullptr;
     QDoubleSpinBox *spn_loop_start_ = nullptr;
@@ -724,7 +826,7 @@ private:
     QGroupBox       *dynamic_text_box_ = nullptr;
     QGroupBox       *bullets_box_ = nullptr;
     QGroupBox       *rect_box_     = nullptr;
-    QGroupBox       *image_box_    = nullptr;
+    QWidget         *image_box_    = nullptr;
 
     /* Text controls */
     QTextEdit       *txt_content_  = nullptr;
@@ -743,6 +845,7 @@ private:
     QDoubleSpinBox  *spn_baseline_shift_ = nullptr;
     QComboBox       *cmb_language_ = nullptr;
     QComboBox       *cmb_text_style_ = nullptr;
+    QWidget         *row_text_color_ = nullptr;
     QToolButton     *btn_all_caps_ = nullptr;
     QToolButton     *btn_small_caps_ = nullptr;
     QToolButton     *btn_superscript_ = nullptr;
@@ -778,6 +881,7 @@ private:
     /* Text/shape outline controls */
     QGroupBox       *outline_box_ = nullptr;
     QCheckBox       *chk_outline_enabled_ = nullptr;
+    QComboBox       *cmb_stroke_fill_type_ = nullptr;
     QDoubleSpinBox  *spn_outline_width_ = nullptr;
     QPushButton     *btn_outline_color_ = nullptr;
     QWidget         *row_outline_color_ = nullptr;
@@ -785,12 +889,36 @@ private:
     QComboBox       *cmb_outline_join_ = nullptr;
     QComboBox       *cmb_outline_position_ = nullptr;
     QCheckBox       *chk_outline_antialias_ = nullptr;
+    QComboBox       *cmb_stroke_gradient_type_ = nullptr;
+    QPushButton     *btn_stroke_gradient_start_color_ = nullptr;
+    QPushButton     *btn_stroke_gradient_end_color_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_start_pos_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_end_pos_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_start_opacity_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_end_opacity_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_opacity_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_angle_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_center_x_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_center_y_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_scale_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_focal_x_ = nullptr;
+    QDoubleSpinBox  *spn_stroke_gradient_focal_y_ = nullptr;
 
     /* Rectangle/Image geometry controls */
     QDoubleSpinBox  *spn_layer_w_   = nullptr;
     QDoubleSpinBox  *spn_layer_h_   = nullptr;
-    QDoubleSpinBox  *spn_rect_corner_   = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_tl_ = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_tr_ = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_br_ = nullptr;
+    QDoubleSpinBox  *spn_rect_corner_bl_ = nullptr;
+    QCheckBox       *chk_corner_lock_ = nullptr;
+    QWidget         *row_rect_corners_ = nullptr;
+    QWidget         *row_corner_type_ = nullptr;
+    QButtonGroup    *grp_corner_type_ = nullptr;
     QComboBox       *cmb_shape_type_ = nullptr;
+    QButtonGroup    *grp_shape_type_ = nullptr;
+    QPushButton     *btn_shape_defaults_ = nullptr;
+    QCheckBox       *chk_size_lock_ = nullptr;
     QSpinBox        *spn_shape_points_ = nullptr;
     QSpinBox        *spn_shape_sides_ = nullptr;
     QDoubleSpinBox  *spn_shape_inner_radius_ = nullptr;
@@ -817,16 +945,6 @@ private:
     QDoubleSpinBox  *spn_gradient_focal_y_ = nullptr;
 
     /* Text/image background controls */
-    QCheckBox       *chk_background_enabled_ = nullptr;
-    QPushButton     *btn_background_color_ = nullptr;
-    QDoubleSpinBox  *spn_background_opacity_ = nullptr;
-    QDoubleSpinBox  *spn_background_padding_x_ = nullptr;
-    QDoubleSpinBox  *spn_background_padding_y_ = nullptr;
-    QDoubleSpinBox  *spn_background_corner_ = nullptr;
-    QWidget         *row_background_enabled_ = nullptr;
-    QWidget         *row_background_color_ = nullptr;
-    QComboBox       *cmb_background_fill_type_ = nullptr;
-    QWidget         *row_background_fill_type_ = nullptr;
     QGroupBox       *background_gradient_box_ = nullptr;
     QComboBox       *cmb_background_gradient_type_ = nullptr;
     QPushButton     *btn_background_gradient_start_color_ = nullptr;
@@ -842,12 +960,9 @@ private:
     QDoubleSpinBox  *spn_background_gradient_scale_ = nullptr;
     QDoubleSpinBox  *spn_background_gradient_focal_x_ = nullptr;
     QDoubleSpinBox  *spn_background_gradient_focal_y_ = nullptr;
-    QWidget         *row_background_opacity_ = nullptr;
-    QWidget         *row_background_padding_x_ = nullptr;
-    QWidget         *row_background_padding_y_ = nullptr;
-    QWidget         *row_background_corner_ = nullptr;
 
     /* Image controls */
+    QLabel          *lbl_image_preview_ = nullptr;
     QLineEdit       *edit_image_path_ = nullptr;
     QPushButton     *btn_pick_image_ = nullptr;
     QComboBox       *cmb_image_scale_filter_ = nullptr;
@@ -859,12 +974,23 @@ private:
     QDoubleSpinBox  *spn_scale_y_  = nullptr;
     QDoubleSpinBox  *spn_rot_      = nullptr;
     QDoubleSpinBox  *spn_opacity_  = nullptr;
+    QCheckBox       *chk_scene_mask_ = nullptr;
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_scale_lock_ = nullptr;
-    QCheckBox       *chk_use_as_scene_mask_ = nullptr;
-    QCheckBox       *chk_lock_aspect_ = nullptr;
     QComboBox       *cmb_anchor_ = nullptr;
+    QWidget         *transform_box_ = nullptr;
+    QWidget         *appearance_box_ = nullptr;
+    QPushButton     *btn_appearance_fill_color_ = nullptr;
+    QPushButton     *btn_appearance_stroke_color_ = nullptr;
+    QLabel          *btn_appearance_stroke_label_ = nullptr;
+    QDoubleSpinBox  *spn_appearance_stroke_width_ = nullptr;
+    QDoubleSpinBox  *spn_appearance_opacity_ = nullptr;
+    QPushButton     *btn_kf_appearance_fill_ = nullptr;
+    QPushButton     *btn_kf_appearance_stroke_ = nullptr;
+    QPushButton     *btn_kf_appearance_opacity_ = nullptr;
+    QPushButton     *btn_anchor_grid_ = nullptr;
+    QPushButton     *btn_transform_defaults_ = nullptr;
     QGroupBox       *shadow_box_ = nullptr;
     QCheckBox       *chk_shadow_enabled_ = nullptr;
     QComboBox       *cmb_shadow_preset_ = nullptr;
@@ -902,13 +1028,6 @@ private:
     QPushButton     *btn_kf_paragraph_indent_right_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_first_line_ = nullptr;
     QPushButton     *btn_kf_width_ = nullptr;
-    QPushButton     *btn_kf_height_ = nullptr;
     QPushButton     *btn_kf_text_color_ = nullptr;
     QPushButton     *btn_kf_fill_color_ = nullptr;
-    QPushButton     *btn_kf_background_enabled_ = nullptr;
-    QPushButton     *btn_kf_background_color_ = nullptr;
-    QPushButton     *btn_kf_background_opacity_ = nullptr;
-    QPushButton     *btn_kf_background_padding_x_ = nullptr;
-    QPushButton     *btn_kf_background_padding_y_ = nullptr;
-    QPushButton     *btn_kf_background_corner_ = nullptr;
 };

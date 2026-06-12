@@ -31,6 +31,13 @@ enum class ShapeType {
     Line,
 };
 
+enum class CornerType {
+    Round,
+    Straight,
+    Concave,
+    Cutout,
+};
+
 enum class MaskMode {
     None,
     Alpha,
@@ -126,12 +133,27 @@ struct Layer {
 
     /* ----- Outline shared by text and solid/shape layers ----- */
     bool        outline_enabled = false;
+    int         stroke_fill_type = 1;  /* 0=none, 1=color, 2=gradient */
     uint32_t    stroke_color  = 0xFF000000;
     float       stroke_width  = 0.0f;
     float       outline_opacity = 1.0f;
     int         outline_join_style = 1;  /* 0=miter, 1=round, 2=bevel */
     bool        outline_on_front = true;
     bool        outline_antialias = true;
+    int         stroke_gradient_type = 0;  /* 0=linear, 1=radial */
+    uint32_t    stroke_gradient_start_color = 0xFFFFFFFF;
+    uint32_t    stroke_gradient_end_color   = 0xFF000000;
+    float       stroke_gradient_start_pos = 0.0f;
+    float       stroke_gradient_end_pos   = 1.0f;
+    float       stroke_gradient_start_opacity = 1.0f;
+    float       stroke_gradient_end_opacity   = 1.0f;
+    float       stroke_gradient_opacity   = 1.0f;
+    float       stroke_gradient_angle     = 0.0f;
+    float       stroke_gradient_center_x  = 0.5f;
+    float       stroke_gradient_center_y  = 0.5f;
+    float       stroke_gradient_scale     = 1.0f;
+    float       stroke_gradient_focal_x   = 0.5f;
+    float       stroke_gradient_focal_y   = 0.5f;
 
     int         align_h       = 1;  /* 0=left 1=center 2=right 3=justify last left 4=justify last center 5=justify last right 6=justify all */
     int         align_v       = 1;  /* 0=top  1=middle 2=bottom */
@@ -198,10 +220,16 @@ struct Layer {
     float       rect_width    = 1920.0f;
     float       rect_height   = 100.0f;
     float       corner_radius = 0.0f;
+    float       corner_radius_tl = 0.0f;
+    float       corner_radius_tr = 0.0f;
+    float       corner_radius_br = 0.0f;
+    float       corner_radius_bl = 0.0f;
+    bool        corner_radius_locked = true;
+    CornerType  corner_type = CornerType::Round;
     ShapeType   shape_type = ShapeType::Rectangle;
     int         shape_points = 5;
     int         shape_sides = 6;
-    float       shape_inner_radius = 0.45f;
+    float       shape_inner_radius = 0.20f;
     float       shape_outer_radius = 0.5f;
     float       shape_roundness = 0.0f;
 

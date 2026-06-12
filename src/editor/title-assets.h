@@ -48,6 +48,8 @@ static inline QIcon obsgs_icon(const char *file_name, const QColor &color)
         pixmap.fill(Qt::transparent);
         QPainter painter(&pixmap);
         renderer.render(&painter);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(pixmap.rect(), color);
         icon.addPixmap(pixmap);
     }
     return icon;

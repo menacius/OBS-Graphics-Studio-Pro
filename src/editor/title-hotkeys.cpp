@@ -260,7 +260,7 @@ static void register_hotkey_section_source_type()
     static obs_source_info si = {};
     si.id = kHotkeySectionSourceId;
     si.type = OBS_SOURCE_TYPE_INPUT;
-    si.output_flags = 0;
+    si.output_flags = OBS_SOURCE_CAP_DISABLED;
     si.get_name = hotkey_section_source_get_name;
 
     obs_register_source(&si);
