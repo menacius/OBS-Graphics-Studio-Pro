@@ -1,7 +1,48 @@
-# OBS Graphics Studio Pro — Native OBS Plugin by OmniaTV
+#OBS Graphics Studio Pro
 
-OBS Graphics Studio Pro is developed by OmniaTV. It is a fully native C++/Qt OBS plugin providing After Effects–style title creation,
-management, and real-time compositing.
+OBS Graphics Studio Pro is an advanced native graphics plugin for OBS Studio that transforms OBS from a streaming application into a complete real-time graphics and motion design system. Designed for broadcasters, live productions, journalists, content creators, podcasts, esports, and sports productions, it enables the creation, management, and playback of professional broadcast graphics directly inside OBS.
+
+Built as a fully native C++/Qt plugin, OBS Graphics Studio Pro integrates seamlessly with OBS Studio, providing a dedicated graphics editor, timeline-based animation system, and real-time compositing without requiring browser sources or external graphics applications.
+
+Key Features
+Native C++/Qt integration with OBS Studio.
+Dedicated dockable graphics management panel.
+Built-in graphics editor with timeline, layers, and keyframes.
+Creation of lower thirds, titles, overlays, scoreboards, tickers, and animated graphics.
+Real-time graphics compositing using the OBS rendering pipeline.
+Support for text, images, shapes, gradients, and visual effects.
+Advanced animation system with keyframes, easing, looping, and timeline controls.
+Live data integration for dynamic and automatically updated graphics.
+Multi-style text editing with professional typography controls.
+GPU-accelerated rendering architecture designed for advanced visual effects.
+Support for shadows, glows, blur effects, motion graphics, and future 3D transformations.
+Object-based masking system, allowing shapes, text, images, and other graphic elements to be used as masks.
+Scene masking support, enabling OBS scenes to be displayed and animated inside custom masks created with graphics objects.
+Real-time mask animation, allowing scenes to follow animated mask position, scale, and transformations through the compositing system.
+Direct use of graphics as native OBS sources.
+Vision
+
+The goal of OBS Graphics Studio Pro is to provide a professional graphics workflow directly inside OBS Studio, eliminating the need for external titling applications while offering a modern motion graphics environment tailored for live production.
+
+By combining graphics creation, animation, compositing, and live data workflows into a single integrated system, OBS Graphics Studio Pro aims to become a complete graphics solution for OBS users.
+
+#Current Status
+
+Alpha 0.1
+
+The project is currently in active development. Core graphics creation, editing, and playback functionality is operational, while many advanced features and workflow refinements are still being implemented.
+
+Planned and Ongoing Development
+Shapes and vector drawing tools.
+Advanced masking workflows.
+Gradient fills and outlines.
+Effects stack system.
+Additional animation controls.
+GPU rendering optimizations.
+Improved editor usability and workflow.
+Advanced typography features.
+Enhanced performance for complex graphics and animations.
+Additional compositing and visual effects capabilities.
 
 ---
 
