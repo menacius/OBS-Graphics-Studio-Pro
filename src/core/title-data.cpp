@@ -804,6 +804,7 @@ static json rich_paragraph_format_to_json(const RichTextParagraphFormat &f)
 {
     return {{"align_h", f.align_h}, {"align_v", f.align_v}, {"indent_left", f.indent_left},
             {"indent_right", f.indent_right}, {"indent_first_line", f.indent_first_line},
+            {"line_spacing", f.line_spacing},
             {"space_before", f.space_before}, {"space_after", f.space_after}, {"hyphenate", f.hyphenate}};
 }
 
@@ -816,6 +817,7 @@ static RichTextParagraphFormat rich_paragraph_format_from_json(const json &j, co
     f.indent_left = (float)std::clamp(finite_or(json_double(j, "indent_left", f.indent_left), f.indent_left), 0.0, 10000.0);
     f.indent_right = (float)std::clamp(finite_or(json_double(j, "indent_right", f.indent_right), f.indent_right), 0.0, 10000.0);
     f.indent_first_line = (float)std::clamp(finite_or(json_double(j, "indent_first_line", f.indent_first_line), f.indent_first_line), -10000.0, 10000.0);
+    f.line_spacing = (float)std::clamp(finite_or(json_double(j, "line_spacing", f.line_spacing), f.line_spacing), -1000.0, 1000.0);
     f.space_before = (float)std::clamp(finite_or(json_double(j, "space_before", f.space_before), f.space_before), 0.0, 10000.0);
     f.space_after = (float)std::clamp(finite_or(json_double(j, "space_after", f.space_after), f.space_after), 0.0, 10000.0);
     f.hyphenate = json_bool(j, "hyphenate", f.hyphenate);
@@ -1313,6 +1315,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (l->rich_text.plain_text.empty() && !l->text_content.empty())
         l->rich_text = rich_text_document_from_layer_defaults(*l);
     l->text_content = l->rich_text.plain_text;
+    rich_text_document_sync_layer_mirrors(*l);
     l->background_enabled = json_bool(j, "background_enabled", false);
     l->background_color = json_color(j, "background_color", (uint32_t)0xFF000000);
     l->background_opacity = (float)std::clamp(finite_or(json_double(j, "background_opacity", 0.35), 0.35), 0.0, 1.0);
@@ -1487,6 +1490,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("fill_color_r")) l->fill_color_r = aprop_from_json(j["fill_color_r"], "fill_color_r");
     if (j.contains("fill_color_g")) l->fill_color_g = aprop_from_json(j["fill_color_g"], "fill_color_g");
     if (j.contains("fill_color_b")) l->fill_color_b = aprop_from_json(j["fill_color_b"], "fill_color_b");
+    rich_text_document_sync_layer_mirrors(*l);
     l->image_path    = bounded_string(j, "image_path", "", 4096);
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
         if (error) *error = "Could not restore an embedded image asset from the template file.";

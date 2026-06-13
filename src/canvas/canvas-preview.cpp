@@ -2486,6 +2486,15 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
                                    layer->rich_text.selection.head != next_model.selection.head;
     const bool changed = layer->text_content != plain || layer->rich_text.plain_text != next_model.plain_text ||
                          !rich_text_char_formats_equal(layer->rich_text.default_format, next_model.default_format) ||
+                         layer->rich_text.default_paragraph_format.align_h != next_model.default_paragraph_format.align_h ||
+                         layer->rich_text.default_paragraph_format.align_v != next_model.default_paragraph_format.align_v ||
+                         std::abs(layer->rich_text.default_paragraph_format.indent_left - next_model.default_paragraph_format.indent_left) >= 0.0001f ||
+                         std::abs(layer->rich_text.default_paragraph_format.indent_right - next_model.default_paragraph_format.indent_right) >= 0.0001f ||
+                         std::abs(layer->rich_text.default_paragraph_format.indent_first_line - next_model.default_paragraph_format.indent_first_line) >= 0.0001f ||
+                         std::abs(layer->rich_text.default_paragraph_format.line_spacing - next_model.default_paragraph_format.line_spacing) >= 0.0001f ||
+                         std::abs(layer->rich_text.default_paragraph_format.space_before - next_model.default_paragraph_format.space_before) >= 0.0001f ||
+                         std::abs(layer->rich_text.default_paragraph_format.space_after - next_model.default_paragraph_format.space_after) >= 0.0001f ||
+                         layer->rich_text.default_paragraph_format.hyphenate != next_model.default_paragraph_format.hyphenate ||
                          !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) {
         if (selection_changed)
@@ -2496,6 +2505,7 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     layer->text_content = plain;
     layer->rich_text = std::move(next_model);
     layer->rich_text_html.clear();
+    rich_text_document_sync_layer_mirrors(*layer);
     if (editor_doc)
         editor_doc->setModified(false);
     if (mark_dirty) dirty_ = true;
@@ -2690,6 +2700,9 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
         commit_text_edit(true);
 
     inline_text_layer_id_ = layer->id;
+    if (layer->rich_text.empty())
+        layer->rich_text = rich_text_document_from_layer_defaults(*layer);
+    rich_text_document_sync_layer_mirrors(*layer);
     updating_inline_text_editor_ = true;
     QSignalBlocker blocker(inline_text_editor_);
     configure_inline_text_editor(*layer);

@@ -2301,11 +2301,11 @@ void TitleEditor::apply_picked_color_to_selection(const QColor &color)
         const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
                                              std::max(0.0, layer->out_time - layer->in_time));
         if (is_canvas_text_layer(*layer)) {
-            layer->fill_type = 0;
-            layer->text_color = argb;
-            set_color_channels_at(*layer, true, local_time, argb);
             RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
+            fmt.fill.type = 0;
+            fmt.fill.color = argb;
             apply_rich_text_format_to_layer_range(*layer, fmt, RichTextCharFillColor, false);
+            set_color_channels_at(*layer, true, local_time, argb);
             last_changed = layer;
         } else if (layer->type == LayerType::Shape || layer->type == LayerType::SolidRect) {
             layer->fill_type = 0;

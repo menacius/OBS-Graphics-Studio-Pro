@@ -1384,9 +1384,34 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         apply_rich_text_format_to_layer_range(*layer_, format, mask, active);
         emit text_char_format_changed(layer_->id, format, mask);
     };
+    auto current_text_char_format = [this]() {
+        RichTextCharFormat fmt;
+        if (!layer_) return fmt;
+        const bool active = active_text_edit_layer_id_ == layer_->id;
+        RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
+        return summary.valid ? summary.format : fmt;
+    };
     auto apply_text_fill_format = [this, apply_text_char_format]() {
         if (!layer_ || loading_values_) return;
-        RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+        const bool active = active_text_edit_layer_id_ == layer_->id;
+        RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
+        RichTextCharFormat fmt = summary.valid ? summary.format : RichTextCharFormat();
+        fmt.fill.type = layer_->fill_type;
+        fmt.fill.color = layer_->text_color;
+        fmt.fill.gradient_type = layer_->gradient_type;
+        fmt.fill.gradient_start_color = layer_->gradient_start_color;
+        fmt.fill.gradient_end_color = layer_->gradient_end_color;
+        fmt.fill.gradient_start_pos = layer_->gradient_start_pos;
+        fmt.fill.gradient_end_pos = layer_->gradient_end_pos;
+        fmt.fill.gradient_start_opacity = layer_->gradient_start_opacity;
+        fmt.fill.gradient_end_opacity = layer_->gradient_end_opacity;
+        fmt.fill.gradient_opacity = layer_->gradient_opacity;
+        fmt.fill.gradient_angle = layer_->gradient_angle;
+        fmt.fill.gradient_center_x = layer_->gradient_center_x;
+        fmt.fill.gradient_center_y = layer_->gradient_center_y;
+        fmt.fill.gradient_scale = layer_->gradient_scale;
+        fmt.fill.gradient_focal_x = layer_->gradient_focal_x;
+        fmt.fill.gradient_focal_y = layer_->gradient_focal_y;
         apply_text_char_format(fmt, RichTextCharFillColor);
     };
     auto local_time = [this]() {
@@ -1590,9 +1615,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     layer_->text_content = value;
                     if (layer_->rich_text.empty())
                         layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
-                    layer_->rich_text.default_paragraph_format = layer_paragraph_format_for_editor(*layer_);
-                    rich_text_document_replace_text(layer_->rich_text, value);
+                    RichTextCharFormat insertion_format = insertion_format_for_text_replace(layer_->rich_text);
+                    rich_text_document_replace_text(layer_->rich_text, value, &insertion_format);
                     layer_->rich_text_html.clear();
+                    rich_text_document_sync_layer_mirrors(*layer_);
                 }
                 emit_change();
             });
@@ -1615,90 +1641,94 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->max_text_box_height = (float)v; emit_change(); }
             });
     connect(cmb_font_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](const QString &s){
                 if (!can_edit()) return;
-                populate_font_style_combo(cmb_font_style_, s, QString::fromStdString(layer_->font_style));
-                layer_->font_family = s.toStdString();
-                layer_->font_style = cmb_font_style_->currentText().toStdString();
+                RichTextCharFormat fmt = current_text_char_format();
+                populate_font_style_combo(cmb_font_style_, s, QString::fromStdString(fmt.font_style));
+                fmt.font_family = s.toStdString();
+                fmt.font_style = cmb_font_style_->currentText().toStdString();
                 QFontDatabase fdb;
-                layer_->font_bold = fdb.bold(s, cmb_font_style_->currentText());
-                layer_->font_italic = fdb.italic(s, cmb_font_style_->currentText());
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+                fmt.bold = fdb.bold(s, cmb_font_style_->currentText());
+                fmt.italic = fdb.italic(s, cmb_font_style_->currentText());
                 apply_text_char_format(fmt, RichTextCharFontFamily | RichTextCharFontStyle |
                                        RichTextCharBold | RichTextCharItalic);
                 emit_change();
             });
     connect(cmb_font_style_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](const QString &s){
                 if (!can_edit()) return;
-                layer_->font_style = s.toStdString();
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.font_style = s.toStdString();
                 QFontDatabase fdb;
-                const QString family = QString::fromStdString(layer_->font_family);
-                layer_->font_bold = fdb.bold(family, s);
-                layer_->font_italic = fdb.italic(family, s);
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+                const QString family = QString::fromStdString(fmt.font_family);
+                fmt.bold = fdb.bold(family, s);
+                fmt.italic = fdb.italic(family, s);
                 apply_text_char_format(fmt, RichTextCharFontStyle | RichTextCharBold | RichTextCharItalic);
                 emit_change();
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](int v){
-                if (can_edit()) { layer_->font_size = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharFontSize); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.font_size = v; apply_text_char_format(fmt, RichTextCharFontSize); emit_change(); }
             });
     connect(chk_bold_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
-                if (can_edit()) { layer_->font_bold = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharBold); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.bold = v; apply_text_char_format(fmt, RichTextCharBold); emit_change(); }
             });
     connect(chk_italic_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
-                if (can_edit()) { layer_->font_italic = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharItalic); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.italic = v; apply_text_char_format(fmt, RichTextCharItalic); emit_change(); }
             });
     connect(chk_font_kerning_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
-                if (can_edit()) { layer_->font_kerning = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.kerning = v; apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
             });
     connect(cmb_kerning_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](int idx) {
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int idx) {
                 if (!can_edit()) return;
-                layer_->kerning_mode = cmb_kerning_mode_->itemData(idx).toInt();
-                layer_->font_kerning = layer_->kerning_mode != 2;
-                if (chk_font_kerning_) chk_font_kerning_->setChecked(layer_->font_kerning);
-                if (spn_kerning_value_) spn_kerning_value_->setEnabled(layer_->kerning_mode == 2);
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.kerning_mode = cmb_kerning_mode_->itemData(idx).toInt();
+                fmt.kerning = fmt.kerning_mode != 2;
+                if (chk_font_kerning_) chk_font_kerning_->setChecked(fmt.kerning);
+                if (spn_kerning_value_) spn_kerning_value_->setEnabled(fmt.kerning_mode == 2);
                 apply_text_char_format(fmt, RichTextCharKerning);
                 emit_change();
             });
     connect(spn_kerning_value_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](double v) {
-                if (can_edit()) { layer_->manual_kerning = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v) {
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.manual_kerning = (float)v; apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
             });
     connect(spn_text_leading_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change](double v){
-                if (can_edit()) { layer_->text_leading = (float)v; emit_change(); }
+                if (!can_edit()) return;
+                RichTextParagraphFormat fmt = layer_paragraph_format_for_editor(*layer_);
+                fmt.line_spacing = (float)v;
+                apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
+                emit_change();
             });
     connect(spn_char_tracking_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](double v){
-                if (can_edit()) { layer_->char_tracking = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharTracking); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.tracking = (float)v; apply_text_char_format(fmt, RichTextCharTracking); emit_change(); }
             });
     connect(spn_char_scale_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](double v){
-                if (can_edit()) { layer_->char_scale_x = (float)(v / 100.0); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharScaleX); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.scale_x = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleX); emit_change(); }
             });
     connect(spn_char_scale_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](double v){
-                if (can_edit()) { layer_->char_scale_y = (float)(v / 100.0); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharScaleY); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.scale_y = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleY); emit_change(); }
             });
     connect(spn_baseline_shift_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](double v){
-                if (can_edit()) { layer_->baseline_shift = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharBaselineShift); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.baseline_shift = (float)v; apply_text_char_format(fmt, RichTextCharBaselineShift); emit_change(); }
             });
     connect(cmb_language_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
-                if (can_edit()) { layer_->text_language = s.toStdString(); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharLanguage); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](const QString &s){
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.language = s.toStdString(); apply_text_char_format(fmt, RichTextCharLanguage); emit_change(); }
             });
-    auto set_exclusive_text_style = [this, can_edit, emit_change, apply_text_char_format](int style, bool checked) {
+    auto set_exclusive_text_style = [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int style, bool checked) {
         if (!can_edit()) return;
-        layer_->text_style = checked ? style : 0;
-        RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+        RichTextCharFormat fmt = current_text_char_format();
+        fmt.text_style = checked ? style : 0;
         apply_text_char_format(fmt, RichTextCharTextStyle);
         emit_change();
         load_values();
@@ -1707,15 +1737,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(btn_small_caps_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(2, v); });
     connect(btn_superscript_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(3, v); });
     connect(btn_subscript_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(4, v); });
-    connect(btn_underline_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_underline = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharUnderline); emit_change(); }});
-    connect(btn_strikethrough_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_strikethrough = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStrikethrough); emit_change(); }});
-    connect(btn_ligatures_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_ligatures = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharLigatures); emit_change(); }});
-    connect(btn_stylistic_alternates_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_stylistic_alternates = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStylisticAlternates); emit_change(); }});
-    connect(btn_fractions_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_fractions = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharFractions); emit_change(); }});
-    connect(btn_opentype_features_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_opentype_features = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharOpenTypeFeatures); emit_change(); }});
+    connect(btn_underline_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.underline = v; apply_text_char_format(fmt, RichTextCharUnderline); emit_change(); }});
+    connect(btn_strikethrough_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.strikethrough = v; apply_text_char_format(fmt, RichTextCharStrikethrough); emit_change(); }});
+    connect(btn_ligatures_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.ligatures = v; apply_text_char_format(fmt, RichTextCharLigatures); emit_change(); }});
+    connect(btn_stylistic_alternates_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.stylistic_alternates = v; apply_text_char_format(fmt, RichTextCharStylisticAlternates); emit_change(); }});
+    connect(btn_fractions_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.fractions = v; apply_text_char_format(fmt, RichTextCharFractions); emit_change(); }});
+    connect(btn_opentype_features_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){ if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.opentype_features = v; apply_text_char_format(fmt, RichTextCharOpenTypeFeatures); emit_change(); }});
     connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format](int idx) {
-                if (can_edit()) { layer_->text_style = cmb_text_style_->itemData(idx).toInt(); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharTextStyle); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int idx) {
+                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.text_style = cmb_text_style_->itemData(idx).toInt(); apply_text_char_format(fmt, RichTextCharTextStyle); emit_change(); }
             });
     connect(cmb_text_overflow_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx) {
@@ -1936,11 +1966,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         for (auto *button : group->buttons()) {
             connect(button, &QAbstractButton::clicked, this, [this, can_edit, emit_change, group, horizontal, button]() {
                 if (!can_edit()) return;
-                int value = group->id(button);
+                const int value = group->id(button);
+                RichTextParagraphFormat fmt = layer_paragraph_format_for_editor(*layer_);
                 if (horizontal)
-                    layer_->align_h = value;
+                    fmt.align_h = value;
                 else
-                    layer_->align_v = value;
+                    fmt.align_v = value;
+                apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
                 emit_change();
             });
         }
@@ -1951,7 +1983,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         if (!spin) return;
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
                 [this, can_edit, emit_change, field](double value) {
-                    if (can_edit()) { layer_.get()->*field = (float)value; emit_change(); }
+                    if (!can_edit()) return;
+                    RichTextParagraphFormat fmt = layer_paragraph_format_for_editor(*layer_);
+                    if (field == &Layer::paragraph_space_before)
+                        fmt.space_before = (float)value;
+                    else if (field == &Layer::paragraph_space_after)
+                        fmt.space_after = (float)value;
+                    apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
+                    emit_change();
                 });
     };
     auto connect_keyframed_paragraph_spin = [this, can_edit, local_time, emit_change](QDoubleSpinBox *spin, float Layer::*field, AnimatedProperty Layer::*prop) {
@@ -1959,7 +1998,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
                 [this, can_edit, local_time, emit_change, field, prop](double value) {
                     if (can_edit()) {
-                        layer_.get()->*field = (float)value;
+                        RichTextParagraphFormat fmt = layer_paragraph_format_for_editor(*layer_);
+                        if (field == &Layer::paragraph_indent_left)
+                            fmt.indent_left = (float)value;
+                        else if (field == &Layer::paragraph_indent_right)
+                            fmt.indent_right = (float)value;
+                        else if (field == &Layer::paragraph_indent_first_line)
+                            fmt.indent_first_line = (float)value;
+                        apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
                         set_animated_value(layer_.get()->*prop, local_time(), value);
                         emit_change();
                     }
@@ -1972,20 +2018,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect_paragraph_spin(spn_paragraph_space_after_, &Layer::paragraph_space_after);
     connect(chk_paragraph_hyphenate_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v) {
-                if (can_edit()) { layer_->paragraph_hyphenate = v; emit_change(); }
+                if (!can_edit()) return;
+                RichTextParagraphFormat fmt = layer_paragraph_format_for_editor(*layer_);
+                fmt.hyphenate = v;
+                apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
+                emit_change();
             });
     connect(btn_text_color_, &QPushButton::clicked,
-            this, [this, can_edit, local_time, emit_change, apply_text_char_format]() {
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format]() {
                 if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_text_color(*layer_, local_time()));
                 QColor picked = QColorDialog::getColor(initial, this, obsgs_tr("OBSTitles.TextColor"),
                                                         QColorDialog::ShowAlphaChannel);
                 if (!picked.isValid()) return;
-                layer_->text_color = argb_from_color(picked);
-                set_color_channels_at(*layer_, true, local_time(), layer_->text_color);
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.fill.type = 0;
+                fmt.fill.color = argb_from_color(picked);
                 apply_text_char_format(fmt, RichTextCharFillColor);
-                style_color_button(btn_text_color_, layer_->text_color);
+                set_color_channels_at(*layer_, true, local_time(), fmt.fill.color);
+                style_color_button(btn_text_color_, fmt.fill.color);
                 emit_change();
             });
     auto open_color_selector = [this, can_edit, emit_change, apply_text_fill_format, local_time, control_style](bool stroke) {
@@ -4154,8 +4205,10 @@ void PropertiesPanel::load_values()
 
     const QString panel_text = is_clock
         ? QString::fromStdString(layer_->clock_format)
-        : (!layer_->rich_text_html.empty() ? rich_text_plain_text(layer_->rich_text_html)
-                                           : QString::fromStdString(layer_->text_content));
+        : (!layer_->rich_text.empty() ? QString::fromStdString(layer_->rich_text.plain_text)
+                                      : (!layer_->rich_text_html.empty()
+                                             ? rich_text_plain_text(layer_->rich_text_html)
+                                             : QString::fromStdString(layer_->text_content)));
     txt_content_->setPlainText(panel_text);
     int ticker_style_idx = cmb_ticker_style_->findData(layer_->ticker_style);
     cmb_ticker_style_->setCurrentIndex(ticker_style_idx >= 0 ? ticker_style_idx : 0);

@@ -57,6 +57,7 @@ static RichTextParagraphFormat layer_paragraph_format(const Layer &layer)
     f.indent_left = layer.paragraph_indent_left;
     f.indent_right = layer.paragraph_indent_right;
     f.indent_first_line = layer.paragraph_indent_first_line;
+    f.line_spacing = layer.text_leading;
     f.space_before = layer.paragraph_space_before;
     f.space_after = layer.paragraph_space_after;
     f.hyphenate = layer.paragraph_hyphenate;
@@ -104,6 +105,7 @@ void RichTextDocument::normalize()
     for (auto range : ranges) {
         if (range.start >= text_len || range.length == 0) continue;
         range.length = std::min(range.length, text_len - range.start);
+        if (same_format(range.format, default_format)) continue;
         clipped.push_back(range);
     }
     std::sort(clipped.begin(), clipped.end(), [](const auto &a, const auto &b) {
@@ -152,8 +154,6 @@ RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
     doc.plain_text = layer.text_content;
     doc.default_format = layer_char_format(layer);
     doc.default_paragraph_format = layer_paragraph_format(layer);
-    if (!doc.plain_text.empty())
-        doc.ranges.push_back({0, doc.plain_text.size(), doc.default_format});
     doc.selection = {doc.plain_text.size(), doc.plain_text.size()};
     doc.normalize();
     return doc;
@@ -164,6 +164,80 @@ void rich_text_document_sync_layer_defaults(RichTextDocument &doc, const Layer &
     doc.default_format = layer_char_format(layer);
     doc.default_paragraph_format = layer_paragraph_format(layer);
     doc.normalize();
+}
+
+static void set_static_argb_channels(AnimatedProperty &a, AnimatedProperty &r,
+                                     AnimatedProperty &g, AnimatedProperty &b,
+                                     uint32_t argb)
+{
+    a.static_value = (argb >> 24) & 0xFF;
+    r.static_value = (argb >> 16) & 0xFF;
+    g.static_value = (argb >> 8) & 0xFF;
+    b.static_value = argb & 0xFF;
+}
+
+void rich_text_document_sync_layer_mirrors(Layer &layer)
+{
+    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker)
+        return;
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
+    layer.rich_text.normalize();
+
+    const RichTextCharFormat &f = layer.rich_text.default_format;
+    layer.text_content = layer.rich_text.plain_text;
+    layer.font_family = f.font_family;
+    layer.font_style = f.font_style;
+    layer.font_size = f.font_size;
+    layer.font_bold = f.bold;
+    layer.font_italic = f.italic;
+    layer.text_underline = f.underline;
+    layer.text_strikethrough = f.strikethrough;
+    layer.font_kerning = f.kerning;
+    layer.kerning_mode = f.kerning_mode;
+    layer.manual_kerning = f.manual_kerning;
+    layer.char_tracking = f.tracking;
+    layer.char_scale_x = f.scale_x;
+    layer.char_scale_y = f.scale_y;
+    layer.baseline_shift = f.baseline_shift;
+    layer.text_style = f.text_style;
+    layer.text_ligatures = f.ligatures;
+    layer.text_stylistic_alternates = f.stylistic_alternates;
+    layer.text_fractions = f.fractions;
+    layer.text_opentype_features = f.opentype_features;
+    layer.text_language = f.language;
+    layer.fill_type = f.fill.type;
+    layer.text_color = f.fill.color;
+    layer.gradient_type = f.fill.gradient_type;
+    layer.gradient_start_color = f.fill.gradient_start_color;
+    layer.gradient_end_color = f.fill.gradient_end_color;
+    layer.gradient_start_pos = f.fill.gradient_start_pos;
+    layer.gradient_end_pos = f.fill.gradient_end_pos;
+    layer.gradient_start_opacity = f.fill.gradient_start_opacity;
+    layer.gradient_end_opacity = f.fill.gradient_end_opacity;
+    layer.gradient_opacity = f.fill.gradient_opacity;
+    layer.gradient_angle = f.fill.gradient_angle;
+    layer.gradient_center_x = f.fill.gradient_center_x;
+    layer.gradient_center_y = f.fill.gradient_center_y;
+    layer.gradient_scale = f.fill.gradient_scale;
+    layer.gradient_focal_x = f.fill.gradient_focal_x;
+    layer.gradient_focal_y = f.fill.gradient_focal_y;
+    set_static_argb_channels(layer.text_color_a, layer.text_color_r, layer.text_color_g,
+                             layer.text_color_b, layer.text_color);
+
+    const RichTextParagraphFormat &p = layer.rich_text.default_paragraph_format;
+    layer.align_h = p.align_h;
+    layer.align_v = p.align_v;
+    layer.paragraph_indent_left = p.indent_left;
+    layer.paragraph_indent_right = p.indent_right;
+    layer.paragraph_indent_first_line = p.indent_first_line;
+    layer.text_leading = p.line_spacing;
+    layer.paragraph_space_before = p.space_before;
+    layer.paragraph_space_after = p.space_after;
+    layer.paragraph_hyphenate = p.hyphenate;
+    layer.paragraph_indent_left_prop.static_value = p.indent_left;
+    layer.paragraph_indent_right_prop.static_value = p.indent_right;
+    layer.paragraph_indent_first_line_prop.static_value = p.indent_first_line;
 }
 
 #endif

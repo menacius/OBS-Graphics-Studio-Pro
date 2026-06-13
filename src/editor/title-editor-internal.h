@@ -1367,12 +1367,15 @@ static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const st
 
 static RichTextParagraphFormat layer_paragraph_format_for_editor(const Layer &layer)
 {
+    if (!layer.rich_text.empty())
+        return layer.rich_text.default_paragraph_format;
     RichTextParagraphFormat f;
     f.align_h = layer.align_h;
     f.align_v = layer.align_v;
     f.indent_left = layer.paragraph_indent_left;
     f.indent_right = layer.paragraph_indent_right;
     f.indent_first_line = layer.paragraph_indent_first_line;
+    f.line_spacing = layer.text_leading;
     f.space_before = layer.paragraph_space_before;
     f.space_after = layer.paragraph_space_after;
     f.hyphenate = layer.paragraph_hyphenate;
@@ -1418,6 +1421,8 @@ struct RichTextCharFormatSummary {
 
 static RichTextCharFormat layer_char_format_for_editor(const Layer &layer)
 {
+    if (!layer.rich_text.empty())
+        return layer.rich_text.default_format;
     RichTextCharFormat f;
     f.font_family = layer.font_family;
     f.font_style = layer.font_style;
@@ -1496,6 +1501,15 @@ static RichTextCharFormat format_at_offset(const RichTextDocument &doc, size_t o
     return f;
 }
 
+static RichTextCharFormat insertion_format_for_text_replace(const RichTextDocument &doc)
+{
+    if (doc.plain_text.empty())
+        return doc.default_format;
+    const size_t start = std::min(doc.selection.anchor, doc.selection.head);
+    const size_t sample = std::min(start, doc.plain_text.size() - 1);
+    return format_at_offset(doc, sample);
+}
+
 static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &layer, bool active_selection)
 {
     RichTextDocument doc = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
@@ -1508,17 +1522,19 @@ static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &la
     doc.normalize();
     RichTextCharFormatSummary summary;
     const size_t text_len = doc.plain_text.size();
+    if (!active_selection) {
+        summary.format = doc.default_format;
+        summary.valid = true;
+        return summary;
+    }
     size_t start = 0;
     size_t end = text_len;
-    if (active_selection) {
-        start = std::min(doc.selection.anchor, doc.selection.head);
-        end = std::max(doc.selection.anchor, doc.selection.head);
-        if (start == end) {
-            const size_t sample = text_len == 0 ? 0 : (start < text_len ? start : text_len - 1);
-            summary.format = format_at_offset(doc, sample);
-            summary.valid = true;
-            return summary;
-        }
+    start = std::min(doc.selection.anchor, doc.selection.head);
+    end = std::max(doc.selection.anchor, doc.selection.head);
+    if (start == end) {
+        summary.format = doc.default_format;
+        summary.valid = true;
+        return summary;
     }
     if (text_len == 0) {
         summary.format = doc.default_format;
@@ -1572,7 +1588,27 @@ static void merge_format_bits(RichTextCharFormat &dst, const RichTextCharFormat 
     if (mask & RichTextCharFractions) dst.fractions = src.fractions;
     if (mask & RichTextCharOpenTypeFeatures) dst.opentype_features = src.opentype_features;
     if (mask & RichTextCharLanguage) dst.language = src.language;
-    if (mask & RichTextCharFillColor) { dst.fill.type = src.fill.type; dst.fill.color = src.fill.color; }
+    if (mask & RichTextCharFillColor) dst.fill = src.fill;
+}
+
+static void materialize_rich_text_default_spans(RichTextDocument &doc)
+{
+    doc.normalize();
+    if (doc.plain_text.empty()) return;
+    std::vector<RichTextRange> materialized;
+    materialized.reserve(doc.plain_text.size());
+    size_t start = 0;
+    RichTextCharFormat current = format_at_offset(doc, 0);
+    for (size_t i = 1; i < doc.plain_text.size(); ++i) {
+        RichTextCharFormat next = format_at_offset(doc, i);
+        if (!rich_text_char_formats_equal(current, next)) {
+            materialized.push_back({start, i - start, current});
+            start = i;
+            current = next;
+        }
+    }
+    materialized.push_back({start, doc.plain_text.size() - start, current});
+    doc.ranges = std::move(materialized);
 }
 
 static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCharFormat &format, uint32_t mask, bool active_selection)
@@ -1581,21 +1617,19 @@ static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCh
     if (layer.rich_text.empty())
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
     RichTextDocument &doc = layer.rich_text;
-    doc.default_paragraph_format = layer_paragraph_format_for_editor(layer);
     doc.normalize();
     const size_t text_len = doc.plain_text.size();
     size_t start = active_selection ? std::min(doc.selection.anchor, doc.selection.head) : 0;
-    size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : text_len;
+    size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : 0;
     start = std::min(start, text_len);
     end = std::min(end, text_len);
-    if (start == end) {
+    if (!active_selection || start == end) {
+        if (active_selection)
+            materialize_rich_text_default_spans(doc);
         merge_format_bits(doc.default_format, format, mask);
-        if (text_len == 0) return;
-        const size_t sample = start > 0 ? start - 1 : 0;
-        RichTextCharFormat next = format_at_offset(doc, sample);
-        merge_format_bits(next, format, mask);
-        doc.ranges.push_back({sample, 1, next});
         doc.normalize();
+        layer.rich_text_html.clear();
+        rich_text_document_sync_layer_mirrors(layer);
         return;
     }
     std::vector<RichTextRange> next;
@@ -1633,6 +1667,18 @@ static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCh
     doc.ranges = std::move(next);
     doc.normalize();
     layer.rich_text_html.clear();
+    rich_text_document_sync_layer_mirrors(layer);
+}
+
+static void apply_rich_text_paragraph_format_to_layer(Layer &layer, const RichTextParagraphFormat &format)
+{
+    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
+    layer.rich_text.default_paragraph_format = format;
+    layer.rich_text.normalize();
+    layer.rich_text_html.clear();
+    rich_text_document_sync_layer_mirrors(layer);
 }
 
 static QString rich_text_plain_text(const std::string &html)

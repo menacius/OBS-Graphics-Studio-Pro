@@ -14835,3 +14835,1098 @@ events:
         - "C:/Program Files/obs-graphics-studio-pro"
       CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
 ...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:91 (find_library)"
+    mode: "library"
+    variable: "OBS_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "C:\\Users\\menac\\.codex\\tmp\\arg0\\codex-arg0N6sfQE"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+        - "c:\\Users\\menac\\.vscode\\extensions\\openai.chatgpt-26.609.30741-win32-x64\\bin\\windows-x86_64"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:94 (find_library)"
+    mode: "library"
+    variable: "OBS_FRONTEND_API_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs-frontend-api.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "C:\\Users\\menac\\.codex\\tmp\\arg0\\codex-arg0N6sfQE"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+        - "c:\\Users\\menac\\.vscode\\extensions\\openai.chatgpt-26.609.30741-win32-x64\\bin\\windows-x86_64"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:97 (find_path)"
+    mode: "path"
+    variable: "OBS_INCLUDE_DIR"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.h"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "C:\\Users\\menac\\.codex\\tmp\\arg0\\codex-arg0N6sfQE"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+        - "c:\\Users\\menac\\.vscode\\extensions\\openai.chatgpt-26.609.30741-win32-x64\\bin\\windows-x86_64"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:107 (find_file)"
+    mode: "file"
+    variable: "OBS_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "C:\\Users\\menac\\.codex\\tmp\\arg0\\codex-arg0N6sfQE"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+        - "c:\\Users\\menac\\.vscode\\extensions\\openai.chatgpt-26.609.30741-win32-x64\\bin\\windows-x86_64"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:110 (find_file)"
+    mode: "file"
+    variable: "OBS_FRONTEND_API_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "C:\\Users\\menac\\.codex\\tmp\\arg0\\codex-arg0N6sfQE"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+        - "c:\\Users\\menac\\.vscode\\extensions\\openai.chatgpt-26.609.30741-win32-x64\\bin\\windows-x86_64"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:91 (find_library)"
+    mode: "library"
+    variable: "OBS_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:94 (find_library)"
+    mode: "library"
+    variable: "OBS_FRONTEND_API_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs-frontend-api.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:97 (find_path)"
+    mode: "path"
+    variable: "OBS_INCLUDE_DIR"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.h"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:107 (find_file)"
+    mode: "file"
+    variable: "OBS_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:110 (find_file)"
+    mode: "file"
+    variable: "OBS_FRONTEND_API_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:91 (find_library)"
+    mode: "library"
+    variable: "OBS_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:94 (find_library)"
+    mode: "library"
+    variable: "OBS_FRONTEND_API_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs/"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/lib/obs-frontend-api.lib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug/lib/manual-link"
+        - "C:/vcpkg/installed/x64-windows/lib/manual-link"
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "C:/Program Files/obs-graphics-studio-pro/bin"
+        - "C:/Program Files/CMake/bin"
+        - "/bin"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:97 (find_path)"
+    mode: "path"
+    variable: "OBS_INCLUDE_DIR"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.h"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs.h"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/obs/obs.h"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/include/"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:107 (find_file)"
+    mode: "file"
+    variable: "OBS_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:110 (find_file)"
+    mode: "file"
+    variable: "OBS_FRONTEND_API_DLL"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "LAST"
+      SearchAppBundle: "LAST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "obs-frontend-api.dll"
+    candidate_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/"
+      - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/"
+    searched_directories:
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/debug/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+      - "C:/vcpkg/installed/x64-windows/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/obs-frontend-api.dll"
+    found: "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64/bin/64bit/obs-frontend-api.dll"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "C:/vcpkg/installed/x64-windows/debug"
+        - "C:/vcpkg/installed/x64-windows"
+        - "C:/Users/menac/Desktop/obs-build-dependencies/plugin-deps-2025-08-23-qt6-x64"
+      ENV{PATH}:
+        - "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\debugCommand"
+        - "c:\\Users\\menac\\AppData\\Roaming\\Code\\User\\globalStorage\\github.copilot-chat\\copilotCli"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NvDLISR"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\Zero Install"
+        - "C:\\Program Files\\Microsoft SQL Server\\160\\Tools\\Binn\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current\\Scripts"
+        - "C:\\Users\\menac\\scoop\\apps\\python\\current"
+        - "C:\\Users\\menac\\scoop\\shims"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Python\\Launcher\\"
+        - "C:\\Users\\menac\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\menac\\.dotnet\\tools"
+        - "C:\\Users\\menac\\.lmstudio\\bin"
+        - "C:\\Users\\menac\\AppData\\Roaming\\npm"
+        - "C:\\Users\\menac\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\menac\\AppData\\Local\\PowerToys\\DSCModules\\"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/obs-graphics-studio-pro"
+      CMAKE_FIND_ROOT_PATH: "C:/vcpkg/installed/x64-windows/debug;C:/vcpkg/installed/x64-windows"
+...

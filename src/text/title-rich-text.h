@@ -54,6 +54,7 @@ struct RichTextParagraphFormat {
     float indent_left = 0.0f;
     float indent_right = 0.0f;
     float indent_first_line = 0.0f;
+    float line_spacing = 0.0f;
     float space_before = 0.0f;
     float space_after = 0.0f;
     bool hyphenate = false;
@@ -87,7 +88,7 @@ struct RichTextTransaction {
 
 struct RichTextDocument {
     int version = 1;
-    std::string plain_text = "Title";
+    std::string plain_text;
     RichTextCharFormat default_format;
     RichTextParagraphFormat default_paragraph_format;
     std::vector<RichTextBlock> blocks;
@@ -101,5 +102,6 @@ struct RichTextDocument {
 
 RichTextDocument rich_text_document_from_layer_defaults(const struct Layer &layer);
 void rich_text_document_sync_layer_defaults(RichTextDocument &doc, const struct Layer &layer);
+void rich_text_document_sync_layer_mirrors(struct Layer &layer);
 void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text,
                                      const RichTextCharFormat *insertion_format = nullptr);

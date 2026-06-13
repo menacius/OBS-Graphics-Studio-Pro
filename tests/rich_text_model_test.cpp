@@ -40,10 +40,9 @@ int main()
     assert(doc.transactions.size() == 1);
     assert(doc.transactions.back().position == 5);
     assert(doc.transactions.back().inserted_text == " Big ");
-    assert(doc.ranges.size() == 3);
+    assert(doc.ranges.size() == 2);
     assert(doc.ranges[0].start == 0 && doc.ranges[0].length == 5);
-    assert(doc.ranges[1].start == 5 && doc.ranges[1].length == 5);
-    assert(doc.ranges[2].start == 10 && doc.ranges[2].length == 5);
+    assert(doc.ranges[1].start == 10 && doc.ranges[1].length == 5);
 
     RichTextCharFormat gradient = doc.default_format;
     gradient.fill.type = 1;
