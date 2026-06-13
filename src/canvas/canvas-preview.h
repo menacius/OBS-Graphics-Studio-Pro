@@ -65,6 +65,15 @@ public:
     void set_selected_layer(const std::string &lid);
     void set_selected_layers(const std::vector<std::string> &ids);
     void set_safe_guides_visible(bool visible);
+    void set_rulers_visible(bool visible);
+    void set_guides_visible(bool visible);
+    void set_guides_locked(bool locked);
+    void set_show_guide_coordinates(bool visible);
+    void clear_user_guides();
+    bool rulers_visible() const { return rulers_visible_; }
+    bool guides_visible() const { return guides_visible_; }
+    bool guides_locked() const { return guides_locked_; }
+    bool show_guide_coordinates() const { return show_guide_coordinates_; }
     void set_snap_enabled(bool enabled);
     void set_snap_to_guides(bool enabled);
     void set_snap_to_grid(bool enabled);
@@ -107,6 +116,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
     void leaveEvent(QEvent *ev) override;
+    void contextMenuEvent(QContextMenuEvent *ev) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
@@ -134,7 +144,9 @@ private:
         CornerRadiusTL,
         CornerRadiusTR,
         CornerRadiusBR,
-        CornerRadiusBL
+        CornerRadiusBL,
+        GuideX,
+        GuideY
     };
     enum class CanvasTool { Selection, Shape, Text, ColorPicker };
 
@@ -185,6 +197,18 @@ private:
                                   bool allow_snap = true);
     QPointF snap_canvas_point(const QPointF &canvas_pt, bool snap_x, bool snap_y, bool allow_snap = true);
     void collect_snap_targets(bool x_axis, std::vector<double> &targets, std::vector<QString> &labels) const;
+    QRectF canvas_view_rect() const;
+    QRectF ruler_top_rect() const;
+    QRectF ruler_left_rect() const;
+    QRectF ruler_corner_rect() const;
+    bool ruler_hit_test(const QPointF &view_pt, bool &vertical_guide) const;
+    int guide_hit_test(const QPointF &view_pt, bool &x_axis, bool include_locked = false) const;
+    double snap_guide_value_to_objects(bool x_axis, double raw_value);
+    void draw_rulers(QPainter &p, const QRectF &canvas_rect, double scale, const QPointF &origin);
+    void draw_user_guides(QPainter &p, const QRectF &canvas_rect);
+    void draw_guide_coordinate(QPainter &p, const QPointF &view_pt, bool x_axis, double value) const;
+    void save_ruler_guide_settings() const;
+    void load_ruler_guide_settings();
     void collect_spacing_targets(bool x_axis, std::vector<double> &targets, std::vector<QString> &labels) const;
     void clear_snap_feedback();
     void add_snap_feedback(bool x_axis, double value, const QString &label);
@@ -224,6 +248,16 @@ private:
     QPixmap frame_pixmap_;
     bool dirty_ = true;
     bool safe_guides_visible_ = false;
+    bool rulers_visible_ = false;
+    bool guides_visible_ = true;
+    bool guides_locked_ = false;
+    bool show_guide_coordinates_ = true;
+    std::vector<double> vertical_guides_;
+    std::vector<double> horizontal_guides_;
+    bool dragging_new_guide_ = false;
+    bool dragging_guide_x_axis_ = true;
+    int dragging_guide_index_ = -1;
+    double dragging_guide_value_ = 0.0;
     int checkerboard_pattern_ = 1;
     CanvasTool active_tool_ = CanvasTool::Selection;
     ShapeType active_shape_type_ = ShapeType::Rectangle;

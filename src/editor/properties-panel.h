@@ -75,6 +75,7 @@ private:
     QGroupBox       *type_options_box_ = nullptr;
     QGroupBox       *paragraph_box_ = nullptr;
     QGroupBox       *dynamic_text_box_ = nullptr;
+    QGroupBox       *live_edit_box_ = nullptr;
     QGroupBox       *bullets_box_ = nullptr;
     QGroupBox       *rect_box_     = nullptr;
     QWidget         *image_box_    = nullptr;

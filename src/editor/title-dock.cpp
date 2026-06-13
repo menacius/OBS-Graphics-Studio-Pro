@@ -2643,8 +2643,14 @@ void TitleDock::populate_exposed_text()
 
         auto *cue = new QPushButton("▶", text_table_);
         cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
-        cue->setStyleSheet("QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
-                           "QPushButton:hover{background:#3a3a3a;}");
+        const QPalette cue_pal = qApp->palette();
+        const QColor cue_bg = cue_pal.color(QPalette::Button);
+        const QColor cue_hover = cue_bg.lightness() < 128 ? cue_bg.lighter(122) : cue_bg.darker(108);
+        cue->setStyleSheet(QStringLiteral("QPushButton{background:%1;color:%2;border:none;border-radius:3px;font-weight:bold;}"
+                           "QPushButton:hover{background:%3;}")
+                           .arg(cue_bg.name(QColor::HexRgb),
+                                cue_pal.color(QPalette::ButtonText).name(QColor::HexRgb),
+                                cue_hover.name(QColor::HexRgb)));
         connect(cue, &QPushButton::clicked, this, [this]() { cue_live_text_row(0, true); });
         text_table_->setCellWidget(0, 1, cue);
         apply_live_text_row_heights();

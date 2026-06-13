@@ -1,5 +1,36 @@
 #include "title-editor-internal.h"
 
+namespace {
+constexpr int kCanvasRulerThickness = 24;
+constexpr double kCanvasGuideHitTolerancePx = 5.0;
+constexpr const char *kEditorRulersVisibleKey = "rulersVisible";
+constexpr const char *kEditorGuidesVisibleKey = "guidesVisible";
+constexpr const char *kEditorGuidesLockedKey = "guidesLocked";
+constexpr const char *kEditorGuideCoordinatesVisibleKey = "guideCoordinatesVisible";
+constexpr const char *kEditorVerticalGuidesKey = "verticalGuides";
+constexpr const char *kEditorHorizontalGuidesKey = "horizontalGuides";
+
+QStringList guide_values_to_strings(const std::vector<double> &values)
+{
+    QStringList out;
+    for (double v : values)
+        if (std::isfinite(v)) out << QString::number(v, 'f', 3);
+    return out;
+}
+
+std::vector<double> guide_values_from_strings(const QStringList &values)
+{
+    std::vector<double> out;
+    out.reserve((size_t)values.size());
+    for (const QString &value : values) {
+        bool ok = false;
+        const double v = value.toDouble(&ok);
+        if (ok && std::isfinite(v)) out.push_back(v);
+    }
+    return out;
+}
+}
+
 CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
 {
     setMinimumSize(400, 225);
@@ -7,6 +38,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setAutoFillBackground(false);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+    load_ruler_guide_settings();
 
     inline_text_editor_ = new QTextEdit(this);
     inline_text_editor_->hide();
@@ -181,6 +213,77 @@ void CanvasPreview::set_safe_guides_visible(bool visible)
     settings.setValue(QString::fromUtf8(kEditorSafeGuidesVisibleKey), visible);
     settings.endGroup();
     settings.sync();
+    update();
+}
+
+
+void CanvasPreview::load_ruler_guide_settings()
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
+    rulers_visible_ = settings.value(QString::fromUtf8(kEditorRulersVisibleKey), false).toBool();
+    guides_visible_ = settings.value(QString::fromUtf8(kEditorGuidesVisibleKey), true).toBool();
+    guides_locked_ = settings.value(QString::fromUtf8(kEditorGuidesLockedKey), false).toBool();
+    show_guide_coordinates_ = settings.value(QString::fromUtf8(kEditorGuideCoordinatesVisibleKey), true).toBool();
+    vertical_guides_ = guide_values_from_strings(settings.value(QString::fromUtf8(kEditorVerticalGuidesKey)).toStringList());
+    horizontal_guides_ = guide_values_from_strings(settings.value(QString::fromUtf8(kEditorHorizontalGuidesKey)).toStringList());
+    settings.endGroup();
+}
+
+void CanvasPreview::save_ruler_guide_settings() const
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
+    settings.setValue(QString::fromUtf8(kEditorRulersVisibleKey), rulers_visible_);
+    settings.setValue(QString::fromUtf8(kEditorGuidesVisibleKey), guides_visible_);
+    settings.setValue(QString::fromUtf8(kEditorGuidesLockedKey), guides_locked_);
+    settings.setValue(QString::fromUtf8(kEditorGuideCoordinatesVisibleKey), show_guide_coordinates_);
+    settings.setValue(QString::fromUtf8(kEditorVerticalGuidesKey), guide_values_to_strings(vertical_guides_));
+    settings.setValue(QString::fromUtf8(kEditorHorizontalGuidesKey), guide_values_to_strings(horizontal_guides_));
+    settings.endGroup();
+    settings.sync();
+}
+
+void CanvasPreview::set_rulers_visible(bool visible)
+{
+    if (rulers_visible_ == visible) return;
+    rulers_visible_ = visible;
+    save_ruler_guide_settings();
+    position_text_editor();
+    update();
+}
+
+void CanvasPreview::set_guides_visible(bool visible)
+{
+    if (guides_visible_ == visible) return;
+    guides_visible_ = visible;
+    save_ruler_guide_settings();
+    update();
+}
+
+void CanvasPreview::set_guides_locked(bool locked)
+{
+    if (guides_locked_ == locked) return;
+    guides_locked_ = locked;
+    save_ruler_guide_settings();
+    update();
+}
+
+void CanvasPreview::set_show_guide_coordinates(bool visible)
+{
+    if (show_guide_coordinates_ == visible) return;
+    show_guide_coordinates_ = visible;
+    save_ruler_guide_settings();
+    update();
+}
+
+void CanvasPreview::clear_user_guides()
+{
+    if (vertical_guides_.empty() && horizontal_guides_.empty()) return;
+    vertical_guides_.clear();
+    horizontal_guides_.clear();
+    clear_snap_feedback();
+    save_ruler_guide_settings();
     update();
 }
 
@@ -367,8 +470,10 @@ QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
 double CanvasPreview::fit_scale() const
 {
     if (!title_ || title_->width <= 0 || title_->height <= 0) return 1.0;
-    return std::min((double)width() / title_->width,
-                    (double)height() / title_->height);
+    const double available_width = std::max(1.0, (double)width() - (rulers_visible_ ? kCanvasRulerThickness : 0));
+    const double available_height = std::max(1.0, (double)height() - (rulers_visible_ ? kCanvasRulerThickness : 0));
+    return std::min(available_width / title_->width,
+                    available_height / title_->height);
 }
 
 double CanvasPreview::view_scale() const
@@ -380,8 +485,12 @@ QPointF CanvasPreview::centered_view_origin() const
 {
     if (!title_) return QPointF(0, 0);
     double scale = view_scale();
-    return QPointF((width() - title_->width * scale) / 2.0,
-                   (height() - title_->height * scale) / 2.0);
+    const double left_reserved = rulers_visible_ ? kCanvasRulerThickness : 0.0;
+    const double top_reserved = rulers_visible_ ? kCanvasRulerThickness : 0.0;
+    const double available_width = std::max(1.0, (double)width() - left_reserved);
+    const double available_height = std::max(1.0, (double)height() - top_reserved);
+    return QPointF(left_reserved + (available_width - title_->width * scale) / 2.0,
+                   top_reserved + (available_height - title_->height * scale) / 2.0);
 }
 
 QPointF CanvasPreview::view_origin() const
@@ -1161,6 +1270,9 @@ void CanvasPreview::collect_snap_targets(bool x_axis, std::vector<double> &targe
         add(size * (1.0 - OBS_ACTION_SAFE_PERCENT), QStringLiteral("Action safe"));
         add(size * OBS_GRAPHICS_SAFE_PERCENT, QStringLiteral("Title safe"));
         add(size * (1.0 - OBS_GRAPHICS_SAFE_PERCENT), QStringLiteral("Title safe"));
+        const auto &user_guides = x_axis ? vertical_guides_ : horizontal_guides_;
+        for (double guide : user_guides)
+            add(guide, QStringLiteral("Guide"));
     }
 
     if (snap_settings_.grid) {
@@ -1530,7 +1642,18 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         QPointF anchor = start_rect.center();
         double fixed_w = 0.0;
         double fixed_h = 0.0;
-        if (!resize_modifiers.testFlag(Qt::AltModifier)) {
+        if (resize_modifiers.testFlag(Qt::AltModifier)) {
+            // Alt-resize is center-based. Side handles must stay single-axis:
+            // E/W only change width and N/S only change height. The modifier
+            // helper doubles dimensions around the anchor for Alt, so pass half
+            // the unchanged dimension to preserve the original opposite axis.
+            if (!corner_resize) {
+                if (resize_left || resize_right)
+                    fixed_h = start_rect.height() * 0.5;
+                else
+                    fixed_w = start_rect.width() * 0.5;
+            }
+        } else {
             if (corner_resize) {
                 anchor = QPointF(resize_left ? start_rect.right() : start_rect.left(),
                                  resize_top ? start_rect.bottom() : start_rect.top());
@@ -1653,6 +1776,225 @@ void CanvasPreview::render_to_pixmap()
     dirty_ = false;
 }
 
+
+QRectF CanvasPreview::canvas_view_rect() const
+{
+    if (!title_) return QRectF();
+    const double scale = view_scale();
+    const QPointF origin = view_origin();
+    return QRectF(origin.x(), origin.y(), title_->width * scale, title_->height * scale);
+}
+
+QRectF CanvasPreview::ruler_top_rect() const
+{
+    if (!rulers_visible_) return QRectF();
+    return QRectF(kCanvasRulerThickness, 0, std::max(0, width() - kCanvasRulerThickness), kCanvasRulerThickness);
+}
+
+QRectF CanvasPreview::ruler_left_rect() const
+{
+    if (!rulers_visible_) return QRectF();
+    return QRectF(0, kCanvasRulerThickness, kCanvasRulerThickness, std::max(0, height() - kCanvasRulerThickness));
+}
+
+QRectF CanvasPreview::ruler_corner_rect() const
+{
+    if (!rulers_visible_) return QRectF();
+    return QRectF(0, 0, kCanvasRulerThickness, kCanvasRulerThickness);
+}
+
+bool CanvasPreview::ruler_hit_test(const QPointF &view_pt, bool &vertical_guide) const
+{
+    if (!rulers_visible_ || guides_locked_) return false;
+    // Match the requested ruler behavior:
+    // - vertical (left) ruler creates vertical guides (x-axis guides)
+    // - horizontal (top) ruler creates horizontal guides (y-axis guides)
+    if (ruler_left_rect().contains(view_pt)) { vertical_guide = true; return true; }
+    if (ruler_top_rect().contains(view_pt)) { vertical_guide = false; return true; }
+    return false;
+}
+
+int CanvasPreview::guide_hit_test(const QPointF &view_pt, bool &x_axis, bool include_locked) const
+{
+    if (!guides_visible_ || (!include_locked && guides_locked_) || !title_) return -1;
+    const QRectF canvas_rect = canvas_view_rect();
+    for (size_t i = 0; i < vertical_guides_.size(); ++i) {
+        const double x = canvas_to_view(QPointF(vertical_guides_[i], 0.0)).x();
+        if (std::abs(view_pt.x() - x) <= kCanvasGuideHitTolerancePx &&
+            view_pt.y() >= canvas_rect.top() - 8.0 && view_pt.y() <= canvas_rect.bottom() + 8.0) {
+            x_axis = true;
+            return (int)i;
+        }
+    }
+    for (size_t i = 0; i < horizontal_guides_.size(); ++i) {
+        const double y = canvas_to_view(QPointF(0.0, horizontal_guides_[i])).y();
+        if (std::abs(view_pt.y() - y) <= kCanvasGuideHitTolerancePx &&
+            view_pt.x() >= canvas_rect.left() - 8.0 && view_pt.x() <= canvas_rect.right() + 8.0) {
+            x_axis = false;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+
+
+double CanvasPreview::snap_guide_value_to_objects(bool x_axis, double raw_value)
+{
+    if (!title_ || !snap_settings_.enabled || !snap_settings_.object_edges) {
+        clear_snap_feedback();
+        return raw_value;
+    }
+
+    const double tolerance = 6.0 / std::max(0.1, view_scale());
+    double best_value = raw_value;
+    double best_distance = tolerance + 1.0;
+    QString best_label;
+
+    auto consider = [&](double value, const QString &label) {
+        if (!std::isfinite(value)) return;
+        const double distance = std::abs(value - raw_value);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best_value = value;
+            best_label = label;
+        }
+    };
+
+    for (const auto &layer : title_->layers) {
+        if (!layer || !layer->visible) continue;
+        if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
+        QRectF bounds = layer_canvas_bounds(*layer);
+        if (!bounds.isValid() || bounds.isEmpty()) continue;
+
+        consider(x_axis ? bounds.left() : bounds.top(), QStringLiteral("Object edge"));
+        consider(x_axis ? bounds.right() : bounds.bottom(), QStringLiteral("Object edge"));
+        if (snap_settings_.object_centers)
+            consider(x_axis ? bounds.center().x() : bounds.center().y(), QStringLiteral("Object center"));
+    }
+
+    snap_feedback_.clear();
+    if (best_distance <= tolerance) {
+        add_snap_feedback(x_axis, best_value, best_label);
+        return best_value;
+    }
+    return raw_value;
+}
+
+void CanvasPreview::draw_rulers(QPainter &p, const QRectF &canvas_rect, double scale, const QPointF &origin)
+{
+    if (!rulers_visible_ || !title_) return;
+
+    const QPalette pal = palette();
+    const QColor bg = pal.color(QPalette::Button);
+    const QColor border = pal.color(QPalette::Mid);
+    const QColor fg = pal.color(QPalette::ButtonText);
+    const QRectF top = ruler_top_rect();
+    const QRectF left = ruler_left_rect();
+    const QRectF corner = ruler_corner_rect();
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.fillRect(top, bg);
+    p.fillRect(left, bg);
+    p.fillRect(corner, bg.darker(105));
+    p.setPen(border);
+    p.drawLine(top.bottomLeft(), top.bottomRight());
+    p.drawLine(left.topRight(), left.bottomRight());
+    p.drawRect(corner.adjusted(0, 0, -1, -1));
+
+    auto nice_step = [](double target_canvas_units) {
+        static const double bases[] = {1.0, 2.0, 5.0, 10.0};
+        const double exponent = std::pow(10.0, std::floor(std::log10(std::max(1.0, target_canvas_units))));
+        for (double base : bases) {
+            const double step = base * exponent;
+            if (step >= target_canvas_units) return step;
+        }
+        return 10.0 * exponent;
+    };
+    const double major_step = nice_step(72.0 / std::max(0.001, scale));
+    const double minor_step = major_step / 5.0;
+    QFont small = font();
+    small.setPointSize(std::max(7, small.pointSize() - 2));
+    p.setFont(small);
+    p.setPen(fg);
+
+    const double start_x = std::floor(std::max(0.0, view_to_canvas(QPointF(top.left(), 0)).x()) / minor_step) * minor_step;
+    const double end_x = std::min((double)title_->width, view_to_canvas(QPointF(top.right(), 0)).x());
+    for (double v = start_x; v <= end_x + 0.01; v += minor_step) {
+        const bool major = std::fmod(std::abs(v), major_step) < 0.001 || std::abs(std::fmod(std::abs(v), major_step) - major_step) < 0.001;
+        const double x = origin.x() + v * scale;
+        const double h = major ? 12.0 : 6.0;
+        p.drawLine(QPointF(x, top.bottom()), QPointF(x, top.bottom() - h));
+        if (major)
+            p.drawText(QRectF(x + 3.0, top.top() + 2.0, 80.0, top.height() - 6.0), QString::number((int)std::round(v)));
+    }
+
+    const double start_y = std::floor(std::max(0.0, view_to_canvas(QPointF(0, left.top())).y()) / minor_step) * minor_step;
+    const double end_y = std::min((double)title_->height, view_to_canvas(QPointF(0, left.bottom())).y());
+    for (double v = start_y; v <= end_y + 0.01; v += minor_step) {
+        const bool major = std::fmod(std::abs(v), major_step) < 0.001 || std::abs(std::fmod(std::abs(v), major_step) - major_step) < 0.001;
+        const double y = origin.y() + v * scale;
+        const double w = major ? 12.0 : 6.0;
+        p.drawLine(QPointF(left.right(), y), QPointF(left.right() - w, y));
+        if (major) {
+            p.save();
+            p.translate(left.left() + 2.0, y - 3.0);
+            p.rotate(-90.0);
+            p.drawText(QRectF(0, 0, 80.0, left.width() - 6.0), QString::number((int)std::round(v)));
+            p.restore();
+        }
+    }
+    p.restore();
+}
+
+void CanvasPreview::draw_guide_coordinate(QPainter &p, const QPointF &view_pt, bool x_axis, double value) const
+{
+    if (!show_guide_coordinates_) return;
+    const QString text = QStringLiteral("%1: %2 px").arg(x_axis ? QStringLiteral("X") : QStringLiteral("Y")).arg(value, 0, 'f', 1);
+    const QRectF bubble(view_pt.x() + 12.0, view_pt.y() + 12.0, 92.0, 22.0);
+    p.save();
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 185));
+    p.drawRoundedRect(bubble, 4, 4);
+    p.setPen(Qt::white);
+    p.drawText(bubble.adjusted(6, 2, -4, -2), Qt::AlignVCenter | Qt::AlignLeft, text);
+    p.restore();
+}
+
+void CanvasPreview::draw_user_guides(QPainter &p, const QRectF &canvas_rect)
+{
+    if (!guides_visible_ || !title_) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    QPen pen(QColor(0, 160, 255, 210), 1.0, Qt::DashLine);
+    pen.setDashPattern({4.0, 3.0});
+    p.setPen(pen);
+    for (double x_value : vertical_guides_) {
+        const double x = canvas_to_view(QPointF(x_value, 0.0)).x();
+        p.drawLine(QPointF(x, canvas_rect.top()), QPointF(x, canvas_rect.bottom()));
+    }
+    for (double y_value : horizontal_guides_) {
+        const double y = canvas_to_view(QPointF(0.0, y_value)).y();
+        p.drawLine(QPointF(canvas_rect.left(), y), QPointF(canvas_rect.right(), y));
+    }
+    if (dragging_new_guide_ || dragging_guide_index_ >= 0) {
+        QPen active_pen(QColor(255, 220, 0, 240), 1.0, Qt::DashLine);
+        active_pen.setDashPattern({6.0, 3.0});
+        p.setPen(active_pen);
+        if (dragging_guide_x_axis_) {
+            const double x = canvas_to_view(QPointF(dragging_guide_value_, 0.0)).x();
+            p.drawLine(QPointF(x, canvas_rect.top()), QPointF(x, canvas_rect.bottom()));
+            draw_guide_coordinate(p, QPointF(x, canvas_rect.top()), true, dragging_guide_value_);
+        } else {
+            const double y = canvas_to_view(QPointF(0.0, dragging_guide_value_)).y();
+            p.drawLine(QPointF(canvas_rect.left(), y), QPointF(canvas_rect.right(), y));
+            draw_guide_coordinate(p, QPointF(canvas_rect.left(), y), false, dragging_guide_value_);
+        }
+    }
+    p.restore();
+}
+
 void CanvasPreview::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -1756,6 +2098,8 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         draw_guide(OBS_ACTION_SAFE_PERCENT, QColor(0, 200, 255, 190));
         draw_guide(OBS_GRAPHICS_SAFE_PERCENT, QColor(255, 220, 0, 190));
     }
+
+    draw_user_guides(p, QRectF(ox, oy, dw, dh));
 
     if (!snap_feedback_.empty()) {
         p.save();
@@ -1896,6 +2240,7 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     draw_canvas_drag_tooltip(p);
     draw_color_picker_tooltip(p);
+    draw_rulers(p, QRectF(ox, oy, dw, dh), scale, origin);
 }
 double CanvasPreview::toolbar_draw_aspect_ratio() const
 {
@@ -2841,6 +3186,35 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 
     setFocus(Qt::MouseFocusReason);
 
+    if (ev->button() == Qt::LeftButton) {
+        bool vertical_guide = true;
+        if (ruler_hit_test(ev->pos(), vertical_guide)) {
+            dragging_new_guide_ = true;
+            dragging_guide_x_axis_ = vertical_guide;
+            dragging_guide_index_ = -1;
+            const QPointF canvas_pt = view_to_canvas(ev->pos());
+            dragging_guide_value_ = vertical_guide ? canvas_pt.x() : canvas_pt.y();
+            drag_mode_ = vertical_guide ? DragMode::GuideX : DragMode::GuideY;
+            setCursor(vertical_guide ? Qt::SplitHCursor : Qt::SplitVCursor);
+            update();
+            ev->accept();
+            return;
+        }
+        bool x_axis = true;
+        const int guide_index = guide_hit_test(ev->pos(), x_axis);
+        if (guide_index >= 0) {
+            dragging_new_guide_ = false;
+            dragging_guide_x_axis_ = x_axis;
+            dragging_guide_index_ = guide_index;
+            dragging_guide_value_ = x_axis ? vertical_guides_[(size_t)guide_index] : horizontal_guides_[(size_t)guide_index];
+            drag_mode_ = x_axis ? DragMode::GuideX : DragMode::GuideY;
+            setCursor(x_axis ? Qt::SplitHCursor : Qt::SplitVCursor);
+            update();
+            ev->accept();
+            return;
+        }
+    }
+
     if (ev->button() == Qt::MiddleButton) {
         panning_ = true;
         pan_start_view_ = QPointF(ev->pos());
@@ -3014,6 +3388,21 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if ((drag_mode_ == DragMode::GuideX || drag_mode_ == DragMode::GuideY) && (ev->buttons() & Qt::LeftButton)) {
+        const QPointF canvas_pt = view_to_canvas(ev->pos());
+        dragging_guide_value_ = drag_mode_ == DragMode::GuideX ? canvas_pt.x() : canvas_pt.y();
+        if (title_) {
+            if (drag_mode_ == DragMode::GuideX)
+                dragging_guide_value_ = std::clamp(dragging_guide_value_, -10000.0, title_->width + 10000.0);
+            else
+                dragging_guide_value_ = std::clamp(dragging_guide_value_, -10000.0, title_->height + 10000.0);
+        }
+        dragging_guide_value_ = snap_guide_value_to_objects(drag_mode_ == DragMode::GuideX, dragging_guide_value_);
+        update();
+        ev->accept();
+        return;
+    }
+
     if (drag_mode_ != DragMode::None && (ev->buttons() & Qt::LeftButton)) {
         apply_drag(ev->pos(), ev->modifiers());
         ev->accept();
@@ -3031,6 +3420,17 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     if (active_tool_ == CanvasTool::ColorPicker) {
         update_color_picker_tooltip(ev->pos());
         setCursor(Qt::CrossCursor);
+        return;
+    }
+
+    bool hover_x_axis = true;
+    if (guide_hit_test(ev->pos(), hover_x_axis) >= 0) {
+        setCursor(hover_x_axis ? Qt::SplitHCursor : Qt::SplitVCursor);
+        return;
+    }
+    bool hover_vertical_guide = true;
+    if (ruler_hit_test(ev->pos(), hover_vertical_guide)) {
+        setCursor(hover_vertical_guide ? Qt::SplitHCursor : Qt::SplitVCursor);
         return;
     }
 
@@ -3145,6 +3545,33 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
     if (ev->button() != Qt::LeftButton || drag_mode_ == DragMode::None) return;
 
+    if (drag_mode_ == DragMode::GuideX || drag_mode_ == DragMode::GuideY) {
+        const bool x_axis = drag_mode_ == DragMode::GuideX;
+        const QRectF canvas_rect = canvas_view_rect();
+        const bool inside_canvas_band = x_axis
+            ? (ev->pos().x() >= canvas_rect.left() - 12.0 && ev->pos().x() <= canvas_rect.right() + 12.0)
+            : (ev->pos().y() >= canvas_rect.top() - 12.0 && ev->pos().y() <= canvas_rect.bottom() + 12.0);
+        auto &guides = x_axis ? vertical_guides_ : horizontal_guides_;
+        if (inside_canvas_band) {
+            if (dragging_guide_index_ >= 0 && (size_t)dragging_guide_index_ < guides.size())
+                guides[(size_t)dragging_guide_index_] = dragging_guide_value_;
+            else
+                guides.push_back(dragging_guide_value_);
+            std::sort(guides.begin(), guides.end());
+        } else if (dragging_guide_index_ >= 0 && (size_t)dragging_guide_index_ < guides.size()) {
+            guides.erase(guides.begin() + dragging_guide_index_);
+        }
+        dragging_new_guide_ = false;
+        dragging_guide_index_ = -1;
+        drag_mode_ = DragMode::None;
+        clear_snap_feedback();
+        save_ruler_guide_settings();
+        unsetCursor();
+        update();
+        ev->accept();
+        return;
+    }
+
     if (drag_mode_ == DragMode::Marquee) {
         update_marquee(ev->pos(), ev->modifiers());
         if (!marquee_active_)
@@ -3180,6 +3607,32 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     ev->accept();
 }
 
+
+
+void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
+{
+    bool x_axis = true;
+    const int guide_index = guide_hit_test(ev->pos(), x_axis, true);
+    if (guide_index < 0) {
+        QWidget::contextMenuEvent(ev);
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *delete_guide = menu.addAction(QStringLiteral("Delete guide"));
+    delete_guide->setEnabled(!guides_locked_);
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (chosen == delete_guide && !guides_locked_) {
+        auto &guides = x_axis ? vertical_guides_ : horizontal_guides_;
+        if ((size_t)guide_index < guides.size()) {
+            guides.erase(guides.begin() + guide_index);
+            clear_snap_feedback();
+            save_ruler_guide_settings();
+            update();
+        }
+    }
+    ev->accept();
+}
 
 void CanvasPreview::wheelEvent(QWheelEvent *ev)
 {

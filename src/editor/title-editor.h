@@ -211,6 +211,11 @@ private:
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
     QAction         *act_safe_guides_ = nullptr;
+    QAction         *act_rulers_visible_ = nullptr;
+    QAction         *act_guides_visible_ = nullptr;
+    QAction         *act_guides_locked_ = nullptr;
+    QAction         *act_clear_guides_ = nullptr;
+    QAction         *act_guide_coordinates_ = nullptr;
     QAction         *act_live_editing_ = nullptr;
     QAction         *act_undo_ = nullptr;
     QAction         *act_redo_ = nullptr;

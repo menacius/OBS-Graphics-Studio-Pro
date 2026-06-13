@@ -1940,7 +1940,7 @@ static const QColor C_KF_DOT   { 0xffd23f };
 static QIcon keyframe_diamond_icon(bool active, bool outlined = false)
 {
     if (active)
-        return obsgs_icon("keyframe-active.svg");
+        return obsgs_icon("keyframe-active.svg", C_KF_DOT);
     if (outlined)
         return obsgs_icon("keyframe-outline.svg", C_KF_DOT);
     return obsgs_icon("keyframe-inactive.svg");

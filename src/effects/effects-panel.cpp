@@ -1,5 +1,62 @@
 #include "title-editor-internal.h"
 
+static QString obsgs_effects_panel_style()
+{
+    const QPalette pal = qApp->palette();
+    const QColor window = pal.color(QPalette::Window);
+    const QColor window_text = pal.color(QPalette::WindowText);
+    const QColor base = pal.color(QPalette::Base);
+    const QColor text = pal.color(QPalette::Text);
+    const QColor button = pal.color(QPalette::Button);
+    const QColor button_text = pal.color(QPalette::ButtonText);
+    const QColor mid = pal.color(QPalette::Mid);
+    const QColor highlight = pal.color(QPalette::Highlight);
+    const QColor highlighted_text = pal.color(QPalette::HighlightedText);
+    const QColor alternate = pal.color(QPalette::AlternateBase);
+    const QColor hover = button.lightness() < 128 ? button.lighter(122) : button.darker(108);
+    const QColor disabled = window_text.lightness() < 128 ? window_text.lighter(160) : window_text.darker(160);
+
+    QString css = QStringLiteral(
+        "QWidget#OBSGraphicsStudioProEffectsPanel{background:@window@;color:@windowText@;}"
+        "QLabel{color:@windowText@;background:transparent;}"
+        "QListWidget{background:@base@;border:1px solid @mid@;color:@text@;alternate-background-color:@alternate@;}"
+        "QListWidget::item{padding:4px;}"
+        "QListWidget::item:selected{background:@highlight@;color:@highlightedText@;}"
+        "QToolButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:2px;padding:2px;}"
+        "QToolButton:hover{background:@hover@;border-color:@mid@;}"
+        "QToolButton:pressed{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
+        "QScrollArea{background:@window@;border:none;}"
+        "QWidget#OBSGraphicsStudioProEffectsSettingsContainer{background:@window@;}"
+        "QMenu{color:@windowText@;background:@window@;border:1px solid @mid@;}"
+        "QMenu::item{padding:5px 22px;}"
+        "QMenu::item:selected{background:@highlight@;color:@highlightedText@;}"
+        "QMenu::item:disabled{color:@disabled@;}");
+    css.replace(QStringLiteral("@window@"), window.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@windowText@"), window_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@base@"), base.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@text@"), text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@button@"), button.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@buttonText@"), button_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@mid@"), mid.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@highlight@"), highlight.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@highlightedText@"), highlighted_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@alternate@"), alternate.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@hover@"), hover.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@disabled@"), disabled.name(QColor::HexRgb));
+    return css;
+}
+
+static QString obsgs_theme_control_style()
+{
+    const QPalette pal = qApp->palette();
+    return QStringLiteral(
+        "QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
+        "border:1px solid %3;border-radius:2px;padding:1px 3px;selection-background-color:%4;}"
+        "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}")
+        .arg(pal.color(QPalette::Text).name(QColor::HexRgb), pal.color(QPalette::Base).name(QColor::HexRgb),
+             pal.color(QPalette::Mid).name(QColor::HexRgb), pal.color(QPalette::Highlight).name(QColor::HexRgb));
+}
+
 
 static uint32_t color_button_argb(QPushButton *button)
 {
@@ -12,25 +69,32 @@ static void set_color_button_argb(QPushButton *button, uint32_t argb)
     button->setProperty("argb", argb);
     QColor c = color_from_argb(argb);
     button->setText(c.name(QColor::HexArgb).toUpper());
-    button->setStyleSheet(QStringLiteral("QPushButton{color:#fff;background:%1;border:1px solid #555;border-radius:3px;padding:3px 8px;}")
-                          .arg(c.name()));
+    const QColor border = qApp->palette().color(QPalette::Mid);
+    const QColor text = c.lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black);
+    button->setStyleSheet(QStringLiteral("QPushButton{color:%1;background:%2;border:1px solid %3;border-radius:3px;padding:3px 8px;}")
+                          .arg(text.name(QColor::HexRgb), c.name(QColor::HexRgb), border.name(QColor::HexRgb)));
 }
 
 EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 {
+    setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsPanel"));
+    setStyleSheet(obsgs_effects_panel_style());
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
     auto *hint = new QLabel(QStringLiteral("Effect stack"), this);
-    hint->setStyleSheet(QStringLiteral("color:#b8b8b8;font-weight:bold;"));
+    QFont hint_font = hint->font();
+    hint_font.setBold(true);
+    hint->setFont(hint_font);
     layout->addWidget(hint);
 
     effect_list_ = new QListWidget(this);
     effect_list_->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsList"));
     effect_list_->setSelectionMode(QAbstractItemView::SingleSelection);
     effect_list_->setAlternatingRowColors(true);
-    effect_list_->setStyleSheet(QStringLiteral("QListWidget{background:#1a1a1a;border:1px solid #303030;color:#ddd;}QListWidget::item{padding:4px;}QListWidget::item:selected{background:#3b4f64;}"));
+    
     layout->addWidget(effect_list_, 1);
 
     auto *button_bar = new QWidget(this);
@@ -59,8 +123,9 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 
     auto *settings_scroll = new QScrollArea(this);
     settings_scroll->setWidgetResizable(true);
-    settings_scroll->setStyleSheet(QStringLiteral("QScrollArea{background:#151515;border:none;}"));
+    
     settings_container_ = new QWidget(settings_scroll);
+    settings_container_->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsSettingsContainer"));
     settings_layout_ = new QVBoxLayout(settings_container_);
     settings_layout_->setContentsMargins(0, 6, 0, 0);
     settings_layout_->setSpacing(6);
@@ -83,7 +148,7 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     connect(btn_add, &QToolButton::clicked, this, [this, btn_add]() {
         if (!layer_) return;
         QMenu menu(btn_add);
-        menu.setStyleSheet(QStringLiteral("QMenu{color:#ddd;background:#252525;border:1px solid #3a3a3a;}QMenu::item{padding:5px 22px;}QMenu::item:selected{background:#3b4f64;}"));
+        
         const auto add_action = [&menu](const QString &name, LayerEffectType type) {
             auto *action = menu.addAction(name);
             action->setData((int)type);
@@ -281,7 +346,7 @@ void EffectsPanel::load_settings()
     if (!layer_ || !selected_effect()) {
         auto *label = new QLabel(layer_ ? QStringLiteral("Add an effect to edit its settings.") : QStringLiteral("Select a layer to edit effects."), settings_container_);
         label->setWordWrap(true);
-        label->setStyleSheet(QStringLiteral("color:#999;"));
+        
         settings_layout_->addWidget(label);
         settings_layout_->addStretch(1);
         return;
@@ -290,12 +355,39 @@ void EffectsPanel::load_settings()
     loading_values_ = true;
     const double lt = std::clamp(playhead_ - layer_->in_time, 0.0, std::max(0.0, layer_->out_time - layer_->in_time));
     auto *box = new QGroupBox(effect_type_name(selected_effect()->type), settings_container_);
-    box->setStyleSheet(QStringLiteral("QGroupBox{color:#d0d0d0;background:#1b1b1b;border:1px solid #303030;margin-top:8px;padding-top:14px;}QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 3px;}QDoubleSpinBox,QComboBox{color:#ddd;background:#252525;border:1px solid #363636;border-radius:2px;padding:1px 3px;}QPushButton{color:#ddd;background:#2a2a2a;border:1px solid #3f3f3f;border-radius:3px;padding:3px 8px;}"));
+    {
+        const QPalette pal = qApp->palette();
+        const QColor section_bg = pal.color(QPalette::Window).lightness() < 128
+                                    ? pal.color(QPalette::Window).lighter(112)
+                                    : pal.color(QPalette::Window).darker(104);
+        const QColor hover = pal.color(QPalette::Button).lightness() < 128
+                             ? pal.color(QPalette::Button).lighter(122)
+                             : pal.color(QPalette::Button).darker(108);
+        QString group_css = QStringLiteral(
+            "QGroupBox{color:@windowText@;background:@section@;border:1px solid @mid@;margin-top:8px;padding-top:14px;}"
+            "QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 3px;}"
+            "QDoubleSpinBox,QComboBox{color:@text@;background:@base@;border:1px solid @mid@;border-radius:2px;padding:1px 3px;}"
+            "QDoubleSpinBox:focus,QComboBox:focus{border-color:@highlight@;}"
+            "QPushButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:3px;padding:3px 8px;}"
+            "QPushButton:hover{background:@hover@;border-color:@mid@;}"
+            "QPushButton:pressed{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}");
+        group_css.replace(QStringLiteral("@windowText@"), pal.color(QPalette::WindowText).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@section@"), section_bg.name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@mid@"), pal.color(QPalette::Mid).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@text@"), pal.color(QPalette::Text).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@base@"), pal.color(QPalette::Base).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@highlight@"), pal.color(QPalette::Highlight).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@buttonText@"), pal.color(QPalette::ButtonText).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@button@"), pal.color(QPalette::Button).name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@hover@"), hover.name(QColor::HexRgb));
+        group_css.replace(QStringLiteral("@highlightedText@"), pal.color(QPalette::HighlightedText).name(QColor::HexRgb));
+        box->setStyleSheet(group_css);
+    }
     auto *form = new QFormLayout(box);
     form->setContentsMargins(8, 8, 8, 8);
     form->setSpacing(6);
-    auto spin = [box](double min, double max, double step) { auto *s = new QDoubleSpinBox(box); s->setRange(min, max); s->setSingleStep(step); s->setFixedHeight(22); return s; };
-    auto combo = [box]() { auto *c = new QComboBox(box); c->setFixedHeight(22); return c; };
+    auto spin = [box](double min, double max, double step) { auto *s = new QDoubleSpinBox(box); s->setRange(min, max); s->setSingleStep(step); s->setFixedHeight(22); s->setStyleSheet(obsgs_theme_control_style()); return s; };
+    auto combo = [box]() { auto *c = new QComboBox(box); c->setFixedHeight(22); c->setStyleSheet(obsgs_theme_control_style()); return c; };
     auto color_button = [this, box](uint32_t argb, auto setter) {
         auto *button = new QPushButton(box);
         set_color_button_argb(button, argb);

@@ -49,6 +49,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         "border:1px solid %3;border-radius:2px;padding:1px 3px;selection-background-color:%4;}"
         "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}")
             .arg(control_text_name, control_bg_name, border_name, highlight_name);
+    const QString menu_style =
+        QStringLiteral("QMenu{color:%1;background:%2;border:1px solid %3;}"
+        "QMenu::item{padding:5px 22px;}"
+        "QMenu::item:selected{background:%4;color:%5;}"
+        "QMenu::item:disabled{color:%6;}")
+            .arg(panel_text_name, panel_bg_name, border_name, highlight_name, highlighted_text_name, subtle_text_name);
+    const QString themed_dialog_style =
+        QStringLiteral("QDialog{background:%1;border:1px solid %2;}"
+        "QLabel{color:%3;font-size:10px;background:transparent;}"
+        "QToolButton{color:%4;background:%5;border:1px solid %2;border-radius:2px;padding:2px 6px;font-size:10px;}"
+        "QToolButton:hover{background:%6;}"
+        "QToolButton:checked{background:%7;border-color:%7;color:%8;}"
+        "QToolButton:disabled{color:%9;background:%5;border-color:%2;}")
+            .arg(panel_bg_name, border_name, panel_text_name, button_text_name, button_bg_name,
+                 hover_bg_name, highlight_name, highlighted_text_name, subtle_text_name);
 
     auto style_form = [](QFormLayout *form) {
         form->setContentsMargins(6, 5, 6, 6);
@@ -123,10 +138,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         b->setAccessibleName(tip);
         b->setProperty("active", false);
         b->setProperty("outlined", false);
-        b->setStyleSheet("QPushButton{background:transparent;border:none;border-radius:2px;padding:0;}"
-                         "QPushButton:hover{background:#303030;}"
-                         "QPushButton[outlined=\"true\"]{background:#201d12;}"
-                         "QPushButton[active=\"true\"]{background:#2b2518;}");
+        const QColor kf_hover = panel_bg.lightness() < 128 ? panel_bg.lighter(128) : panel_bg.darker(108);
+        const QColor kf_mark = highlight;
+        QColor kf_mark_bg = kf_mark;
+        kf_mark_bg.setAlpha(44);
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton{background:transparent;border:none;border-radius:2px;padding:0;}"
+            "QPushButton:hover{background:%1;}"
+            "QPushButton[outlined=\"true\"]{background:%2;}"
+            "QPushButton[active=\"true\"]{background:%2;}")
+            .arg(kf_hover.name(QColor::HexRgb), kf_mark_bg.name(QColor::HexArgb)));
         return b;
     };
 
@@ -401,11 +422,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_appearance_opacity_->setSuffix(QStringLiteral("%"));
     spn_appearance_opacity_->setDecimals(0);
     spn_appearance_opacity_->setStyleSheet(control_style);
-    chk_scene_mask_->setText(QString());
-    chk_scene_mask_->show();
-    chk_scene_mask_->setFixedSize(24, 24);
-    chk_scene_mask_->setStyleSheet(checkbox_style);
-
     btn_kf_appearance_fill_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleFillColorKeyframe"));
     btn_kf_appearance_stroke_ = mk_kf_button(obsgs_tr("OBSTitles.OutlineColorLabel"));
     btn_kf_appearance_stroke_->setEnabled(false);
@@ -460,10 +476,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                        spn_appearance_stroke_width_, btn_appearance_stroke_label_);
     add_appearance_row(2, btn_kf_appearance_opacity_, QStringLiteral("Opacity"), nullptr,
                        spn_appearance_opacity_);
-    auto *scene_mask_label = new QLabel(QStringLiteral("Set as Scene Mask"), appearance_box_);
-    scene_mask_label->setStyleSheet(transform_label_style);
-    appearance_grid->addWidget(scene_mask_label, 3, 1, 1, 3, Qt::AlignVCenter);
-    appearance_grid->addWidget(chk_scene_mask_, 3, 4, Qt::AlignLeft | Qt::AlignVCenter);
     appearance_layout->addLayout(appearance_grid);
     vl->addWidget(appearance_box_);
 
@@ -622,12 +634,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     /* ── Type Options ── */
     type_options_box_ = new QGroupBox("Type", inner);
+    type_options_box_->setObjectName(QStringLiteral("OBSGraphicsStudioProTextTypePanel"));
     type_options_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
-        "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}")
-        .arg(panel_text_name, section_bg_name));
+        "QGroupBox#OBSGraphicsStudioProTextTypePanel{color:%1;background:%2;border:1px solid %3;"
+        "border-radius:2px;margin-top:16px;padding:0;font-size:14px;}"
+        "QGroupBox#OBSGraphicsStudioProTextTypePanel::title{subcontrol-origin:margin;left:14px;top:2px;padding:0 4px;background:%2;}")
+        .arg(panel_text_name, section_bg_name, border_name));
     auto *type_grid = new QGridLayout(type_options_box_);
-    type_grid->setContentsMargins(14, 28, 14, 12);
+    type_grid->setContentsMargins(14, 24, 14, 12);
     type_grid->setHorizontalSpacing(4);
     type_grid->setVerticalSpacing(4);
     chk_bold_ = mk_type_button("B", obsgs_tr("OBSTitles.Bold"));
@@ -819,12 +833,33 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.OverflowLabel"), cmb_text_overflow_);
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.MinFitScaleLabel"), spn_text_fit_min_scale_);
     add_form_row(dynamic_form, "", lbl_text_fit_scale_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.LiveEditLabel"), chk_expose_text_);
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerStyleLabel"), cmb_ticker_style_);
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerSpeedLabel"), spn_ticker_speed_);
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerLineHoldLabel"), spn_ticker_line_hold_);
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.DirectionLabel"), cmb_ticker_direction_);
     vl->addWidget(dynamic_text_box_);
+
+    /* ── Live Edit ── */
+    live_edit_box_ = new QGroupBox(QStringLiteral("Live Edit"), inner);
+    live_edit_box_->setStyleSheet(QStringLiteral(
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
+        "QLabel{color:%3;font-size:10px;background:transparent;}")
+        .arg(panel_text_name, section_bg_name, subtle_text_name));
+    auto *live_edit_form = new QFormLayout(live_edit_box_);
+    style_form(live_edit_form);
+    live_edit_form->setContentsMargins(14, 28, 14, 12);
+    live_edit_form->setHorizontalSpacing(8);
+    live_edit_form->setVerticalSpacing(6);
+    chk_scene_mask_->setText(QStringLiteral("Set as scene mask"));
+    chk_scene_mask_->setToolTip(QStringLiteral("Use this shape or text layer as a live scene mask for an OBS scene."));
+    chk_scene_mask_->setFixedHeight(22);
+    chk_scene_mask_->setStyleSheet(checkbox_style);
+    chk_expose_text_->setText(QStringLiteral("Expose to dock"));
+    chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
+    add_form_row(live_edit_form, QStringLiteral("Scene Mask"), chk_scene_mask_);
+    add_form_row(live_edit_form, QStringLiteral("Dock Editing"), chk_expose_text_);
+    vl->addWidget(live_edit_box_);
 
     /* ── Bullets and Numbering ── */
     bullets_box_ = new QGroupBox("Bullets and Numbering", inner);
@@ -833,7 +868,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bullets_layout->setContentsMargins(6, 5, 6, 6);
     auto *bullets_hint = new QLabel("Broadcast lower thirds typically use manual bullet glyphs; this group is ready for list presets.", inner);
     bullets_hint->setWordWrap(true);
-    bullets_hint->setStyleSheet("color:#8f8f8f;font-size:10px;");
+    bullets_hint->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name));
     bullets_layout->addWidget(bullets_hint);
     vl->addWidget(bullets_box_);
     bullets_box_->hide();
@@ -1425,11 +1460,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             spn_max_text_box_height_->setEnabled(chk_text_box_height_to_text_ && chk_text_box_height_to_text_->isChecked());
     };
     auto install_delete_all_keyframes_menu =
-        [this, can_edit, emit_change](QPushButton *button, auto props_for_layer) {
+        [this, can_edit, emit_change, menu_style](QPushButton *button, auto props_for_layer) {
             if (!button) return;
             button->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(button, &QPushButton::customContextMenuRequested,
-                    this, [this, button, props_for_layer, can_edit, emit_change](const QPoint &pos) {
+                    this, [this, button, props_for_layer, can_edit, emit_change, menu_style](const QPoint &pos) {
                         if (!layer_) return;
                         std::vector<AnimatedProperty *> props = props_for_layer();
                         bool has_keyframes = false;
@@ -1441,10 +1476,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                         }
 
                         QMenu menu(button);
-                        menu.setStyleSheet("QMenu{color:#ddd;background:#252525;border:1px solid #3a3a3a;}"
-                                           "QMenu::item{padding:5px 22px;}"
-                                           "QMenu::item:selected{background:#3b4f64;}"
-                                           "QMenu::item:disabled{color:#666;}");
+                        menu.setStyleSheet(menu_style);
                         QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
                         delete_all->setEnabled(can_edit() && has_keyframes);
                         if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit()) return;
@@ -1780,19 +1812,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->use_as_scene_mask = v; load_values(); emit_change(); }
             });
     connect(stroke_options_trigger, &QPushButton::clicked,
-            this, [this, can_edit, emit_change, control_style, checkbox_style]() {
+            this, [this, can_edit, emit_change, control_style, checkbox_style, themed_dialog_style]() {
                 if (!can_edit()) return;
 
                 QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
                 popup.setModal(true);
-                popup.setStyleSheet(
-                    "QDialog{background:#3c3c3c;border:1px solid #202020;}"
-                    "QLabel{color:#d8d8d8;font-size:10px;}"
-                    "QToolButton{color:#ddd;background:#4a4a4a;border:1px solid #5a5a5a;"
-                    "border-radius:2px;padding:2px 6px;font-size:10px;}"
-                    "QToolButton:hover{background:#565656;}"
-                    "QToolButton:checked{background:#2d527f;border-color:#76a7df;color:#fff;}"
-                    "QToolButton:disabled{color:#777;background:#444;border-color:#4a4a4a;}");
+                popup.setStyleSheet(themed_dialog_style);
                 auto *root = new QVBoxLayout(&popup);
                 root->setContentsMargins(8, 8, 8, 8);
                 root->setSpacing(6);
@@ -2039,7 +2064,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 style_color_button(btn_text_color_, fmt.fill.color);
                 emit_change();
             });
-    auto open_color_selector = [this, can_edit, emit_change, apply_text_fill_format, local_time, control_style](bool stroke) {
+    auto open_color_selector = [this, can_edit, emit_change, apply_text_fill_format, local_time, control_style,
+                                panel_bg_name, panel_text_name, control_bg_name, control_text_name,
+                                button_bg_name, button_text_name, border_name, highlight_name,
+                                highlighted_text_name, subtle_text_name, hover_bg_name, section_bg_name](bool stroke) {
         if (!can_edit()) return;
         const bool text_fill = !stroke && (layer_->type == LayerType::Text || layer_->type == LayerType::Clock ||
                                            layer_->type == LayerType::Ticker);
@@ -2047,22 +2075,32 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
         popup.setModal(true);
         popup.setMinimumWidth(880);
-        popup.setStyleSheet(
-            "QDialog{background:#3c3c3c;border:1px solid #202020;}"
-            "QTabWidget::pane{border:1px solid #2b2b2b;background:#3c3c3c;}"
-            "QTabBar::tab{color:#d8d8d8;background:#2f2f2f;border:1px solid #242424;"
-            "padding:5px 10px;}"
-            "QTabBar::tab:selected{background:#4a4a4a;color:#fff;}"
-            "QTabBar::tab:disabled{color:#777;background:#303030;}"
-            "QLabel{color:#d8d8d8;font-size:10px;}"
-            "QPushButton{color:#ddd;background:#4a4a4a;border:1px solid #5a5a5a;"
-            "border-radius:2px;padding:3px 8px;font-size:10px;}"
-            "QPushButton:hover{background:#565656;}"
-            "QSlider::groove:horizontal{height:12px;border:1px solid #242424;border-radius:2px;background:#2a2a2a;}"
-            "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid #202020;border-radius:2px;background:#d0d0d0;}"
-            "QLineEdit,QSpinBox{color:#ddd;background:#252525;border:1px solid #363636;"
-            "border-radius:2px;padding:2px 4px;selection-background-color:#4b6ea8;}"
-            "QLineEdit:focus,QSpinBox:focus{border-color:#5a78ad;}");
+        QString popup_css = QStringLiteral(
+            "QDialog{background:@panel@;border:1px solid @border@;}"
+            "QTabWidget::pane{border:1px solid @border@;background:@panel@;}"
+            "QTabBar::tab{color:@text@;background:@button@;border:1px solid @border@;padding:5px 10px;}"
+            "QTabBar::tab:selected{background:@highlight@;color:@highlightedText@;}"
+            "QTabBar::tab:disabled{color:@subtle@;background:@button@;}"
+            "QLabel{color:@text@;font-size:10px;background:transparent;}"
+            "QPushButton{color:@buttonText@;background:@button@;border:1px solid @border@;border-radius:2px;padding:3px 8px;font-size:10px;}"
+            "QPushButton:hover{background:@hover@;}"
+            "QSlider::groove:horizontal{height:12px;border:1px solid @border@;border-radius:2px;background:@section@;}"
+            "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid @border@;border-radius:2px;background:@text@;}"
+            "QLineEdit,QSpinBox{color:@controlText@;background:@controlBg@;border:1px solid @border@;border-radius:2px;padding:2px 4px;selection-background-color:@highlight@;}"
+            "QLineEdit:focus,QSpinBox:focus{border-color:@highlight@;}");
+        popup_css.replace(QStringLiteral("@panel@"), panel_bg_name);
+        popup_css.replace(QStringLiteral("@border@"), border_name);
+        popup_css.replace(QStringLiteral("@text@"), panel_text_name);
+        popup_css.replace(QStringLiteral("@button@"), button_bg_name);
+        popup_css.replace(QStringLiteral("@highlight@"), highlight_name);
+        popup_css.replace(QStringLiteral("@highlightedText@"), highlighted_text_name);
+        popup_css.replace(QStringLiteral("@subtle@"), subtle_text_name);
+        popup_css.replace(QStringLiteral("@buttonText@"), button_text_name);
+        popup_css.replace(QStringLiteral("@hover@"), hover_bg_name);
+        popup_css.replace(QStringLiteral("@section@"), section_bg_name);
+        popup_css.replace(QStringLiteral("@controlText@"), control_text_name);
+        popup_css.replace(QStringLiteral("@controlBg@"), control_bg_name);
+        popup.setStyleSheet(popup_css);
         auto *root = new QVBoxLayout(&popup);
         root->setContentsMargins(8, 8, 8, 8);
         auto *tabs = new QTabWidget(&popup);
@@ -2130,7 +2168,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
         auto swatch_style = [](const QColor &color, bool large = false) {
             return QStringLiteral(
-                "QPushButton{background:%1;border:1px solid #202020;border-radius:2px;"
+                "QPushButton{background:%1;border:1px solid %2;border-radius:2px;"
                 "min-width:%2px;min-height:%3px;max-width:%2px;max-height:%3px;padding:0;}")
                 .arg(color.name(QColor::HexArgb))
                 .arg(large ? 86 : 30)
@@ -2201,9 +2239,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
         auto make_slider_group = [&](const QString &title) {
             auto *box = new QGroupBox(title, slider_column);
-            box->setStyleSheet("QGroupBox{color:#d8d8d8;background:#343434;border:1px solid #292929;"
+            box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
                                "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
-                               "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;}");
+                               "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}"
+                               "QLabel{color:%1;background:transparent;}")
+                               .arg(panel_text_name, section_bg_name, border_name));
             auto *layout = new QGridLayout(box);
             layout->setContentsMargins(8, 8, 8, 8);
             layout->setHorizontalSpacing(6);
@@ -2218,7 +2258,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             slider->setFixedWidth(240);
             slider->setStyleSheet(QStringLiteral(
                 "QSlider::groove:horizontal{height:12px;border:1px solid #242424;border-radius:2px;background:%1;}"
-                "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid #202020;"
+                "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid %2;"
                 "border-radius:2px;background:#d0d0d0;}").arg(gradient));
             auto *spin = new QSpinBox(slider_column);
             spin->setRange(min, max);
@@ -2265,7 +2305,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         recent_layout->setContentsMargins(0, 0, 0, 0);
         recent_layout->setSpacing(8);
         auto *recent_title = new QLabel(QStringLiteral("Recent Swatches"), recent_column);
-        recent_title->setStyleSheet("QLabel{font-size:14px;color:#f0f0f0;}");
+        recent_title->setStyleSheet(QStringLiteral("QLabel{font-size:14px;color:%1;background:transparent;}").arg(panel_text_name));
         recent_layout->addWidget(recent_title);
         auto *recent_row = new QWidget(recent_column);
         auto *recent_row_layout = new QHBoxLayout(recent_row);
@@ -2352,9 +2392,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         type->addItem(QStringLiteral("Diamond"), 4);
         type->hide();
         auto *type_box = new QGroupBox(QStringLiteral("Gradient Type"), properties);
-        type_box->setStyleSheet("QGroupBox{color:#d8d8d8;background:#343434;border:1px solid #292929;"
+        type_box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
                                 "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
-                                "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;}");
+                                "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}")
+                                .arg(panel_text_name, section_bg_name, border_name));
         auto *type_layout = new QGridLayout(type_box);
         type_layout->setContentsMargins(8, 8, 8, 8);
         type_layout->setHorizontalSpacing(6);
@@ -2398,10 +2439,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             }
             ip.end();
             button->setIcon(QIcon(pix));
-            button->setStyleSheet("QToolButton{color:#ddd;background:#2f2f2f;border:1px solid #242424;"
+            button->setStyleSheet(QStringLiteral("QToolButton{color:%1;background:%2;border:1px solid %3;"
                                   "border-radius:2px;padding:2px;font-size:9px;}"
-                                  "QToolButton:hover{background:#3a3a3a;}"
-                                  "QToolButton:checked{background:#4b6ea8;border-color:#7a9bd0;color:white;}");
+                                  "QToolButton:hover{background:%4;}"
+                                  "QToolButton:checked{background:%5;border-color:%5;color:%6;}")
+                                  .arg(button_text_name, button_bg_name, border_name, hover_bg_name,
+                                       highlight_name, highlighted_text_name));
             type_group->addButton(button, id);
             type_layout->addWidget(button, id / 3, id % 3);
             return button;
@@ -2676,15 +2719,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             initial.setAlphaF(stop_index == 0 ? start_opacity->value() / 100.0 : end_opacity->value() / 100.0);
 
             QDialog color_popup(&popup, Qt::Popup | Qt::FramelessWindowHint);
-            color_popup.setStyleSheet(
-                "QDialog{background:#3c3c3c;border:1px solid #202020;}"
-                "QLabel{color:#ddd;font-size:10px;}"
-                "QLineEdit,QSpinBox{color:#ddd;background:#252525;border:1px solid #363636;"
-                "border-radius:2px;padding:2px 4px;selection-background-color:#4b6ea8;}"
-                "QPushButton{color:#ddd;background:#4a4a4a;border:1px solid #5a5a5a;"
-                "border-radius:2px;padding:3px 6px;font-size:10px;}"
-                "QSlider::groove:horizontal{height:10px;border:1px solid #242424;border-radius:2px;background:#2a2a2a;}"
-                "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid #202020;border-radius:2px;background:#d0d0d0;}");
+            QString stop_popup_css = QStringLiteral(
+                "QDialog{background:@panel@;border:1px solid @border@;}"
+                "QLabel{color:@text@;font-size:10px;background:transparent;}"
+                "QLineEdit,QSpinBox{color:@controlText@;background:@controlBg@;border:1px solid @border@;border-radius:2px;padding:2px 4px;selection-background-color:@highlight@;}"
+                "QPushButton{color:@buttonText@;background:@button@;border:1px solid @border@;border-radius:2px;padding:3px 6px;font-size:10px;}"
+                "QPushButton:hover{background:@hover@;}"
+                "QSlider::groove:horizontal{height:10px;border:1px solid @border@;border-radius:2px;background:@section@;}"
+                "QSlider::handle:horizontal{width:10px;margin:-3px 0;border:1px solid @border@;border-radius:2px;background:@text@;}");
+            stop_popup_css.replace(QStringLiteral("@panel@"), panel_bg_name);
+            stop_popup_css.replace(QStringLiteral("@border@"), border_name);
+            stop_popup_css.replace(QStringLiteral("@text@"), panel_text_name);
+            stop_popup_css.replace(QStringLiteral("@controlText@"), control_text_name);
+            stop_popup_css.replace(QStringLiteral("@controlBg@"), control_bg_name);
+            stop_popup_css.replace(QStringLiteral("@highlight@"), highlight_name);
+            stop_popup_css.replace(QStringLiteral("@buttonText@"), button_text_name);
+            stop_popup_css.replace(QStringLiteral("@button@"), button_bg_name);
+            stop_popup_css.replace(QStringLiteral("@hover@"), hover_bg_name);
+            stop_popup_css.replace(QStringLiteral("@section@"), section_bg_name);
+            color_popup.setStyleSheet(stop_popup_css);
             auto *popup_layout = new QVBoxLayout(&color_popup);
             popup_layout->setContentsMargins(8, 8, 8, 8);
             popup_layout->setSpacing(6);
@@ -2735,8 +2788,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!color.isValid()) return;
                 syncing = true;
                 if (update_picker) picker->set_color(color);
-                swatch->setStyleSheet(QStringLiteral("QPushButton{background:%1;border:1px solid #202020;border-radius:2px;padding:0;}")
-                                      .arg(color.name(QColor::HexArgb)));
+                swatch->setStyleSheet(QStringLiteral("QPushButton{background:%1;border:1px solid %2;border-radius:2px;padding:0;}")
+                                      .arg(color.name(QColor::HexArgb), border_name));
                 hex->setText(gradient_editor_hex(color));
                 spin_r->setValue(color.red());
                 spin_g->setValue(color.green());
@@ -3645,6 +3698,7 @@ void PropertiesPanel::load_values()
         if (type_options_box_) type_options_box_->setVisible(false);
         if (paragraph_box_) paragraph_box_->setVisible(false);
         if (dynamic_text_box_) dynamic_text_box_->setVisible(false);
+        if (live_edit_box_) live_edit_box_->setVisible(false);
         if (bullets_box_) bullets_box_->setVisible(false);
         rect_box_->setVisible(false);
         if (btn_shape_defaults_) btn_shape_defaults_->setVisible(false);
@@ -3811,6 +3865,7 @@ void PropertiesPanel::load_values()
     if (type_options_box_) type_options_box_->setVisible(is_text_like);
     if (paragraph_box_) paragraph_box_->setVisible(is_text_like);
     if (dynamic_text_box_) dynamic_text_box_->setVisible(is_text_like);
+    if (live_edit_box_) live_edit_box_->setVisible(is_rect || is_text_like);
     if (bullets_box_) bullets_box_->setVisible(false);
     text_box_->setTitle("Character");
     if (row_text_color_) row_text_color_->setVisible(false);
@@ -3857,10 +3912,19 @@ void PropertiesPanel::load_values()
             cmb_ticker_direction_->setVisible(is_ticker);
             if (auto *label = dynamic_form->labelForField(cmb_ticker_direction_)) label->setVisible(is_ticker);
         }
+    }
+    if (auto *live_form = qobject_cast<QFormLayout *>(live_edit_box_ ? live_edit_box_->layout() : nullptr)) {
+        const bool show_scene_mask = is_rect || is_text_like;
+        const bool show_expose_to_dock = is_text || is_ticker;
+        if (chk_scene_mask_) {
+            chk_scene_mask_->setVisible(show_scene_mask);
+            if (auto *label = live_form->labelForField(chk_scene_mask_))
+                label->setVisible(show_scene_mask);
+        }
         if (chk_expose_text_) {
-            chk_expose_text_->setVisible(is_text || is_ticker);
-            if (auto *label = dynamic_form->labelForField(chk_expose_text_))
-                label->setVisible(is_text || is_ticker);
+            chk_expose_text_->setVisible(show_expose_to_dock);
+            if (auto *label = live_form->labelForField(chk_expose_text_))
+                label->setVisible(show_expose_to_dock);
         }
     }
     rect_box_->setVisible(is_text_like || is_rect || is_image);

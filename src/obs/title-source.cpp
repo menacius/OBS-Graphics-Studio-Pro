@@ -61,6 +61,7 @@
 #include <mutex>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <sstream>
 
 namespace {
@@ -303,6 +304,13 @@ struct TitleSourceData {
         bool move_with_mask = true;
     };
     std::vector<SceneMaskConfig> scene_masks;
+
+    struct ActiveSceneMaskScene {
+        std::string name;
+        obs_source_t *source = nullptr;
+    };
+    bool scene_mask_foreground_active = false;
+    std::vector<ActiveSceneMaskScene> active_scene_mask_scenes;
 };
 
 
@@ -501,6 +509,43 @@ static void refresh_scene_mask_configs(TitleSourceData *data, obs_data_t *settin
         }
     }
 }
+
+static void release_active_scene_mask_scenes(TitleSourceData *data)
+{
+    if (!data)
+        return;
+
+    for (auto &active : data->active_scene_mask_scenes) {
+        if (active.source) {
+            obs_source_dec_active(active.source);
+            obs_source_release(active.source);
+            active.source = nullptr;
+        }
+    }
+    data->active_scene_mask_scenes.clear();
+}
+
+static void activate_scene_mask_scenes(TitleSourceData *data)
+{
+    if (!data || !data->scene_mask_foreground_active)
+        return;
+
+    release_active_scene_mask_scenes(data);
+
+    std::unordered_set<std::string> activated_names;
+    for (const auto &cfg : data->scene_masks) {
+        if (cfg.scene_name.empty() || !activated_names.insert(cfg.scene_name).second)
+            continue;
+
+        obs_source_t *scene = obs_get_source_by_name(cfg.scene_name.c_str());
+        if (!scene)
+            continue;
+
+        obs_source_inc_active(scene);
+        data->active_scene_mask_scenes.push_back({cfg.scene_name, scene});
+    }
+}
+
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -3691,6 +3736,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
         data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
         data->loop = obs_data_get_bool(settings, PROP_LOOP);
         data->speed = (float)obs_data_get_double(settings, PROP_SPEED);
+        refresh_scene_mask_configs(data, settings);
     }
     data->last_tick = std::chrono::steady_clock::now();
     data->last_clock_refresh = data->last_tick;
@@ -3708,6 +3754,7 @@ static void source_destroy(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
+    release_active_scene_mask_scenes(data);
     {
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         obs_enter_graphics();
@@ -3733,10 +3780,16 @@ static void source_update(void *priv, obs_data_t *settings)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data || !settings) return;
+    const bool keep_scene_masks_foreground = data->scene_mask_foreground_active;
+    if (keep_scene_masks_foreground)
+        release_active_scene_mask_scenes(data);
+
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
     data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
     data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
     refresh_scene_mask_configs(data, settings);
+    if (keep_scene_masks_foreground)
+        activate_scene_mask_scenes(data);
     data->playhead = 0.0;
     data->playback_reverse = false;
     data->cue_phase = TitleSourceData::CuePhase::FreeRun;
@@ -3751,6 +3804,24 @@ static void source_update(void *priv, obs_data_t *settings)
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->effect_layer_cache.clear();
     data->dirty    = true;
+}
+
+static void source_activate(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data)
+        return;
+    data->scene_mask_foreground_active = true;
+    activate_scene_mask_scenes(data);
+}
+
+static void source_deactivate(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data)
+        return;
+    data->scene_mask_foreground_active = false;
+    release_active_scene_mask_scenes(data);
 }
 
 static uint32_t source_get_width(void *priv)
@@ -3950,7 +4021,12 @@ static void source_video_tick(void *priv, float seconds)
         if (data->source) {
             obs_data_t *settings = obs_source_get_settings(data->source);
             if (settings) {
+                const bool keep_scene_masks_foreground = data->scene_mask_foreground_active;
+                if (keep_scene_masks_foreground)
+                    release_active_scene_mask_scenes(data);
                 refresh_scene_mask_configs(data, settings);
+                if (keep_scene_masks_foreground)
+                    activate_scene_mask_scenes(data);
                 obs_data_release(settings);
             }
         }
@@ -4419,6 +4495,8 @@ void title_source_register()
     si.get_height     = source_get_height;
     si.video_tick     = source_video_tick;
     si.video_render   = source_video_render;
+    si.activate       = source_activate;
+    si.deactivate     = source_deactivate;
     si.get_properties = source_get_properties;
     si.get_defaults   = source_get_defaults;
 

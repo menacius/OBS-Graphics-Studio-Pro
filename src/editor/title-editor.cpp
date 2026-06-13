@@ -71,10 +71,13 @@ QWidget *TitleEditor::create_styles_panel()
         layout->setContentsMargins(10, 10, 10, 10);
         layout->setSpacing(6);
         auto *heading = new QLabel(title, tab);
-        heading->setStyleSheet(QStringLiteral("color:#f0f0f0;font-weight:bold;"));
+        QFont heading_font = heading->font();
+        heading_font.setBold(true);
+        heading->setFont(heading_font);
+        heading->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(qApp->palette().color(QPalette::WindowText).name(QColor::HexRgb)));
         auto *body = new QLabel(description, tab);
         body->setWordWrap(true);
-        body->setStyleSheet(QStringLiteral("color:#b8b8b8;"));
+        body->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg((qApp->palette().color(QPalette::WindowText).lightness() < 128 ? qApp->palette().color(QPalette::WindowText).lighter(135) : qApp->palette().color(QPalette::WindowText).darker(135)).name(QColor::HexRgb)));
         layout->addWidget(heading);
         layout->addWidget(body);
         layout->addStretch(1);
@@ -106,7 +109,10 @@ QWidget *TitleEditor::create_color_swatches_panel()
 
     auto *hint = new QLabel(QStringLiteral("Reusable color palettes"), panel);
     hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color:#b8b8b8;font-weight:bold;"));
+    QFont hint_font = hint->font();
+    hint_font.setBold(true);
+    hint->setFont(hint_font);
+    hint->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(qApp->palette().color(QPalette::WindowText).name(QColor::HexRgb)));
     layout->addWidget(hint);
 
     auto *grid_widget = new QWidget(panel);
@@ -130,15 +136,18 @@ QWidget *TitleEditor::create_color_swatches_panel()
         swatch->setFixedSize(24, 24);
         swatch->setAutoRaise(false);
         swatch->setToolTip(colors[i].name(QColor::HexRgb).toUpper());
-        swatch->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid #555;border-radius:3px;}"
-                                             "QToolButton:hover{border:2px solid #fff;}" ).arg(colors[i].name()));
+        swatch->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid %2;border-radius:3px;}"
+                                             "QToolButton:hover{border:2px solid %3;}" )
+                              .arg(colors[i].name(QColor::HexRgb),
+                                   qApp->palette().color(QPalette::Mid).name(QColor::HexRgb),
+                                   qApp->palette().color(QPalette::Highlight).name(QColor::HexRgb)));
         grid->addWidget(swatch, i / 6, i % 6);
     }
 
     layout->addWidget(grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
     auto *footer = new QLabel(QStringLiteral("Palette saving, palette import/export, and quick color application workflows will build on these swatches."), panel);
     footer->setWordWrap(true);
-    footer->setStyleSheet(QStringLiteral("color:#9f9f9f;"));
+    footer->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg((qApp->palette().color(QPalette::WindowText).lightness() < 128 ? qApp->palette().color(QPalette::WindowText).lighter(145) : qApp->palette().color(QPalette::WindowText).darker(145)).name(QColor::HexRgb)));
     layout->addWidget(footer);
     layout->addStretch(1);
 
@@ -759,6 +768,44 @@ void TitleEditor::build_ui()
     connect(preferences_action, &QAction::triggered, this, &TitleEditor::show_preferences);
 
     auto *view_menu = menu_bar->addMenu(QStringLiteral("View"));
+    act_rulers_visible_ = view_menu->addAction(QStringLiteral("Rulers"));
+    act_rulers_visible_->setCheckable(true);
+    act_rulers_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    act_rulers_visible_->setToolTip(QStringLiteral("Show or hide Photoshop-style canvas rulers."));
+    connect(act_rulers_visible_, &QAction::toggled, this, [this](bool visible) {
+        if (canvas_) canvas_->set_rulers_visible(visible);
+    });
+
+    act_guides_visible_ = view_menu->addAction(QStringLiteral("Guides"));
+    act_guides_visible_->setCheckable(true);
+    act_guides_visible_->setChecked(true);
+    act_guides_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft));
+    act_guides_visible_->setToolTip(QStringLiteral("Show or hide user-created guides."));
+    connect(act_guides_visible_, &QAction::toggled, this, [this](bool visible) {
+        if (canvas_) canvas_->set_guides_visible(visible);
+    });
+
+    act_guides_locked_ = view_menu->addAction(QStringLiteral("Lock Guides"));
+    act_guides_locked_->setCheckable(true);
+    act_guides_locked_->setToolTip(QStringLiteral("Prevent guides from being moved, removed, or created from rulers."));
+    connect(act_guides_locked_, &QAction::toggled, this, [this](bool locked) {
+        if (canvas_) canvas_->set_guides_locked(locked);
+    });
+
+    act_guide_coordinates_ = view_menu->addAction(QStringLiteral("Show Guide Coordinates"));
+    act_guide_coordinates_->setCheckable(true);
+    act_guide_coordinates_->setChecked(true);
+    connect(act_guide_coordinates_, &QAction::toggled, this, [this](bool visible) {
+        if (canvas_) canvas_->set_show_guide_coordinates(visible);
+    });
+
+    act_clear_guides_ = view_menu->addAction(QStringLiteral("Clear Guides"));
+    act_clear_guides_->setToolTip(QStringLiteral("Remove all user-created horizontal and vertical guides."));
+    connect(act_clear_guides_, &QAction::triggered, this, [this]() {
+        if (canvas_) canvas_->clear_user_guides();
+    });
+    view_menu->addSeparator();
+
     QAction *snap_action = view_menu->addAction(QStringLiteral("Snap"));
     snap_action->setCheckable(true);
     snap_action->setChecked(true);
@@ -818,7 +865,7 @@ void TitleEditor::build_ui()
     title_bar_layout->addStretch(1);
     dirty_indicator_ = new QLabel(title_bar);
     dirty_indicator_->setFixedSize(10, 10);
-    dirty_indicator_->setStyleSheet("background:#e33;border-radius:5px;");
+    dirty_indicator_->setStyleSheet(QStringLiteral("background:%1;border-radius:5px;").arg(QColor(0xE3, 0x33, 0x33).name(QColor::HexRgb)));
     dirty_indicator_->setToolTip(obsgs_tr("OBSTitles.UnsavedChangesIndicator"));
     dirty_indicator_->hide();
     title_bar_layout->addWidget(dirty_indicator_, 0, Qt::AlignVCenter);
@@ -851,7 +898,7 @@ void TitleEditor::build_ui()
     QFont gpu_warning_font = gpu_warning_lbl_->font();
     gpu_warning_font.setBold(true);
     gpu_warning_lbl_->setFont(gpu_warning_font);
-    gpu_warning_lbl_->setStyleSheet("color:#ffca4a;");
+    gpu_warning_lbl_->setStyleSheet(QStringLiteral("color:%1;").arg(QColor(0xFF, 0xCA, 0x4A).name(QColor::HexRgb)));
     gpu_warning_lbl_->hide();
     title_bar_layout->addWidget(gpu_warning_lbl_, 0, Qt::AlignVCenter);
     title_bar_layout->addStretch(1);
@@ -872,6 +919,10 @@ void TitleEditor::build_ui()
     canvas_layout->setSpacing(0);
     canvas_ = new CanvasPreview(canvas_panel);
     canvas_->setMinimumSize(300, 200);
+    if (act_rulers_visible_) act_rulers_visible_->setChecked(canvas_->rulers_visible());
+    if (act_guides_visible_) act_guides_visible_->setChecked(canvas_->guides_visible());
+    if (act_guides_locked_) act_guides_locked_->setChecked(canvas_->guides_locked());
+    if (act_guide_coordinates_) act_guide_coordinates_->setChecked(canvas_->show_guide_coordinates());
     canvas_layout->addWidget(canvas_, 1);
 
     auto *canvas_zoom_bar = new QWidget(canvas_panel);
