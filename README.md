@@ -230,12 +230,6 @@ Requirements are listed in [INSTALL.txt](INSTALL.txt). The build must use an OBS
 powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
 ```
 
-### Linux / WSL
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-ubuntu-wsl.ps1
-```
-
 ### Incremental update, build, and package
 
 ```powershell
