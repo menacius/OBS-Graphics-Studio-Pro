@@ -16,6 +16,7 @@
 #include "cache-tile-payload.h"
 #include "title-cache-policy.h"
 #include "title-source.h"
+#include "title-audio-runtime.h"
 #include "style-presets.h"
 #include "title-data.h"
 #include "external-data.h"

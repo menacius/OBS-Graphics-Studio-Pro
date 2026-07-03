@@ -102,17 +102,15 @@ TitleDock::TitleDock(QWidget *parent)
                 break;
             }
         }
-        if (playlist_active) {
-            /* Playlist cue changes are runtime-only revisions. Rebuilding the
-             * complete table here destroys every cell editor and steals focus on
-             * each step. Update only cue/cache decoration while any playlist runs. */
-            auto selected_title = TitleDataStore::instance().get_title(selected_id());
-            if (selected_title)
-                update_live_text_runtime_status(selected_title);
+        /* Runtime revisions (cue playback, source visibility and scene-mask
+         * activation) must never rebuild the cue table. Recreating its cell
+         * widgets every 100 ms causes missed clicks and cursor flicker. Structural
+         * and external-data changes already call populate_exposed_text() directly. */
+        auto selected_title = TitleDataStore::instance().get_title(selected_id());
+        if (selected_title)
+            update_live_text_runtime_status(selected_title);
+        if (playlist_active)
             update_playlist_countdown_label();
-            return;
-        }
-        populate_exposed_text();
     });
     live_refresh_timer_->start();
     connect(&CacheManager::instance(), &CacheManager::liveCueStateChanged, this,
@@ -320,6 +318,11 @@ void TitleDock::update_live_text_runtime_status(const std::shared_ptr<Title> &ti
         auto *cue = live_cue_button(text_table_, row, cue_col);
         if (!cue)
             continue;
+        /* Source creation and title binding can complete after the dock row was
+         * built. Re-evaluate availability on every source-state refresh so a
+         * freshly added title is cueable immediately, without rebuilding the
+         * table or waiting for another store revision. */
+        cue->setEnabled(title_has_bound_obs_source(title->id));
         const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
             cache_waiting_cue_row_ == row;
         const bool ending = row == title->current_cue_row && title->cue_uncue_requested;
@@ -415,7 +418,7 @@ void TitleDock::update_title_list_cache_icon(const QString &title_id)
             item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status, title->playlist_active, CacheManager::instance().cacheEnabled()));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
         } else {
-            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
+            item->setIcon(title_list_combined_status_icon(*title, has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
         }
         item->setData(kTitleListThumbnailRole, title_preview_pixmap(*title, QSize(96, 54)));
         item->setData(kTitleShowStatusIconRole, true);
@@ -570,6 +573,15 @@ void TitleDock::load_dock_settings()
     QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kDockSettingsGroup));
 
+    const int dock_schema_version = std::clamp(
+        settings.value(QString::fromUtf8(kDockSerializationSchemaVersionKey), 1).toInt(),
+        1, bgs::serialization::kCurrentDockSettingsSchemaVersion);
+    const int dock_saved_development_version = std::clamp(
+        settings.value(QString::fromUtf8(kDockSavedDevelopmentVersionKey), 0).toInt(),
+        0, 1000000);
+    Q_UNUSED(dock_schema_version);
+    Q_UNUSED(dock_saved_development_version);
+
     template_icon_view_ = settings.value(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_).toBool();
     visibility_filter_active_ = settings.value(QString::fromUtf8(kVisibilityFilterKey), visibility_filter_active_).toBool();
     last_selected_title_id_ = settings.value(QString::fromUtf8(kLastSelectedTitleIdKey)).toString();
@@ -606,8 +618,11 @@ void TitleDock::load_dock_settings()
     }
 
     const QByteArray splitter_state = settings.value(QString::fromUtf8(kDockSplitterStateKey)).toByteArray();
-    if (!splitter_state.isEmpty() && sections_)
-        sections_->restoreState(splitter_state);
+    if (!splitter_state.isEmpty() && sections_ && !sections_->restoreState(splitter_state)) {
+        /* Corrupt UI state must not prevent the dock from opening. The bounded
+         * fallback sizes below rebuild a valid splitter layout. */
+        settings.remove(QString::fromUtf8(kDockSplitterStateKey));
+    }
     if (!has_saved_expanded_splitter && sections_) {
         const QList<int> sizes = sections_->sizes();
         if (!sizes.isEmpty() && sizes.front() > kTitlesCompactRailHeight + 8)
@@ -622,6 +637,10 @@ void TitleDock::save_dock_settings() const
     QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kDockSettingsGroup));
 
+    settings.setValue(QString::fromUtf8(kDockSerializationSchemaVersionKey),
+                      bgs::serialization::kCurrentDockSettingsSchemaVersion);
+    settings.setValue(QString::fromUtf8(kDockSavedDevelopmentVersionKey),
+                      bgs::serialization::kCurrentDevelopmentVersion);
     if (sections_)
         settings.setValue(QString::fromUtf8(kDockSplitterStateKey), sections_->saveState());
     settings.setValue(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_);
@@ -686,6 +705,9 @@ void TitleDock::remove_obs_state_callbacks()
 void TitleDock::refresh_for_obs_source_state_change()
 {
     update_titles_compact_rail();
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (title)
+        update_live_text_runtime_status(title);
     if (visibility_filter_active_)
         populate_list();
 }
@@ -695,7 +717,12 @@ void TitleDock::on_obs_source_state_signal(void *priv, calldata_t *)
     auto *dock = static_cast<TitleDock *>(priv);
     if (!dock) return;
 
+    /* OBS emits source_create before all source settings/UI bindings are
+     * guaranteed to be visible to obs_enum_sources(). Refresh immediately and
+     * once more after the event queue settles. Both passes are lightweight and
+     * only update existing cue widgets. */
     QTimer::singleShot(0, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
+    QTimer::singleShot(75, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
 }
 
 void TitleDock::on_obs_frontend_event(obs_frontend_event event, void *priv)

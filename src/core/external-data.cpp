@@ -1,5 +1,6 @@
 #include "external-data.h"
 #include "external-data-log.h"
+#include "performance-counters.h"
 
 #include "title-data.h"
 #include "layer-model.h"
@@ -961,6 +962,7 @@ void ExternalDataManager::publish_change(ExternalDataUpdate update)
             render_queue_.push_back(update);
         } else {
             render_queue_[queued->second] = update;
+            bgl::perf::add(bgl::perf::Counter::ExternalUpdatesCoalesced);
         }
         ExternalDataLog::write_lazy(
             ExternalDataLogLevel::Trace, "RenderQueue", [&]() {
@@ -983,6 +985,7 @@ void ExternalDataManager::publish_change(ExternalDataUpdate update)
     /* The manager revision is deliberately independent from TitleDataStore.
      * Provider updates never write a title, create undo history, schedule
      * persistence, or wake unrelated sources through the global store revision. */
+    bgl::perf::add(bgl::perf::Counter::ExternalUpdatesPublished);
     for (auto &callback : callbacks) {
         try {
             callback(update);

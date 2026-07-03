@@ -3,6 +3,7 @@
  */
 
 #include "title-data.h"
+#include "title-serialization-schema.h"
 #include "extensions/effect-extension-catalog.h"
 #include "title-logger.h"
 #include "ticker-runtime.h"
@@ -398,11 +399,15 @@ static ExternalDataProviderConfig external_provider_from_json(const json &j)
     ExternalDataProviderConfig provider;
     if (!j.is_object())
         return provider;
-    provider.type = static_cast<ExternalDataProviderType>(std::clamp(
-        json_int(j, "type", static_cast<int>(ExternalDataProviderType::None)),
-        static_cast<int>(ExternalDataProviderType::None),
-        static_cast<int>(ExternalDataProviderType::ManualTable)));
-    provider.enabled = json_bool(j, "enabled", true);
+    const int provider_type = json_int(
+        j, "type", static_cast<int>(ExternalDataProviderType::None));
+    const bool provider_supported =
+        provider_type >= static_cast<int>(ExternalDataProviderType::None) &&
+        provider_type <= static_cast<int>(ExternalDataProviderType::ManualTable);
+    provider.type = provider_supported
+        ? static_cast<ExternalDataProviderType>(provider_type)
+        : ExternalDataProviderType::None;
+    provider.enabled = provider_supported && json_bool(j, "enabled", true);
     provider.location = bounded_string(j, "location", "", kMaxTextLength);
     provider.polling_interval_ms = std::clamp(json_int(j, "polling_interval_ms", 0), 0, 86400000);
     provider.refresh_mode = static_cast<ExternalDataRefreshMode>(std::clamp(
@@ -924,12 +929,23 @@ static void ensure_unique_title_id(const std::shared_ptr<Title> &title,
         title->id = TitleDataStore::make_uuid();
     seen.insert(title->id);
 
+    /* Layer IDs are document-local persistent identities. Never rewrite a
+     * non-empty ID during load/migration, even when damaged input contains a
+     * duplicate. Reassigning it would silently break bindings, parenting,
+     * masks and cached references. Only genuinely missing IDs are recovered. */
     std::unordered_set<std::string> layer_ids;
+    for (const auto &layer : title->layers) {
+        if (layer && !layer->id.empty())
+            layer_ids.insert(layer->id);
+    }
     for (auto &layer : title->layers) {
         if (!layer)
             continue;
-        if (layer->id.empty() || layer_ids.find(layer->id) != layer_ids.end())
-            layer->id = TitleDataStore::make_uuid();
+        if (layer->id.empty()) {
+            do {
+                layer->id = TitleDataStore::make_uuid();
+            } while (layer_ids.find(layer->id) != layer_ids.end());
+        }
         layer_ids.insert(layer->id);
     }
     for (auto &layer : title->layers) {
@@ -1065,6 +1081,9 @@ void Title::add_layer(std::shared_ptr<Layer> l)
 
 void Title::remove_layer(const std::string &lid)
 {
+    const auto protected_layer = find_layer(lid);
+    if (protected_layer && stinger_transition_input_layer_is_protected(*protected_layer))
+        return;
     const std::size_t previous_count = layers.size();
     layers.erase(
         std::remove_if(layers.begin(), layers.end(),
@@ -1194,11 +1213,278 @@ std::string live_text_row_id(const Title &title, int row)
     return std::string("legacy-row-") + std::to_string(row);
 }
 
+double stinger_transition_point_seconds(const Title &title)
+{
+    return std::clamp(title.stinger_transition_point, 0.0,
+                      std::max(0.0, title.duration));
+}
+
+void set_stinger_transition_point_seconds(Title &title, double seconds)
+{
+    title.stinger_transition_point = std::clamp(
+        std::isfinite(seconds) ? seconds : 0.0, 0.0,
+        std::max(0.0, title.duration));
+}
+
+bool stinger_transition_input_layer_is_protected(const Layer &layer)
+{
+    return layer.type == LayerType::TransitionInput &&
+           layer.transition_input_required &&
+           (layer.transition_input_slot == 0 || layer.transition_input_slot == 1);
+}
+
+std::shared_ptr<Layer> stinger_transition_input_layer(const Title &title, int slot)
+{
+    std::shared_ptr<Layer> fallback;
+    for (const auto &layer : title.layers) {
+        if (!layer || layer->type != LayerType::TransitionInput ||
+            layer->transition_input_slot != slot)
+            continue;
+        if (layer->transition_input_required)
+            return layer;
+        if (!fallback)
+            fallback = layer;
+    }
+    return fallback;
+}
+
+static void set_stinger_transition_input_default_surface(
+    Layer &layer, const Title &title, int slot)
+{
+    const double canvas_width = static_cast<double>(std::max(1, title.width));
+    const double canvas_height = static_cast<double>(std::max(1, title.height));
+    layer.name = slot == 0 ? "Scene A" : "Scene B";
+    layer.type = LayerType::TransitionInput;
+    layer.transition_input_slot = slot;
+    layer.transition_input_required = true;
+    layer.visible = true;
+    layer.locked = false;
+    layer.in_time = 0.0;
+    layer.out_time = std::max(0.001, title.duration);
+    layer.position.static_value = {canvas_width * 0.5, canvas_height * 0.5};
+    layer.position.keyframes.clear();
+    layer.scale.static_value = {1.0, 1.0};
+    layer.scale.keyframes.clear();
+    layer.lock_aspect_ratio = false;
+    layer.shape_type = ShapeType::Rectangle;
+    layer.rotation.static_value = 0.0;
+    layer.rotation.keyframes.clear();
+    layer.opacity.static_value = 1.0;
+    layer.opacity.keyframes.clear();
+    layer.origin_prop.static_value = {0.5, 0.5};
+    layer.origin_prop.keyframes.clear();
+    layer.origin_x = 0.5f;
+    layer.origin_y = 0.5f;
+    layer.rect_width = static_cast<float>(canvas_width);
+    layer.rect_height = static_cast<float>(canvas_height);
+    layer.size.static_value = {canvas_width, canvas_height};
+    layer.size.keyframes.clear();
+    layer.image_width = static_cast<float>(canvas_width);
+    layer.image_height = static_cast<float>(canvas_height);
+    layer.image_size.static_value = {canvas_width, canvas_height};
+    layer.image_size.keyframes.clear();
+    layer.parent_id.clear();
+    layer.transform_parent_id.clear();
+}
+
+static bool stinger_transition_input_has_legacy_point_opacity(
+    const Layer &layer, int slot, double point)
+{
+    const double start_value = slot == 0 ? 1.0 : 0.0;
+    const double end_value = slot == 0 ? 0.0 : 1.0;
+    const auto near = [](double a, double b) { return std::abs(a - b) <= 1.0e-6; };
+    if (point <= 1.0e-9) {
+        return layer.opacity.keyframes.size() == 1 &&
+               near(layer.opacity.keyframes[0].time, 0.0) &&
+               near(layer.opacity.keyframes[0].value, end_value);
+    }
+    return layer.opacity.keyframes.size() == 2 &&
+           near(layer.opacity.keyframes[0].time, 0.0) &&
+           near(layer.opacity.keyframes[0].value, start_value) &&
+           near(layer.opacity.keyframes[1].time, point) &&
+           near(layer.opacity.keyframes[1].value, end_value);
+}
+
+static std::shared_ptr<Layer> make_stinger_transition_input_layer(
+    const Title &title, int slot)
+{
+    auto layer = std::make_shared<Layer>();
+    layer->id = TitleDataStore::make_uuid();
+    set_stinger_transition_input_default_surface(*layer, title, slot);
+    return layer;
+}
+
+void ensure_stinger_transition_input_layers(Title &title)
+{
+    /* A/B are ordinary visual layers. This function only guarantees that one
+     * required input exists for each runtime scene slot. It must never reset
+     * authored timing, transforms, effects, transitions, hierarchy or names. */
+    std::shared_ptr<Layer> required_inputs[2];
+    std::shared_ptr<Layer> first_inputs[2];
+
+    for (const auto &layer : title.layers) {
+        if (!layer || layer->type != LayerType::TransitionInput)
+            continue;
+        const int input_index = layer->transition_input_slot;
+        if (input_index < 0 || input_index > 1)
+            continue;
+        if (!first_inputs[input_index])
+            first_inputs[input_index] = layer;
+        if (layer->transition_input_required) {
+            if (!required_inputs[input_index])
+                required_inputs[input_index] = layer;
+            else
+                layer->transition_input_required = false;
+        }
+    }
+
+    for (int input_index = 0; input_index < 2; ++input_index) {
+        if (!required_inputs[input_index] && first_inputs[input_index]) {
+            required_inputs[input_index] = first_inputs[input_index];
+            required_inputs[input_index]->transition_input_required = true;
+        }
+        if (!required_inputs[input_index]) {
+            required_inputs[input_index] =
+                make_stinger_transition_input_layer(title, input_index);
+        }
+    }
+
+    /* Upgrade only the exact obsolete automatic point-cut opacity curves.
+     * Preserve every other authored property, including timing and geometry. */
+    const double point = stinger_transition_point_seconds(title);
+    const bool legacy_generated_pair =
+        stinger_transition_input_has_legacy_point_opacity(
+            *required_inputs[0], 0, point) &&
+        stinger_transition_input_has_legacy_point_opacity(
+            *required_inputs[1], 1, point);
+    if (legacy_generated_pair) {
+        required_inputs[0]->opacity.static_value = 1.0;
+        required_inputs[0]->opacity.keyframes.clear();
+        required_inputs[1]->opacity.static_value = 1.0;
+        required_inputs[1]->opacity.keyframes.clear();
+    }
+
+    /* Insert only newly-created required inputs. Model order is bottom-to-top,
+     * so Scene B starts below Scene A exactly like two overlapping image/shape
+     * layers. Existing user ordering is never rewritten. */
+    const auto contains = [&](const std::shared_ptr<Layer> &candidate) {
+        return std::find(title.layers.begin(), title.layers.end(), candidate) !=
+               title.layers.end();
+    };
+    if (!contains(required_inputs[1]))
+        title.layers.insert(title.layers.begin(), required_inputs[1]);
+    if (!contains(required_inputs[0])) {
+        auto scene_b = std::find(title.layers.begin(), title.layers.end(),
+                                 required_inputs[1]);
+        title.layers.insert(scene_b == title.layers.end()
+                                ? title.layers.begin()
+                                : std::next(scene_b),
+                            required_inputs[0]);
+    }
+
+    for (int input_index = 0; input_index < 2; ++input_index) {
+        auto &input_layer = required_inputs[input_index];
+        input_layer->type = LayerType::TransitionInput;
+        input_layer->transition_input_slot = input_index;
+        input_layer->transition_input_required = true;
+        if (input_layer->name.empty())
+            input_layer->name = input_index == 0 ? "Scene A" : "Scene B";
+    }
+}
+
+StingerValidationResult validate_stinger_title(const Title &title)
+{
+    StingerValidationResult result;
+    if (title.graphic_type != TitleGraphicType::Stinger)
+        return result;
+
+    if (!std::isfinite(title.duration) || title.duration <= 0.0)
+        result.errors.push_back("Stinger duration must be greater than zero.");
+    if (!std::isfinite(title.stinger_transition_point) ||
+        title.stinger_transition_point < 0.0 ||
+        title.stinger_transition_point > title.duration)
+        result.errors.push_back("Transition point must be inside the Stinger duration.");
+    if (title.width <= 0 || title.height <= 0 ||
+        title.width > kMaxCanvasDimension || title.height > kMaxCanvasDimension)
+        result.errors.push_back("Stinger output size is invalid.");
+    if (!std::isfinite(title.stinger_pre_roll) || title.stinger_pre_roll < 0.0 ||
+        !std::isfinite(title.stinger_post_roll) || title.stinger_post_roll < 0.0)
+        result.errors.push_back("Pre-roll and post-roll must be zero or greater.");
+
+    const int render_mode = static_cast<int>(title.stinger_render_mode);
+    if (render_mode < static_cast<int>(StingerRenderMode::ProceduralLive) ||
+        render_mode > static_cast<int>(StingerRenderMode::PrerenderedProxy))
+        result.errors.push_back("Stinger render mode is invalid.");
+
+    const int switch_mode = static_cast<int>(title.stinger_switch_mode);
+    if (switch_mode < static_cast<int>(StingerSwitchMode::SwitchAtPoint) ||
+        switch_mode > static_cast<int>(StingerSwitchMode::ManualSceneAnimation))
+        result.errors.push_back("Stinger switch mode is invalid.");
+    if (title.stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation) {
+        const auto scene_a = stinger_transition_input_layer(title, 0);
+        const auto scene_b = stinger_transition_input_layer(title, 1);
+        if (!scene_a || !scene_b)
+            result.errors.push_back("Manual scene animation requires protected Scene A and Scene B layers.");
+        if (title.stinger_render_mode == StingerRenderMode::PrerenderedProxy)
+            result.warnings.push_back("Manual Scene A/B composition is runtime-dynamic; the full document renders live instead of using a full-frame proxy.");
+    }
+
+    bool has_audio = false;
+    bool has_live_content = title.external_data_enabled ||
+                            !title.external_data_sources.empty();
+    for (const auto &layer : title.layers) {
+        if (!layer)
+            continue;
+        has_audio = has_audio || layer->type == LayerType::Audio;
+        has_live_content = has_live_content || layer->type == LayerType::Ticker ||
+                           layer->type == LayerType::Clock ||
+                           !layer->external_bindings.empty();
+    }
+
+    if (title.stinger_audio_enabled && !has_audio)
+        result.warnings.push_back("Optional Stinger audio is enabled, but the document has no audio layer.");
+    if (title.stinger_alpha_output && ((title.bg_color >> 24) & 0xFFu) == 0xFFu)
+        result.warnings.push_back("Alpha output is enabled while the document background is fully opaque.");
+    if (has_live_content) {
+        if (title.stinger_render_mode == StingerRenderMode::PrerenderedProxy)
+            result.warnings.push_back("Ticker, clock, or external data cannot be reliably prerendered and will use live rendering during the OBS transition.");
+        else
+            result.warnings.push_back("This Stinger contains ticker, clock, or external live data and will render live during the OBS transition.");
+    }
+    return result;
+}
+
+
+static std::string unique_title_name_locked(
+    const std::vector<std::shared_ptr<Title>> &titles,
+    const std::string &requested,
+    const std::string &exclude_id = {})
+{
+    const std::string base = requested.empty() ? std::string("New Title") : requested;
+    auto exists = [&](const std::string &candidate) {
+        return std::any_of(titles.begin(), titles.end(), [&](const auto &title) {
+            return title && title->id != exclude_id && title->name == candidate;
+        });
+    };
+    if (!exists(base))
+        return base;
+    for (int suffix = 1; ; ++suffix) {
+        char number[16];
+        snprintf(number, sizeof(number), "%02d", suffix);
+        const std::string candidate = base + " " + number;
+        if (!exists(candidate))
+            return candidate;
+    }
+}
+
 std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
 {
     auto t = std::make_shared<Title>();
-    t->id   = make_uuid();
-    t->name = name;
+    t->id = make_uuid();
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        t->name = unique_title_name_locked(titles_, name);
+    }
     t->creation_date = current_iso_utc_string();
 
     /* Default: one text layer */
@@ -1214,7 +1500,7 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     layer->size.static_value.y = layer->rect_height;
     set_color_channels(*layer, true, layer->text_color);
     set_color_channels(*layer, false, layer->fill_color);
-    layer->text_content = name;
+    layer->text_content = t->name;
     layer->rich_text = rich_text_document_from_layer_defaults(*layer);
     layer->expose_text = true;
     t->layers.push_back(layer);
@@ -1262,7 +1548,7 @@ void TitleDataStore::rename_title(const std::string &id, const std::string &n)
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (auto &t : titles_) {
             if (t && t->id == id) {
-                t->name = n;
+                t->name = unique_title_name_locked(titles_, n, id);
                 renamed = true;
                 break;
             }
@@ -1321,8 +1607,10 @@ static Keyframe keyframe_from_json(const json &j)
         json_double(j, "temporal_in_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
     k.outgoing_influence = std::clamp(finite_or(
         json_double(j, "temporal_out_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
-    k.incoming_speed = finite_or(json_double(j, "temporal_in_speed", 0.0), 0.0);
-    k.outgoing_speed = finite_or(json_double(j, "temporal_out_speed", 0.0), 0.0);
+    k.incoming_speed = std::clamp(finite_or(json_double(j, "temporal_in_speed", 0.0), 0.0),
+                                    -kMaxPropertyValue, kMaxPropertyValue);
+    k.outgoing_speed = std::clamp(finite_or(json_double(j, "temporal_out_speed", 0.0), 0.0),
+                                    -kMaxPropertyValue, kMaxPropertyValue);
     k.temporal_tangents_linked = json_bool(j, "temporal_tangents_linked", true);
     k.temporal_velocity_explicit = json_bool(j, "temporal_velocity_explicit", false);
     return k;
@@ -1656,8 +1944,12 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
                 json_double(item, "temporal_in_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
             k.outgoing_influence = std::clamp(finite_or(
                 json_double(item, "temporal_out_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
-            k.incoming_speed = finite_or(json_double(item, "temporal_in_speed", 0.0), 0.0);
-            k.outgoing_speed = finite_or(json_double(item, "temporal_out_speed", 0.0), 0.0);
+            k.incoming_speed = std::clamp(
+                finite_or(json_double(item, "temporal_in_speed", 0.0), 0.0),
+                -kMaxPropertyValue, kMaxPropertyValue);
+            k.outgoing_speed = std::clamp(
+                finite_or(json_double(item, "temporal_out_speed", 0.0), 0.0),
+                -kMaxPropertyValue, kMaxPropertyValue);
             k.temporal_tangents_linked = json_bool(item, "temporal_tangents_linked", true);
             k.temporal_velocity_explicit = json_bool(item, "temporal_velocity_explicit", false);
 
@@ -1916,7 +2208,8 @@ static json rich_doc_to_json(const RichTextDocument &doc)
 
     json auto_rules = json::array();
     for (const auto &rule : doc.auto_style_rules) {
-        auto_rules.push_back({{"enabled", rule.enabled},
+        auto_rules.push_back({{"pattern_schema_version", bgs::serialization::kCurrentPatternSchemaVersion},
+                              {"enabled", rule.enabled},
                               {"style_preset_id", rule.style_preset_id},
                               {"rule_id", rule.rule_id},
                               {"display_name", rule.display_name},
@@ -1945,7 +2238,9 @@ static json rich_doc_to_json(const RichTextDocument &doc)
                               {"cached_mask", rule.cached_mask},
                               {"cached_format", rich_char_format_to_json(rule.cached_format)}});
     }
-    return {{"version", doc.version}, {"plain_text", doc.plain_text},
+    return {{"version", doc.version},
+            {"formatting_schema_version", bgs::serialization::kCurrentFormattingSchemaVersion},
+            {"plain_text", doc.plain_text},
             {"default_format", rich_char_format_to_json(doc.default_format)},
             {"default_paragraph_format", rich_paragraph_format_to_json(doc.default_paragraph_format)},
             {"has_typing_format", doc.has_typing_format},
@@ -2093,6 +2388,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["locked"]   = l.locked;
     j["properties_expanded"] = l.properties_expanded;
     j["group_collapsed"] = l.group_collapsed;
+    if (l.type == LayerType::TransitionInput) {
+        j["transition_input_slot"] = l.transition_input_slot;
+        j["transition_input_required"] = l.transition_input_required;
+    }
     j["parent_id"] = l.parent_id;
     j["transform_parent_id"] = l.transform_parent_id;
     j["asset_title_id"] = l.asset_title_id;
@@ -2111,6 +2410,39 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["asset_pause_duration"] = l.asset_pause_duration;
     j["asset_loop_count"] = l.asset_loop_count;
     j["asset_loop"] = l.asset_loop;
+    j["audio_source"] = l.audio_source;
+    j["audio_stream_index"] = l.audio_stream_index;
+    j["audio_in_point"] = l.audio_in_point;
+    j["audio_out_point"] = l.audio_out_point;
+    j["audio_volume"] = l.audio_volume;
+    j["audio_pan"] = l.audio_pan;
+    j["audio_volume_prop"] = aprop_to_json(l.audio_volume_prop);
+    j["audio_pan_prop"] = aprop_to_json(l.audio_pan_prop);
+    j["audio_muted"] = l.audio_muted;
+    j["audio_solo"] = l.audio_solo;
+    j["audio_fade_in"] = l.audio_fade_in;
+    j["audio_fade_out"] = l.audio_fade_out;
+    j["audio_fade_curve"] = (int)l.audio_fade_curve;
+    json audio_effects = json::array();
+    for (const auto &fx : l.audio_effects) {
+        audio_effects.push_back({
+            {"type", (int)fx.type}, {"enabled", fx.enabled},
+            {"gain_db", fx.gain_db}, {"frequency_hz", fx.frequency_hz},
+            {"threshold_db", fx.threshold_db}, {"ratio", fx.ratio},
+            {"attack_ms", fx.attack_ms}, {"release_ms", fx.release_ms},
+            {"makeup_db", fx.makeup_db}, {"fade_in", fx.fade_in},
+            {"fade_out", fx.fade_out}, {"fade_curve", (int)fx.fade_curve}
+        });
+    }
+    j["audio_effects"] = std::move(audio_effects);
+    j["audio_loop"] = l.audio_loop;
+    j["audio_playback_mode"] = (int)l.audio_playback_mode;
+    j["audio_independent"] = l.audio_independent;
+    j["audio_media_duration"] = l.audio_media_duration;
+    j["audio_sample_rate"] = l.audio_sample_rate;
+    j["audio_channels"] = l.audio_channels;
+    j["audio_waveform"] = l.audio_waveform;
+    j["audio_waveform_duration"] = l.audio_waveform_duration;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     j["matte_visibility_mode"] = (int)l.matte_visibility_mode;
@@ -2648,11 +2980,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
 
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Asset);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::TransitionInput);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->group_collapsed = json_bool(j, "group_collapsed", false);
+    l->transition_input_slot = std::clamp(json_int(j, "transition_input_slot", -1), -1, 1);
+    l->transition_input_required = json_bool(j, "transition_input_required", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
     l->transform_parent_id = bounded_string(j, "transform_parent_id", "", kMaxNameLength);
     l->asset_title_id = bounded_string(j, "asset_title_id", "", kMaxNameLength);
@@ -2671,6 +3005,59 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->asset_pause_duration = std::clamp(finite_or(json_double(j, "asset_pause_duration", 1.0), 1.0), 0.0, kMaxDuration);
     l->asset_loop_count = std::clamp(json_int(j, "asset_loop_count", 1), 1, 1000000);
     l->asset_loop = json_bool(j, "asset_loop", false);
+    l->audio_source = bounded_string(j, "audio_source", "", kMaxPathLength);
+    l->audio_stream_index = std::clamp(json_int(j, "audio_stream_index", -1), -1, 1024);
+    l->audio_in_point = std::clamp(finite_or(json_double(j, "audio_in_point", 0.0), 0.0), 0.0, kMaxDuration);
+    l->audio_out_point = std::clamp(finite_or(json_double(j, "audio_out_point", 0.0), 0.0), 0.0, kMaxDuration);
+    l->audio_volume = (float)std::clamp(finite_or(json_double(j, "audio_volume", 1.0), 1.0), 0.0, 4.0);
+    l->audio_pan = (float)std::clamp(finite_or(json_double(j, "audio_pan", 0.0), 0.0), -1.0, 1.0);
+    l->audio_volume_prop = j.contains("audio_volume_prop")
+        ? aprop_from_json(j["audio_volume_prop"], "audio_volume")
+        : AnimatedProperty{"audio_volume", l->audio_volume};
+    l->audio_pan_prop = j.contains("audio_pan_prop")
+        ? aprop_from_json(j["audio_pan_prop"], "audio_pan")
+        : AnimatedProperty{"audio_pan", l->audio_pan};
+    l->audio_muted = json_bool(j, "audio_muted", false);
+    l->audio_solo = json_bool(j, "audio_solo", false);
+    l->audio_fade_in = std::clamp(finite_or(json_double(j, "audio_fade_in", 0.0), 0.0), 0.0, kMaxDuration);
+    l->audio_fade_out = std::clamp(finite_or(json_double(j, "audio_fade_out", 0.0), 0.0), 0.0, kMaxDuration);
+    l->audio_fade_curve = (AudioFadeCurve)std::clamp(json_int(j, "audio_fade_curve", 0), 0, 2);
+    if (j.contains("audio_effects") && j["audio_effects"].is_array()) {
+        const size_t count = std::min<size_t>(j["audio_effects"].size(), 64);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &a = j["audio_effects"][i];
+            if (!a.is_object()) continue;
+            AudioEffect fx;
+            fx.type = (AudioEffectType)std::clamp(json_int(a, "type", 0), 0, 4);
+            fx.enabled = json_bool(a, "enabled", true);
+            fx.gain_db = (float)std::clamp(finite_or(json_double(a, "gain_db", 0.0), 0.0), -96.0, 24.0);
+            fx.frequency_hz = (float)std::clamp(finite_or(json_double(a, "frequency_hz", 120.0), 120.0), 10.0, 24000.0);
+            fx.threshold_db = (float)std::clamp(finite_or(json_double(a, "threshold_db", -6.0), -6.0), -60.0, 0.0);
+            fx.ratio = (float)std::clamp(finite_or(json_double(a, "ratio", 4.0), 4.0), 1.0, 100.0);
+            fx.attack_ms = (float)std::clamp(finite_or(json_double(a, "attack_ms", 5.0), 5.0), 0.1, 1000.0);
+            fx.release_ms = (float)std::clamp(finite_or(json_double(a, "release_ms", 80.0), 80.0), 1.0, 5000.0);
+            fx.makeup_db = (float)std::clamp(finite_or(json_double(a, "makeup_db", 0.0), 0.0), -24.0, 24.0);
+            fx.fade_in = std::clamp(finite_or(json_double(a, "fade_in", 0.0), 0.0), 0.0, kMaxDuration);
+            fx.fade_out = std::clamp(finite_or(json_double(a, "fade_out", 0.0), 0.0), 0.0, kMaxDuration);
+            fx.fade_curve = (AudioFadeCurve)std::clamp(json_int(a, "fade_curve", 0), 0, 2);
+            l->audio_effects.push_back(fx);
+        }
+    }
+    l->audio_loop = json_bool(j, "audio_loop", false);
+    l->audio_playback_mode = (AudioPlaybackMode)std::clamp(json_int(j, "audio_playback_mode", 0), 0, 2);
+    l->audio_independent = json_bool(j, "audio_independent", false);
+    l->audio_media_duration = std::clamp(finite_or(json_double(j, "audio_media_duration", 0.0), 0.0), 0.0, kMaxDuration);
+    l->audio_sample_rate = std::clamp(json_int(j, "audio_sample_rate", 0), 0, 768000);
+    l->audio_channels = std::clamp(json_int(j, "audio_channels", 0), 0, 64);
+    l->audio_waveform_duration = std::max(0.0, json_double(j, "audio_waveform_duration", 0.0));
+    if (j.contains("audio_waveform") && j["audio_waveform"].is_array()) {
+        const size_t count = std::min<size_t>(j["audio_waveform"].size(), 8192);
+        l->audio_waveform.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (j["audio_waveform"][i].is_number())
+                l->audio_waveform.push_back((float)std::clamp(j["audio_waveform"][i].get<double>(), -1.0, 1.0));
+        }
+    }
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedClipping);
     if (j.contains("matte_visibility_mode")) {
@@ -3579,6 +3966,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             diagnostics->missing_images,
             l->name + ": " + l->image_path);
     }
+    if (diagnostics && l->type == LayerType::Audio && !l->audio_source.empty() &&
+        !QFileInfo::exists(QString::fromStdString(l->audio_source))) {
+        append_unique_import_diagnostic(
+            diagnostics->missing_audio,
+            l->name + ": " + l->audio_source);
+    }
     l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", l->type == LayerType::Image);
     l->image_box_lock_aspect_ratio = json_bool(j, "image_box_lock_aspect_ratio", false);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
@@ -3614,6 +4007,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr)
 {
     json jt;
+    jt["schema_version"] = bgs::serialization::kCurrentTitleSchemaVersion;
+    jt["development_version"] = bgs::serialization::kCurrentDevelopmentVersion;
     jt["id"]       = t.id;
     jt["name"]     = t.name;
     if (!t.description.empty()) jt["description"] = t.description;
@@ -3629,6 +4024,34 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["bg_color"] = t.bg_color;
     jt["width"]    = t.width;
     jt["height"]   = t.height;
+    jt["graphic_type"] = static_cast<int>(t.graphic_type);
+    if (t.graphic_type == TitleGraphicType::Stinger) {
+        jt["stinger_transition_point"] = t.stinger_transition_point;
+        jt["stinger_audio_enabled"] = t.stinger_audio_enabled;
+        jt["stinger_alpha_output"] = t.stinger_alpha_output;
+        jt["stinger_pre_roll"] = t.stinger_pre_roll;
+        jt["stinger_post_roll"] = t.stinger_post_roll;
+        jt["stinger_render_mode"] = static_cast<int>(t.stinger_render_mode);
+        jt["stinger_switch_mode"] = static_cast<int>(t.stinger_switch_mode);
+        jt["stinger_editor_background"] = static_cast<int>(t.stinger_editor_background);
+    }
+    if (t.proxy_metadata.schema_version > 0 || !t.proxy_metadata.content_hash.empty() ||
+        !t.proxy_metadata.proxy_path.empty() || t.proxy_metadata.complete) {
+        jt["proxy_metadata"] = {
+            {"schema_version", bgs::serialization::kCurrentProxyManifestSchemaVersion},
+            {"content_hash", t.proxy_metadata.content_hash},
+            {"cache_namespace", t.proxy_metadata.cache_namespace},
+            {"proxy_path", t.proxy_metadata.proxy_path},
+            {"generated_at", t.proxy_metadata.generated_at},
+            {"generated_development_version", t.proxy_metadata.generated_development_version},
+            {"width", t.proxy_metadata.width},
+            {"height", t.proxy_metadata.height},
+            {"frame_rate", t.proxy_metadata.frame_rate},
+            {"frame_count", t.proxy_metadata.frame_count},
+            {"has_audio", t.proxy_metadata.has_audio},
+            {"complete", t.proxy_metadata.complete},
+        };
+    }
     jt["is_asset"] = t.is_asset;
     jt["asset_animated"] = t.asset_animated;
     jt["asset_category"] = t.asset_category;
@@ -3698,13 +4121,26 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     return jt;
 }
 
-static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_ids,
+static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate_ids,
                                                bool require_embedded_assets = false, std::string *error = nullptr,
                                                TitleImportDiagnostics *diagnostics = nullptr)
 {
+    if (!input.is_object())
+        throw std::runtime_error("Title entry root must be a JSON object.");
+
+    bgs::serialization::MigrationReport migration_report;
+    const json jt = bgs::serialization::migrate_title_json(input, &migration_report);
     auto t = std::make_shared<Title>();
     if (!jt.is_object())
         return t;
+    if (!migration_report.recoveries.empty() || !migration_report.warnings.empty()) {
+        BGL_LOG_WARNING("Serialization", QStringLiteral(
+            "Recovered title JSON sourceSchema=%1 sourceDevelopment=%2 recoveries=%3 warnings=%4")
+            .arg(migration_report.source_schema_version)
+            .arg(migration_report.source_development_version)
+            .arg(static_cast<int>(migration_report.recoveries.size()))
+            .arg(static_cast<int>(migration_report.warnings.size())));
+    }
 
     t->id       = bounded_string(jt, "id", TitleDataStore::make_uuid(), kMaxNameLength);
     t->name     = bounded_string(jt, "name", "Untitled", kMaxNameLength);
@@ -3721,6 +4157,66 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->bg_color = json_color(jt, "bg_color", (uint32_t)0x00000000);
     t->width    = std::clamp(json_int(jt, "width", 1920), 1, kMaxCanvasDimension);
     t->height   = std::clamp(json_int(jt, "height", 1080), 1, kMaxCanvasDimension);
+    const bool has_explicit_graphic_type = jt.contains("graphic_type");
+    t->graphic_type = static_cast<TitleGraphicType>(std::clamp(
+        json_int(jt, "graphic_type", 0),
+        static_cast<int>(TitleGraphicType::Title),
+        static_cast<int>(TitleGraphicType::Stinger)));
+    t->stinger_transition_point = finite_or(json_double(
+        jt, "stinger_transition_point", t->duration * 0.5), t->duration * 0.5);
+    /* Legacy transition-point display-mode values are intentionally ignored.
+     * Transition points are now always presented as timecode. */
+    t->stinger_audio_enabled = json_bool(jt, "stinger_audio_enabled", true);
+    t->stinger_alpha_output = json_bool(jt, "stinger_alpha_output", true);
+    t->stinger_pre_roll = std::clamp(finite_or(json_double(jt, "stinger_pre_roll", 0.0), 0.0), 0.0, kMaxDuration);
+    t->stinger_post_roll = std::clamp(finite_or(json_double(jt, "stinger_post_roll", 0.0), 0.0), 0.0, kMaxDuration);
+    t->stinger_render_mode = static_cast<StingerRenderMode>(std::clamp(
+        json_int(jt, "stinger_render_mode", 0),
+        static_cast<int>(StingerRenderMode::ProceduralLive),
+        static_cast<int>(StingerRenderMode::PrerenderedProxy)));
+    t->stinger_switch_mode = static_cast<StingerSwitchMode>(std::clamp(
+        json_int(jt, "stinger_switch_mode", 0),
+        static_cast<int>(StingerSwitchMode::SwitchAtPoint),
+        static_cast<int>(StingerSwitchMode::ManualSceneAnimation)));
+    int stinger_editor_background = json_int(
+        jt, "stinger_editor_background",
+        static_cast<int>(StingerEditorBackground::FollowSwitchPoint));
+    /* v168-v169 stored a static Scene A or Scene B choice. The canvas preview
+     * now represents the actual transition, so both legacy values migrate to
+     * the automatic A-before/B-after switch-point background. */
+    if (stinger_editor_background == static_cast<int>(StingerEditorBackground::SceneA) ||
+        stinger_editor_background == static_cast<int>(StingerEditorBackground::SceneB))
+        stinger_editor_background = static_cast<int>(StingerEditorBackground::FollowSwitchPoint);
+    t->stinger_editor_background = static_cast<StingerEditorBackground>(std::clamp(
+        stinger_editor_background,
+        static_cast<int>(StingerEditorBackground::CanvasTransparency),
+        static_cast<int>(StingerEditorBackground::FollowSwitchPoint)));
+    set_stinger_transition_point_seconds(*t, t->stinger_transition_point);
+    if (jt.contains("proxy_metadata") && jt["proxy_metadata"].is_object()) {
+        const json &proxy = jt["proxy_metadata"];
+        t->proxy_metadata.schema_version = std::clamp(
+            json_int(proxy, "schema_version", 0), 0,
+            bgs::serialization::kCurrentProxyManifestSchemaVersion);
+        t->proxy_metadata.content_hash = bounded_string(proxy, "content_hash", "", 512);
+        t->proxy_metadata.cache_namespace = bounded_string(proxy, "cache_namespace", "", kMaxNameLength);
+        t->proxy_metadata.proxy_path = bounded_string(proxy, "proxy_path", "", kMaxPathLength);
+        t->proxy_metadata.generated_at = bounded_string(proxy, "generated_at", "", kMaxNameLength);
+        t->proxy_metadata.generated_development_version = std::clamp(
+            json_int(proxy, "generated_development_version", 0), 0, 1000000);
+        t->proxy_metadata.width = std::clamp(json_int(proxy, "width", 0), 0, kMaxCanvasDimension);
+        t->proxy_metadata.height = std::clamp(json_int(proxy, "height", 0), 0, kMaxCanvasDimension);
+        t->proxy_metadata.frame_rate = std::clamp(
+            finite_or(json_double(proxy, "frame_rate", 0.0), 0.0), 0.0, 1000.0);
+        t->proxy_metadata.frame_count = std::clamp(
+            json_int(proxy, "frame_count", 0), 0, 100000000);
+        t->proxy_metadata.has_audio = json_bool(proxy, "has_audio", false);
+        t->proxy_metadata.complete = json_bool(proxy, "complete", false);
+        /* Proxy metadata is advisory. A stale/missing file is treated as an
+         * unavailable proxy and never prevents the title from loading. */
+        if (!t->proxy_metadata.proxy_path.empty() &&
+            !QFileInfo::exists(QString::fromStdString(t->proxy_metadata.proxy_path)))
+            t->proxy_metadata.complete = false;
+    }
     t->is_asset = json_bool(jt, "is_asset", false);
     t->asset_animated = json_bool(jt, "asset_animated", false);
     t->asset_category = bounded_string(jt, "asset_category", "Default", kMaxNameLength);
@@ -3755,6 +4251,24 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
             if (require_embedded_assets && error && !error->empty())
                 return t;
         }
+    }
+    if (t->graphic_type == TitleGraphicType::Stinger &&
+        t->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
+        ensure_stinger_transition_input_layers(*t);
+
+    if (!has_explicit_graphic_type) {
+        bool has_exposed_text = false;
+        bool has_scene_mask = false;
+        for (const auto &layer : t->layers) {
+            if (!layer)
+                continue;
+            has_exposed_text = has_exposed_text ||
+                               (layer->type == LayerType::Text && layer->expose_text);
+            has_scene_mask = has_scene_mask || layer->use_as_scene_mask;
+        }
+        t->graphic_type = has_exposed_text ? TitleGraphicType::Title
+                          : has_scene_mask ? TitleGraphicType::Mask
+                                           : TitleGraphicType::Graphic;
     }
     /* Development builds before 056 stored both group membership and ordinary
      * transform parenting in parent_id. Preserve real Group containers exactly,
@@ -3878,55 +4392,10 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
                                                        kMaxScreenshotBase64Length);
 
     if (regenerate_ids) {
-        std::unordered_map<std::string, std::string> layer_id_map;
+        /* Imported templates need a new title identity, but layer IDs remain
+         * stable because they are scoped to their title and are referenced by
+         * external bindings, masks, parents and asset metadata. */
         t->id = TitleDataStore::make_uuid();
-        for (auto &layer : t->layers) {
-            std::string old_id = layer->id;
-            layer->id = TitleDataStore::make_uuid();
-            if (!old_id.empty())
-                layer_id_map[old_id] = layer->id;
-        }
-        for (auto &layer : t->layers) {
-            auto it = layer_id_map.find(layer->parent_id);
-            if (it != layer_id_map.end())
-                layer->parent_id = it->second;
-            else if (!layer->parent_id.empty())
-                layer->parent_id.clear();
-            auto transform_parent_it = layer_id_map.find(layer->transform_parent_id);
-            if (transform_parent_it != layer_id_map.end())
-                layer->transform_parent_id = transform_parent_it->second;
-            else if (!layer->transform_parent_id.empty())
-                layer->transform_parent_id.clear();
-            auto asset_owner_it = layer_id_map.find(layer->asset_owner_id);
-            if (asset_owner_it != layer_id_map.end())
-                layer->asset_owner_id = asset_owner_it->second;
-            else if (!layer->asset_owner_id.empty())
-                layer->asset_owner_id.clear();
-            auto mask_it = layer_id_map.find(layer->mask_source_id);
-            if (mask_it != layer_id_map.end())
-                layer->mask_source_id = mask_it->second;
-            else if (!layer->mask_source_id.empty()) {
-                layer->mask_source_id.clear();
-                layer->mask_mode = MaskMode::None;
-            }
-        }
-        for (auto &layer_id : t->live_text_column_order) {
-            auto it = layer_id_map.find(layer_id);
-            if (it != layer_id_map.end())
-                layer_id = it->second;
-        }
-        for (auto &cell : t->live_text_external_bindings) {
-            auto it = layer_id_map.find(cell.layer_id);
-            if (it != layer_id_map.end())
-                cell.layer_id = it->second;
-        }
-        for (auto &mapping : t->live_text_table_bindings) {
-            for (auto &column : mapping.columns) {
-                auto it = layer_id_map.find(column.layer_id);
-                if (it != layer_id_map.end())
-                    column.layer_id = it->second;
-            }
-        }
     }
 
     /* Asset animation is derived from the cloned nested composition, not from
@@ -4147,7 +4616,9 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
 
     json root;
     root["format"] = "broadcast-graphics-live-title-template";
-    root["version"] = 3;
+    root["version"] = 4;
+    root["schema_version"] = bgs::serialization::kCurrentTitleSchemaVersion;
+    root["development_version"] = bgs::serialization::kCurrentDevelopmentVersion;
     root["template_title"] = export_metadata.title;
     root["description"] = export_metadata.description;
     root["creator"] = export_metadata.creator;
@@ -4183,19 +4654,23 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     }
     root["title"] = std::move(exported_title);
 
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f.is_open()) {
-        if (error) *error = "Could not open the export file for writing.";
-        return false;
-    }
+    std::string payload;
     try {
-        f << root.dump(2, ' ', false, json::error_handler_t::replace);
+        payload = root.dump(2, ' ', false, json::error_handler_t::replace);
     } catch (const std::exception &e) {
         if (error) *error = std::string("Failed to serialize the export file: ") + e.what();
         return false;
     }
-    if (!f.good()) {
-        if (error) *error = "Failed while writing the export file.";
+
+    QSaveFile file(QString::fromUtf8(path.data(), static_cast<int>(path.size())));
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = "Could not open the export file for atomic writing.";
+        return false;
+    }
+    const qint64 expected = static_cast<qint64>(payload.size());
+    if (file.write(payload.data(), expected) != expected || !file.commit()) {
+        if (error) *error = "Failed while atomically writing the export file.";
         BGL_LOG_ERROR("ImportExport", QStringLiteral(
             "Title export write failed id=%1 path=%2")
             .arg(QString::fromStdString(id), QString::fromStdString(path)));
@@ -4256,19 +4731,10 @@ std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std
         std::unordered_set<std::string> seen_ids;
         ensure_unique_title_id(imported, seen_ids);
 
-        std::string base_name = imported->name.empty() ? "Imported Title" : imported->name;
-        std::string unique_name = base_name;
-        int suffix = 2;
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
-            auto name_exists = [this](const std::string &candidate) {
-                return std::any_of(titles_.begin(), titles_.end(), [&](const auto &existing) {
-                    return existing && existing->name == candidate;
-                });
-            };
-            while (name_exists(unique_name))
-                unique_name = base_name + " (imported " + std::to_string(suffix++) + ")";
-            imported->name = unique_name;
+            imported->name = unique_title_name_locked(
+                titles_, imported->name.empty() ? "Imported Title" : imported->name);
             titles_.push_back(imported);
         }
 
@@ -4340,17 +4806,33 @@ void TitleDataStore::load()
     }
 
     try {
-        if (!root.is_array())
-            throw std::runtime_error("Saved titles root must be an array.");
+        const json *stored_titles = nullptr;
+        if (root.is_array()) {
+            stored_titles = &root;
+        } else if (root.is_object() && root.contains("titles") &&
+                   root["titles"].is_array()) {
+            /* Future-compatible object roots are accepted, while saves remain
+             * arrays so pre-schema BGL builds can still open the collection. */
+            stored_titles = &root["titles"];
+        } else {
+            throw std::runtime_error("Saved titles root must be an array or an object containing a titles array.");
+        }
 
         std::vector<std::shared_ptr<Title>> loaded;
         std::unordered_set<std::string> seen_ids;
-        const size_t count = std::min(root.size(), kMaxTitles);
+        const size_t count = std::min(stored_titles->size(), kMaxTitles);
         loaded.reserve(count);
         for (size_t i = 0; i < count; ++i) {
-            auto title = title_from_json(root[i], false);
-            ensure_unique_title_id(title, seen_ids);
-            loaded.push_back(title);
+            try {
+                auto title = title_from_json((*stored_titles)[i], false);
+                ensure_unique_title_id(title, seen_ids);
+                loaded.push_back(title);
+            } catch (const std::exception &entry_error) {
+                BGL_LOG_WARNING("Serialization", QStringLiteral(
+                    "Skipped unrecoverable title entry index=%1 error=%2")
+                    .arg(static_cast<qulonglong>(i))
+                    .arg(QString::fromUtf8(entry_error.what())));
+            }
         }
         size_t loaded_count = 0;
         {

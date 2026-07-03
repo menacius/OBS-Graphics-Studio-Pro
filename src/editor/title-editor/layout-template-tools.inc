@@ -93,6 +93,8 @@ std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const s
         if (!layer) continue;
         auto clone = std::make_shared<Layer>(*layer);
         clone->id = TitleDataStore::make_uuid();
+        if (clone->type == LayerType::TransitionInput)
+            clone->transition_input_required = false;
         if (suffix_name)
             clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy")
                                               : clone->name + editor_text_std("OBSTitles.CopySuffix");
@@ -207,7 +209,8 @@ void TitleEditor::duplicate_selected_layers()
     if (!title_) return;
     const auto requested_ids = selected_layer_ids_for_operation();
     if (requested_ids.empty()) return;
-    const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
+    auto ids = editor_selection_with_group_descendants(title_, requested_ids);
+    if (ids.empty()) return;
 
     std::set<std::string> selected_ids(ids.begin(), ids.end());
     std::vector<std::shared_ptr<Layer>> originals;
@@ -551,7 +554,8 @@ void TitleEditor::copy_selected_layer()
     layer_clipboard_.reserve(ids.size());
     for (const auto &id : ids) {
         auto layer = title_->find_layer(id);
-        if (layer) layer_clipboard_.push_back(std::make_shared<Layer>(*layer));
+        if (layer)
+            layer_clipboard_.push_back(std::make_shared<Layer>(*layer));
     }
     if (layers_) layers_->set_layer_clipboard_available(!layer_clipboard_.empty());
 }
@@ -563,7 +567,8 @@ void TitleEditor::paste_layer_from_clipboard()
     std::vector<std::shared_ptr<Layer>> clipboard_layers;
     clipboard_layers.reserve(layer_clipboard_.size());
     for (const auto &layer : layer_clipboard_)
-        if (layer) clipboard_layers.push_back(layer);
+        if (layer)
+            clipboard_layers.push_back(layer);
 
     auto pasted_layers = clone_layers_for_insert(clipboard_layers, true);
     if (pasted_layers.empty()) return;
@@ -668,7 +673,12 @@ void TitleEditor::delete_selected_layer()
     if (!title_) return;
     const auto requested_ids = selected_layer_ids_for_operation();
     if (requested_ids.empty()) return;
-    const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
+    auto ids = editor_selection_with_group_descendants(title_, requested_ids);
+    ids.erase(std::remove_if(ids.begin(), ids.end(), [this](const std::string &id) {
+        auto layer = title_->find_layer(id);
+        return layer && stinger_transition_input_layer_is_protected(*layer);
+    }), ids.end());
+    if (ids.empty()) return;
 
     std::set<std::string> removed_ids(ids.begin(), ids.end());
     std::vector<std::pair<std::shared_ptr<Layer>, QTransform>> detached_transform_children;
@@ -779,6 +789,15 @@ void TitleEditor::restore_undo_snapshot(int index)
     title_->bg_color = snapshot->bg_color;
     title_->width = snapshot->width;
     title_->height = snapshot->height;
+    title_->graphic_type = snapshot->graphic_type;
+    title_->stinger_transition_point = snapshot->stinger_transition_point;
+    title_->stinger_audio_enabled = snapshot->stinger_audio_enabled;
+    title_->stinger_alpha_output = snapshot->stinger_alpha_output;
+    title_->stinger_pre_roll = snapshot->stinger_pre_roll;
+    title_->stinger_post_roll = snapshot->stinger_post_roll;
+    title_->stinger_render_mode = snapshot->stinger_render_mode;
+    title_->stinger_switch_mode = snapshot->stinger_switch_mode;
+    title_->stinger_editor_background = snapshot->stinger_editor_background;
     title_->live_text_rows = snapshot->live_text_rows;
     title_->live_text_row_ids = snapshot->live_text_row_ids;
     title_->live_text_column_order = snapshot->live_text_column_order;
@@ -919,10 +938,12 @@ void TitleEditor::play_pause()
         act_play_->setIcon(obs_icon("pause.svg"));
         playback_clock_.restart();
         play_timer_->start();
+        sync_editor_audio_preview(true);
     } else {
         act_play_->setText("▶");
         act_play_->setIcon(obs_icon("play.svg"));
         play_timer_->stop();
+        sync_editor_audio_preview(false);
     }
 }
 
@@ -939,6 +960,7 @@ void TitleEditor::play_full_loop()
     act_play_->setIcon(obs_icon("pause.svg"));
     playback_clock_.restart();
     play_timer_->start();
+    sync_editor_audio_preview(true);
 }
 
 void TitleEditor::reverse_play()
@@ -951,6 +973,7 @@ void TitleEditor::reverse_play()
         play_timer_->stop();
         act_play_->setText("▶");
         act_play_->setIcon(obs_icon("play.svg"));
+        sync_editor_audio_preview(false);
         return;
     }
     full_loop_playback_ = false;
@@ -964,6 +987,7 @@ void TitleEditor::reverse_play()
     act_play_->setIcon(obs_icon("pause.svg"));
     playback_clock_.restart();
     play_timer_->start();
+    sync_editor_audio_preview(true);
 }
 
 void TitleEditor::go_to_start()

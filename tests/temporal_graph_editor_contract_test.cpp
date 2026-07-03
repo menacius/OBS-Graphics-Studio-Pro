@@ -82,7 +82,7 @@ int main(int argc, char **argv)
                          "double evaluate_temporal_segment_velocity(", "std::clamp(segment.start_value",
                          "property values are not clamped");
     ok &= require(animation_cpp, "if (!(span > kAnimationEpsilon))", "short interval guard");
-    ok &= require(animation_cpp, "return evaluate_temporal_segment(temporal_segment(i), t)",
+    ok &= require(animation_cpp, "return evaluate_temporal_segment(temporal_segment(segment), t)",
                   "scalar uses common evaluator");
     ok &= require(animation_cpp, "const double progress = evaluate_temporal_segment(segment, t)",
                   "position uses common evaluator");

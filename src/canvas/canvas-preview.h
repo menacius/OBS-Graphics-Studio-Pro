@@ -108,6 +108,9 @@ public:
     void set_snap_to_canvas_bounds(bool enabled);
     void set_snap_to_spacing(bool enabled);
     void refresh_preview();
+    int last_render_cost_ms() const { return last_full_quality_render_cost_ms_; }
+    double average_render_cost_ms() const { return average_render_cost_ms_; }
+    double live_playback_fps() const { return measured_live_fps_; }
     bool prepare_cached_playback_frame(double time);
     void clear_rendered_frame();
     QImage current_rendered_frame() const;
@@ -116,6 +119,7 @@ public:
     void fit_canvas(bool up_to_100 = false);
     bool fit_zoom_active() const { return fit_zoom_active_; }
     void set_checkerboard_pattern(int pattern);
+    int checkerboard_pattern() const { return checkerboard_pattern_; }
     enum class AdaptiveQualityMode { Auto = 0, Full, Percent75, Percent50, Percent37_5, Percent25 };
     void set_adaptive_rendering_enabled(bool enabled);
     bool adaptive_rendering_enabled() const { return adaptive_rendering_enabled_; }
@@ -349,6 +353,9 @@ private:
                                            const Vec2Value &offset) const;
     QPointF position_segment_canvas_point(const Layer &layer, size_t segment_index,
                                           double temporal_progress) const;
+    const std::vector<std::vector<QPointF>> &motion_path_canvas_samples(
+        const Layer &layer, int samples_per_segment) const;
+    void invalidate_motion_path_sample_cache() const;
     int hit_test_position_keyframe_vertices(const Layer &layer,
                                             const QPointF &view_pt) const;
     DragMode hit_test_position_tangent_handles(const Layer &layer,
@@ -381,6 +388,7 @@ private:
     void begin_adaptive_interaction();
     void end_adaptive_interaction();
     double adaptive_preview_scale() const;
+    bool layer_is_editor_visible(const Layer &layer) const;
     std::shared_ptr<Layer> selected_layer() const;
     std::vector<std::shared_ptr<Layer>> selected_layers() const;
     QRectF layer_local_rect(const Layer &layer) const;
@@ -548,6 +556,12 @@ private:
     bool force_live_full_quality_render_ = false;
     double frame_image_preview_scale_ = 1.0;
     int last_full_quality_render_cost_ms_ = 0;
+    qint64 render_cost_accumulator_ms_ = 0;
+    int render_cost_sample_count_ = 0;
+    double average_render_cost_ms_ = 0.0;
+    QElapsedTimer live_fps_timer_;
+    int live_fps_frame_count_ = 0;
+    double measured_live_fps_ = 0.0;
     QHash<QString, QImage> editor_quality_cache_;
     bool safe_guides_visible_ = false;
     bool rulers_visible_ = false;
@@ -616,6 +630,15 @@ private:
         InTangent,
         OutTangent,
     };
+    struct MotionPathSampleCache {
+        std::string title_id;
+        std::string layer_id;
+        size_t keyframe_count = 0;
+        int samples_per_segment = 0;
+        std::vector<std::vector<QPointF>> canvas_segments;
+        bool valid = false;
+    };
+    mutable MotionPathSampleCache motion_path_sample_cache_;
     int selected_position_keyframe_index_ = -1;
     MotionPathHoverType motion_path_hover_type_ = MotionPathHoverType::None;
     int motion_path_hover_keyframe_index_ = -1;

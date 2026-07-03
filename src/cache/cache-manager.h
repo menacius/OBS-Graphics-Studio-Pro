@@ -9,11 +9,13 @@
 #include <QSet>
 #include <QMutex>
 #include <QDateTime>
+#include <QReadWriteLock>
 #include <QRect>
 #include <QVector>
 
 #include <memory>
 #include <functional>
+#include <list>
 #include <vector>
 #include <atomic>
 #include <condition_variable>
@@ -108,7 +110,9 @@ private:
     mutable QMutex mutex_;
     QHash<CacheFrameKey, quint64> key_payload_ids_;
     QHash<quint64, PayloadEntry> payloads_;
-    QVector<CacheFrameKey> lru_;
+    void touchKeyLocked(const CacheFrameKey &key);
+    std::list<CacheFrameKey> lru_;
+    QHash<CacheFrameKey, std::list<CacheFrameKey>::iterator> lru_positions_;
     quint64 max_bytes_ = 512ull * 1024ull * 1024ull;
     quint64 bytes_used_ = 0;
 };
@@ -121,9 +125,10 @@ public:
     bool contains(const CacheFrameKey &key) const;
     bool get(const CacheFrameKey &key, QImage &image) const;
     void put(const CacheFrameKey &key, const QImage &image);
-    void enqueuePut(const CacheFrameKey &key, const QImage &image);
+    bool enqueuePut(const CacheFrameKey &key, const QImage &image);
     void enqueueAlias(const CacheFrameKey &key,
                       const CacheFrameKey &canonical_key);
+    void cancelTitleWrites(const QString &title_id);
     void flushWrites();
     QVector<CacheFrameKey> keysForTitle(const QString &title_id) const;
     void remove(const CacheFrameKey &key);
@@ -134,6 +139,7 @@ public:
     quint64 bytesUsed() const;
 
 private:
+    struct WriteJob;
     struct TileRef {
         QRect rect;
         QByteArray digest;
@@ -148,10 +154,12 @@ private:
     void writerLoop();
     void cancelQueuedWrites();
     void putForGeneration(const CacheFrameKey &key, const QImage &image,
-                          quint64 generation);
+                          quint64 generation, quint64 title_generation);
     void aliasForGeneration(const CacheFrameKey &key,
                             const CacheFrameKey &canonical_key,
-                            quint64 generation);
+                            quint64 generation, quint64 title_generation);
+    quint64 titleWriteGeneration(const QString &title_id) const;
+    bool writeJobCurrent(const WriteJob &job) const;
     void putLocked(const CacheFrameKey &key, const QImage &image);
     bool aliasLocked(const CacheFrameKey &key,
                      const CacheFrameKey &canonical_key);
@@ -160,6 +168,9 @@ private:
     bool readTileLocked(const TileRef &ref, QImage &image) const;
     bool writeTileLocked(const QImage &image, const QByteArray &digest,
                          quint64 &created_bytes);
+    void setIndexedMembershipLocked(const QString &indexed_key, bool present);
+    void rebuildIndexedMembershipLocked();
+    void publishBytesUsedLocked();
     void addTileReferencesLocked(const QVector<QByteArray> &digests);
     void releaseTileReferencesLocked(const QVector<QByteArray> &digests);
     struct WriteJob {
@@ -169,26 +180,32 @@ private:
         CacheFrameKey canonical_key;
         QImage image;
         quint64 generation = 0;
+        quint64 title_generation = 0;
         quint64 bytes = 0;
     };
     mutable QMutex mutex_;
     QString cache_dir_;
     QHash<QString, CacheFrameKey> indexed_keys_;
+    mutable QReadWriteLock membership_mutex_;
+    QSet<QString> indexed_membership_;
     QHash<QString, QVector<QByteArray>> frame_tile_digests_;
     QHash<QByteArray, qsizetype> tile_ref_counts_;
     quint64 bytes_used_ = 0;
+    std::atomic<quint64> bytes_used_snapshot_{0};
     std::mutex writer_mutex_;
     std::condition_variable writer_cv_;
     std::condition_variable writer_idle_cv_;
-    std::condition_variable writer_space_cv_;
     std::deque<WriteJob> writer_queue_;
     std::deque<QString> cleanup_queue_;
     std::thread writer_thread_;
     bool writer_stop_ = false;
     bool writer_active_ = false;
     quint64 writer_pending_bytes_ = 0;
-    quint64 writer_queue_budget_ = 64ull * 1024ull * 1024ull;
+    quint64 writer_queue_budget_ = 128ull * 1024ull * 1024ull;
+    std::size_t writer_queue_limit_ = 8;
     std::atomic<quint64> writer_generation_{1};
+    mutable std::mutex writer_title_generation_mutex_;
+    QHash<QString, quint64> writer_title_generations_;
 };
 
 class CacheStateTracker : public QObject {
@@ -244,6 +261,7 @@ public:
 
     explicit RenderQueueManager(QObject *parent = nullptr);
     bool enqueue(const Job &job);
+    int enqueueMany(const QVector<Job> &jobs);
     void setAcceptingJobs(bool accepting);
     void cancelTitle(const QString &title_id);
     void cancelRange(const QString &title_id, int first_frame, int last_frame);
@@ -263,9 +281,12 @@ signals:
     void queueChanged();
 
 private:
+    void rebuildQueuedIndicesLocked();
     mutable QMutex mutex_;
     QVector<Job> jobs_;
     QSet<QString> queued_keys_;
+    QHash<QString, int> queued_indices_;
+    bool order_dirty_ = false;
     QHash<QString, QString> active_tokens_;
     bool accepting_jobs_ = true;
 };
@@ -308,6 +329,7 @@ public:
     void restoreDiskStates(const std::shared_ptr<Title> &title);
     bool titleHasTimelineChanges(const Title &title) const;
     FrameCacheState displayStateForFrame(const std::shared_ptr<Title> &title, int frame) const;
+    bool frameReadyForPlayback(const std::shared_ptr<Title> &title, double time) const;
     bool displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const;
 
     void clearRam();
@@ -425,6 +447,13 @@ private:
     int frameForTime(double t) const;
     double timeForFrame(int frame) const;
     void wakeWorker();
+    void scheduleQueueChanged();
+    void scheduleDiagnosticsChanged();
+    void scheduleFrameReady(const QString &title_id, int frame);
+    void scheduleLiveCueStateChanged(const QString &title_id, int row);
+    void scheduleCacheStatesChanged(const QString &title_id, int first_frame, int last_frame);
+    void scheduleUiNotificationFlush();
+    void flushUiNotifications();
     void workerLoop();
     bool takePendingLiveCueStructureRefresh(std::shared_ptr<Title> &title);
     bool renderJob(RenderQueueManager::Job job);
@@ -507,4 +536,12 @@ private:
     mutable QMutex visual_hash_mutex_;
     QHash<QString, QString> last_visual_hash_by_title_;
     QHash<QString, QHash<QString, QRect>> last_layer_rects_by_title_;
+
+    mutable std::mutex ui_notification_mutex_;
+    std::atomic_bool ui_notification_flush_scheduled_{false};
+    bool pending_queue_changed_ = false;
+    bool pending_diagnostics_changed_ = false;
+    QHash<QString, QPair<int, int>> pending_cache_state_ranges_;
+    QHash<QString, QSet<int>> pending_frame_ready_;
+    QHash<QString, QSet<int>> pending_live_cue_rows_;
 };

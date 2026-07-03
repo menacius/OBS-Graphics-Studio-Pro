@@ -277,7 +277,8 @@
     };
     auto rule_to_json = [format_to_json](const RichTextAutoStyleRule &r) {
         QJsonArray excludes; for (const auto &id : r.excludes_rule_ids) excludes.append(QString::fromStdString(id));
-        return QJsonObject{{"enabled", r.enabled}, {"style_preset_id", QString::fromStdString(r.style_preset_id)},
+        return QJsonObject{{"pattern_schema_version", bgs::serialization::kCurrentPatternSchemaVersion},
+            {"enabled", r.enabled}, {"style_preset_id", QString::fromStdString(r.style_preset_id)},
             {"rule_id", QString::fromStdString(r.rule_id)}, {"display_name", QString::fromStdString(r.display_name)},
             {"conflict_mode", QString::fromStdString(r.conflict_mode)}, {"match_mode", QString::fromStdString(r.match_mode)},
             {"stop_processing", r.stop_processing}, {"excludes_rule_ids", excludes}, {"condition_type", QString::fromStdString(r.condition_type)},
@@ -290,21 +291,50 @@
             {"start", (qint64)r.start}, {"length", (qint64)r.length}, {"cached_mask", (qint64)r.cached_mask},
             {"cached_format", format_to_json(r.cached_format)}};
     };
-    auto rule_from_json = [format_from_json](const QJsonObject &o, int index) {
+    auto bounded_rule_string = [](const QJsonObject &o, const char *key,
+                                  const QString &fallback, int maximum) {
+        QString value = o.value(QString::fromUtf8(key)).toString(fallback);
+        if (value.size() > maximum) value.truncate(maximum);
+        return value.toStdString();
+    };
+    auto bounded_rule_size = [](const QJsonObject &o, const char *key,
+                                quint64 fallback, quint64 maximum) {
+        bool ok = false;
+        const quint64 value = o.value(QString::fromUtf8(key)).toVariant().toULongLong(&ok);
+        return static_cast<size_t>(std::min(ok ? value : fallback, maximum));
+    };
+    auto rule_from_json = [format_from_json, bounded_rule_string,
+                           bounded_rule_size](const QJsonObject &o, int index) {
         RichTextAutoStyleRule r; r.enabled = o.value("enabled").toBool(true);
-        r.style_preset_id = o.value("style_preset_id").toString().toStdString(); r.rule_id = o.value("rule_id").toString().toStdString();
+        r.style_preset_id = bounded_rule_string(o, "style_preset_id", QString(), 256);
+        r.rule_id = bounded_rule_string(o, "rule_id", QString(), 256);
         if (r.rule_id.empty()) r.rule_id = std::string("rule_") + std::to_string(index + 1);
-        r.display_name = o.value("display_name").toString().toStdString(); r.conflict_mode = o.value("conflict_mode").toString("override_previous").toStdString();
-        r.match_mode = o.value("match_mode").toString("all_matches").toStdString(); r.stop_processing = o.value("stop_processing").toBool(false);
-        for (const auto &v : o.value("excludes_rule_ids").toArray()) r.excludes_rule_ids.push_back(v.toString().toStdString());
-        r.condition_type = o.value("condition_type").toString("range_markers").toStdString(); r.regex_pattern = o.value("regex_pattern").toString().toStdString();
-        r.regex_capture_group = (size_t)o.value("regex_capture_group").toVariant().toULongLong(); r.regex_case_sensitive = o.value("regex_case_sensitive").toBool(true); r.generalization_mode = o.value("generalization_mode").toString("auto_merge").toStdString(); r.prevent_duplicates = o.value("prevent_duplicates").toBool(true); r.allow_multiple_cases = o.value("allow_multiple_cases").toBool(true);
-        r.start_condition = o.value("start_condition").toString("text_start").toStdString(); r.end_condition = o.value("end_condition").toString("character_index").toStdString();
-        r.start_offset = (size_t)o.value("start_offset").toVariant().toULongLong(); r.end_offset = (size_t)o.value("end_offset").toVariant().toULongLong();
-        r.start_custom_chars = o.value("start_custom_chars").toString().toStdString(); r.end_custom_chars = o.value("end_custom_chars").toString().toStdString();
+        r.display_name = bounded_rule_string(o, "display_name", QString(), 512);
+        r.conflict_mode = bounded_rule_string(o, "conflict_mode", QStringLiteral("override_previous"), 64);
+        r.match_mode = bounded_rule_string(o, "match_mode", QStringLiteral("all_matches"), 64);
+        r.stop_processing = o.value("stop_processing").toBool(false);
+        const QJsonArray excludes = o.value("excludes_rule_ids").toArray();
+        for (int i = 0; i < excludes.size() && i < 128; ++i) {
+            QString id = excludes.at(i).toString(); if (id.size() > 256) id.truncate(256);
+            if (!id.isEmpty()) r.excludes_rule_ids.push_back(id.toStdString());
+        }
+        r.condition_type = bounded_rule_string(o, "condition_type", QStringLiteral("range_markers"), 64);
+        r.regex_pattern = bounded_rule_string(o, "regex_pattern", QString(), 65536);
+        r.regex_capture_group = bounded_rule_size(o, "regex_capture_group", 0, 1024);
+        r.regex_case_sensitive = o.value("regex_case_sensitive").toBool(true);
+        r.generalization_mode = bounded_rule_string(o, "generalization_mode", QStringLiteral("auto_merge"), 64);
+        r.prevent_duplicates = o.value("prevent_duplicates").toBool(true); r.allow_multiple_cases = o.value("allow_multiple_cases").toBool(true);
+        r.start_condition = bounded_rule_string(o, "start_condition", QStringLiteral("text_start"), 64);
+        r.end_condition = bounded_rule_string(o, "end_condition", QStringLiteral("character_index"), 64);
+        r.start_offset = bounded_rule_size(o, "start_offset", 0, 10000000);
+        r.end_offset = bounded_rule_size(o, "end_offset", 0, 10000000);
+        r.start_custom_chars = bounded_rule_string(o, "start_custom_chars", QString(), 65536);
+        r.end_custom_chars = bounded_rule_string(o, "end_custom_chars", QString(), 65536);
         r.require_stop_match = o.value("require_stop_match").toBool(true); r.include_start_marker = o.value("include_start_marker").toBool(true);
-        r.include_end_marker = o.value("include_end_marker").toBool(false); r.start = (size_t)o.value("start").toVariant().toULongLong();
-        r.length = (size_t)o.value("length").toVariant().toULongLong(); r.cached_mask = (uint32_t)o.value("cached_mask").toVariant().toULongLong();
+        r.include_end_marker = o.value("include_end_marker").toBool(false);
+        r.start = bounded_rule_size(o, "start", 0, 10000000);
+        r.length = bounded_rule_size(o, "length", 0, 10000000);
+        r.cached_mask = static_cast<uint32_t>(bounded_rule_size(o, "cached_mask", 0, 0xffffffffULL));
         r.cached_format = format_from_json(o.value("cached_format").toObject(), r.cached_format); return r;
     };
     auto update_rule_set_status = [this]() {
@@ -320,14 +350,20 @@
         if (path.isEmpty()) return false;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".gsp-auto-style.json";
         QJsonArray rules; for (const auto &rule : layer_->rich_text.auto_style_rules) rules.append(rule_to_json(rule));
-        QJsonObject root{{"format", "gsp-auto-style-rule-set"}, {"version", 1},
+        QJsonObject root{{"format", "gsp-auto-style-rule-set"}, {"version", 2},
+                         {"schema_version", bgs::serialization::kCurrentFormattingSchemaVersion},
+                         {"pattern_schema_version", bgs::serialization::kCurrentPatternSchemaVersion},
+                         {"development_version", bgs::serialization::kCurrentDevelopmentVersion},
                          {"auto_style_enabled", layer_->rich_text.auto_style_enabled},
                          {"base_style_preset_id", QString::fromStdString(layer_->rich_text.auto_default_style_preset_id)},
                          {"rules", rules}};
-        QFile file(path); if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QSaveFile file(path); if (!file.open(QIODevice::WriteOnly)) {
             QMessageBox::warning(this, "Save Rule Set", "Could not write the selected file."); return false;
         }
-        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)); file.close();
+        const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+        if (file.write(data) != data.size() || !file.commit()) {
+            QMessageBox::warning(this, "Save Rule Set", "Could not write the selected file atomically."); return false;
+        }
         auto_style_rules_file_path_ = path; update_rule_set_status(); return true;
     };
     connect(btn_auto_rules_save_as_, &QPushButton::clicked, this, [save_rule_set]() mutable { save_rule_set(QString()); });
@@ -346,6 +382,9 @@
         }
         std::vector<RichTextAutoStyleRule> loaded; int index = 0;
         for (const auto &value : root.value("rules").toArray()) if (value.isObject() && loaded.size() < 128) loaded.push_back(rule_from_json(value.toObject(), index++));
+        if (loaded.empty() && !root.value("rules").toArray().isEmpty()) {
+            QMessageBox::warning(this, "Load Rule Set", "The rule set contains no recoverable rule definitions."); return;
+        }
         QMessageBox choice(this); choice.setWindowTitle("Load Rule Set"); choice.setText(QString("Loaded %1 rule(s). How should they be applied?").arg(loaded.size()));
         auto *replace = choice.addButton("Replace Current", QMessageBox::AcceptRole); auto *append = choice.addButton("Append", QMessageBox::ActionRole); choice.addButton(QMessageBox::Cancel);
         choice.exec(); if (choice.clickedButton() != replace && choice.clickedButton() != append) return;
@@ -356,7 +395,11 @@
         } else {
             added_count = rich_text_merge_auto_style_rules(layer_->rich_text.auto_style_rules, loaded);
         }
-        if (choice.clickedButton() == replace) layer_->rich_text.auto_default_style_preset_id = root.value("base_style_preset_id").toString().toStdString();
+        if (choice.clickedButton() == replace) {
+            QString preset_id = root.value("base_style_preset_id").toString();
+            if (preset_id.size() > 256) preset_id.truncate(256);
+            layer_->rich_text.auto_default_style_preset_id = preset_id.toStdString();
+        }
         layer_->rich_text.auto_style_enabled = root.value("auto_style_enabled").toBool(true);
         auto_style_rules_file_path_ = path; update_rule_set_status(); invalidate_auto_text_styling(); refresh_auto_rule_list(); emit property_changed();
         if (added_count < loaded.size()) QMessageBox::information(this, "Load Rule Set", QString("Added %1 rule(s); skipped or merged %2 equivalent duplicate(s).").arg(added_count).arg(loaded.size() - added_count));
@@ -648,7 +691,7 @@ void PropertiesPanel::update_playhead(double t)
     const bool is_ticker = layer_->type == LayerType::Ticker;
     const bool is_text_like = is_text || is_clock || is_ticker;
     const bool is_image = layer_->type == LayerType::Image;
-    const bool is_rect = layer_->type == LayerType::SolidRect || layer_->type == LayerType::Shape;
+    const bool is_rect = layer_type_uses_shape_geometry(layer_->type);
 
     auto set_double = [](QDoubleSpinBox *spin, double value) {
         if (!spin || !std::isfinite(value))
@@ -845,6 +888,7 @@ void PropertiesPanel::load_values()
     loading_values_ = true;
     if (!layer_) {
         if (transform_box_) transform_box_->setVisible(false);
+        if (audio_box_) audio_box_->setVisible(false);
         if (asset_box_) asset_box_->setVisible(false);
         if (appearance_box_) appearance_box_->setVisible(false);
         if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(false);
@@ -1016,15 +1060,46 @@ void PropertiesPanel::load_values()
     const bool is_text_like = is_text || is_clock || is_ticker;
     const bool is_adjustment = layer_->type == LayerType::Adjustment;
     const bool is_color_solid = layer_->type == LayerType::ColorSolid;
+    const bool is_transition_input = layer_type_is_transition_input(layer_->type);
     const bool is_fixed_canvas_layer = false;
     const bool is_rect = layer_->type == LayerType::SolidRect ||
-                         layer_->type == LayerType::Shape || is_color_solid;
+                         layer_->type == LayerType::Shape ||
+                         is_transition_input || is_color_solid;
     const bool is_image = layer_->type == LayerType::Image;
     const bool is_asset = layer_->type == LayerType::Asset;
+    const bool is_audio = layer_->type == LayerType::Audio;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
     const bool supports_outline = is_text_like || is_rect || is_image;
-    if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer);
+    if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer && !is_audio);
+    if (audio_box_) audio_box_->setVisible(is_audio);
     if (asset_box_) asset_box_->setVisible(is_asset);
+    if (is_audio) {
+        if (edt_audio_source_) edt_audio_source_->setText(QString::fromStdString(layer_->audio_source));
+        if (spn_audio_in_) spn_audio_in_->setValue(layer_->audio_in_point);
+        if (spn_audio_out_) spn_audio_out_->setValue(layer_->audio_out_point);
+        const double audio_local_time = std::clamp(playhead_ - layer_->in_time, 0.0,
+            std::max(0.0, layer_->out_time - layer_->in_time));
+        const double volume_value = layer_->audio_volume_prop.evaluate(audio_local_time) * 100.0;
+        const double pan_value = layer_->audio_pan_prop.evaluate(audio_local_time) * 100.0;
+        if (spn_audio_volume_) spn_audio_volume_->setValue(volume_value);
+        if (sld_audio_volume_) sld_audio_volume_->setValue(qRound(volume_value));
+        if (spn_audio_pan_) spn_audio_pan_->setValue(pan_value);
+        if (sld_audio_pan_) sld_audio_pan_->setValue(qRound(pan_value));
+        if (btn_kf_audio_volume_) btn_kf_audio_volume_->setIcon(keyframe_diamond_icon(
+            std::any_of(layer_->audio_volume_prop.keyframes.begin(), layer_->audio_volume_prop.keyframes.end(),
+                [audio_local_time](const Keyframe &k){ return std::abs(k.time-audio_local_time)<0.0001; })));
+        if (btn_kf_audio_pan_) btn_kf_audio_pan_->setIcon(keyframe_diamond_icon(
+            std::any_of(layer_->audio_pan_prop.keyframes.begin(), layer_->audio_pan_prop.keyframes.end(),
+                [audio_local_time](const Keyframe &k){ return std::abs(k.time-audio_local_time)<0.0001; })));
+        if (spn_audio_fade_in_) spn_audio_fade_in_->setValue(layer_->audio_fade_in);
+        if (spn_audio_fade_out_) spn_audio_fade_out_->setValue(layer_->audio_fade_out);
+        if (cmb_audio_fade_curve_) { const int i=cmb_audio_fade_curve_->findData((int)layer_->audio_fade_curve); cmb_audio_fade_curve_->setCurrentIndex(i>=0?i:0); }
+        if (cmb_audio_playback_) { const int i=cmb_audio_playback_->findData((int)layer_->audio_playback_mode); cmb_audio_playback_->setCurrentIndex(i>=0?i:0); }
+        if (chk_audio_mute_) chk_audio_mute_->setChecked(layer_->audio_muted);
+        if (chk_audio_solo_) chk_audio_solo_->setChecked(layer_->audio_solo);
+        if (chk_audio_loop_) chk_audio_loop_->setChecked(layer_->audio_loop);
+        if (chk_audio_independent_) chk_audio_independent_->setChecked(layer_->audio_independent);
+    }
     if (is_asset) {
         if (lbl_asset_name_) {
             const QString source_name = title_ && !layer_->asset_title_id.empty()
@@ -1049,7 +1124,7 @@ void PropertiesPanel::load_values()
         if (chk_asset_loop_) chk_asset_loop_->setChecked(layer_->asset_loop);
         update_asset_playback_controls_visibility();
     }
-    if (appearance_box_) appearance_box_->setVisible(!is_adjustment);
+    if (appearance_box_) appearance_box_->setVisible(!is_adjustment && !is_audio);
     if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(!is_fixed_canvas_layer);
     text_box_->setVisible(is_text_like);
     if (type_options_box_) type_options_box_->setVisible(is_text_like);

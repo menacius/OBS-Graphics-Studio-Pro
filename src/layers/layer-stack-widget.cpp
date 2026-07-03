@@ -5,6 +5,8 @@
 #include <map>
 #include <unordered_map>
 
+#include <QPainter>
+
 
 namespace {
 
@@ -29,6 +31,65 @@ constexpr int kLayerMatteControlWidth = 20;
  * extra room for the vertical scrollbar so the splitter can never compress
  * the layer list until controls paint over one another. */
 constexpr int kLayerStackMinimumWidth = 836;
+
+class FxIndicatorButton final : public QToolButton {
+public:
+    explicit FxIndicatorButton(QWidget *parent = nullptr) : QToolButton(parent) {}
+
+    void set_effect_stack_disabled(bool disabled)
+    {
+        if (effect_stack_disabled_ == disabled) return;
+        effect_stack_disabled_ = disabled;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        if (!effect_stack_disabled_) return;
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QColor slash = palette().color(QPalette::WindowText);
+        slash.setAlpha(220);
+        QPen pen(slash, 1.6, Qt::SolidLine, Qt::RoundCap);
+        painter.setPen(pen);
+        painter.drawLine(QPointF(4.0, height() - 3.0),
+                         QPointF(width() - 4.0, 3.0));
+    }
+
+private:
+    bool effect_stack_disabled_ = false;
+};
+
+struct LayerMediaKinds {
+    bool visual = false;
+    bool audio = false;
+};
+
+static LayerMediaKinds layer_media_kinds(const std::shared_ptr<Title> &title,
+                                         const Layer &layer,
+                                         std::set<std::string> *visiting = nullptr)
+{
+    if (layer.type == LayerType::Audio) return {false, true};
+    if (!layer_type_is_container(layer.type)) return {true, false};
+    std::set<std::string> local;
+    if (!visiting) visiting = &local;
+    if (!visiting->insert(layer.id).second) return {};
+    LayerMediaKinds kinds;
+    if (title) {
+        for (const auto &child : title->layers) {
+            if (!child || child->parent_id != layer.id) continue;
+            const auto ck = layer_media_kinds(title, *child, visiting);
+            kinds.visual = kinds.visual || ck.visual;
+            kinds.audio = kinds.audio || ck.audio;
+        }
+    }
+    visiting->erase(layer.id);
+    return kinds;
+}
+
 
 static TimelinePropertyRef layer_timeline_property(Layer &layer,
                                                    const std::string &property_name)
@@ -314,6 +375,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                         bgl_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
     add_menu->addAction(obs_icon("image.svg"),
                         bgl_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
+    add_menu->addAction(obs_icon("audio.svg"),
+                        bgl_tr("OBSTitles.Audio"), this, &LayerStack::on_add_audio);
     add_menu->addSeparator();
     add_menu->addAction(obs_icon("lightning.svg"),
                         bgl_tr("OBSTitles.AdjustmentLayer"), this, &LayerStack::on_add_adjustment);
@@ -554,8 +617,19 @@ void LayerStack::populate()
             return btn;
         };
 
+        const LayerMediaKinds media_kinds = layer_media_kinds(title_, *l);
+        const bool is_audio_layer = l->type == LayerType::Audio;
+        const bool is_group_layer = layer_type_is_container(l->type);
+
         QToolButton *vis = nullptr;
-        if (is_mask_object) {
+        if (is_audio_layer) {
+            vis = make_toggle("sound.svg", "sound-mute.svg", !l->audio_muted,
+                              bgl_tr("OBSTitles.AudioMuteTooltip"));
+            connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool audible) {
+                list_->setCurrentItem(item);
+                emit layer_audio_mute_changed(id, !audible);
+            });
+        } else if (is_mask_object) {
             vis = new QToolButton(row_widget);
             vis->setCheckable(false);
             vis->setFixedSize(kLayerVisibilityWidth, 20);
@@ -596,6 +670,16 @@ void LayerStack::populate()
             connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
                 list_->setCurrentItem(item);
                 emit layer_visibility_changed(id, checked);
+            });
+        }
+
+        if (is_group_layer && media_kinds.audio) {
+            auto *audio_toggle = make_toggle("sound.svg", "sound-mute.svg", !l->audio_muted,
+                                             bgl_tr("OBSTitles.AudioMuteTooltip"));
+            connect(audio_toggle, &QToolButton::toggled, this,
+                    [this, id = l->id, item](bool audible) {
+                list_->setCurrentItem(item);
+                emit layer_audio_mute_changed(id, !audible);
             });
         }
 
@@ -670,12 +754,13 @@ void LayerStack::populate()
         const bool has_external_binding = std::any_of(
             l->external_bindings.begin(), l->external_bindings.end(),
             [](const ExternalPropertyBinding &binding) { return binding.enabled; });
-        QToolButton *fx_indicator = new QToolButton(row_widget);
+        auto *fx_indicator = new FxIndicatorButton(row_widget);
         fx_indicator->setText(has_effect_stack
             ? (has_external_binding ? QStringLiteral("FX•") : bgl_tr("OBSTitles.FX"))
             : (has_external_binding ? QStringLiteral("D") : QString()));
         fx_indicator->setCheckable(has_effect_stack);
         fx_indicator->setChecked(has_enabled_effect_stack);
+        fx_indicator->set_effect_stack_disabled(has_effect_stack && !has_enabled_effect_stack);
         fx_indicator->setFixedSize(kLayerFxWidth, 18);
         QString layer_indicator_tip;
         if (has_effect_stack)
@@ -702,6 +787,7 @@ void LayerStack::populate()
             connect(fx_indicator, &QToolButton::toggled, this,
                     [this, id = l->id, item, fx_indicator](bool enabled) {
                         list_->setCurrentItem(item);
+                        fx_indicator->set_effect_stack_disabled(!enabled);
                         fx_indicator->setToolTip(enabled
                             ? bgl_tr("OBSTitles.DisableLayerEffectsTooltip")
                             : bgl_tr("OBSTitles.EnableLayerEffectsTooltip"));
@@ -760,9 +846,10 @@ void LayerStack::populate()
                   .arg(text.name(QColor::HexRgb),
                        base.name(QColor::HexRgb),
                        highlight.name(QColor::HexRgb)));
-        connect(name, &QLineEdit::editingFinished, this, [this, id = l->id, name]() {
-            emit layer_name_changed(id, name->text().trimmed().toStdString());
-        });
+        connect(name, &QLineEdit::editingFinished, this,
+                [this, id = l->id, name]() {
+                    emit layer_name_changed(id, name->text().trimmed().toStdString());
+                });
         name_layout->addWidget(name, 1);
         hl->addWidget(name_cell, 1);
 
@@ -778,7 +865,8 @@ void LayerStack::populate()
         mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
         int mode_idx = mode->findData((int)l->blend_mode);
         mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
-        mode->setEnabled(true);
+        mode->setEnabled(!is_audio_layer);
+        mode->setVisible(!is_audio_layer);
         connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this, id = l->id, mode](int index) {
                     emit layer_blend_mode_changed(id, (EffectBlendMode)mode->itemData(index).toInt());
@@ -805,6 +893,7 @@ void LayerStack::populate()
                 [this, id = l->id, parent](int index) {
                     emit layer_parent_changed(id, parent->itemData(index).toString().toStdString());
                 });
+        parent->setVisible(!is_audio_layer);
         hl->addWidget(parent);
 
         QComboBox *matte = new QComboBox(row_widget);
@@ -831,6 +920,7 @@ void LayerStack::populate()
 
         const int matte_idx = matte->findData(QString::fromStdString(l->mask_source_id));
         matte->setCurrentIndex(matte_idx >= 0 ? matte_idx : 0);
+        matte->setVisible(!is_audio_layer);
         hl->addWidget(matte);
 
         const bool has_matte = !l->mask_source_id.empty() && l->mask_mode != MaskMode::None;
@@ -868,6 +958,7 @@ void LayerStack::populate()
         matte_type->setAutoRaise(true);
         matte_type->setStyleSheet(button_style);
         matte_type->setEnabled(has_matte);
+        matte_type->setVisible(!is_audio_layer);
         hl->addWidget(matte_type);
 
         QToolButton *matte_invert = new QToolButton(row_widget);
@@ -885,6 +976,7 @@ void LayerStack::populate()
         matte_invert->setAutoRaise(true);
         matte_invert->setStyleSheet(button_style);
         matte_invert->setEnabled(has_matte);
+        matte_invert->setVisible(!is_audio_layer);
         hl->addWidget(matte_invert);
 
         auto selected_matte_mode = [matte_type, matte_invert]() {
@@ -1128,7 +1220,17 @@ void LayerStack::on_selection_changed()
 {
     std::string id = selected_id();
     const bool has_layer = !id.empty() && title_ && title_->find_layer(id);
-    if (btn_del_) btn_del_->setEnabled(has_layer);
+    bool has_deletable_layer = false;
+    if (title_) {
+        for (const auto &selected_id : selected_ids()) {
+            const auto layer = title_->find_layer(selected_id);
+            if (layer && !stinger_transition_input_layer_is_protected(*layer)) {
+                has_deletable_layer = true;
+                break;
+            }
+        }
+    }
+    if (btn_del_) btn_del_->setEnabled(has_deletable_layer);
 
     bool can_move_up = false;
     bool can_move_down = false;
@@ -1168,6 +1270,7 @@ void LayerStack::on_add_clock() { emit add_layer_requested(LayerType::Clock); }
 void LayerStack::on_add_ticker() { emit add_layer_requested(LayerType::Ticker); }
 void LayerStack::on_add_rect() { emit add_layer_requested(LayerType::Shape); }
 void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
+void LayerStack::on_add_audio() { emit add_layer_requested(LayerType::Audio); }
 void LayerStack::on_add_adjustment() { emit add_layer_requested(LayerType::Adjustment); }
 void LayerStack::on_add_color_solid() { emit add_layer_requested(LayerType::ColorSolid); }
 
@@ -1191,8 +1294,18 @@ void LayerStack::on_move_down()
 
 void LayerStack::on_delete()
 {
-    std::string id = selected_id();
-    if (!id.empty()) emit delete_layer_requested(id);
+    if (!title_)
+        return;
+    for (const auto &id : selected_ids()) {
+        const auto layer = title_->find_layer(id);
+        if (layer && !stinger_transition_input_layer_is_protected(*layer)) {
+            /* The editor command consumes the complete selection. Emit any
+             * editable anchor so a mixed A/B + artwork selection still deletes
+             * only the user-owned layers and never the protected inputs. */
+            emit delete_layer_requested(id);
+            return;
+        }
+    }
 }
 
 void LayerStack::show_layer_context_menu(const QPoint &pos)
@@ -1302,6 +1415,19 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
         list_->setCurrentItem(item);
 
     const std::vector<std::string> selection = selected_ids();
+    const auto selection_has_layer = [this, &selection]() {
+        return std::any_of(selection.begin(), selection.end(),
+            [this](const std::string &layer_id) {
+                return title_ && title_->find_layer(layer_id) != nullptr;
+            });
+    };
+    const auto selection_has_deletable_layer = [this, &selection]() {
+        return std::any_of(selection.begin(), selection.end(),
+            [this](const std::string &layer_id) {
+                const auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+                return layer && !stinger_transition_input_layer_is_protected(*layer);
+            });
+    };
     auto selected_layer_is_group = [this](const std::string &layer_id) {
         auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
         return layer && layer->type == LayerType::Group;
@@ -1329,6 +1455,8 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
 
     QMenu menu(this);
     style_menu(&menu);
+    const bool has_selected_layer = selection_has_layer();
+    const bool has_deletable_layer = selection_has_deletable_layer();
     QAction *group_layers = menu.addAction(bgl_tr("OBSTitles.GroupLayers"));
     group_layers->setEnabled(selection.size() >= 2);
     QAction *ungroup_layers = menu.addAction(bgl_tr("OBSTitles.UngroupLayers"));
@@ -1367,11 +1495,14 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
 
     menu.addSeparator();
     QAction *clone = menu.addAction(bgl_tr("OBSTitles.CloneLayer"));
+    clone->setEnabled(has_selected_layer);
     QAction *copy = menu.addAction(bgl_tr("OBSTitles.CopyLayer"));
+    copy->setEnabled(has_selected_layer);
     QAction *paste = menu.addAction(bgl_tr("OBSTitles.PasteLayer"));
     paste->setEnabled(layer_clipboard_available_);
     menu.addSeparator();
     QAction *del = menu.addAction(bgl_tr("OBSTitles.DeleteLayer"));
+    del->setEnabled(has_deletable_layer);
 
     QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
     if (chosen == group_layers) emit group_layers_requested();

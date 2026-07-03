@@ -1,4 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512">
-  <!-- Font Awesome Free 6 - text; License: CC BY 4.0, https://fontawesome.com/license/free -->
-  <path fill="currentColor" d="M254 52.8C249.3 40.3 237.3 32 224 32s-25.3 8.3-30 20.8L57.8 416H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32h-1.8l18-48h159.6l18 48H320c-17.7 0-32 14.3-32 32s14.3 32 32 32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32h-25.8L254 52.8zM168.2 304L224 155.1 279.8 304H168.2z"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #4a5565;
+      }
+    </style>
+  </defs>
+  <path class="cls-1" d="M52,12H12c-4.42,0-8,3.58-8,8v24c0,4.42,3.58,8,8,8h40c4.42,0,8-3.58,8-8v-24c0-4.42-3.58-8-8-8ZM40.96,26.57h-6.14v15.66h-5.33v-15.66h-6.14v-4.81h17.61v4.81Z"/>
 </svg>

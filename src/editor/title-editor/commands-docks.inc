@@ -50,6 +50,14 @@
     editor_status_bar_ = new QStatusBar(this);
     editor_status_bar_->setObjectName(QStringLiteral("BroadcastGraphicsLiveEditorStatusBar"));
     editor_status_bar_->setSizeGripEnabled(true);
+    status_diagnostics_label_ = new QLabel(editor_status_bar_);
+    status_diagnostics_label_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    status_diagnostics_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    editor_status_bar_->addWidget(status_diagnostics_label_, 1);
+    auto *diagnostics_timer = new QTimer(editor_status_bar_);
+    diagnostics_timer->setInterval(1000);
+    connect(diagnostics_timer, &QTimer::timeout, this, &TitleEditor::update_footer_diagnostics);
+    diagnostics_timer->start();
     status_activity_label_ = new QLabel(editor_status_bar_);
     status_activity_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     status_activity_label_->setMinimumWidth(210);
@@ -224,7 +232,7 @@
     canvas_settings.endGroup();
 
     auto *checkerboard = new QToolButton(canvas_zoom_bar);
-    checkerboard->setText("Transparency: Medium");
+    checkerboard->setText("Background");
     checkerboard->setPopupMode(QToolButton::InstantPopup);
     auto *checkerboard_menu = new QMenu(checkerboard);
     auto *checkerboard_group = new QActionGroup(checkerboard_menu);
@@ -243,10 +251,45 @@
     add_checkerboard_action("Solid white", 3);
     add_checkerboard_action("Solid black", 4);
     add_checkerboard_action("Solid grey", 5);
-    if (auto *checked = checkerboard_group->checkedAction())
-        checkerboard->setText(QString("Transparency: %1").arg(checked->text()));
+    QAction *stinger_scene_background_action =
+        add_checkerboard_action("Scene A/B", 6);
+    stinger_scene_background_action->setToolTip(
+        "Show Scene A before the transition point and Scene B at/after it.");
+    stinger_scene_background_action->setVisible(false);
     checkerboard->setMenu(checkerboard_menu);
     canvas_->set_checkerboard_pattern(saved_checkerboard_pattern);
+
+    const auto refresh_canvas_background_control =
+        [this, checkerboard_group, stinger_scene_background_action]() {
+            const bool point_switch = title_ &&
+                title_->graphic_type == TitleGraphicType::Stinger &&
+                title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint;
+            stinger_scene_background_action->setVisible(point_switch);
+            const bool use_scene_background = point_switch &&
+                title_->stinger_editor_background !=
+                    StingerEditorBackground::CanvasTransparency;
+
+            QAction *selected = nullptr;
+            if (use_scene_background) {
+                selected = stinger_scene_background_action;
+            } else {
+                const int pattern = canvas_ ? canvas_->checkerboard_pattern() : 1;
+                for (QAction *candidate : checkerboard_group->actions()) {
+                    if (candidate != stinger_scene_background_action &&
+                        candidate->data().toInt() == pattern) {
+                        selected = candidate;
+                        break;
+                    }
+                }
+            }
+            if (selected) {
+                QSignalBlocker blocker(checkerboard_group);
+                selected->setChecked(true);
+            }
+        };
+    connect(checkerboard_menu, &QMenu::aboutToShow, this,
+            refresh_canvas_background_control);
+    refresh_canvas_background_control();
     if (act_safe_guides_) {
         act_safe_guides_->setChecked(saved_safe_guides_visible);
         canvas_->set_safe_guides_visible(saved_safe_guides_visible);
@@ -348,10 +391,38 @@
         QSignalBlocker fit_blocker(fit_canvas);
         fit_canvas->setChecked(canvas_->fit_zoom_active());
     });
-    connect(checkerboard_menu, &QMenu::triggered, this, [this, checkerboard](QAction *action) {
-        checkerboard->setText(QString("Transparency: %1").arg(action->text()));
-        canvas_->set_checkerboard_pattern(action->data().toInt());
-    });
+    connect(checkerboard_menu, &QMenu::triggered, this,
+            [this, refresh_canvas_background_control](QAction *action) {
+                if (!action || !canvas_)
+                    return;
+                const int selection = action->data().toInt();
+                const bool point_switch = title_ &&
+                    title_->graphic_type == TitleGraphicType::Stinger &&
+                    title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint;
+                if (selection == 6) {
+                    if (!point_switch)
+                        return;
+                    if (title_->stinger_editor_background !=
+                        StingerEditorBackground::FollowSwitchPoint) {
+                        title_->stinger_editor_background =
+                            StingerEditorBackground::FollowSwitchPoint;
+                        on_title_modified(true);
+                    }
+                    force_next_title_visual_update();
+                    canvas_->update();
+                } else {
+                    canvas_->set_checkerboard_pattern(selection);
+                    if (point_switch &&
+                        title_->stinger_editor_background !=
+                            StingerEditorBackground::CanvasTransparency) {
+                        title_->stinger_editor_background =
+                            StingerEditorBackground::CanvasTransparency;
+                        on_title_modified(true);
+                        force_next_title_visual_update();
+                    }
+                }
+                refresh_canvas_background_control();
+            });
     upper_split->addWidget(canvas_panel);
 
     props_ = new PropertiesPanel(this);
@@ -647,8 +718,38 @@
                         canvas_->set_image_tool_active();
                     return;
                 }
-                auto l = create_basic_layer(type);
+                QString audio_path;
+                if (type == LayerType::Audio) {
+                    audio_path = QFileDialog::getOpenFileName(
+                        this, bgl_tr("OBSTitles.ImportAudio"), QString(),
+                        bgl_tr("OBSTitles.AudioFilesFilter"));
+                    if (audio_path.isEmpty()) return;
+                }
+                auto l = create_basic_layer(type, type == LayerType::Audio
+                    ? QFileInfo(audio_path).completeBaseName() : QString());
                 if (!l) return;
+                if (type == LayerType::Audio) {
+                    l->audio_source = audio_path.toStdString();
+                    l->audio_out_point = std::max(0.0, l->out_time - l->in_time);
+                    QFile media(audio_path);
+                    if (media.open(QIODevice::ReadOnly)) {
+                        const QByteArray bytes = media.readAll();
+                        constexpr int peak_pairs = 512;
+                        l->audio_waveform.reserve(peak_pairs * 2);
+                        for (int bucket = 0; bucket < peak_pairs; ++bucket) {
+                            const qsizetype begin = bytes.size() * bucket / peak_pairs;
+                            const qsizetype end = bytes.size() * (bucket + 1) / peak_pairs;
+                            float lo = 0.0f, hi = 0.0f;
+                            for (qsizetype i = begin; i < end; ++i) {
+                                const float sample = (static_cast<unsigned char>(bytes.at(i)) - 127.5f) / 127.5f;
+                                lo = std::min(lo, sample);
+                                hi = std::max(hi, sample);
+                            }
+                            l->audio_waveform.push_back(lo);
+                            l->audio_waveform.push_back(hi);
+                        }
+                    }
+                }
                 title_->add_layer(l);
                 if (type == LayerType::Text)
                     pending_text_layer_auto_names_.insert(l->id);
@@ -696,6 +797,24 @@
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->visible = visible;
+                    on_title_modified();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_audio_mute_changed,
+            this, [this](const std::string &lid, bool muted) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->audio_muted = muted;
+                    on_title_modified();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_audio_volume_changed,
+            this, [this](const std::string &lid, float volume) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->audio_volume = std::clamp(volume, 0.0f, 2.0f);
                     on_title_modified();
                 }
             });
@@ -1011,6 +1130,17 @@
             });
     connect(timeline_, &TimelineWidget::effect_preset_dropped,
             this, &TitleEditor::apply_effect_preset_to_layer);
+    connect(timeline_, &TimelineWidget::audio_effect_dropped,
+            this, [this](int type, const std::string &layer_id) {
+                if (!title_ || !effects_panel_) return;
+                auto layer = title_->find_layer(layer_id);
+                if (!layer || layer->locked) return;
+                effects_panel_->set_layer(layer, playhead_);
+                if (effects_panel_->add_audio_effect(static_cast<AudioEffectType>(type))) {
+                    sel_layer_id_ = layer_id;
+                    on_title_modified();
+                }
+            });
     connect(timeline_, &TimelineWidget::transition_preset_dropped,
             this, &TitleEditor::apply_transition_preset_to_layer);
     connect(timeline_, &TimelineWidget::transition_edit_requested,
@@ -1031,7 +1161,26 @@
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
             this, [this]() {
                 if (layers_) layers_->set_playhead(playhead_);
+                if (title_props_ && title_ && title_->graphic_type == TitleGraphicType::Stinger)
+                    title_props_->set_title(title_);
                 on_title_modified();
+            });
+    connect(timeline_, &TimelineWidget::audio_layer_property_changed,
+            this, [this](bool commit_undo) {
+                if (!title_) return;
+                set_dirty(true);
+                publish_editor_audio_runtime_state();
+                sync_editor_audio_preview(false);
+                if (props_) {
+                    const auto selected_ids = selected_layer_ids_for_operation();
+                    auto selected = selected_ids.empty() ? nullptr : title_->find_layer(selected_ids.front());
+                    if (selected && selected->type == LayerType::Audio)
+                        props_->set_layer(selected, playhead_);
+                }
+                if (commit_undo) {
+                    push_undo_snapshot();
+                    save_live_edit();
+                }
             });
 
     connect(props_, &PropertiesPanel::property_changed,
@@ -1045,6 +1194,34 @@
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
+    connect(props_, &PropertiesPanel::audio_property_changed,
+            this, [this](bool commit_undo) {
+                if (updating_layer_panels_ || !title_)
+                    return;
+                /* Audio mix/transport edits are consumed directly from the shared
+                 * title model by SourceAudioRuntime.  Do not enter the visual
+                 * prerender/cache invalidation path for every spin-box step. */
+                set_dirty(true);
+                publish_editor_audio_runtime_state();
+                if (timeline_) timeline_->update();
+                if (layers_) layers_->update();
+                sync_editor_audio_preview(false);
+                if (commit_undo) {
+                    push_undo_snapshot();
+                    save_live_edit();
+                }
+            });
+
+    connect(effects_panel_, &EffectsPanel::audio_property_changed,
+            this, [this](bool commit_undo) {
+                if (updating_layer_panels_ || !title_) return;
+                set_dirty(true);
+                publish_editor_audio_runtime_state();
+                sync_editor_audio_preview(false);
+                if (effects_panel_) effects_panel_->update();
+                if (commit_undo) { push_undo_snapshot(); save_live_edit(); }
+            });
+
     connect(props_, &PropertiesPanel::live_visual_changed,
             this, [this]() {
                 if (updating_layer_panels_)
@@ -1087,12 +1264,43 @@
                 if (canvas_) canvas_->set_color_picker_tool_active();
             });
     connect(title_props_, &TitlePropertiesPanel::title_changed,
-            this, [this](bool push_undo_snapshot) {
+            this, [this, refresh_canvas_background_control](bool push_undo_snapshot) {
                 if (!title_) return;
                 playhead_ = std::clamp(playhead_, 0.0, title_->duration);
                 on_title_modified(push_undo_snapshot);
                 timeline_->set_title(title_);
                 on_playhead_changed(playhead_);
+                refresh_canvas_background_control();
+            });
+    connect(title_props_, &TitlePropertiesPanel::stinger_structure_changed,
+            this, [this, refresh_canvas_background_control]() {
+                if (!title_ || !layers_ || !timeline_ || !canvas_)
+                    return;
+                const bool show_transition_inputs =
+                    title_->graphic_type == TitleGraphicType::Stinger &&
+                    title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation;
+                if (!show_transition_inputs && !sel_layer_id_.empty()) {
+                    const auto selected = title_->find_layer(sel_layer_id_);
+                    if (selected && layer_type_is_transition_input(selected->type)) {
+                        sel_layer_id_.clear();
+                        canvas_->set_selected_layers({});
+                        update_layer_panels(nullptr, playhead_);
+                    }
+                }
+                layers_->refresh();
+                timeline_->set_title(title_);
+                if (!sel_layer_id_.empty()) {
+                    layers_->set_selected_layer(sel_layer_id_);
+                    timeline_->set_selected_layer(sel_layer_id_);
+                    canvas_->set_selected_layer(sel_layer_id_);
+                }
+                refresh_canvas_background_control();
+            });
+    connect(title_props_, &TitlePropertiesPanel::stinger_editor_preview_changed,
+            this, [this]() {
+                force_next_title_visual_update();
+                if (canvas_)
+                    canvas_->update();
             });
     connect(layers_, &LayerStack::layer_order_changed,
             this, [this]() {

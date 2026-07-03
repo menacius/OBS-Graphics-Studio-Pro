@@ -59,6 +59,9 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
             }
         }
         dynamic[i] = independent_asset_time ||
+                     (title.graphic_type == TitleGraphicType::Stinger &&
+                      title.stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation &&
+                      layer->type == LayerType::TransitionInput) ||
                      layer->type == LayerType::Clock ||
                      (layer->type == LayerType::Ticker &&
                       layer->ticker_playback_mode != static_cast<int>(TickerPlaybackMode::CustomPlayback));

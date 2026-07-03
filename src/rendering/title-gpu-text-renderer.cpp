@@ -571,6 +571,41 @@ static uint32_t multiply_alpha(uint32_t argb, float multiplier)
     return (argb & 0x00FFFFFFu) | (std::min(255u, resolved) << 24);
 }
 
+static void crop_quad_padding(Quad &quad, float inset)
+{
+    if (inset <= 0.0f || quad.x1 <= quad.x0 || quad.y1 <= quad.y0)
+        return;
+    const float max_inset_x = std::max(0.0f, (quad.x1 - quad.x0) * 0.5f - 0.001f);
+    const float max_inset_y = std::max(0.0f, (quad.y1 - quad.y0) * 0.5f - 0.001f);
+    const float resolved = std::min(inset, std::min(max_inset_x, max_inset_y));
+    if (resolved <= 0.0f)
+        return;
+
+    const float tx = resolved / (quad.x1 - quad.x0);
+    const float ty = resolved / (quad.y1 - quad.y0);
+    const float old_u0 = quad.u0;
+    const float old_v0 = quad.v0;
+    const float old_u1 = quad.u1;
+    const float old_v1 = quad.v1;
+    const float old_lx0 = quad.local_x0;
+    const float old_ly0 = quad.local_y0;
+    const float old_lx1 = quad.local_x1;
+    const float old_ly1 = quad.local_y1;
+
+    quad.x0 += resolved;
+    quad.y0 += resolved;
+    quad.x1 -= resolved;
+    quad.y1 -= resolved;
+    quad.u0 = old_u0 + (old_u1 - old_u0) * tx;
+    quad.v0 = old_v0 + (old_v1 - old_v0) * ty;
+    quad.u1 = old_u1 - (old_u1 - old_u0) * tx;
+    quad.v1 = old_v1 - (old_v1 - old_v0) * ty;
+    quad.local_x0 = old_lx0 + (old_lx1 - old_lx0) * tx;
+    quad.local_y0 = old_ly0 + (old_ly1 - old_ly0) * ty;
+    quad.local_x1 = old_lx1 - (old_lx1 - old_lx0) * tx;
+    quad.local_y1 = old_ly1 - (old_ly1 - old_ly0) * ty;
+}
+
 static bool clip_quad(Quad &quad, float clip_x0, float clip_y0,
                       float clip_x1, float clip_y1)
 {
@@ -1326,6 +1361,34 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
             const size_t paint_index =
                 std::min(slice.paint_index, resolved_runs.size() - 1);
             Quad painted_quad = glyph_quad;
+
+            /* The atlas stores the full SDF spread around every glyph, but
+             * rasterizing that entire transparent border creates extreme
+             * overdraw in paragraphs and tickers. Keep only the coverage
+             * required by the current material. This changes neither glyph
+             * metrics nor atlas data; it merely crops unused quad/UV margins. */
+            const RichTextStroke &slice_stroke =
+                resolved_runs[paint_index].style.stroke;
+            float required_padding = 2.5f;
+            if (slice_stroke.enabled && slice_stroke.width > 0.0001f) {
+                const TextStrokeCoverageExtents extents =
+                    text_stroke_coverage_extents(slice_stroke.width,
+                                                 slice_stroke.alignment);
+                required_padding = std::max(required_padding,
+                                            extents.outside + 2.5f);
+            }
+            if (cluster_animation) {
+                required_padding += static_cast<float>(
+                    std::max(0.0, cluster_animation->blur));
+                required_padding += static_cast<float>(
+                    std::max(0.0, cluster_animation->stroke_width_delta));
+            }
+            required_padding = std::clamp(
+                required_padding, 2.5f, static_cast<float>(kSdfSpread + 2));
+            crop_quad_padding(
+                painted_quad,
+                static_cast<float>(kSdfSpread + 2) - required_padding);
+
             if (split_paint_cluster &&
                 !clip_quad(painted_quad,
                            options.text_offset_x + slice.x0,
@@ -1343,8 +1406,7 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                             : 1.0f,
                         false);
 
-            const RichTextStroke &stroke =
-                resolved_runs[paint_index].style.stroke;
+            const RichTextStroke &stroke = slice_stroke;
             if (!stroke.enabled || stroke.width <= 0.0001f)
                 continue;
             /* Order is explicit for every alignment. An inner stroke placed

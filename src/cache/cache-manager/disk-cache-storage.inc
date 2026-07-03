@@ -3,14 +3,19 @@
         if (!doc.isObject())
             continue;
         const QJsonObject obj = doc.object();
+        const int schema_version = obj.value(QStringLiteral("schema_version")).toInt(1);
+        if (schema_version <= 0)
+            continue;
         CacheFrameKey key;
-        key.title_id = obj.value(QStringLiteral("title_id")).toString();
-        key.content_hash = obj.value(QStringLiteral("content_hash")).toString();
-        key.frame = obj.value(QStringLiteral("frame")).toInt();
+        key.title_id = obj.value(QStringLiteral("title_id")).toString().left(256);
+        key.content_hash = obj.value(QStringLiteral("content_hash")).toString().left(512);
+        key.frame = obj.value(QStringLiteral("frame")).toInt(-1);
         key.width = obj.value(QStringLiteral("width")).toInt();
         key.height = obj.value(QStringLiteral("height")).toInt();
         if (key.title_id.isEmpty() || key.content_hash.isEmpty() ||
-            key.frame < 0 || key.width <= 0 || key.height <= 0)
+            key.frame < 0 || key.frame > 100000000 ||
+            key.width <= 0 || key.width > 16384 ||
+            key.height <= 0 || key.height > 16384)
             continue;
         const QString indexed_key = key.toString();
         if (indexed_keys_.contains(indexed_key))
@@ -55,6 +60,7 @@
             QFile::remove(tile.absoluteFilePath());
     }
     rewriteManifestLocked();
+    rebuildIndexedMembershipLocked();
 }
 
 quint64 DiskFrameCache::scanBytesUsed() const
@@ -82,6 +88,10 @@ void DiskFrameCache::appendManifestEntry(const CacheFrameKey &key) const
     if (!manifest.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
         return;
     QJsonObject obj;
+    obj.insert(QStringLiteral("schema_version"),
+               bgs::serialization::kCurrentProxyManifestSchemaVersion);
+    obj.insert(QStringLiteral("development_version"),
+               bgs::serialization::kCurrentDevelopmentVersion);
     obj.insert(QStringLiteral("title_id"), key.title_id);
     obj.insert(QStringLiteral("content_hash"), key.content_hash);
     obj.insert(QStringLiteral("frame"), key.frame);
@@ -100,6 +110,10 @@ void DiskFrameCache::rewriteManifestLocked() const
     for (auto it = indexed_keys_.cbegin(); it != indexed_keys_.cend(); ++it) {
         const CacheFrameKey &key = it.value();
         QJsonObject obj;
+        obj.insert(QStringLiteral("schema_version"),
+                   bgs::serialization::kCurrentProxyManifestSchemaVersion);
+        obj.insert(QStringLiteral("development_version"),
+                   bgs::serialization::kCurrentDevelopmentVersion);
         obj.insert(QStringLiteral("title_id"), key.title_id);
         obj.insert(QStringLiteral("content_hash"), key.content_hash);
         obj.insert(QStringLiteral("frame"), key.frame);
@@ -184,10 +198,13 @@ CacheManager::CacheManager(QObject *parent)
     paused_.store(!cache_enabled_.load());
     queue_.setAcceptingJobs(cache_enabled_.load());
     connect(&queue_, &RenderQueueManager::queueChanged, this, [this]() {
-        emit queueChanged();
         wakeWorker();
-    });
-    connect(&state_tracker_, &CacheStateTracker::stateChanged, this, &CacheManager::cacheStatesChanged);
+        scheduleQueueChanged();
+    }, Qt::DirectConnection);
+    connect(&state_tracker_, &CacheStateTracker::stateChanged, this,
+            [this](const QString &title_id, int first_frame, int last_frame) {
+                scheduleCacheStatesChanged(title_id, first_frame, last_frame);
+            }, Qt::DirectConnection);
     connect(&invalidation_, &CacheInvalidationManager::rangeInvalidated, this,
             [this](const QString &title_id, int first, int last) {
                 /* An in-flight job is no longer valid after an edit. A per-title
@@ -229,6 +246,121 @@ CacheManager::CacheManager(QObject *parent)
 CacheManager::~CacheManager()
 {
     shutdownWorker();
+}
+
+void CacheManager::scheduleQueueChanged()
+{
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        pending_queue_changed_ = true;
+    }
+    scheduleUiNotificationFlush();
+}
+
+void CacheManager::scheduleDiagnosticsChanged()
+{
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        pending_diagnostics_changed_ = true;
+    }
+    scheduleUiNotificationFlush();
+}
+
+void CacheManager::scheduleFrameReady(const QString &title_id, int frame)
+{
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        pending_frame_ready_[title_id].insert(frame);
+    }
+    scheduleUiNotificationFlush();
+}
+
+void CacheManager::scheduleLiveCueStateChanged(const QString &title_id, int row)
+{
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        pending_live_cue_rows_[title_id].insert(row);
+    }
+    scheduleUiNotificationFlush();
+}
+
+void CacheManager::scheduleCacheStatesChanged(const QString &title_id,
+                                              int first_frame,
+                                              int last_frame)
+{
+    if (last_frame < first_frame)
+        std::swap(first_frame, last_frame);
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        const auto it = pending_cache_state_ranges_.find(title_id);
+        if (it == pending_cache_state_ranges_.end()) {
+            pending_cache_state_ranges_.insert(title_id,
+                                               qMakePair(first_frame, last_frame));
+        } else {
+            it.value().first = std::min(it.value().first, first_frame);
+            it.value().second = std::max(it.value().second, last_frame);
+        }
+    }
+    scheduleUiNotificationFlush();
+}
+
+void CacheManager::scheduleUiNotificationFlush()
+{
+    bool expected = false;
+    if (!ui_notification_flush_scheduled_.compare_exchange_strong(expected, true))
+        return;
+
+    /* Cache production happens on worker threads. Deliver one compact UI burst
+     * per display-sized interval instead of one queued Qt event per frame. */
+    QMetaObject::invokeMethod(this, [this]() {
+        QTimer::singleShot(33, this, [this]() { flushUiNotifications(); });
+    }, Qt::QueuedConnection);
+}
+
+void CacheManager::flushUiNotifications()
+{
+    bool queue_changed = false;
+    bool diagnostics_changed = false;
+    QHash<QString, QPair<int, int>> cache_state_ranges;
+    QHash<QString, QSet<int>> ready_frames;
+    QHash<QString, QSet<int>> live_cue_rows;
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        queue_changed = pending_queue_changed_;
+        diagnostics_changed = pending_diagnostics_changed_;
+        pending_queue_changed_ = false;
+        pending_diagnostics_changed_ = false;
+        cache_state_ranges.swap(pending_cache_state_ranges_);
+        ready_frames.swap(pending_frame_ready_);
+        live_cue_rows.swap(pending_live_cue_rows_);
+        ui_notification_flush_scheduled_.store(false);
+    }
+
+    if (queue_changed)
+        emit queueChanged();
+    for (auto it = cache_state_ranges.cbegin(); it != cache_state_ranges.cend(); ++it)
+        emit cacheStatesChanged(it.key(), it.value().first, it.value().second);
+    for (auto it = ready_frames.cbegin(); it != ready_frames.cend(); ++it) {
+        for (const int frame : it.value())
+            emit frameReady(it.key(), frame);
+    }
+    for (auto it = live_cue_rows.cbegin(); it != live_cue_rows.cend(); ++it) {
+        for (const int row : it.value())
+            emit liveCueStateChanged(it.key(), row);
+    }
+    if (diagnostics_changed)
+        emit diagnosticsChanged();
+
+    bool has_pending = false;
+    {
+        std::lock_guard<std::mutex> lock(ui_notification_mutex_);
+        has_pending = pending_queue_changed_ || pending_diagnostics_changed_ ||
+                      !pending_cache_state_ranges_.isEmpty() ||
+                      !pending_frame_ready_.isEmpty() ||
+                      !pending_live_cue_rows_.isEmpty();
+    }
+    if (has_pending)
+        scheduleUiNotificationFlush();
 }
 
 void CacheManager::shutdownWorker()
@@ -543,6 +675,9 @@ QString CacheManager::contentHash(const Title &title) const
      * did not change. The title id is already part of CacheFrameKey. */
     add(title.width);
     add(title.height);
+    add((int)title.graphic_type);
+    if (title.graphic_type == TitleGraphicType::Stinger)
+        add((int)title.stinger_switch_mode);
     add(title.duration);
     add(title.loop_start);
     add(title.loop_end);
@@ -575,6 +710,8 @@ QString CacheManager::contentHash(const Title &title) const
         if (!layer) continue;
         add(QString::fromStdString(layer->id));
         add((int)layer->type);
+        if (layer->type == LayerType::TransitionInput)
+            add(layer->transition_input_slot);
         add(layer->visible);
         add(QString::fromStdString(layer->parent_id));
         add(QString::fromStdString(layer->transform_parent_id));
@@ -791,6 +928,9 @@ QString CacheManager::contentHash(const Title &title) const
             }
         }
     }
+    /* Source proxy state, schema/development metadata and collapsed-dock UI
+     * state are deliberately excluded: none of them changes rendered pixels,
+     * so they must not invalidate the full-title visual cache. */
     return QString::fromLatin1(hash.result().toHex());
 }
 
@@ -812,12 +952,13 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         stream << value;
         hash.addData(bytes);
     };
+    double sample_time = time;
     auto add_anim = [&](const AnimatedProperty &p) {
-        if (p.is_animated()) add(p.evaluate(time));
+        if (p.is_animated()) add(p.evaluate(sample_time));
     };
     auto add_vec = [&](const AnimatedVec2Property &p) {
         if (!p.is_animated()) return;
-        const Vec2Value v = p.evaluate(time);
+        const Vec2Value v = p.evaluate(sample_time);
         add(v.x); add(v.y);
     };
     auto add_effect = [&](const LayerEffect &e) {
@@ -836,14 +977,15 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add_anim(e.secondary_color_a); add_anim(e.secondary_color_r);
         add_anim(e.secondary_color_g); add_anim(e.secondary_color_b);
         if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
-            add(time);
+            add(sample_time);
     };
 
     for (const auto &layer : title.layers) {
         if (!layer) continue;
+        sample_time = cache_layer_sample_time(title, *layer, time);
         /* Visibility boundaries are renderer state even when no numeric
          * property is animated. Hash the resolved active flag, not raw time. */
-        add(layer->visible && time >= layer->in_time && time <= layer->out_time);
+        add(layer->visible && sample_time >= layer->in_time && sample_time <= layer->out_time);
         add_vec(layer->position); add_vec(layer->scale); add_anim(layer->rotation);
         add(layer->transform_quad_tl_x); add(layer->transform_quad_tl_y);
         add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
@@ -878,7 +1020,7 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         for (const auto &transition : layer->transitions) {
             if (!transition.enabled)
                 continue;
-            add(layer_transition_progress(transition, layer->in_time, layer->out_time, time));
+            add(layer_transition_progress(transition, layer->in_time, layer->out_time, sample_time));
         }
     }
     return QString::fromLatin1(hash.result().toHex());
@@ -906,12 +1048,13 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
             return 0;
         return qRound64(value / step);
     };
+    double sample_time = time;
     auto add_anim = [&](const AnimatedProperty &p, double step) {
-        if (p.is_animated()) add(quant(p.evaluate(time), step));
+        if (p.is_animated()) add(quant(p.evaluate(sample_time), step));
     };
     auto add_vec = [&](const AnimatedVec2Property &p, double step) {
         if (!p.is_animated()) return;
-        const Vec2Value v = p.evaluate(time);
+        const Vec2Value v = p.evaluate(sample_time);
         add(quant(v.x, step)); add(quant(v.y, step));
     };
     auto add_effect = [&](const LayerEffect &e) {
@@ -942,6 +1085,6 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(e.secondary_color_g, 1.0 / 255.0);
         add_anim(e.secondary_color_b, 1.0 / 255.0);
         if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
-            add(quant(time, 1.0 / 240.0));
+            add(quant(sample_time, 1.0 / 240.0));
     };
 

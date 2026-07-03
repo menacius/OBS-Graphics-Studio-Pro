@@ -920,6 +920,36 @@ static const char *source_get_name(void *)
     return bgl_tr_c("OBSTitles.SourceName");
 }
 
+static void apply_source_cue_end_state(TitleSourceData *data,
+                                       const std::shared_ptr<Title> &title,
+                                       const char *reason)
+{
+    if (!data)
+        return;
+
+    data->playing = false;
+    data->waiting_for_cue = true;
+    data->active_cue_row = -1;
+    data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+    data->playback_reverse = false;
+
+    const int behavior = title ? std::clamp(title->cue_end_behavior, 0, 2) : 1;
+    if (behavior == 1) {
+        data->playhead = title ? std::max(0.0, title->duration) : 0.0;
+        set_source_output_visible(data, false, reason ? reason : "initial-show-nothing");
+    } else if (behavior == 2) {
+        data->playhead = 0.0;
+        set_source_output_visible(data, true, reason ? reason : "initial-show-first-frame");
+    } else {
+        data->playhead = title ? std::max(0.0, title->duration) : 0.0;
+        set_source_output_visible(data, true, reason ? reason : "initial-show-last-frame");
+    }
+
+    release_active_scene_mask_scenes(data);
+    data->dirty = true;
+    data->first_frame_pending = true;
+}
+
 static void *source_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *data = new TitleSourceData();
@@ -928,8 +958,14 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     if (settings) {
         data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
         data->cue_first_row_when_active = obs_data_get_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE);
+        data->editor_audio_preview = obs_data_get_bool(settings, "editor_audio_preview");
+        data->editor_transport_controlled =
+            obs_data_get_bool(settings, "editor_transport_controlled");
         refresh_scene_mask_configs(data, settings);
     }
+    data->audio_runtime =
+        std::make_unique<bgl::audio::SourceAudioRuntime>(
+            source, data->editor_audio_preview);
     data->cache_wake_state = std::make_shared<SourceCacheWakeState>();
     bind_source_cache_wake_title(data->cache_wake_state, data->title_id);
     const std::weak_ptr<SourceCacheWakeState> weak_wake_state =
@@ -965,18 +1001,19 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
      * state. */
     data->seen_store_revision = std::numeric_limits<uint64_t>::max();
     data->seen_external_data_revision = std::numeric_limits<uint64_t>::max();
-    data->playing = false;
-    data->waiting_for_cue = true;
-    data->active_cue_row = -1;
-    data->output_visible.store(true, std::memory_order_release);
-    data->dirty = true;
-    data->first_frame_pending = true;
+    apply_source_cue_end_state(
+        data, TitleDataStore::instance().get_title(data->title_id),
+        "source-created-cue-end-state");
+    sync_source_audio_active(
+        data, TitleDataStore::instance().get_title(data->title_id),
+        "source-created");
     data->consecutive_draw_failures = 0;
     BGL_LOG_INFO("Source", QStringLiteral(
         "Created OBS source=%1 title=%2 session=%3")
         .arg(reinterpret_cast<quintptr>(source), 0, 16)
         .arg(QString::fromStdString(data->title_id))
         .arg(reinterpret_cast<quintptr>(data->gpu_render_session), 0, 16));
+    register_title_source_instance(data);
     return data;
 }
 
@@ -984,6 +1021,7 @@ static void source_destroy(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
+    unregister_title_source_instance(data);
     clear_live_cue_runtime_for_source(data, data->title_id);
     BGL_LOG_INFO("Source", QStringLiteral(
         "Destroying OBS source title=%1 session=%2")
@@ -992,6 +1030,8 @@ static void source_destroy(void *priv)
     QObject::disconnect(data->cache_frame_ready_connection);
     data->cache_wake_state.reset();
     release_active_scene_mask_scenes(data);
+    if (data->audio_runtime) data->audio_runtime->stop(false);
+    data->audio_runtime.reset();
     title_gpu_render_session_destroy(data->gpu_render_session);
     data->gpu_render_session = nullptr;
     {
@@ -1023,7 +1063,14 @@ static void source_update(void *priv, obs_data_t *settings)
         release_active_scene_mask_scenes(data);
 
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+    if (data->audio_runtime) data->audio_runtime->stop(false);
     data->cue_first_row_when_active = obs_data_get_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE);
+    data->editor_audio_preview = obs_data_get_bool(settings, "editor_audio_preview");
+    data->editor_transport_controlled =
+        obs_data_get_bool(settings, "editor_transport_controlled");
+    data->editor_playback_reverse = false;
+    if (data->audio_runtime)
+        data->audio_runtime->set_editor_preview(data->editor_audio_preview);
     const bool title_changed = data->title_id != previous_title_id;
     if (title_changed) {
         request_source_presentation_reset(data, "source-title-binding-changed");
@@ -1035,13 +1082,14 @@ static void source_update(void *priv, obs_data_t *settings)
     }
     bind_source_cache_wake_title(data->cache_wake_state, data->title_id);
     refresh_scene_mask_configs(data, settings);
-    data->playhead = 0.0;
-    data->playback_reverse = false;
-    data->cue_phase = TitleSourceData::CuePhase::FreeRun;
-    data->playing = false;
-    data->output_visible.store(true, std::memory_order_release);
-    data->waiting_for_cue = true;
-    data->active_cue_row = -1;
+    apply_source_cue_end_state(
+        data, TitleDataStore::instance().get_title(data->title_id),
+        "source-updated-cue-end-state");
+    data->seen_audio_membership_revision =
+        std::numeric_limits<uint64_t>::max();
+    sync_source_audio_active(
+        data, TitleDataStore::instance().get_title(data->title_id),
+        "source-updated");
     if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
         /* The dock selection and OBS source-settings update are asynchronous.
@@ -1173,6 +1221,7 @@ static void source_deactivate(void *priv)
     if (!data)
         return;
     data->scene_mask_foreground_active = false;
+    if (data->audio_runtime) data->audio_runtime->stop(true);
     clear_live_cue_runtime_for_source(data, data->title_id);
     data->cue_timer_row = -1;
     data->cue_timer_elapsed_seconds = 0.0;

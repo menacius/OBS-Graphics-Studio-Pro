@@ -206,7 +206,7 @@ void TitleDock::update_template_view_mode()
         }
     } else {
         list_->setViewMode(QListView::ListMode);
-        list_->setIconSize(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
+        list_->setIconSize(QSize(kTitleListIconExtent * 3 + 6, kTitleListIconExtent));
         list_->setGridSize(QSize());
         list_->setResizeMode(QListView::Fixed);
         list_->setMovement(QListView::Static);
@@ -236,6 +236,28 @@ void TitleDock::on_toggle_visibility_filter(bool enabled)
     visibility_filter_active_ = enabled;
     populate_list();
     save_dock_settings();
+}
+
+static bool title_has_bound_obs_source(const std::string &title_id)
+{
+    if (title_id.empty())
+        return false;
+    struct Context { const std::string *id; bool found = false; } ctx{&title_id, false};
+    obs_enum_sources([](void *param, obs_source_t *source) {
+        auto *ctx = static_cast<Context *>(param);
+        if (!ctx || !source || ctx->found)
+            return false;
+        const char *source_id = obs_source_get_id(source);
+        if (!source_id || strcmp(source_id, kTitleSourceId) != 0)
+            return true;
+        obs_data_t *settings = obs_source_get_settings(source);
+        const char *bound = settings ? obs_data_get_string(settings, PROP_TITLE_ID) : nullptr;
+        ctx->found = bound && *bound && *ctx->id == bound;
+        if (settings)
+            obs_data_release(settings);
+        return !ctx->found;
+    }, &ctx);
+    return ctx.found;
 }
 
 QSet<QString> TitleDock::active_title_source_ids() const
@@ -301,7 +323,7 @@ void TitleDock::populate_list()
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
             item->setTextAlignment(Qt::AlignHCenter);
         } else {
-            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
+            item->setIcon(title_list_combined_status_icon(*t, has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
             item->setSizeHint(QSize());
             item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         }
@@ -783,6 +805,11 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue, bool force_restart)
 {
     if (!title) return false;
+    if (!title_has_bound_obs_source(title->id)) {
+        BGL_LOG_INFO("CueControl", QStringLiteral("Rejected cue for unbound title=%1")
+                                      .arg(QString::fromStdString(title->id)));
+        return false;
+    }
     const QString title_id = QString::fromStdString(title->id);
     const bool selected_title = title_id == QString::fromStdString(selected_id());
 
@@ -817,12 +844,14 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         updating_exposed_text_ = true;
         cache_waiting_cue_row_ = -1;
         cache_waiting_title_id_.clear();
-        const bool uncue_active = allow_uncue &&
-            (title->current_cue_row == 0 || title->pending_cue_row == 0);
-        /* Titles without exposed fields still have one synthetic cue row.
-         * Keep it active during uncue so the source can play the remaining
-         * timeline and clear the cue only after When cue ends is applied. */
-        title->current_cue_row = 0;
+        const bool row_active = title->current_cue_row == 0 || title->pending_cue_row == 0;
+        const bool immediate_finalize = allow_uncue && title->current_cue_row == 0 &&
+            title->cue_uncue_requested;
+        const bool uncue_active = allow_uncue && row_active && !immediate_finalize;
+        /* Titles without exposed fields still have one synthetic cue row. The
+         * first click requests the outro; a second click while yellow clears
+         * the cue immediately and lets the source apply When cue ends. */
+        title->current_cue_row = immediate_finalize ? -1 : 0;
         title->pending_cue_row = -1;
         title->cue_uncue_requested = uncue_active;
         title->cue_persistence_transition = false;
@@ -897,7 +926,22 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     if (!(allow_uncue && (is_active_cue || is_pending_cue)))
         title->cue_uncue_requested = false;
 
-    if (allow_uncue && (is_active_cue || is_pending_cue)) {
+    if (allow_uncue && is_active_cue && title->cue_uncue_requested) {
+        cache_waiting_cue_row_ = -1;
+        cache_waiting_title_id_.clear();
+        title->current_cue_row = -1;
+        title->pending_cue_row = -1;
+        title->cue_uncue_requested = false;
+        title->cue_persistence_transition = false;
+        title->cue_persistent_text_columns.clear();
+        ++title->cue_revision;
+        TitleDataStore::instance().touch_runtime_change();
+        updating_exposed_text_ = false;
+        if (selected_title)
+            update_live_text_runtime_status_fast(title, row);
+        schedule_title_list_cache_icon_update(title_id);
+        return true;
+    } else if (allow_uncue && (is_active_cue || is_pending_cue)) {
         cache_waiting_cue_row_ = -1;
         cache_waiting_title_id_.clear();
         /* Keep current_cue_row active while the source plays the outro.  This

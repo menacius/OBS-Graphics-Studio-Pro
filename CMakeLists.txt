@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.8)
+project(broadcast-graphics-live VERSION 0.8.9)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "144")
+set(OBS_BGS_DEVELOPMENT_VERSION "189")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -409,6 +409,8 @@ set(OBS_BGS_CORE_HEADERS
     src/core/external-data.h
     src/core/external-data-types.h
     src/core/external-data-provider.h
+    src/core/external-json-path.h
+    src/core/performance-counters.h
 )
 
 set(OBS_BGS_LAYER_HEADERS
@@ -480,6 +482,7 @@ set(OBS_BGS_TEXT_HEADERS
     src/text/text-animator-preset-io.h
     src/text/title-text-layout.h
     src/text/title-text-layout-qt-font-registry.h
+    src/text/pattern-resource-cache.h
 )
 
 set(OBS_BGS_RENDERING_SOURCES
@@ -521,10 +524,15 @@ set(OBS_BGS_CANVAS_HEADERS
 set(OBS_BGS_OBS_SOURCES
     src/obs/plugin-main.cpp
     src/obs/title-source.cpp
+    src/obs/title-audio-runtime.cpp
+    src/obs/stinger-transition.cpp
 )
 set(OBS_BGS_OBS_HEADERS
     src/obs/plugin-main.h
     src/obs/title-source.h
+    src/obs/title-audio-runtime.h
+    src/obs/audio-output-scheduler.h
+    src/obs/stinger-transition.h
 )
 
 set(OBS_BGS_EDITOR_SOURCES
@@ -678,6 +686,36 @@ target_link_libraries(broadcast-graphics-live PRIVATE
     nlohmann_json::nlohmann_json
     ${OBS_BGS_LZ4_TARGET}
 )
+
+# Optional FFmpeg backend for MP3/FLAC/AAC/M4A and audio streams in video assets.
+# A dependency-free PCM WAV decoder remains available when the development
+# packages are not present, so source loading never becomes a hard failure.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(BGL_FFMPEG QUIET IMPORTED_TARGET
+    libavformat libavcodec libavutil libswresample)
+endif()
+if(TARGET PkgConfig::BGL_FFMPEG)
+  target_link_libraries(broadcast-graphics-live PRIVATE PkgConfig::BGL_FFMPEG)
+  target_compile_definitions(broadcast-graphics-live PRIVATE BGL_HAVE_FFMPEG=1)
+else()
+  # Windows/vcpkg does not always expose FFmpeg through pkg-config.
+  find_path(BGL_AVFORMAT_INCLUDE_DIR libavformat/avformat.h)
+  find_library(BGL_AVFORMAT_LIBRARY NAMES avformat)
+  find_library(BGL_AVCODEC_LIBRARY NAMES avcodec)
+  find_library(BGL_AVUTIL_LIBRARY NAMES avutil)
+  find_library(BGL_SWRESAMPLE_LIBRARY NAMES swresample)
+  if(BGL_AVFORMAT_INCLUDE_DIR AND BGL_AVFORMAT_LIBRARY AND BGL_AVCODEC_LIBRARY
+     AND BGL_AVUTIL_LIBRARY AND BGL_SWRESAMPLE_LIBRARY)
+    target_include_directories(broadcast-graphics-live PRIVATE ${BGL_AVFORMAT_INCLUDE_DIR})
+    target_link_libraries(broadcast-graphics-live PRIVATE
+      ${BGL_AVFORMAT_LIBRARY} ${BGL_AVCODEC_LIBRARY}
+      ${BGL_AVUTIL_LIBRARY} ${BGL_SWRESAMPLE_LIBRARY})
+    target_compile_definitions(broadcast-graphics-live PRIVATE BGL_HAVE_FFMPEG=1)
+  else()
+    message(WARNING "FFmpeg development libraries were not found; only PCM WAV audio will decode")
+  endif()
+endif()
 
 if(CAIRO_CFLAGS_OTHER)
   target_compile_options(broadcast-graphics-live PRIVATE ${CAIRO_CFLAGS_OTHER})
@@ -850,7 +888,7 @@ if(OBS_BGS_BUILD_TESTS)
   add_executable(animation_model_test
       tests/animation_model_test.cpp
       src/timeline/animation.cpp)
-  target_include_directories(animation_model_test PRIVATE src/timeline)
+  target_include_directories(animation_model_test PRIVATE src/timeline src/core)
   add_test(NAME animation_model_test COMMAND animation_model_test)
 
   add_executable(text_animator_system_test
@@ -1060,6 +1098,7 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-types.h
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.h
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-json-path.h
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-settings-dialog.cpp
@@ -1515,4 +1554,85 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/color-gradient-editing.inc
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/ui-construction.inc
       ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
+
+  add_executable(serialization_migration_roundtrip_test
+      tests/serialization_migration_roundtrip_test.cpp)
+  target_include_directories(serialization_migration_roundtrip_test PRIVATE
+      src/core)
+  target_link_libraries(serialization_migration_roundtrip_test PRIVATE
+      nlohmann_json::nlohmann_json)
+  add_test(NAME serialization_migration_roundtrip_test
+      COMMAND serialization_migration_roundtrip_test)
+
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME python_contract_regression_suite
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_contract_tests.py)
+  endif()
+
+  add_executable(external_json_path_test
+      tests/external_json_path_test.cpp)
+  target_include_directories(external_json_path_test PRIVATE src/core)
+  add_test(NAME external_json_path_test COMMAND external_json_path_test)
+
+  add_executable(audio_output_scheduler_test
+      tests/audio_output_scheduler_test.cpp)
+  target_include_directories(audio_output_scheduler_test PRIVATE src/obs)
+  add_test(NAME audio_output_scheduler_test COMMAND audio_output_scheduler_test)
+
+  add_executable(audio_reverse_transport_test
+      tests/audio_reverse_transport_test.cpp)
+  target_include_directories(audio_reverse_transport_test PRIVATE src/obs)
+  add_test(NAME audio_reverse_transport_test COMMAND audio_reverse_transport_test)
+
+  add_executable(pattern_resource_cache_test
+      tests/pattern_resource_cache_test.cpp)
+  target_include_directories(pattern_resource_cache_test PRIVATE
+      src/text src/core)
+  add_test(NAME pattern_resource_cache_test COMMAND pattern_resource_cache_test)
+
+  add_executable(performance_cache_threading_contract_test
+      tests/performance_cache_threading_contract_test.cpp)
+  target_include_directories(performance_cache_threading_contract_test PRIVATE tests)
+  add_test(NAME performance_cache_threading_contract_test
+      COMMAND performance_cache_threading_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/text/pattern-resource-cache.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/text/title-rich-text.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-audio-runtime.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-audio-runtime.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/animation.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/spatial-bezier-keyframes.inc
+      # Contract argv[10] is content-hash (implemented in disk-cache-storage.inc);
+      # argv[11] is disk-writer (implemented in visual-hash-keying.inc).
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/disk-cache-storage.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/visual-hash-keying.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/live-cue-state.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/worker-publication.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/render-queue-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/plugin-main.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/stinger-transition.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-registration.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-effects-transitions.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/cache-policy-invalidation.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-serialization-schema.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/keyboard-wheel-events.inc)
+
+  add_executable(unified_serialization_contract_test
+      tests/unified_serialization_contract_test.cpp)
+  target_include_directories(unified_serialization_contract_test PRIVATE tests)
+  add_test(NAME unified_serialization_contract_test
+      COMMAND unified_serialization_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-serialization-schema.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/style-presets.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/disk-cache-storage.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/dock-lifecycle.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/collapsible-titles.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-audio-runtime.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/property-synchronization.inc)
 endif()

@@ -1,4 +1,5 @@
 #include "title-rich-text.h"
+#include "pattern-resource-cache.h"
 #include <regex>
 #include <sstream>
 #ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
@@ -1188,10 +1189,11 @@ static std::vector<std::pair<size_t, size_t>> regex_auto_style_ranges(
     if (rule.regex_pattern.empty())
         return ranges;
     try {
-        const auto flags = std::regex::ECMAScript |
-            (rule.regex_case_sensitive ? std::regex::flag_type{} : std::regex::icase);
-        const std::regex expression(rule.regex_pattern, flags);
-        for (std::sregex_iterator it(text.begin(), text.end(), expression), end; it != end; ++it) {
+        const auto expression = bgl::text::cached_pattern(
+            rule.regex_pattern, rule.regex_case_sensitive);
+        if (!expression)
+            return ranges;
+        for (std::sregex_iterator it(text.begin(), text.end(), *expression), end; it != end; ++it) {
             const std::smatch &match = *it;
             const size_t group = std::min(rule.regex_capture_group, match.size() ? match.size() - 1 : size_t{0});
             if (!match[group].matched)
@@ -1215,6 +1217,7 @@ static std::vector<std::pair<size_t, size_t>> regex_auto_style_ranges(
 
 static std::vector<std::pair<size_t, size_t>> auto_style_rule_ranges(const RichTextAutoStyleRule &rule, const std::string &text)
 {
+    bgl::perf::add(bgl::perf::Counter::FormattingRuleEvaluations);
     const size_t text_len = text.size();
     std::vector<std::pair<size_t, size_t>> ranges;
 

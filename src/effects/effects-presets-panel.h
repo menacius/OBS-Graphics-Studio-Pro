@@ -18,6 +18,7 @@ public:
 
 signals:
     void effect_preset_activated(const QString &file_path);
+    void audio_effect_activated(int effect_type);
 
 private:
     bool filter_item(QTreeWidgetItem *item, const QString &query);

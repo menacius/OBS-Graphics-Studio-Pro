@@ -101,6 +101,14 @@
     uint32_t external_background_snapshot_height = 0;
     enum gs_color_format external_background_snapshot_format = GS_UNKNOWN;
     std::unique_ptr<TitleEffectRegistry> effect_registry;
+    /* Borrowed OBS transition textures. They are valid only during the
+     * synchronous obs_transition_video_render callback and are never owned or
+     * cached by BGL. */
+    gs_texture_t *transition_input_textures[2] = {nullptr, nullptr};
+    uint32_t transition_input_width = 0;
+    uint32_t transition_input_height = 0;
+    uint64_t transition_input_generation = 0;
+    bool transition_input_preview_enabled = false;
     gs_texture_t *final_texture = nullptr;
     /* A published texture is valid only for the exact model that produced it.
      * Keeping this identity beside the pointer makes cross-title/project
@@ -341,6 +349,18 @@ static bool layer_can_use_gpu_primitive_raster(const Layer &layer,
 
     const double local_time = std::max(0.0, title_time - layer.in_time);
     if (layer.fill_type != 0)
+        return false;
+
+    /* The analytic primitive target only reserves geometry/stroke padding.
+     * Any appearance/effect that can paint outside the primitive needs the
+     * full asymmetric surface from clipped_effect_surface_rect(). Keeping such
+     * layers on this fast path clips shadows, glows and blurs exactly at the
+     * layer box because the later effect shader cannot write beyond its input
+     * texture. Route them through the exact base-raster path instead. */
+    const ShadowRenderParams shadow = evaluated_shadow_params(layer, local_time);
+    if (shadow.drop_enabled || shadow.long_enabled ||
+        eval_background_enabled(layer, local_time) ||
+        layer_has_stackable_pixel_effects(layer))
         return false;
 
     const bool has_stroke = layer_has_visible_outline(layer, local_time);

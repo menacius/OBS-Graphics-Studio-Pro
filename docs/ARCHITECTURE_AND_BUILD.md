@@ -90,3 +90,15 @@ When a canonical document path changes, update audits to read the new document i
 
 A changed value publishes a runtime-only revision, editor callback, and coalesced render-queue entry. OBS consumes pending entries from its source tick/render path and resolves effective values from a mutex-protected snapshot. Equal values are acknowledged by timestamp only and intentionally produce no callbacks or cache invalidation.
 
+## Serialization and migration
+
+The title store remains a top-level JSON array. Titles carry explicit schema and development metadata, and the migration ledger is contiguous from Development Version 144 onward, including deliberate no-op steps. Migration and current-schema validation are idempotent. Malformed titles or child entries recover independently; unknown future fields are retained by the JSON migration layer where possible; missing audio, proxy, provider, or extension resources fail softly instead of discarding the document. Existing non-empty layer IDs are preserved.
+
+Persisted coverage includes external data and Live Text table bindings, rich-text formatting and patterns, audio layers and effects, Stinger settings and Scene A/B inputs, proxy metadata, spatial/temporal Bezier handles, groups, and dock state. Runtime provider values, audio decoder state, monitor state, worker queues, and cache residency are not serialized as authored document data.
+
+## Regression coverage
+
+Automated contracts cover source structure, serialization round trips, cache/thread ownership, audio scheduling and reverse transport, external JSON paths, Stinger modes, timeline behavior, effects, shutdown, and package/version consistency. The Python contract runner executes every `tests/*.py` source contract deterministically.
+
+Manual release checks include: Undo/redo, Copy/paste, Group/ungroup, Save/reopen, External JSON, Audio layer pause/resume/seek, Stinger scene transition, cache/prerender, scene masks, Corrupt proxy cache recovery, Dock layout restoration, Windows and Linux parity, and OBS startup/shutdown.
+

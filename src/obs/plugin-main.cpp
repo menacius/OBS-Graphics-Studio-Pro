@@ -5,6 +5,8 @@
 
 #include "plugin-main.h"
 #include "title-source.h"
+#include "stinger-transition.h"
+#include "title-audio-runtime.h"
 #include "title-dock.h"
 #include "title-hotkeys.h"
 #include "title-editor.h"
@@ -17,6 +19,8 @@
 #include "title-preferences.h"
 #include "title-text-layout.h"
 #include "title-text-layout-qt-font-registry.h"
+#include "pattern-resource-cache.h"
+#include "performance-counters.h"
 #include "cache-manager.h"
 #include "build-info.h"
 #include "extensions/effect-extension-catalog.h"
@@ -181,6 +185,7 @@ bool obs_module_load(void)
 
     /* 2. Register the renderable source type and title cue hotkeys */
     title_source_register();
+    stinger_transition_register();
     title_hotkeys_register();
 
     /* 3. Add global preferences entry and defer dock/hotkey creation until the OBS UI is ready */
@@ -218,8 +223,16 @@ void obs_module_unload(void)
         CacheManager::instance().clearAll();
     }
     release_title_gpu_render_resources();
+    bgl::audio::SourceAudioRuntime::clear_shared_cache();
+    bgl::text::clear_pattern_resource_cache();
     shared_text_layout_cache().clear();
     text_layout_clear_raw_font_registry();
+#ifndef NDEBUG
+    const std::string performance_snapshot = bgl::perf::snapshot_text();
+    if (!performance_snapshot.empty())
+        BGL_LOG_INFO("Performance", QString::fromStdString(performance_snapshot));
+    bgl::perf::reset();
+#endif
     BglEffectExtensionCatalog::instance().shutdown();
     blog(LOG_INFO, "[Broadcast Graphics Live] Plugin unloaded.");
     BGL_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));

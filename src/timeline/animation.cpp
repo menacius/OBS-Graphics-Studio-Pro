@@ -1,4 +1,5 @@
 #include "animation.h"
+#include "../core/performance-counters.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,6 +8,22 @@
 namespace {
 
 constexpr double kAnimationEpsilon = 1e-10;
+
+template<typename KeyframeType>
+static size_t segment_index_for_time(const std::vector<KeyframeType> &keyframes,
+                                     double time)
+{
+    const auto upper = std::upper_bound(
+        keyframes.begin(), keyframes.end(), time,
+        [](double sample_time, const KeyframeType &keyframe) {
+            return sample_time < keyframe.time;
+        });
+    if (upper == keyframes.begin())
+        return 0;
+    return std::min<size_t>(
+        static_cast<size_t>(std::distance(keyframes.begin(), upper) - 1),
+        keyframes.size() - 2);
+}
 
 static bool finite_vec(const Vec2Value &value)
 {
@@ -313,26 +330,24 @@ TemporalBezierSegment AnimatedProperty::temporal_segment(size_t segment_index) c
 
 double AnimatedProperty::evaluate(double t) const
 {
+    bgl::perf::add(bgl::perf::Counter::BezierEvaluations);
     if (!std::isfinite(t)) return static_value;
     if (keyframes.empty()) return static_value;
     if (keyframes.size() == 1) return keyframes.front().value;
     if (t <= keyframes.front().time) return keyframes.front().value;
     if (t >= keyframes.back().time) return keyframes.back().value;
-    for (size_t i = 0; i + 1 < keyframes.size(); ++i)
-        if (t >= keyframes[i].time && t <= keyframes[i + 1].time)
-            return evaluate_temporal_segment(temporal_segment(i), t);
-    return keyframes.back().value;
+    const size_t segment = segment_index_for_time(keyframes, t);
+    return evaluate_temporal_segment(temporal_segment(segment), t);
 }
 
 double AnimatedProperty::velocity(double t) const
 {
+    bgl::perf::add(bgl::perf::Counter::BezierEvaluations);
     if (keyframes.size() < 2 || !std::isfinite(t)) return 0.0;
     if (t <= keyframes.front().time) t = keyframes.front().time;
     if (t >= keyframes.back().time) t = keyframes.back().time;
-    for (size_t i = 0; i + 1 < keyframes.size(); ++i)
-        if (t >= keyframes[i].time && t <= keyframes[i + 1].time)
-            return evaluate_temporal_segment_velocity(temporal_segment(i), t);
-    return 0.0;
+    const size_t segment = segment_index_for_time(keyframes, t);
+    return evaluate_temporal_segment_velocity(temporal_segment(segment), t);
 }
 
 void AnimatedProperty::set_temporal_mode(size_t keyframe_index,
@@ -898,20 +913,17 @@ void AnimatedVec2Property::apply_easy_ease(size_t keyframe_index,
 
 Vec2Value AnimatedVec2Property::evaluate(double t) const
 {
+    bgl::perf::add(bgl::perf::Counter::BezierEvaluations);
     if (!std::isfinite(t)) return static_value;
     if (keyframes.empty()) return static_value;
     if (keyframes.size() == 1) return keyframes.front().value;
     if (t <= keyframes.front().time) return keyframes.front().value;
     if (t >= keyframes.back().time) return keyframes.back().value;
-    for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
-        if (t >= keyframes[i].time && t <= keyframes[i + 1].time) {
-            const TemporalBezierSegment segment = temporal_segment(i);
-            const double progress = evaluate_temporal_segment(segment, t);
-            // The temporal result is the spatial progress for the shared path evaluator.
-            return evaluate_spatial_segment(i, progress);
-        }
-    }
-    return keyframes.back().value;
+    const size_t segment_index = segment_index_for_time(keyframes, t);
+    const TemporalBezierSegment segment = temporal_segment(segment_index);
+    const double progress = evaluate_temporal_segment(segment, t);
+    // The temporal result is the spatial progress for the shared path evaluator.
+    return evaluate_spatial_segment(segment_index, progress);
 }
 
 Vec2Value AnimatedVec2Property::velocity(double t) const

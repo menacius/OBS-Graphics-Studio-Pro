@@ -404,6 +404,9 @@ void TitleEditor::new_title_contents()
         return;
 
     title_->layers.clear();
+    if (title_->graphic_type == TitleGraphicType::Stinger &&
+        title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
+        ensure_stinger_transition_input_layers(*title_);
     sel_layer_id_.clear();
     layers_->refresh();
     canvas_->set_selected_layers({});
@@ -685,6 +688,7 @@ void TitleEditor::open_title(const std::string &tid)
 {
     show_editor_activity(bgl_tr("OBSTitles.LoadingTitleStatus"), 0);
     play_timer_->stop();
+    release_editor_audio_preview();
     if (cache_invalidation_timer_)
         cache_invalidation_timer_->stop();
     CacheManager::instance().setInteractiveBypass(false);
@@ -705,6 +709,7 @@ void TitleEditor::open_title(const std::string &tid)
     CacheManager::instance().setEditorPrerenderFocus(QString::fromStdString(tid), true);
     editing_title_id_ = tid;
     title_ = clone_title(*stored_title);
+    ensure_editor_audio_preview();
     external_data_visual_hash_ =
         CacheManager::instance().contentHashForTitle(*title_);
     load_new_layer_defaults();

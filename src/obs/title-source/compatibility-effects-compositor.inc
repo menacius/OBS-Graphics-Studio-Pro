@@ -1015,11 +1015,44 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
                                       h + eval_background_padding_top(layer, t) + eval_background_padding_bottom(layer, t)));
     }
 
+    /* Include every stroke source, including per-run rich-text strokes.
+     * Rich text can exceed the layer's global outline by a large amount. */
     const double outline = std::max({eval_outline_width(layer, t),
                                      eval_background_stroke_width(layer, t),
+                                     max_rich_text_stroke_width(layer, t),
                                      0.0});
-    if (outline > 0.0)
-        bounds = bounds.adjusted(-outline, -outline, outline, outline);
+    if (outline > 0.0) {
+        /* Outside/center strokes plus antialiasing and joins may consume more
+         * than one nominal width at sharp corners. Reserve the full diameter. */
+        const double stroke_extent = outline * 2.0 + 4.0;
+        bounds = bounds.adjusted(-stroke_extent, -stroke_extent,
+                                 stroke_extent, stroke_extent);
+    }
+
+    /* Legacy layer shadow properties are rendered outside the stackable effect
+     * pipeline, so stackable_effect_padding() alone cannot protect them. Build
+     * the complete asymmetric envelope here before allocating the surface. */
+    const ShadowRenderParams shadow = evaluated_shadow_params(layer, t);
+    if (shadow.drop_enabled) {
+        const double support = gaussian_blur_support(
+            std::max(0.0, shadow.blur) + std::max(0.0, shadow.spread));
+        const double halo = support + std::max(0.0, shadow.blur) +
+                            std::max(0.0, shadow.spread) + 8.0;
+        bounds = bounds.united(bounds.translated(shadow.dx, shadow.dy)
+                                   .adjusted(-halo, -halo, halo, halo));
+    }
+    if (shadow.long_enabled) {
+        const double radians = shadow.long_angle * M_PI / 180.0;
+        const QPointF end(std::cos(radians) * shadow.long_length,
+                          std::sin(radians) * shadow.long_length);
+        const double halo = shadow.long_blur_type ==
+                static_cast<int>(LongShadowBlurType::None)
+            ? 4.0
+            : gaussian_blur_support(std::max(0.0, shadow.long_blur)) +
+                  std::max(0.0, shadow.long_blur) + 8.0;
+        bounds = bounds.united(bounds.translated(end)
+                                   .adjusted(-halo, -halo, halo, halo));
+    }
 
     const double pad = stackable_effect_padding(layer, t);
     return bounds.adjusted(-pad, -pad, pad, pad);
@@ -1272,7 +1305,8 @@ static QTransform layer_local_transform_qt(const Title &title,
         title, layer, title_time);
     const double local_time = std::max(0.0, resolved_time - layer.in_time);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, resolved_time);
+        layer.transitions, layer.in_time, layer.out_time,
+        gpu_layer_transition_time(title, layer, title_time));
     const auto position = layer.position.evaluate(local_time);
     const auto scale = layer.scale.evaluate(local_time);
     local.translate(position.x + transition.translate_x,

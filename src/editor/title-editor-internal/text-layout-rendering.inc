@@ -18,6 +18,10 @@ static QColor layer_type_color(LayerType type)
     case LayerType::Group:
     case LayerType::Asset:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::GroupLayer);
+    case LayerType::TransitionInput:
+        return type == LayerType::TransitionInput
+            ? TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer)
+            : TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::GroupLayer);
     }
     return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
 }
@@ -40,6 +44,7 @@ static QString layer_type_short(LayerType type)
     case LayerType::ColorSolid: return "■";
     case LayerType::Group: return "G";
     case LayerType::Asset: return "A";
+    case LayerType::TransitionInput: return "A/B";
     }
     return "•";
 }

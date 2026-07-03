@@ -4,6 +4,7 @@
 #include <QMutexLocker>
 
 #include <algorithm>
+#include <iterator>
 
 RamFrameCache::RamFrameCache(QObject *parent) : QObject(parent) {}
 
@@ -27,8 +28,7 @@ bool RamFrameCache::get(const CacheFrameKey &key, QImage &image) const
     if (payload_it == payloads_.constEnd() || payload_it->image.isNull())
         return false;
     auto *self = const_cast<RamFrameCache *>(this);
-    self->lru_.removeAll(key);
-    self->lru_.push_back(key);
+    self->touchKeyLocked(key);
     image = payload_it->image;
     return true;
 }
@@ -42,8 +42,7 @@ void RamFrameCache::put(const CacheFrameKey &key, const QImage &image)
     const quint64 payload_id = payloadId(image);
     const auto existing_key = key_payload_ids_.constFind(key);
     if (existing_key != key_payload_ids_.constEnd() && existing_key.value() == payload_id) {
-        lru_.removeAll(key);
-        lru_.push_back(key);
+        touchKeyLocked(key);
         return;
     }
 
@@ -62,8 +61,7 @@ void RamFrameCache::put(const CacheFrameKey &key, const QImage &image)
     }
 
     key_payload_ids_.insert(key, payload_id);
-    lru_.removeAll(key);
-    lru_.push_back(key);
+    touchKeyLocked(key);
     evictIfNeeded();
 }
 
@@ -81,6 +79,7 @@ void RamFrameCache::clear()
     key_payload_ids_.clear();
     payloads_.clear();
     lru_.clear();
+    lru_positions_.clear();
     bytes_used_ = 0;
     BGL_LOG_INFO("RamCache", QStringLiteral(
         "Cleared RAM frame cache keys=%1 bytes=%2")
@@ -140,17 +139,32 @@ quint64 RamFrameCache::payloadId(const QImage &image) const
     return static_cast<quint64>(image.cacheKey());
 }
 
-void RamFrameCache::releaseKeyLocked(const CacheFrameKey &key)
+void RamFrameCache::touchKeyLocked(const CacheFrameKey &key)
 {
-    const auto key_it = key_payload_ids_.find(key);
-    if (key_it == key_payload_ids_.end()) {
-        lru_.removeAll(key);
+    auto position = lru_positions_.find(key);
+    if (position != lru_positions_.end()) {
+        lru_.splice(lru_.end(), lru_, position.value());
+        position.value() = std::prev(lru_.end());
         return;
     }
+    lru_.push_back(key);
+    lru_positions_.insert(key, std::prev(lru_.end()));
+}
+
+void RamFrameCache::releaseKeyLocked(const CacheFrameKey &key)
+{
+    auto lru_position = lru_positions_.find(key);
+    if (lru_position != lru_positions_.end()) {
+        lru_.erase(lru_position.value());
+        lru_positions_.erase(lru_position);
+    }
+
+    const auto key_it = key_payload_ids_.find(key);
+    if (key_it == key_payload_ids_.end())
+        return;
 
     const quint64 payload_id = key_it.value();
     key_payload_ids_.erase(key_it);
-    lru_.removeAll(key);
 
     auto payload_it = payloads_.find(payload_id);
     if (payload_it == payloads_.end())
@@ -163,8 +177,8 @@ void RamFrameCache::releaseKeyLocked(const CacheFrameKey &key)
 
 void RamFrameCache::evictIfNeeded()
 {
-    while (bytes_used_ > max_bytes_ && !lru_.isEmpty()) {
-        const CacheFrameKey victim = lru_.takeFirst();
+    while (bytes_used_ > max_bytes_ && !lru_.empty()) {
+        const CacheFrameKey victim = lru_.front();
         /* Removing an alias is free until the last reference is evicted. Keep
          * walking the LRU until enough unique payloads have actually gone. */
         releaseKeyLocked(victim);

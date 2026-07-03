@@ -25,6 +25,8 @@ enum class LayerType {
     ColorSolid = 7,
     Group = 8,
     Asset = 9,       /* reusable nested title composition */
+    Audio = 10,       /* timeline audio clip; no visual transform */
+    TransitionInput = 11, /* runtime Scene A/B texture supplied by OBS transitions */
 };
 
 inline bool layer_type_is_asset(LayerType type)
@@ -36,6 +38,67 @@ inline bool layer_type_is_container(LayerType type)
 {
     return type == LayerType::Group || type == LayerType::Asset;
 }
+
+inline bool layer_type_is_audio(LayerType type)
+{
+    return type == LayerType::Audio;
+}
+
+inline bool layer_type_is_transition_input(LayerType type)
+{
+    return type == LayerType::TransitionInput;
+}
+
+/* Scene A/B transition inputs use the same editable rectangular geometry as
+ * shape layers. Their pixels come from OBS rather than a fill material, but
+ * resize, animated Size, origin, transforms, masks and effects all follow the
+ * shape-box contract. */
+inline constexpr bool layer_type_uses_shape_geometry(LayerType type)
+{
+    return type == LayerType::Shape ||
+           type == LayerType::SolidRect ||
+           type == LayerType::TransitionInput;
+}
+
+inline constexpr bool layer_type_is_authored_shape(LayerType type)
+{
+    return type == LayerType::Shape || type == LayerType::SolidRect;
+}
+
+enum class AudioPlaybackMode {
+    PlayOnce = 0,
+    Loop = 1,
+    PauseAtOut = 2,
+};
+
+enum class AudioFadeCurve {
+    Linear = 0,
+    Smooth = 1,
+    EqualPower = 2,
+};
+
+enum class AudioEffectType {
+    Gain = 0,
+    Fade = 1,
+    HighPass = 2,
+    LowPass = 3,
+    CompressorLimiter = 4,
+};
+
+struct AudioEffect {
+    AudioEffectType type = AudioEffectType::Gain;
+    bool enabled = true;
+    float gain_db = 0.0f;
+    float frequency_hz = 120.0f;
+    float threshold_db = -6.0f;
+    float ratio = 4.0f;
+    float attack_ms = 5.0f;
+    float release_ms = 80.0f;
+    float makeup_db = 0.0f;
+    double fade_in = 0.0;
+    double fade_out = 0.0;
+    AudioFadeCurve fade_curve = AudioFadeCurve::Linear;
+};
 
 
 enum class ShapeType {
@@ -142,6 +205,13 @@ struct Layer {
     /* Group rows can collapse their descendants in the layer/timeline UI.
      * This is presentation state only; it never affects rendering. */
     bool        group_collapsed = false;
+    /* Runtime scene slot for manual Stinger composition: 0=Scene A, 1=Scene B.
+     * Transition-input layers otherwise follow the ordinary visual-layer
+     * contract. Only the two required document inputs are non-deletable;
+     * duplicates/copies remain ordinary deletable layers that reference the
+     * same runtime scene slot. */
+    int         transition_input_slot = -1;
+    bool        transition_input_required = false;
     /* Container hierarchy. Group and Asset layers may be referenced here. */
     std::string parent_id;
     /* Independent transform parenting. This never changes group membership,
@@ -191,6 +261,32 @@ struct Layer {
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;
     double      out_time = 5.0;
+
+    /* ----- Audio-specific -----
+     * Audio layers are timeline-only media clips. The generic in_time/out_time
+     * fields are their clip position and duration in the title timeline. */
+    std::string audio_source;
+    int         audio_stream_index = -1; /* -1 = standalone audio/default stream */
+    double      audio_in_point = 0.0;
+    double      audio_out_point = 0.0;   /* 0 = use media duration when known */
+    float       audio_volume = 1.0f;     /* legacy/static linear gain, 0..4 */
+    float       audio_pan = 0.0f;        /* legacy/static -1 left .. +1 right */
+    AnimatedProperty audio_volume_prop{"audio_volume", 1.0};
+    AnimatedProperty audio_pan_prop{"audio_pan", 0.0};
+    bool        audio_muted = false;
+    bool        audio_solo = false;
+    double      audio_fade_in = 0.0;
+    double      audio_fade_out = 0.0;
+    AudioFadeCurve audio_fade_curve = AudioFadeCurve::Linear;
+    std::vector<AudioEffect> audio_effects; /* independent from visual effects */
+    bool        audio_loop = false;
+    AudioPlaybackMode audio_playback_mode = AudioPlaybackMode::PlayOnce;
+    bool        audio_independent = false;
+    double      audio_media_duration = 0.0; /* cached metadata, safe if source missing */
+    int         audio_sample_rate = 0;
+    int         audio_channels = 0;
+    std::vector<float> audio_waveform; /* normalized min/max peak pairs for the full decoded asset */
+    double audio_waveform_duration = 0.0; /* decoded asset duration represented by audio_waveform */
 
     /* ----- Animated properties ----- */
     AnimatedVec2Property position { "position", {0.0, 0.0} };

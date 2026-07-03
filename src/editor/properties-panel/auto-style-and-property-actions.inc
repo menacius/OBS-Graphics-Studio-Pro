@@ -52,7 +52,7 @@
         return 1.0;
     };
     auto apply_shape_size_metric_scaling = [this, shape_resize_factor](double old_w, double old_h, double new_w, double new_h) {
-        if (!layer_ || (layer_->type != LayerType::Shape && layer_->type != LayerType::SolidRect))
+        if (!layer_ || !layer_type_uses_shape_geometry(layer_->type))
             return;
         const double factor = shape_resize_factor(old_w, old_h, new_w, new_h);
         if (!std::isfinite(factor) || factor <= 0.0 || std::abs(factor - 1.0) < 1e-6)
@@ -130,8 +130,7 @@
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
                                        (layer_->type == LayerType::Image ||
-                                        layer_->type == LayerType::Shape ||
-                                        layer_->type == LayerType::SolidRect);
+                                        layer_type_uses_shape_geometry(layer_->type));
                 if (lock_size && old_w > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
                     set_animated_y(layer_->size, t, layer_->rect_height);
@@ -182,8 +181,7 @@
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
                                        (layer_->type == LayerType::Image ||
-                                        layer_->type == LayerType::Shape ||
-                                        layer_->type == LayerType::SolidRect);
+                                        layer_type_uses_shape_geometry(layer_->type));
                 if (lock_size && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
                     set_animated_x(layer_->size, t, layer_->rect_width);
@@ -210,8 +208,7 @@
                     spn_layer_w_->setValue(v);
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
-                                       (layer_->type == LayerType::Shape ||
-                                        layer_->type == LayerType::SolidRect);
+                                       layer_type_uses_shape_geometry(layer_->type);
                 if (lock_size && old_w > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
                     set_animated_y(layer_->size, t, layer_->rect_height);
@@ -240,8 +237,7 @@
                     spn_layer_h_->setValue(v);
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
-                                       (layer_->type == LayerType::Shape ||
-                                        layer_->type == LayerType::SolidRect);
+                                       layer_type_uses_shape_geometry(layer_->type);
                 if (lock_size && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
                     set_animated_x(layer_->size, t, layer_->rect_width);
@@ -434,6 +430,24 @@
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 const double t = local_time();
+                if (layer_->type == LayerType::TransitionInput) {
+                    const double default_w = title_ ? std::max(1.0, (double)title_->width) : 1920.0;
+                    const double default_h = title_ ? std::max(1.0, (double)title_->height) : 1080.0;
+                    layer_->shape_type = ShapeType::Rectangle;
+                    layer_->rect_width = (float)default_w;
+                    layer_->rect_height = (float)default_h;
+                    set_animated_x(layer_->size, t, default_w);
+                    set_animated_y(layer_->size, t, default_h);
+                    set_layer_all_corner_radii(*layer_, 0.0f);
+                    layer_->corner_radius_locked = true;
+                    layer_->corner_bevel_roundness = 100.0f;
+                    layer_->lock_aspect_ratio = false;
+                    layer_->scale_stroke_with_shape = false;
+                    layer_->scale_corners_with_shape = false;
+                    load_values();
+                    emit_change();
+                    return;
+                }
                 if (layer_->type == LayerType::Image) {
                     QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
                     if (!intrinsic.isValid() || intrinsic.isEmpty())

@@ -33,8 +33,11 @@
 #include <QDirIterator>
 #include <QDateTime>
 #include <QStatusBar>
+#include <QPalette>
+#include <QStringList>
 
 #include <cmath>
+#include <obs.h>
 
 
 #include "long-press-tool-button.h"
@@ -49,5 +52,6 @@
 #include "title-editor/document-shape-editing.inc"
 #include "title-editor/playback-cache-preferences.inc"
 #include "title-editor/layout-template-tools.inc"
+#include "title-editor/editor-audio-preview.inc"
 #include "title-editor/signal-handlers.inc"
 #include "title-editor/editor-events.inc"

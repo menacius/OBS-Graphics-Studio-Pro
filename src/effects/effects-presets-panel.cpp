@@ -3,6 +3,7 @@
 #include "effect-preset-catalog.h"
 #include "transition-preset-catalog.h"
 #include "title-assets.h"
+#include "title-data.h"
 #include "title-localization.h"
 
 #include <QAbstractItemView>
@@ -30,9 +31,10 @@ constexpr int kPresetPathRole = Qt::UserRole;
 constexpr int kPresetKindRole = Qt::UserRole + 1;
 constexpr int kCategoryPathRole = Qt::UserRole + 2;
 constexpr int kMaxIndividuallyWatchedPresetFiles = 512;
+constexpr const char *kAudioEffectMimeType = "application/x-bgl-audio-effect";
 constexpr int kMaxCatalogPresetFiles = 4096;
 constexpr qint64 kMaxCatalogSourceBytes = 64 * 1024 * 1024;
-enum class PresetKind { None = 0, Effect = 1, Transition = 2 };
+enum class PresetKind { None = 0, Effect = 1, Transition = 2, AudioEffect = 3 };
 
 QString category_display_name(const QString &segment, const QString &category_key)
 {
@@ -42,6 +44,8 @@ QString category_display_name(const QString &segment, const QString &category_ke
         return bgl_tr("OBSTitles.Transitions");
     if (segment.compare(QStringLiteral("Effects"), Qt::CaseInsensitive) == 0)
         return bgl_tr("OBSTitles.Effects");
+    if (segment.compare(QStringLiteral("Audio Effects"), Qt::CaseInsensitive) == 0)
+        return bgl_tr("OBSTitles.AudioEffects");
     if (category_key == QStringLiteral("transitions/text"))
         return bgl_tr("OBSTitles.TextTransitions");
     if (category_key == QStringLiteral("transitions/general"))
@@ -59,6 +63,7 @@ protected:
         return {
             QString::fromUtf8(bgs::effects::kEffectPresetMimeType),
             QString::fromUtf8(bgs::transitions::kTransitionPresetMimeType),
+            QString::fromUtf8(kAudioEffectMimeType),
         };
     }
 
@@ -78,6 +83,9 @@ protected:
         } else if (kind == PresetKind::Effect) {
             mime->setData(QString::fromUtf8(bgs::effects::kEffectPresetMimeType),
                           bgs::effects::encode_effect_preset_mime(file_path));
+        } else if (kind == PresetKind::AudioEffect) {
+            mime->setData(QString::fromUtf8(kAudioEffectMimeType),
+                          QByteArray::number(file_path.toInt() - 1));
         } else {
             delete mime;
             return nullptr;
@@ -158,6 +166,8 @@ EffectsPresetsPanel::EffectsPresetsPanel(QWidget *parent)
                 const PresetKind kind = static_cast<PresetKind>(item->data(0, kPresetKindRole).toInt());
                 if (!path.isEmpty() && kind == PresetKind::Effect)
                     emit effect_preset_activated(path);
+                else if (kind == PresetKind::AudioEffect)
+                    emit audio_effect_activated(item->data(0, kPresetPathRole).toInt() - 1);
             });
 
     reload();
@@ -194,6 +204,7 @@ void EffectsPresetsPanel::reload()
         QStringLiteral("Animation Presets"),
         QStringLiteral("Transitions"),
         QStringLiteral("Effects"),
+        QStringLiteral("Audio Effects"),
     };
 
     struct PresetEntry {
@@ -245,6 +256,9 @@ void EffectsPresetsPanel::reload()
         }
     }
 
+    // Audio DSP entries are built-ins rather than visual .obgeffect files.
+    // They are inserted below after the ordinary file-backed catalog is built.
+
     std::sort(entries.begin(), entries.end(), [](const PresetEntry &a, const PresetEntry &b) {
         const int category_compare = QString::compare(
             a.category_path.join(QLatin1Char('/')),
@@ -284,6 +298,26 @@ void EffectsPresetsPanel::reload()
         QTreeWidgetItem *root_item = ensure_category({category});
         if (root_item && !had_existing_items)
             root_item->setExpanded(category == QStringLiteral("Effects"));
+    }
+
+    {
+        QTreeWidgetItem *audio_root = ensure_category({QStringLiteral("Audio Effects")});
+        struct BuiltinAudioEffect { const char *name_key; AudioEffectType type; };
+        const BuiltinAudioEffect builtins[] = {
+            {"OBSTitles.AudioEffectGain", AudioEffectType::Gain},
+            {"OBSTitles.AudioEffectFade", AudioEffectType::Fade},
+            {"OBSTitles.AudioEffectHighPass", AudioEffectType::HighPass},
+            {"OBSTitles.AudioEffectLowPass", AudioEffectType::LowPass},
+            {"OBSTitles.AudioEffectCompressorLimiter", AudioEffectType::CompressorLimiter},
+        };
+        for (const auto &builtin : builtins) {
+            auto *item = new QTreeWidgetItem(audio_root, QStringList(bgl_tr(builtin.name_key)));
+            item->setIcon(0, bgl_icon("sound.svg"));
+            item->setData(0, kPresetPathRole, static_cast<int>(builtin.type) + 1);
+            item->setData(0, kPresetKindRole, static_cast<int>(PresetKind::AudioEffect));
+            item->setFlags(item->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+        }
+        if (audio_root && !had_existing_items) audio_root->setExpanded(true);
     }
 
     for (const PresetEntry &entry : entries) {

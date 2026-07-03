@@ -1,7 +1,9 @@
 #include "external-data-provider.h"
+#include "external-json-path.h"
 
 #include "external-data.h"
 #include "external-data-log.h"
+#include "performance-counters.h"
 
 #include <QAbstractSocket>
 #include <QByteArray>
@@ -44,6 +46,7 @@ namespace {
 constexpr qint64 kMaxProviderPayloadBytes = 16 * 1024 * 1024;
 constexpr size_t kMaxProviderFields = 65536;
 constexpr size_t kMaxProviderTableRows = 10000;
+constexpr int kMinimumPublishCoalesceMs = 16;
 
 static int64_t now_ms()
 {
@@ -82,97 +85,9 @@ static std::string lower_ascii(std::string value)
     return value;
 }
 
-struct JsonPathToken {
-    bool is_index = false;
-    std::string key;
-    size_t index = 0;
-};
-
-static bool parse_json_path(const std::string &path,
-                            std::vector<JsonPathToken> &tokens,
-                            std::string *error = nullptr)
-{
-    tokens.clear();
-    size_t i = 0;
-    while (i < path.size()) {
-        if (path[i] == '.') {
-            ++i;
-            continue;
-        }
-        if (path[i] == '[') {
-            const size_t close = path.find(']', i + 1);
-            if (close == std::string::npos) {
-                if (error)
-                    *error = "Unclosed array index in field path.";
-                return false;
-            }
-            const std::string index_text = trim_ascii(path.substr(i + 1, close - i - 1));
-            if (index_text.empty() ||
-                !std::all_of(index_text.begin(), index_text.end(), [](unsigned char ch) {
-                    return std::isdigit(ch) != 0;
-                })) {
-                if (error)
-                    *error = "Array indexes must be non-negative integers.";
-                return false;
-            }
-            try {
-                tokens.push_back({true, {}, static_cast<size_t>(std::stoull(index_text))});
-            } catch (...) {
-                if (error)
-                    *error = "Array index is too large.";
-                return false;
-            }
-            i = close + 1;
-            continue;
-        }
-        const size_t begin = i;
-        while (i < path.size() && path[i] != '.' && path[i] != '[')
-            ++i;
-        std::string key = path.substr(begin, i - begin);
-        if (key.empty()) {
-            if (error)
-                *error = "Empty component in field path.";
-            return false;
-        }
-        tokens.push_back({false, std::move(key), 0});
-    }
-    return true;
-}
-
-static const json *resolve_json_path(const json &root, const std::string &path,
-                                     std::string *error = nullptr)
-{
-    if (path.empty())
-        return &root;
-    std::vector<JsonPathToken> tokens;
-    if (!parse_json_path(path, tokens, error))
-        return nullptr;
-    const json *current = &root;
-    for (const JsonPathToken &token : tokens) {
-        if (token.is_index) {
-            if (!current->is_array() || token.index >= current->size()) {
-                if (error)
-                    *error = "Array index is outside the JSON value.";
-                return nullptr;
-            }
-            current = &(*current)[token.index];
-        } else {
-            if (!current->is_object()) {
-                if (error)
-                    *error = "JSON field path traverses a non-object value.";
-                return nullptr;
-            }
-            auto it = current->find(token.key);
-            if (it == current->end()) {
-                if (error)
-                    *error = "JSON field path was not found: " + path;
-                return nullptr;
-            }
-            current = &*it;
-        }
-    }
-    return current;
-}
+using bgl::external_data::JsonPathToken;
+using bgl::external_data::parse_json_path;
+using bgl::external_data::resolve_json_path;
 
 static ExternalDataProviderValidation validate_json_paths(
     const ExternalDataSourceDefinition &definition)
@@ -857,11 +772,17 @@ protected:
         pending_tables_ = std::move(tables);
         pending_tables_complete_ = true;
         pending_success_ = true;
-        const int delay = std::clamp(definition_.provider.rate_limit_ms, 0, 60000);
-        if (delay == 0)
-            publish_pending();
-        else if (!publish_timer_.isActive())
+        bgl::perf::add(bgl::perf::Counter::ExternalUpdatesSubmitted);
+        /* Even providers configured with a zero user rate limit get one event-loop
+         * coalescing window. This prevents websocket bursts or repeated file
+         * notifications from queueing one UI/render invalidation per field. */
+        const int delay = std::max(
+            kMinimumPublishCoalesceMs,
+            std::clamp(definition_.provider.rate_limit_ms, 0, 60000));
+        if (!publish_timer_.isActive())
             publish_timer_.start(delay);
+        else
+            bgl::perf::add(bgl::perf::Counter::ExternalUpdatesCoalesced);
     }
 
     void complete_without_values()

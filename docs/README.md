@@ -1,21 +1,17 @@
 # Broadcast Graphics Live documentation
 
-This directory contains the canonical documentation for `v0.8.8-alpha`. Older one-feature notes and per-development-version reports were merged into the thematic guides below so that each subject has one maintained source of truth.
+These are the canonical documents for `v0.8.9-alpha`. Historical one-feature reports, delivery validations, and per-development-version notes have been merged into the guides and changelog below.
 
 | Document | Purpose |
 | --- | --- |
-| [USER_GUIDE.md](USER_GUIDE.md) | Installation, first launch, basic title creation, cueing, and everyday workflows. |
-| [EDITOR_WORKFLOW.md](EDITOR_WORKFLOW.md) | Layers, canvas tools, panels, timeline, grouping, parenting, mattes, assets, presets, and editor interaction. |
-| [TEXT_AND_LIVE_DATA.md](TEXT_AND_LIVE_DATA.md) | Rich text, inline editing, clocks, tickers, auto styling, exposed fields, live cues, and external data. |
-| [TEXT_ANIMATORS.md](TEXT_ANIMATORS.md) | Unified Text Animator model, selectors, keyframing, preset migration, dynamic text remapping, and cache integration. |
-| [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md) | Editor/source rendering parity, GPU pipeline, RAM/disk cache, prerendering, invalidation, and performance behavior. |
-| [EFFECTS_AND_EXTENSIONS.md](EFFECTS_AND_EXTENSIONS.md) | Effect stack, presets, transitions, built-in effects, extension manifests, API/ABI, and compatibility rules. |
-| [ARCHITECTURE_AND_BUILD.md](ARCHITECTURE_AND_BUILD.md) | Source ownership, module boundaries, build systems, packaging, tests, audits, and contribution rules. |
-| [CHANGELOG.md](CHANGELOG.md) | Consolidated development history and current revision notes. |
+| [USER_GUIDE.md](USER_GUIDE.md) | Installation, title creation, cueing, audio, Stingers, caching, and everyday use. |
+| [EDITOR_WORKFLOW.md](EDITOR_WORKFLOW.md) | Canvas, layers, hierarchy, timeline, Graph Editor, motion paths, assets, and Stinger authoring. |
+| [TEXT_AND_LIVE_DATA.md](TEXT_AND_LIVE_DATA.md) | Rich text, Text Animators, auto styling, exposed fields, Live Text Cues, and external data. |
+| [EFFECTS_AND_EXTENSIONS.md](EFFECTS_AND_EXTENSIONS.md) | Effect stacks, FX state indicators, presets, transitions, manifests, and native extensions. |
+| [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md) | Rendering parity, audio runtime, persistence, RAM/disk cache, scheduling, and performance. |
+| [ARCHITECTURE_AND_BUILD.md](ARCHITECTURE_AND_BUILD.md) | Source ownership, serialization, build, packaging, automated tests, and manual regression coverage. |
+| [CHANGELOG.md](CHANGELOG.md) | Consolidated development history and release notes. |
 
-## Documentation rules
+## Maintenance rule
 
-- Update the canonical thematic document instead of creating a new one-off note.
-- Put user-visible changes in `CHANGELOG.md`.
-- Put machine-readable inventories under `tools/`, not in this directory.
-- Keep implementation details close to the owning source module when they only matter to maintainers of that module.
+Update the relevant canonical guide and `CHANGELOG.md`; do not add a new root-level report for each development delivery. Machine-readable inventories and source audits belong under `tools/` and executable contracts under `tests/`.

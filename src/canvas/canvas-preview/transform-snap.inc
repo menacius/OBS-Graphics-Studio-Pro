@@ -722,7 +722,8 @@ const CanvasPreview::HoverOverlayGeometry &CanvasPreview::hover_overlay_geometry
     });
     if (it != title_->layers.end() && *it) {
         const Layer &layer = **it;
-        if (layer.visible && !layer.locked && playhead_ >= layer.in_time && playhead_ <= layer.out_time) {
+        if (layer_is_editor_visible(layer) && layer.visible && !layer.locked &&
+            playhead_ >= layer.in_time && playhead_ <= layer.out_time) {
             const QRectF box = layer_local_rect(layer);
             if (box.isValid() && !box.isEmpty()) {
                 auto layer_point_to_view = [&](const QPointF &pt) {

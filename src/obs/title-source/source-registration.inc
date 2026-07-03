@@ -254,6 +254,35 @@ bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
         session, texture, output_width, output_height, false);
 }
 
+bool title_gpu_render_session_draw_transition_inputs(
+    TitleGpuRenderSession *session, gs_texture_t *scene_a, gs_texture_t *scene_b,
+    uint32_t input_width, uint32_t input_height,
+    uint32_t output_width, uint32_t output_height)
+{
+    if (!session || !scene_a || !scene_b || session->destroying.load())
+        return false;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load())
+        return false;
+    session->transition_input_textures[0] = scene_a;
+    session->transition_input_textures[1] = scene_b;
+    session->transition_input_width = input_width;
+    session->transition_input_height = input_height;
+    ++session->transition_input_generation;
+    session->frame_dirty = true;
+    gs_texture_t *texture = render_gpu_session_locked(session);
+    /* Manual Stinger composition already contains Scene A, Scene B and all
+     * authored artwork. Replace the transition callback target so its alpha is
+     * preserved exactly and the scenes are never blended a second time. */
+    const bool presented = present_gpu_session_texture_locked(
+        session, texture, output_width, output_height, true);
+    session->transition_input_textures[0] = nullptr;
+    session->transition_input_textures[1] = nullptr;
+    session->transition_input_width = 0;
+    session->transition_input_height = 0;
+    return presented;
+}
+
 bool title_gpu_render_session_draw_over_background_rect(
     TitleGpuRenderSession *session, gs_texture_t *background,
     uint32_t background_width, uint32_t background_height,
@@ -563,6 +592,26 @@ void title_gpu_render_session_discard_readback(
 {
     QImage discarded;
     title_gpu_render_session_resolve_readback(ticket, discarded);
+}
+
+void title_gpu_render_session_cancel_readback(
+    const TitleGpuReadbackTicket &ticket)
+{
+    if (!ticket.valid() || ticket.session->destroying.load())
+        return;
+    obs_enter_graphics();
+    {
+        std::lock_guard<std::mutex> lock(ticket.session->mutex);
+        for (auto &slot : ticket.session->readback_slots) {
+            if (!slot.pending || slot.serial != ticket.serial)
+                continue;
+            slot.pending = false;
+            slot.serial = 0;
+            slot.region = QRect();
+            break;
+        }
+    }
+    obs_leave_graphics();
 }
 
 bool render_title_gpu_cache_submit_readback(
@@ -1177,6 +1226,148 @@ static void source_get_defaults(obs_data_t *settings)
     obs_data_set_default_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE, false);
 }
 
+static void sync_media_transport_cue_state(TitleSourceData *data, bool cue)
+{
+    if (!data)
+        return;
+
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    if (!title)
+        return;
+
+    const auto exposed = exposed_text_layers(title);
+    if (cue) {
+        if (!exposed.empty()) {
+            bgs::live_text::normalize_live_text_rows(title, exposed);
+            if (!title->live_text_rows.empty()) {
+                int row = title->current_cue_row;
+                if (row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+                    row = 0;
+                apply_live_text_row(title, row);
+                title->current_cue_row = row;
+            }
+        }
+        title->pending_cue_row = -1;
+        title->cue_uncue_requested = false;
+        title->cue_persistence_transition = false;
+        title->cue_persistent_text_columns.clear();
+        data->waiting_for_cue = false;
+    } else {
+        title->pending_cue_row = -1;
+        title->cue_uncue_requested = false;
+        title->current_cue_row = -1;
+        title->cue_persistence_transition = false;
+        title->cue_persistent_text_columns.clear();
+        data->active_cue_row = -1;
+        data->waiting_for_cue = true;
+    }
+
+    ++title->cue_revision;
+    TitleDataStore::instance().touch_runtime_change();
+    data->force_cue_state_sync = true;
+    data->dirty = true;
+    data->first_frame_pending = true;
+}
+
+static void source_media_play_pause(void *priv, bool pause)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
+    sync_editor_transport_override(data);
+    const bool was_playing = data->playing;
+    data->playing = !pause;
+    if (!data->editor_audio_preview && !pause)
+        sync_media_transport_cue_state(data, true);
+    else if (data->editor_audio_preview)
+        data->waiting_for_cue = false;
+    if (data->audio_runtime)
+        data->audio_runtime->transport(data->playhead, data->playing, true,
+                                       was_playing != data->playing,
+                                       data->editor_transport_controlled
+                                           ? data->editor_playback_reverse
+                                           : data->playback_reverse);
+}
+
+static void source_media_restart(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
+    sync_editor_transport_override(data);
+    data->playhead = 0.0;
+    data->playback_reverse = false;
+    if (!data->editor_transport_controlled)
+        data->editor_playback_reverse = false;
+    data->playing = true;
+    if (!data->editor_audio_preview)
+        sync_media_transport_cue_state(data, true);
+    else
+        data->waiting_for_cue = false;
+    data->dirty = true;
+    if (data->audio_runtime)
+        data->audio_runtime->transport(
+            0.0, true, true, true,
+            data->editor_transport_controlled
+                ? data->editor_playback_reverse
+                : data->playback_reverse);
+}
+
+static void source_media_stop(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
+    data->playing = false;
+    data->playhead = 0.0;
+    if (!data->editor_audio_preview)
+        sync_media_transport_cue_state(data, false);
+    else
+        data->waiting_for_cue = true;
+    data->dirty = true;
+    if (data->audio_runtime) data->audio_runtime->stop(true);
+}
+
+static int64_t source_media_get_duration(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return 0;
+    if (data->audio_runtime) return data->audio_runtime->duration_ms();
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    return title ? static_cast<int64_t>(std::llround(title->duration * 1000.0)) : 0;
+}
+
+static int64_t source_media_get_time(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    return data && data->audio_runtime
+        ? data->audio_runtime->time_ms()
+        : (data ? static_cast<int64_t>(std::llround(data->playhead * 1000.0)) : 0);
+}
+
+static void source_media_set_time(void *priv, int64_t milliseconds)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
+    sync_editor_transport_override(data);
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    const double duration = title ? std::max(0.0, title->duration) : 0.0;
+    data->playhead = std::clamp(milliseconds / 1000.0, 0.0, duration);
+    data->dirty = true;
+    data->first_frame_pending = true;
+    if (data->audio_runtime)
+        data->audio_runtime->transport(
+            data->playhead, data->playing, true, true,
+            data->editor_transport_controlled
+                ? data->editor_playback_reverse
+                : data->playback_reverse);
+}
+
+static enum obs_media_state source_media_get_state(void *priv)
+{
+    auto *data = static_cast<TitleSourceData *>(priv);
+    return data && data->audio_runtime
+        ? data->audio_runtime->media_state()
+        : OBS_MEDIA_STATE_STOPPED;
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Registration
  * ══════════════════════════════════════════════════════════════════ */
@@ -1185,7 +1376,8 @@ void title_source_register()
     static obs_source_info si = {};
     si.id             = "broadcast_graphics_live_source";
     si.type           = OBS_SOURCE_TYPE_INPUT;
-    si.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
+    si.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO |
+                        OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_CONTROLLABLE_MEDIA;
     si.get_name       = source_get_name;
     si.create         = source_create;
     si.destroy        = source_destroy;
@@ -1200,6 +1392,13 @@ void title_source_register()
     si.hide           = source_hide;
     si.get_properties = source_get_properties;
     si.get_defaults   = source_get_defaults;
+    si.media_play_pause = source_media_play_pause;
+    si.media_restart    = source_media_restart;
+    si.media_stop       = source_media_stop;
+    si.media_get_duration = source_media_get_duration;
+    si.media_get_time     = source_media_get_time;
+    si.media_set_time     = source_media_set_time;
+    si.media_get_state    = source_media_get_state;
 
     obs_register_source(&si);
     blog(LOG_INFO, "[Broadcast Graphics Live] Source type registered.");

@@ -708,6 +708,45 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
 }
 
 
+static void render_transition_input_placeholder(cairo_t *cr, const Layer &layer,
+                                                double title_time)
+{
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    const double width = std::max(1.0, eval_box_width(layer, local_time));
+    const double height = std::max(1.0, eval_box_height(layer, local_time));
+    const double x = -eval_origin_x(layer, local_time) * width;
+    const double y = -eval_origin_y(layer, local_time) * height;
+    const bool scene_b = layer.transition_input_slot == 1;
+    cairo_save(cr);
+    cairo_rectangle(cr, x, y, width, height);
+    if (scene_b)
+        cairo_set_source_rgb(cr, 0.34, 0.16, 0.08);
+    else
+        cairo_set_source_rgb(cr, 0.06, 0.20, 0.36);
+    cairo_fill(cr);
+    const double grid = std::max(24.0, std::min(width, height) / 12.0);
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.12);
+    for (double px = x; px <= x + width; px += grid) {
+        cairo_move_to(cr, px, y); cairo_line_to(cr, px, y + height);
+    }
+    for (double py = y; py <= y + height; py += grid) {
+        cairo_move_to(cr, x, py); cairo_line_to(cr, x + width, py);
+    }
+    cairo_stroke(cr);
+    const char *label = scene_b ? "B" : "A";
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, std::max(48.0, std::min(width, height) * 0.28));
+    cairo_text_extents_t extents{};
+    cairo_text_extents(cr, label, &extents);
+    cairo_move_to(cr, x + (width - extents.width) * 0.5 - extents.x_bearing,
+                  y + (height - extents.height) * 0.5 - extents.y_bearing);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.82);
+    cairo_show_text(cr, label);
+    cairo_restore(cr);
+}
+
 static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Layer &layer,
                                       double title_time, int canvas_w, int canvas_h)
 {
@@ -724,6 +763,9 @@ static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Lay
         break;
     case LayerType::Image:
         render_layer_image(cr, title, layer, title_time);
+        break;
+    case LayerType::TransitionInput:
+        render_transition_input_placeholder(cr, layer, title_time);
         break;
     default:
         break;

@@ -379,9 +379,18 @@ void CanvasPreview::fit_canvas(bool up_to_100)
     update();
 }
 
+bool CanvasPreview::layer_is_editor_visible(const Layer &layer) const
+{
+    if (!layer_type_is_transition_input(layer.type))
+        return true;
+    return title_ && title_->graphic_type == TitleGraphicType::Stinger &&
+           title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation;
+}
+
 std::shared_ptr<Layer> CanvasPreview::selected_layer() const
 {
-    return title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+    auto layer = title_ ? title_->find_layer(sel_layer_id_) : nullptr;
+    return layer && layer_is_editor_visible(*layer) ? layer : nullptr;
 }
 
 std::vector<std::shared_ptr<Layer>> CanvasPreview::selected_layers() const
@@ -396,7 +405,7 @@ std::vector<std::shared_ptr<Layer>> CanvasPreview::selected_layers() const
     for (const auto &id : selected_layer_ids_) {
         if (!seen.insert(id).second) continue;
         auto layer = title_->find_layer(id);
-        if (layer) layers.push_back(layer);
+        if (layer && layer_is_editor_visible(*layer)) layers.push_back(layer);
     }
     return layers;
 }

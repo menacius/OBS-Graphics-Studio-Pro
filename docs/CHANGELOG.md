@@ -1,3 +1,143 @@
+# v0.8.9-alpha — Development Version 189
+
+This release consolidates the work completed after `v0.8.8-alpha` Development Version 144: first-class audio layers and editor monitoring, native OBS Stinger transitions, Scene A/B animation, serialization and migration hardening, cache/prerender scheduling improvements, live cue transition persistence, and broad cross-platform regression coverage.
+
+## Development Version 189 — Disabled FX stack indicator and documentation consolidation
+
+- Layer rows retain their FX badge when an effect stack is bypassed and draw a diagonal strike-through over it. Re-enabling the stack removes the strike immediately.
+- Preserved the independent external-data binding dot/label behavior on the same layer indicator.
+- Bumped the public version to `v0.8.9-alpha` and the delivery revision to Development Version 189 across CMake, runtime metadata, dependency metadata, package examples, tests, and audits.
+- Rewrote the root README around the current feature set and grouped release additions since Development Version 144.
+- Merged Text Animator documentation into the text/live-data guide, merged testing and validation guidance into the architecture guide, and removed obsolete root-level per-delivery reports.
+
+# Development Version 188 — Audio mixer visibility and reverse editor audio
+
+- Title sources now call OBS audio-active state dynamically: only titles with
+  an Audio layer appear as devices in the Audio Mixer.
+- Mixer visibility is re-evaluated when the bound title or its layer structure
+  changes, without recreating the OBS source.
+- The editor monitored preview now publishes its exact playhead and playback
+  direction to the private title source.
+- Reverse playback mixes decoded audio samples in descending sample order,
+  including editor reverse handling for independent audio layers.
+- Direction changes are transport discontinuities so scheduler state and DSP
+  history are reset cleanly at reverse/forward boundaries.
+
+# Development Version 187 — Live cue transition persistence and cache performance
+
+- Unified live cue persistence timing for keyframes and transitions, including manual uncue and row-to-row persistence states.
+- Made cache visual-state deduplication persistence-aware.
+- Batched cache queue construction, added constant-time queued-key lookup, deferred background ordering, and added a realtime/urgent lane that preempts background work without full-queue sorting.
+- Converted RAM frame-cache LRU maintenance from linear scans to constant-time list operations.
+- Moved disk frame hydration entirely to the cache worker for editor and OBS realtime requests; bounded disk persistence is now nonblocking and best-effort under backpressure.
+- Added non-blocking disk membership/usage snapshots, coalesced UI notifications, debounced prerender diagnostics, removed per-live-cue-frame sleeps, and aligned paused/interactive wake predicates with the urgent dequeue lane.
+- Bumped the GPU cache ABI so stale frames created under the old persistence clock cannot be reused.
+- No persisted title schema fields changed.
+
+# Development Version 186 — Sample-locked editor audio cadence
+
+- Analyzed the v185 runtime log and found 16 synthetic 20–21.6 ms timestamp gaps in nine seconds, with no actual monitor underrun.
+- Replaced wall-clock-relative monitor deadlines with absolute sample-locked deadlines.
+- Removed periodic timestamp rewrites to `now`; normal packet timestamps remain exactly contiguous.
+- Added bounded catch-up for ordinary timer jitter and a 70 ms threshold for genuine hard resynchronization.
+- Added deterministic Windows-oversleep regression coverage and retained the existing source-audio scheduler unchanged.
+
+# Development Version 184 — Editor audio delivery restoration and diagnostics
+
+- Replaced the ineffective Development Version 183 threshold-only adjustment with a real delivery-path split.
+- Private editor preview audio now uses the exact Development Version 178 `video_tick` packet-submission cadence, while decode remains asynchronous and cached.
+- Ordinary OBS source audio continues to use the Development Version 181 background worker and 80–160 ms buffered queue.
+- The editor-preview flag is read before constructing `SourceAudioRuntime`, preventing any initial worker-mode burst.
+- Added `[BGL Audio]` lifecycle, transport, decode, flow, timestamp-gap, delivery-stall, underrun and idle diagnostics to the OBS log.
+- Added source contracts for single-path editor delivery and logging coverage. No serialization fields changed.
+
+# Development Version 183 — Editor audio monitor cadence fix
+
+- Isolated the remaining audio regression to the private editor preview source, which uses OBS monitor-only delivery rather than the normal timestamped source mixer.
+- Kept the 80–160 ms queue for ordinary source output and added a dedicated 10–30 ms monitor profile with a three-block burst limit.
+- Added automatic scheduler profile switching from the public OBS monitoring type, with clock reset at consumer boundaries.
+- Added editor-monitor cadence regression coverage; no persisted schema fields changed.
+
+# Development Version 182 — Windows audio worker compile fix
+
+- Fixed MSVC C3861 in `title-audio-runtime.cpp` by removing the unavailable `os_set_thread_name()` libobs symbol.
+- Added private Windows/Linux/macOS thread naming with no new link dependency and no audio-path behavior change.
+- Added a portability source contract and extended the no-op serialization migration ledger to Development Version 182.
+
+# Development Version 181 — Audio scheduler repair and automated regression pass
+
+- Fixed the v180 intermittent/noisy audio regression after a direct v178/v180 comparison identified the dedicated output scheduler's 30 ms queue as the only material playback-path change.
+- Added an 80–160 ms bounded output window, monotonic gapless timestamps, title-playhead re-anchoring after true underruns, and new audio-output debug counters.
+- Kept file decode, waveform generation, audio mixing, network activity and proxy rendering outside UI/render/video threads.
+- Added direct external JSON path and audio scheduler unit tests, a CTest wrapper for every Python source contract, the Development Step 100 matrix, and a complete manual regression checklist.
+- Extended the serialization migration ledger to Development Version 181 without changing persisted schema.
+
+# Development Version 180 — Performance, cache and threading audit
+
+- Coalesced provider and render-publication bursts by source/field key, with a minimum frame-sized publication window.
+- Added bounded compiled formatting-pattern caching and retained canvas pattern-tile diagnostics.
+- Moved audio mix/output off the OBS video tick, added cooperative decode cancellation, reusable immutable PCM/waveform assets, weak global ownership, and worker joins on source shutdown.
+- Added per-title disk-write generations, stale GPU-readback cancellation, proxy-only visual-hash exclusion, and complete title-cache ownership cleanup while preserving dirty-region invalidation.
+- Replaced linear Bezier segment scans with binary search and added an explicitly invalidated UI-only motion-path sample cache.
+- Added debug performance counters plus new unit/source contracts for threading, caching, shutdown and migration compatibility.
+
+## Development Version 179 — Unified Serialization and Migration Audit
+
+- Introduced title schema version 4 with per-title `schema_version` and `development_version` fields while preserving the top-level title array used by older builds.
+- Added a contiguous Development Version 144–179 migration ledger and idempotent current-schema validation.
+- Added validation/recovery for external sources and bindings, rich-text formatting profiles and pattern rules, audio layers, Stinger settings, proxy metadata, Bezier handles, and dock collapse/splitter state.
+- Unknown or unavailable external providers now load disabled; missing audio and stale/broken proxy files remain non-fatal.
+- Existing non-empty layer IDs are never regenerated during migration or template import.
+- Style presets, Auto Styling rule sets, title templates, per-title store entries, and proxy manifests now carry schema metadata where applicable; title/preset/profile writes and manifest rewrites use atomic replacement.
+- Added JSON migration round-trip tests and a unified source contract covering every audited feature.
+
+## Development Version 173 — Full Scene A/B layer contract
+
+- Manual Scene A/B inputs now support the same trim, temporal move, keyframes, transitions, hierarchy, rename, copy/duplicate, masks and effects workflows as ordinary shape/image layers.
+- Removed the special fixed-duration timeline path and all automatic reapplication of full-duration timing.
+- Required A/B layers are protected only from deletion. Duplicates are ordinary deletable scene-input layers.
+- Existing authored geometry, timing, effects, transitions, hierarchy and ordering are preserved.
+- Newly created required A/B layers start at full canvas size and full title duration.
+
+## Development Version 172 — Shape-like Scene A/B layers
+
+- Scene A/B transition inputs now use the same Size-backed rectangular geometry and resize behavior as shape layers.
+- Live OBS scene textures map 1:1 into the current authored A/B layer box rather than inheriting placeholder-raster crop metadata.
+- Runtime A/B effects and mask graphs use the layer's real local geometry while remaining non-cacheable per transition frame.
+- Switch-at-point mode continues to hide A/B system layers from canvas selection and bounding boxes.
+
+## Development Version 171 — Stinger A/B layer visibility, surfaces, and duration fixes
+
+- Hid Scene A/B system layers from canvas selection, hit testing, hover, and bounding boxes whenever Switch at Point mode is active.
+- Corrected manual mode defaults to two full-canvas 1:1 surfaces, with Scene B below Scene A and no implicit transition-point opacity cut.
+- Added deterministic migration for the exact generated v168-v170 A/B defaults and fixed their timeline strips to the document animation range.
+
+## Development Version 169 — Stinger Qt keyword compile fix
+
+- Fixed the MSVC syntax-error cascade in `title-data.cpp` caused by using `slots` as a local variable while Qt keyword macros are enabled.
+- Renamed the local transition-input container and loop identifiers to unambiguous names.
+- Added a regression test for Qt macro-safe compilation of the Stinger A/B layer block.
+
+## Development Version 168 — Stinger switch modes and animatable Scene A/B inputs
+
+- Added Switch at Point and Manual Scene Animation modes to Stinger documents.
+- Added editor-only Scene A/Scene B canvas preview backgrounds for point-switch Stingers, with Scene A selected by default for newly created Stingers.
+- Added protected, persistent Scene A and Scene B runtime input layers in manual mode. Both participate in transforms, keyframes, masks, mattes, blend modes, and effects, but cannot be renamed, duplicated, grouped, or deleted.
+- Kept A/B placeholder surfaces editor-only; ordinary OBS title sources render them transparent, while the native manual transition binds the live OBS scene textures.
+- Bound the real OBS transition textures to those layers through the native `obs_transition_video_render()` callback and the unified BGL GPU compositor.
+- Marked manual Scene A/B composition as dynamic for cache/proxy validation and added cache-key coverage for switch mode and transition-input identity.
+- Synchronized CMake and runtime development-version metadata to 168.
+
+## Development Version 164 — Stinger dock icon compile fix
+
+- Fixed the undeclared `title` identifier in `TitleDock::populate_list()` by using the loop's current `t` title object when composing list-view status icons.
+- Added a source contract to prevent the scope regression from returning.
+- Synchronized CMake and runtime development-version metadata to 164.
+
+## Development Version 150 — Audio layer UI and effect routing
+
+- Added audio-specific layer controls, group dual eye/speaker controls, Audio Effects catalog/settings integration, and audio/visual compatibility routing.
+
 ## Development Version 144 — v0.8.8-alpha and Character panel cleanup
 
 - Bumped the public plugin version from `v0.8.7-alpha` to `v0.8.8-alpha` across CMake, compile-time/runtime metadata, vcpkg metadata, installation/package examples, tests, audits, and canonical documentation.
@@ -88,8 +228,8 @@
 - Added ordered animator stacks, generic properties, four selector families, selector composition, deterministic seeds, dynamic-text policies, serialization, cache signatures, and timeline discovery.
 - Converted every legacy text preset identifier found in development version 133 to editable animator/property/selector/keyframe data and retained legacy loading only as a conversion layer.
 - Added a Text Animators inspector and standalone `.obgtextanim` preset round-trip support.
-- Added Unicode/dynamic text/migration/performance tests and `TEXT_ANIMATORS.md`.
-- This revision is the shared-core integration milestone; full layout-animation, effects parity, expanded preset library, pixel fixtures, and Windows/Linux OBS runtime validation remain explicitly tracked in `TEXT_ANIMATORS.md`.
+- Added Unicode/dynamic text/migration/performance tests and `TEXT_AND_LIVE_DATA.md`.
+- This revision is the shared-core integration milestone; full layout-animation, effects parity, expanded preset library, pixel fixtures, and Windows/Linux OBS runtime validation remain explicitly tracked in `TEXT_AND_LIVE_DATA.md`.
 
 ## Development Version 133 — Dock caret refinement and updated application icon
 
@@ -630,3 +770,19 @@ Group and parenting workflows are now clearly separated: transform parenting no 
 - Infers fields at paragraph starts, between delimiters and after structural separators.
 - Learned rules carry a complete inline style snapshot, so fill, stroke, font and other formatting remain portable without an existing preset.
 - Added Clear All Rules actions to the main Auto Styling panel and Rule Editor, with destructive-action confirmation.
+
+## Development version 145 — Audio Layer Data Model
+- Added migration-safe `LayerType::Audio` and serializable audio clip properties.
+- Added audio import for WAV, FLAC, MP3, AAC/M4A and video containers with audio streams.
+- Added timeline waveform rendering, trim-safe clip timing, grouping/duplicate compatibility, and missing-media-safe loading.
+- Audio layers do not expose visual transform/keyframe rows.
+
+## Development version 146 — Audio Playback and OBS Integration
+
+- Declared the BGL title source as an OBS audio-capable, controllable media source.
+- Added a per-source asynchronous audio decode/cache runtime; decoding never runs in the render callback.
+- Routed mixed stereo PCM through `obs_source_output_audio`, preserving OBS mixer volume, mute, monitoring, filters and routing.
+- Added synchronized title-playhead transport and independent audio clocks, pause/resume continuity, immediate seek, looping, pan, gain and fades.
+- Added OBS media-control callbacks for play, pause, restart, stop, seek, duration, current time and state.
+- Added optional FFmpeg decoding for FLAC, MP3, AAC/M4A and audio streams in video containers, with a dependency-free PCM WAV fallback.
+- Missing or undecodable media remains silent without crashing or repeatedly resetting the stream.

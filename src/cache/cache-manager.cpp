@@ -1,4 +1,5 @@
 #include "cache-manager.h"
+#include "title-serialization-schema.h"
 #include "cache-frame-payload.h"
 #include "cache-tile-payload.h"
 #include "cache-time.h"
@@ -10,6 +11,8 @@
 #include "title-logger.h"
 #include "external-data.h"
 #include "image-layer-utils.h"
+#include "live-text-cue-utils.h"
+#include "performance-counters.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -26,6 +29,8 @@
 #include <QSet>
 #include <QSettings>
 #include <QStringList>
+#include <QMetaObject>
+#include <QTimer>
 
 #ifdef OBS_BGS_HAVE_LZ4
 #include <lz4.h>

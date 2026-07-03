@@ -768,8 +768,25 @@ void TitleEditor::apply_effect_preset_to_layer(const QString &file_path, const s
         return;
 
     const auto layer = title_->find_layer(layer_id);
-    if (!layer || layer->locked)
+    if (!layer || layer->locked || layer->type == LayerType::Audio)
         return;
+    if (layer_type_is_container(layer->type)) {
+        std::function<std::pair<bool, bool>(const std::string &, std::set<std::string> &)> classify =
+            [this, &classify](const std::string &parent_id, std::set<std::string> &visited) {
+                if (!visited.insert(parent_id).second) return std::pair<bool, bool>{false, false};
+                bool visual = false, audio = false;
+                for (const auto &child : title_->layers) {
+                    if (!child || child->parent_id != parent_id) continue;
+                    if (child->type == LayerType::Audio) audio = true;
+                    else if (layer_type_is_container(child->type)) {
+                        auto nested = classify(child->id, visited); visual |= nested.first; audio |= nested.second;
+                    } else visual = true;
+                }
+                return std::pair<bool, bool>{visual, audio};
+            };
+        std::set<std::string> visited;
+        if (!classify(layer->id, visited).first) return;
+    }
 
     on_layer_selected(layer_id);
     effects_panel_->add_effect_from_preset_file(file_path);
@@ -783,8 +800,25 @@ void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
         return;
 
     auto layer = title_->find_layer(layer_id);
-    if (!layer || layer->locked)
+    if (!layer || layer->locked || layer->type == LayerType::Audio)
         return;
+    if (layer_type_is_container(layer->type)) {
+        std::function<std::pair<bool, bool>(const std::string &, std::set<std::string> &)> classify =
+            [this, &classify](const std::string &parent_id, std::set<std::string> &visited) {
+                if (!visited.insert(parent_id).second) return std::pair<bool, bool>{false, false};
+                bool visual = false, audio = false;
+                for (const auto &child : title_->layers) {
+                    if (!child || child->parent_id != parent_id) continue;
+                    if (child->type == LayerType::Audio) audio = true;
+                    else if (layer_type_is_container(child->type)) {
+                        auto nested = classify(child->id, visited); visual |= nested.first; audio |= nested.second;
+                    } else visual = true;
+                }
+                return std::pair<bool, bool>{visual, audio};
+            };
+        std::set<std::string> visited;
+        if (!classify(layer->id, visited).first) return;
+    }
 
     bgs::transitions::TransitionPresetDescriptor descriptor;
     QString error;
@@ -944,6 +978,7 @@ void TitleEditor::apply_playhead_change(double t, bool playback_frame)
         return;
     }
     playhead_ = t;
+    sync_editor_audio_preview(!playback_frame);
     canvas_->set_playhead(t, playback_frame);
     timeline_->set_playhead(t);
     if (layers_) layers_->set_playhead(t);
@@ -965,6 +1000,7 @@ void TitleEditor::apply_playhead_change(double t, bool playback_frame)
         }
     }
 
+    update_footer_diagnostics();
     if (time_lbl_)
         time_lbl_->setText(bgl_tr("OBSTitles.TimeFpsFormat").arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2));
 }

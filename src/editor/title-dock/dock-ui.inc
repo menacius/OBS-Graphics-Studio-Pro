@@ -294,6 +294,7 @@ struct TemplateFileMetadata {
     QString collection;
     QIcon screenshot_icon;
     QPixmap screenshot_pixmap;
+    TitleGraphicType graphic_type = TitleGraphicType::Title;
 };
 
 static const std::array<const char *, 0> template_library_category_folders{};
@@ -487,6 +488,9 @@ static TemplateFileMetadata read_template_file_metadata(const QString &path)
     metadata.category = meta.value(QStringLiteral("category")).toString(root.value(QStringLiteral("category")).toString()).trimmed();
     metadata.subcategory = meta.value(QStringLiteral("subcategory")).toString(root.value(QStringLiteral("subcategory")).toString()).trimmed();
     metadata.collection = meta.value(QStringLiteral("collection")).toString(root.value(QStringLiteral("collection")).toString()).trimmed();
+    const QJsonObject title_object = root.value(QStringLiteral("title")).toObject();
+    metadata.graphic_type = static_cast<TitleGraphicType>(std::clamp(
+        title_object.value(QStringLiteral("graphic_type")).toInt(0), 0, 3));
 
     QJsonObject screenshot = meta.value(QStringLiteral("screenshot")).toObject();
     if (screenshot.isEmpty())
@@ -495,7 +499,18 @@ static TemplateFileMetadata read_template_file_metadata(const QString &path)
     QPixmap pixmap;
     if (!png.isEmpty() && pixmap.loadFromData(png, "PNG")) {
         metadata.screenshot_pixmap = pixmap;
-        metadata.screenshot_icon = QIcon(pixmap.scaled(QSize(96, 54), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        QPixmap composed = pixmap.scaled(QSize(96, 54), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (metadata.graphic_type == TitleGraphicType::Stinger) {
+            QPainter painter(&composed);
+            const QPixmap badge = obs_icon("stinger.svg", QColor(255, 255, 255)).pixmap(QSize(18, 18));
+            painter.setBrush(QColor(0, 0, 0, 170));
+            painter.setPen(Qt::NoPen);
+            painter.drawRoundedRect(QRect(3, 3, 24, 24), 4, 4);
+            painter.drawPixmap(6, 6, badge);
+        }
+        metadata.screenshot_icon = QIcon(composed);
+    } else if (metadata.graphic_type == TitleGraphicType::Stinger) {
+        metadata.screenshot_icon = obs_icon("stinger.svg", QColor(205, 205, 205));
     }
     return metadata;
 }

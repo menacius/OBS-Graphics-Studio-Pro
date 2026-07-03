@@ -8,12 +8,14 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QMimeData>
 #include <QDragLeaveEvent>
 #include <QFontMetrics>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QPainterPath>
+#include <QBrush>
 #include <QPolygon>
 
 #include <algorithm>
@@ -149,7 +151,7 @@ void TimelineWidget::set_vertical_scroll(int scroll_y)
 void TimelineWidget::set_pixels_per_sec(double pixels_per_sec, double anchor_time, int anchor_x)
 {
     pixels_per_sec_ = std::clamp(pixels_per_sec, 5.0, 1200.0);
-    scroll_x_ = (int)std::round(anchor_time * pixels_per_sec_) - anchor_x;
+    scroll_x_ = (int)std::round((anchor_time + timeline_pre_roll()) * pixels_per_sec_) - anchor_x;
     clamp_scroll();
     keep_playhead_visible();
     update();
@@ -171,9 +173,11 @@ int TimelineWidget::zoom_percent() const
 
 void TimelineWidget::fit_timeline()
 {
-    double dur = title_ ? std::max(obs_frame_duration(), title_->duration) : 10.0;
-    double fitted = (double)std::max(1, width() - 40) / dur;
-    set_pixels_per_sec(fitted, 0.0, 0);
+    const double dur = std::max(obs_frame_duration(), timeline_display_duration());
+    const double fitted = (double)std::max(1, width() - 40) / dur;
+    /* Anchor the complete transition at the left edge. Document time zero is
+     * offset by pre-roll in normal Stinger timeline mode. */
+    set_pixels_per_sec(fitted, -timeline_pre_roll(), 0);
 }
 
 bool TimelineWidget::has_selected_keyframes() const
@@ -388,22 +392,55 @@ bool TimelineWidget::keep_playhead_visible()
     if (!title_) return false;
     int phx = time_to_x(playhead_);
     int old_scroll = scroll_x_;
+    const double display_time = playhead_ + timeline_pre_roll();
     if (phx < 24)
-        scroll_x_ = std::max(0, (int)std::round(playhead_ * pixels_per_sec_) - 24);
+        scroll_x_ = std::max(0, (int)std::round(display_time * pixels_per_sec_) - 24);
     if (phx > width() - 24)
-        scroll_x_ = std::max(0, (int)std::round(playhead_ * pixels_per_sec_) - width() + 24);
+        scroll_x_ = std::max(0, (int)std::round(display_time * pixels_per_sec_) - width() + 24);
     clamp_scroll();
     return old_scroll != scroll_x_;
 }
 
+double TimelineWidget::timeline_pre_roll() const
+{
+    if (!title_ || graph_editor_enabled_ ||
+        title_->graphic_type != TitleGraphicType::Stinger)
+        return 0.0;
+    return std::max(0.0, title_->stinger_pre_roll);
+}
+
+double TimelineWidget::timeline_post_roll() const
+{
+    if (!title_ || graph_editor_enabled_ ||
+        title_->graphic_type != TitleGraphicType::Stinger)
+        return 0.0;
+    return std::max(0.0, title_->stinger_post_roll);
+}
+
+double TimelineWidget::timeline_display_duration() const
+{
+    const double document_duration = title_ ? std::max(0.0, title_->duration) : 10.0;
+    return timeline_pre_roll() + document_duration + timeline_post_roll();
+}
+
+double TimelineWidget::x_to_display_time(int x) const
+{
+    return (x + scroll_x_) / pixels_per_sec_;
+}
+
+int TimelineWidget::display_time_to_x(double t) const
+{
+    return (int)std::round(t * pixels_per_sec_) - scroll_x_;
+}
+
 double TimelineWidget::x_to_time(int x) const
 {
-    return snap_time((x + scroll_x_) / pixels_per_sec_);
+    return snap_time(x_to_display_time(x) - timeline_pre_roll());
 }
 
 int TimelineWidget::time_to_x(double t) const
 {
-    return (int)std::round(t * pixels_per_sec_) - scroll_x_;
+    return display_time_to_x(t + timeline_pre_roll());
 }
 
 QRect TimelineWidget::playhead_dirty_rect(int playhead_x) const
@@ -421,7 +458,7 @@ double TimelineWidget::snap_time(double t) const
 
 void TimelineWidget::clamp_scroll()
 {
-    double dur = title_ ? title_->duration : 10.0;
+    const double dur = timeline_display_duration();
     int max_scroll = std::max(0, (int)std::ceil(dur * pixels_per_sec_) - width() + 40);
     scroll_x_ = std::clamp(scroll_x_, 0, max_scroll);
 }
@@ -821,7 +858,8 @@ void TimelineWidget::begin_layer_strip_drag(const std::string &layer_id, DragMod
     ids.insert(layer_id);
 
     for (const auto &layer : title_->layers) {
-        if (!layer || layer->locked || ids.find(layer->id) == ids.end()) continue;
+        if (!layer || layer->locked ||
+            ids.find(layer->id) == ids.end()) continue;
         DraggedLayerStrip dragged;
         dragged.layer_id = layer->id;
         dragged.start_in = layer->in_time;
@@ -938,9 +976,21 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     /* Background */
     p.fillRect(dirty, window);
 
-    double dur = title_ ? title_->duration : 10.0;
-    double fps = obs_frame_rate();
-    double frame_step = obs_frame_duration();
+    const double dur = title_ ? std::max(0.0, title_->duration) : 10.0;
+    const double pre_roll = timeline_pre_roll();
+    const double post_roll = timeline_post_roll();
+    const double display_dur = timeline_display_duration();
+    const bool show_stinger_rolls = title_ &&
+        title_->graphic_type == TitleGraphicType::Stinger &&
+        (pre_roll > 0.0 || post_roll > 0.0);
+    const int transition_start_x = display_time_to_x(0.0);
+    const int animation_start_x = time_to_x(0.0);
+    const int animation_end_x = time_to_x(dur);
+    const int transition_end_x = display_time_to_x(display_dur);
+    const QColor pre_roll_color = with_alpha(QColor(68, 126, 172), window.lightness() < 128 ? 72 : 48);
+    const QColor post_roll_color = with_alpha(QColor(178, 112, 64), window.lightness() < 128 ? 72 : 48);
+    const double fps = obs_frame_rate();
+    const double frame_step = obs_frame_duration();
     const double pixels_per_frame = std::max(0.000001, pixels_per_sec_ * frame_step);
 
     /* Build a density-safe ruler scale.  Drawing every frame at every zoom
@@ -949,7 +999,8 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
      * the widest visible label, then derive a minor interval that is never
      * closer than a few device pixels. */
     const QFontMetrics ruler_fm(p.font());
-    const int max_visible_seconds = std::max(0, (int)std::ceil(dur));
+    const int max_visible_seconds = std::max(0, (int)std::ceil(
+        std::max({dur, pre_roll, post_roll})));
     const int widest_label = std::max(ruler_fm.horizontalAdvance(QStringLiteral("+00f")),
                                       ruler_fm.horizontalAdvance(QStringLiteral("%1s").arg(max_visible_seconds)));
     const double target_major_px = std::max(56.0, (double)widest_label + 14.0);
@@ -978,11 +1029,15 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         }
     }
 
-    const int first_visible_frame = std::max(0, (int)std::floor((scroll_x_ + dirty.left()) /
-                                                                  pixels_per_sec_ / frame_step) - minor_frames);
-    const int last_visible_frame = (int)std::ceil((scroll_x_ + dirty.right()) /
-                                                   pixels_per_sec_ / frame_step) + minor_frames;
-    const int first_tick_frame = (first_visible_frame / minor_frames) * minor_frames;
+    const int first_visible_display_frame = std::max(0, (int)std::floor(
+        x_to_display_time(dirty.left()) / frame_step) - minor_frames);
+    const int last_visible_display_frame = (int)std::ceil(
+        x_to_display_time(dirty.right()) / frame_step) + minor_frames;
+    const int pre_roll_frames = std::max(0, (int)std::round(pre_roll / frame_step));
+    const int first_relative_frame = (int)std::floor(
+        (double)(first_visible_display_frame - pre_roll_frames) / minor_frames) * minor_frames;
+    const int last_relative_frame = (int)std::ceil(
+        (double)(last_visible_display_frame - pre_roll_frames) / minor_frames) * minor_frames;
 
     auto draw_header = [&]() {
         const QRect header_dirty = dirty.intersected(QRect(0, 0, W, rh));
@@ -996,6 +1051,18 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
          * column header so the first layer row starts at the same Y position
          * in both panes. */
         p.fillRect(QRect(0, 0, W, rh), ruler_bg);
+        if (show_stinger_rolls) {
+            if (pre_roll > 0.0) {
+                const QRect pre_rect = QRect(transition_start_x, 0,
+                    animation_start_x - transition_start_x, rh).normalized();
+                p.fillRect(pre_rect, QBrush(pre_roll_color, Qt::BDiagPattern));
+            }
+            if (post_roll > 0.0) {
+                const QRect post_rect = QRect(animation_end_x, 0,
+                    transition_end_x - animation_end_x, rh).normalized();
+                p.fillRect(post_rect, QBrush(post_roll_color, Qt::FDiagPattern));
+            }
+        }
         p.setPen(border);
         p.drawLine(0, rh - 1, W, rh - 1);
 
@@ -1010,25 +1077,38 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
 
         int last_label_right = std::numeric_limits<int>::min();
         const int rounded_fps = std::max(1, (int)std::round(fps));
-        for (int frame = first_tick_frame; frame <= last_visible_frame; frame += minor_frames) {
-            const double t = frame * frame_step;
-            if (t > dur + frame_step)
-                break;
-            const int x = time_to_x(t);
+        auto ruler_time_text = [rounded_fps](int relative_frame) {
+            const bool negative = relative_frame < 0;
+            const int absolute_frame = std::abs(relative_frame);
+            const int seconds = absolute_frame / rounded_fps;
+            const int frame_in_second = absolute_frame % rounded_fps;
+            if (!negative) {
+                return frame_in_second == 0
+                    ? QStringLiteral("%1s").arg(seconds)
+                    : QStringLiteral("%1s+%2f").arg(seconds).arg(frame_in_second, 2, 10, QChar('0'));
+            }
+            if (seconds == 0)
+                return QStringLiteral("-%1f").arg(frame_in_second);
+            return frame_in_second == 0
+                ? QStringLiteral("-%1s").arg(seconds)
+                : QStringLiteral("-%1s+%2f").arg(seconds).arg(frame_in_second, 2, 10, QChar('0'));
+        };
+        for (int relative_frame = first_relative_frame; relative_frame <= last_relative_frame;
+             relative_frame += minor_frames) {
+            const double display_time = pre_roll + relative_frame * frame_step;
+            if (display_time < -frame_step || display_time > display_dur + frame_step)
+                continue;
+            const int x = display_time_to_x(display_time);
             if (x < dirty.left() - widest_label || x > dirty.right() + widest_label)
                 continue;
 
-            const bool is_major = (frame % major_frames) == 0;
+            const bool is_major = (relative_frame % major_frames) == 0;
             p.setPen(is_major ? tick_major : tick_minor);
             p.drawLine(x, tick_baseline - (is_major ? 10 : 4), x, tick_baseline);
             if (!is_major)
                 continue;
 
-            const int seconds = frame / rounded_fps;
-            const int frame_in_second = frame % rounded_fps;
-            const QString ruler_text = frame_in_second == 0
-                ? QStringLiteral("%1s").arg(seconds)
-                : QStringLiteral("%1s+%2f").arg(seconds).arg(frame_in_second, 2, 10, QChar('0'));
+            const QString ruler_text = ruler_time_text(relative_frame);
             const int label_width = ruler_fm.horizontalAdvance(ruler_text);
             const int label_left = x + 3;
             if (label_left <= last_label_right + 6)
@@ -1062,11 +1142,18 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             const bool cache_disabled = !CacheManager::instance().cacheEnabled() ||
                 CacheManager::instance().titleCacheability(title_) == TitleCacheability::NonCacheable;
             if (cache_disabled) {
-                p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled, false));
+                const int cache_left = std::min(animation_start_x, animation_end_x);
+                const int cache_width = std::max(0, std::abs(animation_end_x - animation_start_x));
+                p.fillRect(QRect(cache_left, cache_y, cache_width, cache_h),
+                           state_color(FrameCacheState::Disabled, false));
             } else {
                 const int total_frames = std::max(0, (int)std::ceil(dur / frame_step));
-                const int cache_first_frame = std::clamp(first_visible_frame, 0, total_frames);
-                const int cache_last_frame = std::clamp(last_visible_frame, cache_first_frame, total_frames);
+                const double visible_document_start = x_to_display_time(dirty.left()) - pre_roll;
+                const double visible_document_end = x_to_display_time(dirty.right()) - pre_roll;
+                const int cache_first_frame = std::clamp(
+                    (int)std::floor(visible_document_start / frame_step) - 1, 0, total_frames);
+                const int cache_last_frame = std::clamp(
+                    (int)std::ceil(visible_document_end / frame_step) + 1, cache_first_frame, total_frames);
                 for (int frame = cache_first_frame; frame <= cache_last_frame; ++frame) {
                     const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
                     if (state == FrameCacheState::NotCached) continue;
@@ -1113,6 +1200,53 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             p.drawText(pause_x + 4, label_top, 100, label_height, Qt::AlignVCenter, bgl_tr("OBSTitles.Pause"));
             p.setBrush(Qt::NoBrush);
         }
+        if (title_ && title_->graphic_type == TitleGraphicType::Stinger &&
+            title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint) {
+            const int switch_x = time_to_x(stinger_transition_point_seconds(*title_));
+            const int marker_top = std::max(label_top + label_height, tick_baseline - 11);
+            const QColor stinger_color(210, 72, 170);
+            p.setPen(QPen(stinger_color, 2));
+            p.drawLine(switch_x, marker_top, switch_x, tick_baseline);
+            p.setBrush(stinger_color);
+            p.setPen(Qt::NoPen);
+            QPolygon marker;
+            marker << QPoint(switch_x - 7, marker_top)
+                   << QPoint(switch_x + 7, marker_top)
+                   << QPoint(switch_x, std::min(tick_baseline, marker_top + 11));
+            p.drawPolygon(marker);
+            p.setPen(stinger_color.lighter(150));
+            p.drawText(switch_x + 5, label_top, 110, label_height, Qt::AlignVCenter,
+                       bgl_tr("OBSTitles.StingerSceneSwitch"));
+            p.setBrush(Qt::NoBrush);
+        }
+        if (show_stinger_rolls) {
+            auto draw_roll_label = [&](int left, int right, const QString &label, const QColor &color) {
+                const int zone_left = std::min(left, right);
+                const int zone_width = std::abs(right - left);
+                const int text_width = ruler_fm.horizontalAdvance(label) + 10;
+                if (zone_width < text_width + 4)
+                    return;
+                QRect label_rect(zone_left + (zone_width - text_width) / 2, label_top,
+                                 text_width, label_height);
+                label_rect = label_rect.intersected(QRect(0, 0, W, rh));
+                if (label_rect.width() < text_width / 2)
+                    return;
+                p.fillRect(label_rect, with_alpha(ruler_bg, 205));
+                QColor label_color = color.lighter(165);
+                label_color.setAlpha(220);
+                p.setPen(label_color);
+                p.drawText(label_rect, Qt::AlignCenter, label);
+            };
+            if (pre_roll > 0.0)
+                draw_roll_label(transition_start_x, animation_start_x,
+                                bgl_tr("OBSTitles.StingerPreRoll"), pre_roll_color);
+            if (post_roll > 0.0)
+                draw_roll_label(animation_end_x, transition_end_x,
+                                bgl_tr("OBSTitles.StingerPostRoll"), post_roll_color);
+            p.setPen(QPen(with_alpha(text, 115), 1, Qt::DashLine));
+            p.drawLine(animation_start_x, 0, animation_start_x, rh);
+            p.drawLine(animation_end_x, 0, animation_end_x, rh);
+        }
         p.restore();
     };
 
@@ -1151,6 +1285,123 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 }
                 if (sel) bar_col = bar_col.lighter(125);
                 p.fillRect(strip_rect, bar_col);
+                if (layer->type == LayerType::Audio && layer->audio_waveform.empty() && title_) {
+                    if (auto stored = TitleDataStore::instance().get_title(title_->id)) {
+                        if (auto runtime_layer = stored->find_layer(layer->id)) {
+                            layer->audio_waveform = runtime_layer->audio_waveform;
+                            layer->audio_waveform_duration = runtime_layer->audio_waveform_duration;
+                        }
+                    }
+                }
+                if (layer->type == LayerType::Audio && layer->audio_waveform.size() >= 2 && strip_rect.width() > 2) {
+                    p.save();
+                    p.setClipRect(strip_rect.adjusted(1, 1, -1, -1));
+                    p.setPen(QPen(with_alpha(text, layer->audio_muted ? 70 : 190), 1));
+                    const int center_y = strip_rect.center().y();
+                    const int half_h = std::max(1, strip_rect.height() / 2 - 3);
+                    const int pairs = static_cast<int>(layer->audio_waveform.size() / 2);
+                    const double asset_duration = layer->audio_waveform_duration > 0.0
+                        ? layer->audio_waveform_duration
+                        : std::max(layer->audio_out_point, layer->audio_in_point + std::max(0.0, layer->out_time - layer->in_time));
+                    const double media_begin = std::clamp(layer->audio_in_point, 0.0, std::max(0.0, asset_duration));
+                    const double available_end = layer->audio_out_point > media_begin
+                        ? std::min(layer->audio_out_point, asset_duration)
+                        : asset_duration;
+                    const double available_span = std::max(0.0, available_end - media_begin);
+                    const double timeline_span = std::max(0.0, layer->out_time - layer->in_time);
+                    const bool repeats = layer->audio_loop || layer->audio_playback_mode == AudioPlaybackMode::Loop;
+
+                    for (int px = 0; px < strip_rect.width(); ++px) {
+                        const double timeline_offset = timeline_span * (double(px) + 0.5) /
+                            std::max(1, strip_rect.width());
+                        double media_time = media_begin + timeline_offset;
+                        if (repeats && available_span > 0.0)
+                            media_time = media_begin + std::fmod(timeline_offset, available_span);
+                        else
+                            media_time = std::min(media_time, available_end);
+
+                        const double normalized = asset_duration > 0.0
+                            ? std::clamp(media_time / asset_duration, 0.0, 1.0)
+                            : 0.0;
+                        const int pair = std::clamp(static_cast<int>(normalized * (pairs - 1)), 0, pairs - 1);
+                        const float lo = layer->audio_waveform[static_cast<size_t>(pair * 2)];
+                        const float hi = layer->audio_waveform[static_cast<size_t>(pair * 2 + 1)];
+                        p.drawLine(strip_rect.left() + px, center_y - qRound(hi * half_h),
+                                   strip_rect.left() + px, center_y - qRound(lo * half_h));
+                    }
+                    p.restore();
+                }
+                if (layer->type == LayerType::Audio && strip_rect.width() > 4) {
+                    const double clip_duration = std::max(0.0, layer->out_time - layer->in_time);
+                    const double fade_in = std::clamp(layer->audio_fade_in, 0.0, clip_duration);
+                    const double fade_out = std::clamp(layer->audio_fade_out, 0.0, std::max(0.0, clip_duration - fade_in));
+                    const int fade_in_x = time_to_x(layer->in_time + fade_in);
+                    const int fade_out_x = time_to_x(layer->out_time - fade_out);
+                    const QColor fade_fill = with_alpha(text, 42);
+                    const QColor fade_line = with_alpha(text, 210);
+                    p.save();
+                    p.setClipRect(strip_rect.adjusted(1, 1, -1, -1));
+                    p.setPen(QPen(fade_line, 1.5));
+                    p.setBrush(fade_fill);
+                    auto fade_y = [&](double u, bool fade_out_curve) {
+                        u = std::clamp(u, 0.0, 1.0);
+                        double gain = u;
+                        switch (layer->audio_fade_curve) {
+                        case AudioFadeCurve::Smooth:
+                            gain = u * u * (3.0 - 2.0 * u);
+                            break;
+                        case AudioFadeCurve::EqualPower:
+                            gain = std::sin(u * 1.5707963267948966);
+                            break;
+                        case AudioFadeCurve::Linear:
+                        default:
+                            break;
+                        }
+                        if (fade_out_curve) gain = 1.0 - gain;
+                        return strip_rect.bottom() - gain * strip_rect.height();
+                    };
+                    if (fade_in > 0.0 && fade_in_x > strip_rect.left()) {
+                        QPainterPath curve;
+                        curve.moveTo(strip_rect.left(), fade_y(0.0, false));
+                        constexpr int kCurveSteps = 24;
+                        for (int step = 1; step <= kCurveSteps; ++step) {
+                            const double u = double(step) / double(kCurveSteps);
+                            const double x = strip_rect.left() + u * (fade_in_x - strip_rect.left());
+                            curve.lineTo(x, fade_y(u, false));
+                        }
+                        QPainterPath fill = curve;
+                        fill.lineTo(fade_in_x, strip_rect.bottom());
+                        fill.lineTo(strip_rect.left(), strip_rect.bottom());
+                        fill.closeSubpath();
+                        p.fillPath(fill, fade_fill);
+                        p.drawPath(curve);
+                        p.drawLine(fade_in_x, strip_rect.top(), fade_in_x, strip_rect.bottom());
+                    }
+                    if (fade_out > 0.0 && fade_out_x < strip_rect.right()) {
+                        QPainterPath curve;
+                        curve.moveTo(fade_out_x, fade_y(0.0, true));
+                        constexpr int kCurveSteps = 24;
+                        for (int step = 1; step <= kCurveSteps; ++step) {
+                            const double u = double(step) / double(kCurveSteps);
+                            const double x = fade_out_x + u * (strip_rect.right() - fade_out_x);
+                            curve.lineTo(x, fade_y(u, true));
+                        }
+                        QPainterPath fill = curve;
+                        fill.lineTo(strip_rect.right(), strip_rect.bottom());
+                        fill.lineTo(fade_out_x, strip_rect.bottom());
+                        fill.closeSubpath();
+                        p.fillPath(fill, fade_fill);
+                        p.drawPath(curve);
+                        p.drawLine(fade_out_x, strip_rect.top(), fade_out_x, strip_rect.bottom());
+                    }
+                    if (sel && !layer->locked) {
+                        p.setBrush(fade_line);
+                        p.setPen(Qt::NoPen);
+                        p.drawEllipse(QPoint(fade_in_x, strip_rect.top() + 3), 3, 3);
+                        p.drawEllipse(QPoint(fade_out_x, strip_rect.top() + 3), 3, 3);
+                    }
+                    p.restore();
+                }
                 if (layer->locked) {
                     p.save();
                     p.setClipRect(strip_rect);
@@ -1292,6 +1543,33 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     }
 
     draw_header();
+
+    if (show_stinger_rolls) {
+        const QRect body_bounds(0, ruler_height(), W, std::max(0, H - ruler_height()));
+        p.save();
+        p.setClipRect(dirty.intersected(body_bounds));
+        if (pre_roll > 0.0) {
+            const QRect pre_rect = QRect(transition_start_x, ruler_height(),
+                animation_start_x - transition_start_x, H - ruler_height()).normalized();
+            p.fillRect(pre_rect, QBrush(with_alpha(pre_roll_color, 44), Qt::BDiagPattern));
+        }
+        if (post_roll > 0.0) {
+            const QRect post_rect = QRect(animation_end_x, ruler_height(),
+                transition_end_x - animation_end_x, H - ruler_height()).normalized();
+            p.fillRect(post_rect, QBrush(with_alpha(post_roll_color, 44), Qt::FDiagPattern));
+        }
+        p.setPen(QPen(with_alpha(text, 115), 1, Qt::DashLine));
+        p.drawLine(animation_start_x, 0, animation_start_x, H);
+        p.drawLine(animation_end_x, 0, animation_end_x, H);
+        p.restore();
+    }
+
+    if (title_ && title_->graphic_type == TitleGraphicType::Stinger &&
+        title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint) {
+        const int switch_x = time_to_x(stinger_transition_point_seconds(*title_));
+        p.setPen(QPen(QColor(210, 72, 170), 1, Qt::DashLine));
+        p.drawLine(switch_x, ruler_height(), switch_x, height());
+    }
 
     /* Playhead */
     int phx = time_to_x(playhead_);
@@ -1940,6 +2218,12 @@ void TimelineWidget::clear_transition_drop_preview()
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent *ev)
 {
+    static constexpr const char *kAudioEffectMimeType = "application/x-bgl-audio-effect";
+    if (ev && ev->mimeData()->hasFormat(QString::fromUtf8(kAudioEffectMimeType))) {
+        ev->setDropAction(Qt::CopyAction);
+        ev->accept();
+        return;
+    }
     if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
         ev->setDropAction(Qt::CopyAction);
         ev->accept();
@@ -1955,6 +2239,22 @@ void TimelineWidget::dragEnterEvent(QDragEnterEvent *ev)
 
 void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
 {
+    static constexpr const char *kAudioEffectMimeType = "application/x-bgl-audio-effect";
+    if (ev && ev->mimeData()->hasFormat(QString::fromUtf8(kAudioEffectMimeType))) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        const auto layer = layer_strip_at_pos(pos);
+        if (layer && (layer->type == LayerType::Audio || layer_type_is_container(layer->type))) {
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+        } else {
+            ev->ignore();
+        }
+        return;
+    }
     if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
@@ -1996,6 +2296,39 @@ void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
 
 void TimelineWidget::dropEvent(QDropEvent *ev)
 {
+    static constexpr const char *kAudioEffectMimeType = "application/x-bgl-audio-effect";
+    if (ev && ev->mimeData()->hasFormat(QString::fromUtf8(kAudioEffectMimeType))) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        const auto layer = layer_strip_at_pos(pos);
+        bool audio_capable = layer && layer->type == LayerType::Audio;
+        if (layer && layer_type_is_container(layer->type) && title_) {
+            std::set<std::string> pending{layer->id}, visited;
+            while (!pending.empty() && !audio_capable) {
+                const std::string parent = *pending.begin();
+                pending.erase(pending.begin());
+                if (!visited.insert(parent).second) continue;
+                for (const auto &child : title_->layers) {
+                    if (!child || child->parent_id != parent) continue;
+                    if (child->type == LayerType::Audio) { audio_capable = true; break; }
+                    if (layer_type_is_container(child->type)) pending.insert(child->id);
+                }
+            }
+        }
+        bool ok = false;
+        const int type = QString::fromUtf8(ev->mimeData()->data(QString::fromUtf8(kAudioEffectMimeType))).toInt(&ok);
+        if (layer && audio_capable && ok) {
+            emit audio_effect_dropped(type, layer->id);
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+            return;
+        }
+        ev->ignore();
+        return;
+    }
     if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
@@ -2074,6 +2407,32 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
             const auto &layer = rows[row].layer;
             const int x0 = time_to_x(layer->in_time);
             const int x1 = time_to_x(layer->out_time);
+            if (layer->type == LayerType::Audio && !layer->locked) {
+                const double clip_duration = std::max(0.0, layer->out_time - layer->in_time);
+                const int fade_in_x = time_to_x(layer->in_time + std::clamp(layer->audio_fade_in, 0.0, clip_duration));
+                const int fade_out_x = time_to_x(layer->out_time - std::clamp(layer->audio_fade_out, 0.0, clip_duration));
+                constexpr int kAudioFadeHandleHitWidth = 7;
+                const int strip_top = ruler_height() + row * row_height() - scroll_y_ + 3;
+                const bool in_fade_handle_band = ev->pos().y() >= strip_top && ev->pos().y() <= strip_top + 11;
+                if (in_fade_handle_band &&
+                    (std::abs(ev->pos().x() - fade_in_x) <= kAudioFadeHandleHitWidth ||
+                     std::abs(ev->pos().x() - fade_out_x) <= kAudioFadeHandleHitWidth)) {
+                    select_layer_from_mouse(layer->id, ev->modifiers());
+                    clear_transition_selection();
+                    drag_layer_id_ = layer->id;
+                    if (std::abs(ev->pos().x() - fade_in_x) <= std::abs(ev->pos().x() - fade_out_x)) {
+                        drag_mode_ = DragMode::AudioFadeIn;
+                        drag_start_in_ = layer->audio_fade_in;
+                    } else {
+                        drag_mode_ = DragMode::AudioFadeOut;
+                        drag_start_out_ = layer->audio_fade_out;
+                    }
+                    drag_start_time_ = x_to_time(ev->pos().x());
+                    setCursor(Qt::SizeHorCursor);
+                    ev->accept();
+                    return;
+                }
+            }
             const int in_distance = std::abs(ev->pos().x() - x0);
             const int out_distance = std::abs(ev->pos().x() - x1);
             if (std::min(in_distance, out_distance) <= kLayerTrimHitWidth) {
@@ -2124,6 +2483,16 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 
     if (ev->pos().y() < ruler_height()) {
         clear_transition_selection();
+        if (title_->graphic_type == TitleGraphicType::Stinger &&
+            title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint) {
+            const int switch_x = time_to_x(stinger_transition_point_seconds(*title_));
+            if (std::abs(ev->pos().x() - switch_x) <= 9) {
+                drag_mode_ = DragMode::StingerTransitionPoint;
+                setCursor(Qt::SizeHorCursor);
+                ev->accept();
+                return;
+            }
+        }
         if (title_->playback_mode == 2) {
             int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, title_->duration));
             if (std::abs(ev->pos().x() - pause_x) <= 8) {
@@ -2277,6 +2646,12 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drag_mode_ == DragMode::StingerTransitionPoint) {
+        set_stinger_transition_point_seconds(*title_, t);
+        update();
+        return;
+    }
+
     if (drag_mode_ == DragMode::LoopStart) {
         title_->loop_start = std::clamp(t, 0.0, title_->loop_end);
         update();
@@ -2301,6 +2676,24 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
                                               std::max(0.0, layer->out_time - layer->in_time)));
         }
         update();
+        return;
+    }
+
+    if (drag_mode_ == DragMode::AudioFadeIn || drag_mode_ == DragMode::AudioFadeOut) {
+        if (auto layer = title_->find_layer(drag_layer_id_)) {
+            if (!layer->locked && layer->type == LayerType::Audio) {
+                const double clip_duration = std::max(0.0, layer->out_time - layer->in_time);
+                if (drag_mode_ == DragMode::AudioFadeIn) {
+                    layer->audio_fade_in = std::clamp(t - layer->in_time, 0.0,
+                        std::max(0.0, clip_duration - layer->audio_fade_out));
+                } else {
+                    layer->audio_fade_out = std::clamp(layer->out_time - t, 0.0,
+                        std::max(0.0, clip_duration - layer->audio_fade_in));
+                }
+                emit audio_layer_property_changed(false);
+                update();
+            }
+        }
         return;
     }
 
@@ -2427,6 +2820,17 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         if (rows[row].layer) {
             const int x0 = time_to_x(rows[row].layer->in_time);
             const int x1 = time_to_x(rows[row].layer->out_time);
+            if (rows[row].layer->type == LayerType::Audio && !rows[row].layer->locked) {
+                const double clip_duration = std::max(0.0, rows[row].layer->out_time - rows[row].layer->in_time);
+                const int fade_in_x = time_to_x(rows[row].layer->in_time + std::clamp(rows[row].layer->audio_fade_in, 0.0, clip_duration));
+                const int fade_out_x = time_to_x(rows[row].layer->out_time - std::clamp(rows[row].layer->audio_fade_out, 0.0, clip_duration));
+                const int strip_top = ruler_height() + row * row_height() - scroll_y_ + 3;
+                if (ev->pos().y() >= strip_top && ev->pos().y() <= strip_top + 11 &&
+                    std::min(std::abs(ev->pos().x() - fade_in_x), std::abs(ev->pos().x() - fade_out_x)) <= 7) {
+                    setCursor(Qt::SizeHorCursor);
+                    return;
+                }
+            }
             if (std::min(std::abs(ev->pos().x() - x0),
                          std::abs(ev->pos().x() - x1)) <=
                 kLayerTrimHitWidth) {
@@ -2479,9 +2883,12 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
                    drag_mode_ == DragMode::TrimOut ||
                    drag_mode_ == DragMode::Layer ||
                    drag_mode_ == DragMode::TransitionDuration ||
+                   drag_mode_ == DragMode::AudioFadeIn ||
+                   drag_mode_ == DragMode::AudioFadeOut ||
                    drag_mode_ == DragMode::LoopStart ||
                    drag_mode_ == DragMode::LoopEnd ||
-                   drag_mode_ == DragMode::PauseMarker;
+                   drag_mode_ == DragMode::PauseMarker ||
+                   drag_mode_ == DragMode::StingerTransitionPoint;
 
     if (drag_mode_ == DragMode::Marquee) {
         if (marquee_moved_)
@@ -2538,6 +2945,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
     }
 
     const bool transition_changed = drag_mode_ == DragMode::TransitionDuration;
+    const bool audio_fade_changed = drag_mode_ == DragMode::AudioFadeIn || drag_mode_ == DragMode::AudioFadeOut;
     drag_mode_ = DragMode::None;
     drag_layer_id_.clear();
     drag_prop_name_.clear();
@@ -2553,6 +2961,8 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
     update();
     if (transition_changed)
         emit transition_modified();
+    else if (audio_fade_changed)
+        emit audio_layer_property_changed(true);
     else if (changed)
         emit keyframe_easing_changed();
 }

@@ -40,14 +40,14 @@ void test_gpu_graph_and_readback_contract(const std::string &source,
 void test_worker_contract(const std::string &source,
                           const std::string &header)
 {
-    require(header, "void enqueuePut(const CacheFrameKey &key, const QImage &image)");
+    require(header, "bool enqueuePut(const CacheFrameKey &key, const QImage &image)");
     require(header, "std::thread writer_thread_");
     require(source, "pending_readbacks.size() >= 3");
     require(source, "resolveOldestGpuReadback");
     require(source, "title_gpu_frame_cache_store_image(");
     require(source, "disk_cache_.enqueuePut(job.key, image)");
-    require(source, "putForGeneration(job.key, job.image, job.generation)");
-    require(source, "generation != writer_generation_.load");
+    require(source, "putForGeneration(job.key, job.image, job.generation,");
+    require(source, "job.generation == writer_generation_.load");
     require(source, "dirty_pixels * 100 < full_pixels * 60");
     require(source, "previous_key.content_hash = previous_hash");
     require(source, "last_visual_hash_by_title_.value(job.key.title_id)");
@@ -61,7 +61,7 @@ void test_worker_contract(const std::string &source,
     reject(source, "QImage CacheManager::renderDirtyTiles");
     reject(source, "QImage CacheManager::mergeDirtyTiles");
     reject(source, "disk_cache_.put(job.key, image)");
-    reject(source, "ram_cache_.put(job.key, image)");
+    require(source, "ram_cache_.put(job.key, image)");
     reject(source, "#include <QPainter>");
 }
 

@@ -48,7 +48,7 @@ constexpr int kCacheTileSize = bgs::cache_tile_payload::kTileSize;
  * visual cache identity and prevents stale prerenders from surviving renderer
  * fixes. */
 constexpr const char *kGpuRendererCacheAbi =
-    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur";
+    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur-v37-live-cue-transition-persistence";
 
 static bool gpu_ram_frame_contains(const CacheFrameKey &key)
 {
@@ -211,6 +211,47 @@ static void apply_persisted_live_cue_persistence(const std::shared_ptr<Title> &t
         title->cue_persistent_text_columns.clear();
 }
 
+static double cache_cue_persistence_hold_time(const Title &title)
+{
+    if (title.playback_mode == 1)
+        return std::clamp(title.loop_end, title.loop_start, title.duration);
+    if (title.playback_mode == 2)
+        return std::clamp(title.pause_time, 0.0, title.duration);
+    return std::clamp(title.duration, 0.0, title.duration);
+}
+
+static bool cache_layer_uses_cue_persistence(const Title &title,
+                                             const Layer &layer)
+{
+    const bool persistence = title.cue_background_persistence &&
+        title.cue_persistence_transition && title.current_cue_row >= 0 &&
+        !title.live_text_rows.empty() && !layer.ignore_persistence;
+    if (!persistence || !layer.asset_owner_id.empty())
+        return false;
+
+    const auto exposed = bgs::live_text::exposed_text_layers(title);
+    int exposed_index = -1;
+    for (std::size_t i = 0; i < exposed.size(); ++i) {
+        if (exposed[i] && (exposed[i].get() == &layer ||
+            (!layer.id.empty() && exposed[i]->id == layer.id))) {
+            exposed_index = static_cast<int>(i);
+            break;
+        }
+    }
+    const bool persistent_text = exposed_index >= 0 && title.cue_text_persistence &&
+        exposed_index < static_cast<int>(title.cue_persistent_text_columns.size()) &&
+        title.cue_persistent_text_columns[exposed_index];
+    return exposed_index < 0 || persistent_text;
+}
+
+static double cache_layer_sample_time(const Title &title, const Layer &layer,
+                                      double title_time)
+{
+    return cache_layer_uses_cue_persistence(title, layer)
+        ? cache_cue_persistence_hold_time(title)
+        : title_time;
+}
+
 static void enter_cache_worker_background_mode()
 {
 #ifdef _WIN32
@@ -246,6 +287,7 @@ DiskFrameCache::DiskFrameCache(QObject *parent) : QObject(parent)
     QDir().mkpath(cache_dir_);
     rebuildIndex();
     bytes_used_ = scanBytesUsed();
+    publishBytesUsedLocked();
     const QFileInfo active_info(cache_dir_);
     QDir cache_parent(active_info.absolutePath());
     const QString obsolete_pattern =
@@ -266,42 +308,40 @@ DiskFrameCache::~DiskFrameCache()
         writer_stop_ = true;
     }
     writer_cv_.notify_all();
-    writer_space_cv_.notify_all();
     if (writer_thread_.joinable())
         writer_thread_.join();
 }
 
-void DiskFrameCache::enqueuePut(const CacheFrameKey &key, const QImage &image)
+bool DiskFrameCache::enqueuePut(const CacheFrameKey &key, const QImage &image)
 {
     if (image.isNull())
-        return;
+        return false;
     WriteJob job;
     job.kind = WriteJob::Kind::Put;
     job.key = key;
     job.image = image;
     job.generation = writer_generation_.load(std::memory_order_acquire);
+    job.title_generation = titleWriteGeneration(key.title_id);
     job.bytes = static_cast<quint64>(
         std::max<qsizetype>(0, image.sizeInBytes()));
     {
-        std::unique_lock<std::mutex> lock(writer_mutex_);
-        /* Compression is intentionally asynchronous, but an unbounded queue of
-         * full/sparse QImages merely moves the cache explosion from GPU memory
-         * to system RAM. Keep at most four writes and ~64 MiB of payloads in
-         * flight; an individual oversized frame is allowed only when alone. */
-        writer_space_cv_.wait(lock, [this, &job]() {
-            const bool byte_room = writer_pending_bytes_ == 0 ||
-                (job.bytes <= writer_queue_budget_ &&
-                 writer_pending_bytes_ <= writer_queue_budget_ - job.bytes);
-            const std::size_t in_flight = writer_queue_.size() +
-                (writer_active_ ? 1u : 0u);
-            return writer_stop_ || (in_flight < 4 && byte_room);
-        });
-        if (writer_stop_)
-            return;
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        /* Disk persistence is best-effort and must never apply backpressure to
+         * the cache/render worker. When compression or storage cannot keep up,
+         * retain the completed frame in GPU/RAM and skip this disk write rather
+         * than blocking realtime playback, UI work, or urgent hydration jobs. */
+        const std::size_t in_flight = writer_queue_.size() +
+            (writer_active_ ? 1u : 0u);
+        const bool byte_room = writer_pending_bytes_ == 0 ||
+            (job.bytes <= writer_queue_budget_ &&
+             writer_pending_bytes_ <= writer_queue_budget_ - job.bytes);
+        if (writer_stop_ || in_flight >= writer_queue_limit_ || !byte_room)
+            return false;
         writer_pending_bytes_ += job.bytes;
         writer_queue_.push_back(std::move(job));
     }
     writer_cv_.notify_one();
+    return true;
 }
 
 void DiskFrameCache::enqueueAlias(
@@ -318,18 +358,54 @@ void DiskFrameCache::enqueueAlias(
     job.key = key;
     job.canonical_key = canonical_key;
     job.generation = writer_generation_.load(std::memory_order_acquire);
+    job.title_generation = titleWriteGeneration(key.title_id);
     {
-        std::unique_lock<std::mutex> lock(writer_mutex_);
-        writer_space_cv_.wait(lock, [this]() {
-            const std::size_t in_flight = writer_queue_.size() +
-                (writer_active_ ? 1u : 0u);
-            return writer_stop_ || in_flight < 4;
-        });
-        if (writer_stop_)
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        const std::size_t in_flight = writer_queue_.size() +
+            (writer_active_ ? 1u : 0u);
+        if (writer_stop_ || in_flight >= writer_queue_limit_)
             return;
         writer_queue_.push_back(std::move(job));
     }
     writer_cv_.notify_one();
+}
+
+quint64 DiskFrameCache::titleWriteGeneration(const QString &title_id) const
+{
+    std::lock_guard<std::mutex> lock(writer_title_generation_mutex_);
+    return writer_title_generations_.value(title_id, 0);
+}
+
+bool DiskFrameCache::writeJobCurrent(const WriteJob &job) const
+{
+    return job.generation == writer_generation_.load(std::memory_order_acquire) &&
+           job.title_generation == titleWriteGeneration(job.key.title_id);
+}
+
+void DiskFrameCache::cancelTitleWrites(const QString &title_id)
+{
+    if (title_id.isEmpty())
+        return;
+    {
+        std::lock_guard<std::mutex> generation_lock(
+            writer_title_generation_mutex_);
+        writer_title_generations_[title_id] =
+            writer_title_generations_.value(title_id, 0) + 1;
+    }
+    {
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        for (auto it = writer_queue_.begin(); it != writer_queue_.end();) {
+            if (it->key.title_id == title_id) {
+                writer_pending_bytes_ -= std::min(
+                    writer_pending_bytes_, it->bytes);
+                it = writer_queue_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!writer_active_ && writer_queue_.empty() && cleanup_queue_.empty())
+            writer_idle_cv_.notify_all();
+    }
 }
 
 void DiskFrameCache::flushWrites()
@@ -345,6 +421,11 @@ void DiskFrameCache::cancelQueuedWrites()
 {
     writer_generation_.fetch_add(1, std::memory_order_acq_rel);
     {
+        std::lock_guard<std::mutex> generation_lock(
+            writer_title_generation_mutex_);
+        writer_title_generations_.clear();
+    }
+    {
         std::lock_guard<std::mutex> lock(writer_mutex_);
         for (const WriteJob &job : writer_queue_)
             writer_pending_bytes_ -= std::min(writer_pending_bytes_, job.bytes);
@@ -352,7 +433,6 @@ void DiskFrameCache::cancelQueuedWrites()
         if (!writer_active_)
             writer_idle_cv_.notify_all();
     }
-    writer_space_cv_.notify_all();
 }
 
 void DiskFrameCache::writerLoop()
@@ -384,9 +464,10 @@ void DiskFrameCache::writerLoop()
         if (write_job) {
             if (job.kind == WriteJob::Kind::Alias)
                 aliasForGeneration(job.key, job.canonical_key,
-                                   job.generation);
+                                   job.generation, job.title_generation);
             else
-                putForGeneration(job.key, job.image, job.generation);
+                putForGeneration(job.key, job.image, job.generation,
+                                 job.title_generation);
         }
         else if (!cleanup_dir.isEmpty())
             QDir(cleanup_dir).removeRecursively();
@@ -400,8 +481,8 @@ void DiskFrameCache::writerLoop()
             if (writer_queue_.empty() && cleanup_queue_.empty())
                 writer_idle_cv_.notify_all();
         }
-        writer_space_cv_.notify_all();
     }
+
     {
         std::lock_guard<std::mutex> lock(writer_mutex_);
         writer_active_ = false;
@@ -425,12 +506,35 @@ QString DiskFrameCache::pathForTileDigest(const QByteArray &digest) const
 
 bool DiskFrameCache::contains(const CacheFrameKey &key) const
 {
-    QMutexLocker lock(&mutex_);
-    /* Manifest-backed membership is kept in memory. This method is called by
-     * timeline/live-cue progress code and must not turn every frame query into
-     * a filesystem metadata lookup. The worker validates the actual file when
-     * it hydrates the payload. */
-    return indexed_keys_.contains(key.toString());
+    /* Membership has its own short-lived read lock. Disk compression, manifest
+     * writes and tile I/O continue under mutex_, but realtime/UI callers never
+     * wait behind those operations merely to ask whether a key exists. */
+    QReadLocker lock(&membership_mutex_);
+    return indexed_membership_.contains(key.toString());
+}
+
+void DiskFrameCache::setIndexedMembershipLocked(const QString &indexed_key,
+                                                 bool present)
+{
+    QWriteLocker lock(&membership_mutex_);
+    if (present)
+        indexed_membership_.insert(indexed_key);
+    else
+        indexed_membership_.remove(indexed_key);
+}
+
+void DiskFrameCache::rebuildIndexedMembershipLocked()
+{
+    QWriteLocker lock(&membership_mutex_);
+    indexed_membership_.clear();
+    indexed_membership_.reserve(indexed_keys_.size());
+    for (auto it = indexed_keys_.cbegin(); it != indexed_keys_.cend(); ++it)
+        indexed_membership_.insert(it.key());
+}
+
+void DiskFrameCache::publishBytesUsedLocked()
+{
+    bytes_used_snapshot_.store(bytes_used_, std::memory_order_release);
 }
 
 bool DiskFrameCache::readFrameTileRefsLocked(
@@ -593,26 +697,34 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
 
 void DiskFrameCache::putForGeneration(const CacheFrameKey &key,
                                       const QImage &image,
-                                      quint64 generation)
+                                      quint64 generation,
+                                      quint64 title_generation)
 {
     if (image.isNull())
         return;
     QMutexLocker lock(&mutex_);
-    /* Re-check only after acquiring the disk-cache lock. clear(), clearFast(),
-     * and setCacheDirectory() advance the generation before taking this lock,
-     * so an already-dequeued stale write can neither recreate a cleared frame
-     * nor land in the replacement cache directory. */
-    if (generation != writer_generation_.load(std::memory_order_acquire))
+    /* Re-check after acquiring the disk-cache lock. Global cache rotations and
+     * per-title deletion generations prevent an already-dequeued write from
+     * recreating a removed proxy. */
+    WriteJob identity;
+    identity.key = key;
+    identity.generation = generation;
+    identity.title_generation = title_generation;
+    if (!writeJobCurrent(identity))
         return;
     putLocked(key, image);
 }
 
 void DiskFrameCache::aliasForGeneration(
     const CacheFrameKey &key, const CacheFrameKey &canonical_key,
-    quint64 generation)
+    quint64 generation, quint64 title_generation)
 {
     QMutexLocker lock(&mutex_);
-    if (generation != writer_generation_.load(std::memory_order_acquire))
+    WriteJob identity;
+    identity.key = key;
+    identity.generation = generation;
+    identity.title_generation = title_generation;
+    if (!writeJobCurrent(identity))
         return;
     aliasLocked(key, canonical_key);
 }
@@ -786,6 +898,8 @@ void DiskFrameCache::putLocked(const CacheFrameKey &key, const QImage &image)
     releaseTileReferencesLocked(previous_digests);
     frame_tile_digests_[indexed_key] = new_digests;
     indexed_keys_[indexed_key] = key;
+    setIndexedMembershipLocked(indexed_key, true);
+    publishBytesUsedLocked();
     if (!already_indexed)
         appendManifestEntry(key);
 }
@@ -852,6 +966,8 @@ bool DiskFrameCache::aliasLocked(
     releaseTileReferencesLocked(previous_digests);
     frame_tile_digests_[indexed_key] = new_digests;
     indexed_keys_[indexed_key] = key;
+    setIndexedMembershipLocked(indexed_key, true);
+    publishBytesUsedLocked();
     if (!already_indexed)
         appendManifestEntry(key);
     return true;
@@ -880,7 +996,9 @@ void DiskFrameCache::remove(const CacheFrameKey &key)
     if (QFile::remove(path))
         bytes_used_ -= std::min(bytes_used_, previous_size);
     indexed_keys_.remove(indexed_key);
+    setIndexedMembershipLocked(indexed_key, false);
     releaseTileReferencesLocked(digests);
+    publishBytesUsedLocked();
 }
 
 void DiskFrameCache::clear()
@@ -893,6 +1011,8 @@ void DiskFrameCache::clear()
         frame_tile_digests_.clear();
         tile_ref_counts_.clear();
         bytes_used_ = 0;
+        rebuildIndexedMembershipLocked();
+        publishBytesUsedLocked();
         return;
     }
     for (const QFileInfo &file : dir.entryInfoList(
@@ -905,6 +1025,8 @@ void DiskFrameCache::clear()
     frame_tile_digests_.clear();
     tile_ref_counts_.clear();
     bytes_used_ = 0;
+    rebuildIndexedMembershipLocked();
+    publishBytesUsedLocked();
     BGL_LOG_INFO("DiskCache", QStringLiteral("Cleared disk frame cache directory=%1")
         .arg(cache_dir_));
 }
@@ -927,6 +1049,8 @@ void DiskFrameCache::clearFast()
     frame_tile_digests_.clear();
     tile_ref_counts_.clear();
     bytes_used_ = 0;
+    rebuildIndexedMembershipLocked();
+    publishBytesUsedLocked();
     BGL_LOG_INFO("DiskCache", QStringLiteral(
         "Detached disk cache generation directory=%1 tombstone=%2")
         .arg(old_dir, tombstone));
@@ -955,6 +1079,7 @@ void DiskFrameCache::setCacheDirectory(const QString &path)
     QDir().mkpath(cache_dir_);
     rebuildIndex();
     bytes_used_ = scanBytesUsed();
+    publishBytesUsedLocked();
     BGL_LOG_INFO("DiskCache", QStringLiteral(
         "Set disk cache directory=%1 indexedFrames=%2 bytes=%3")
         .arg(cache_dir_)
@@ -970,14 +1095,14 @@ QString DiskFrameCache::cacheDirectory() const
 
 quint64 DiskFrameCache::bytesUsed() const
 {
-    QMutexLocker lock(&mutex_);
-    return bytes_used_;
+    return bytes_used_snapshot_.load(std::memory_order_acquire);
 }
 
 
 void DiskFrameCache::rebuildIndex()
 {
     indexed_keys_.clear();
+    rebuildIndexedMembershipLocked();
     frame_tile_digests_.clear();
     tile_ref_counts_.clear();
     QSet<QString> indexed_frame_files;

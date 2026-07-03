@@ -10,6 +10,13 @@ Ordinary layer effects run in layer space on a padded raster. Full-canvas passes
 
 During normal editing and scrubbing the editor can refresh up to the active monitor rate. During authored playback, frame advancement follows the project frame rate. Interactive quality can be reduced temporarily during high-frequency manipulation, then restored for the settled frame.
 
+
+## Audio runtime
+
+Audio media is decoded and waveform data is generated outside the UI and OBS render threads. The source runtime mixes fixed-size sample blocks with continuous timestamps, bounded buffering, transport-discontinuity resets, and separate low-latency editor monitoring. Mix, trim, fade, pan, gain, mute/solo, loop, keyframes, and DSP changes do not rebuild unrelated visual cache frames.
+
+Editor transport publishes an exact playhead and direction to its private monitor source. Reverse playback reads decoded samples in descending order while OBS packet timestamps remain monotonic. Only titles containing an Audio layer activate an OBS mixer device.
+
 ## RAM and disk cache
 
 - RAM cache stores render-ready frame payloads for low-latency presentation.
@@ -22,11 +29,11 @@ During normal editing and scrubbing the editor can refresh up to the active moni
 
 Edits should invalidate only affected frames, layers, tiles, or cue states. Selection changes and UI-only changes must not invalidate rendered content. Structural changes such as layer order, effect order, timing, masks, or title dimensions may require broader invalidation.
 
-Live cue rows use structural and value-aware invalidation so adding, deleting, or editing one row does not rebuild unrelated cached frames. Background Persistence states are included in the cache identity and progress calculation.
+Live cue rows use structural and value-aware invalidation so adding, deleting, or editing one row does not rebuild unrelated cached frames. Background Persistence states are included in the cache identity and progress calculation. Keyframes and layer transitions use the same frozen persistence sample time, so manual uncue and cue-row changes cannot replay or advance only the transition portion of a persistent state.
 
 ## Scheduling and playback
 
-The editor preview has priority while the editor is open. Background prerender work yields or pauses when interactive rendering needs the device. When the editor is closed, queued title and cue renders can continue in title order.
+Realtime OBS output, cue/uncue, editor playback, scrubbing, and direct interaction have priority over background prerender. Cache jobs are inserted in batches, deduplicated through indexed keys, and split into urgent and background lanes. RAM LRU updates are constant-time. Disk frames are hydrated asynchronously by workers, while bounded disk writes remain best-effort under backpressure rather than blocking playback. UI progress and diagnostics are coalesced instead of emitted for every frame.
 
 **Play after rendering** waits for required frames before authored playback. If an exact cached frame is unavailable, the source can use a real-time fallback rather than presenting an unrelated or stale frame.
 

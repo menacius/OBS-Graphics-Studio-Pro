@@ -55,3 +55,12 @@ The Libraries dock contains assets, style presets, gradients, effects, and trans
 ## Undo, persistence, and selection
 
 Editor operations should enter the shared undo history rather than modifying the model silently. Selection-only changes must not trigger expensive rerenders. Saved titles persist authored content; editor-only panel order, panel collapse state, and presentation preferences persist separately as UI settings.
+
+## Stinger authoring
+
+Stinger is a document playback mode and a native OBS transition type. Its timeline shows pre-roll, animation time, the switch point, and post-roll without changing the authored layer/keyframe time domain.
+
+- **Switch at Point** renders the title animation and performs one Scene A → Scene B switch at the configured point. Editor-only Scene A/B backgrounds help preview the cut and never enter source output or cached frames.
+- **Manual Scene Animation** adds persistent Scene A and Scene B input layers. They use the ordinary visual-layer contract for Size, transform, opacity, timing, transitions, hierarchy, masks, mattes, blend modes, and effects.
+- Proxy readiness can be required or allowed to fall back to safe live rendering. Native OBS transition preview and on-air playback use the same transition callbacks.
+

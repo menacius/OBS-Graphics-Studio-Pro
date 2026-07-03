@@ -29,9 +29,9 @@ bool require_absent(const std::string &text, const std::string &needle,
 
 int main(int argc, char **argv)
 {
-    if (argc != 10) {
+    if (argc != 11) {
         std::cerr << "usage: external_data_providers_contract_test <types> <provider-h> "
-                     "<provider-cpp> <manager-cpp> <title-data-cpp> <dialog-cpp> "
+                     "<provider-cpp> <json-path-h> <manager-cpp> <title-data-cpp> <dialog-cpp> "
                      "<dock> <plugin-main> <cmake>\n";
         return 2;
     }
@@ -39,12 +39,13 @@ int main(int argc, char **argv)
     const std::string types = read_file(argv[1]);
     const std::string provider_h = read_file(argv[2]);
     const std::string provider_cpp = read_file(argv[3]);
-    const std::string manager_cpp = read_file(argv[4]);
-    const std::string title_data_cpp = read_file(argv[5]);
-    const std::string dialog_cpp = read_file(argv[6]);
-    const std::string dock = read_file(argv[7]);
-    const std::string plugin_main = read_file(argv[8]);
-    const std::string cmake = read_file(argv[9]);
+    const std::string json_path_h = read_file(argv[4]);
+    const std::string manager_cpp = read_file(argv[5]);
+    const std::string title_data_cpp = read_file(argv[6]);
+    const std::string dialog_cpp = read_file(argv[7]);
+    const std::string dock = read_file(argv[8]);
+    const std::string plugin_main = read_file(argv[9]);
+    const std::string cmake = read_file(argv[10]);
 
     bool ok = true;
     ok &= require(types, "enum class ExternalDataProviderType", "provider type enum");
@@ -81,7 +82,9 @@ int main(int argc, char **argv)
     ok &= require(provider_cpp, "resolve_json_path", "nested JSON path resolution");
     ok &= require(provider_cpp, "Discovery is always performed", "JSON discovery with schema overrides");
     ok &= require(provider_cpp, "Native columns are always discovered first", "CSV discovery with mappings");
-    ok &= require(provider_cpp, "token.index", "JSON array indexing");
+    ok &= require(json_path_h, "token.index", "JSON array indexing");
+    ok &= require(json_path_h, "Array indexes must be non-negative integers",
+                  "JSON index validation");
     ok &= require(provider_cpp, "csv_first_row_headers", "CSV header support");
     ok &= require(provider_cpp, "QNetworkAccessManager", "asynchronous HTTP transport");
     ok &= require(provider_cpp, "timeout_timer_", "HTTP timeout");

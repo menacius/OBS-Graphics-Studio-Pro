@@ -426,6 +426,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                   (type == LayerType::Clock) ? editor_text_std("OBSTitles.Clock") :
                   (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
                   (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") :
+                  (type == LayerType::Audio) ? editor_text_std("OBSTitles.Audio") :
                   (type == LayerType::Adjustment) ? editor_text_std("OBSTitles.AdjustmentLayer") :
                   (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") :
                   (type == LayerType::Group) ? editor_text_std("OBSTitles.Group") : editor_text_std("OBSTitles.Shape");

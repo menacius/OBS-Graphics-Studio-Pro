@@ -8,6 +8,19 @@ void CanvasPreview::render_to_frame()
     if (render_in_progress_)
         return;
     render_in_progress_ = true;
+    if (!live_fps_timer_.isValid()) live_fps_timer_.start();
+    ++live_fps_frame_count_;
+    const qint64 fps_elapsed = live_fps_timer_.elapsed();
+    if (fps_elapsed >= 1000) {
+        measured_live_fps_ = 1000.0 * double(live_fps_frame_count_) / double(fps_elapsed);
+        average_render_cost_ms_ = render_cost_sample_count_ > 0
+            ? double(render_cost_accumulator_ms_) / double(render_cost_sample_count_)
+            : 0.0;
+        live_fps_frame_count_ = 0;
+        render_cost_accumulator_ms_ = 0;
+        render_cost_sample_count_ = 0;
+        live_fps_timer_.restart();
+    }
     QElapsedTimer render_cost;
     render_cost.start();
 
@@ -17,6 +30,15 @@ void CanvasPreview::render_to_frame()
     frame_image_preview_scale_ = 1.0;
 
     if (title_ && gpu_render_session_) {
+        /* Transition-input placeholders are an editor-only affordance. Normal
+         * OBS title sources keep these layers transparent; the native manual
+         * transition path supplies the live Scene A/B textures explicitly. */
+        title_gpu_render_session_set_transition_input_preview(
+            gpu_render_session_,
+            title_->graphic_type == TitleGraphicType::Stinger &&
+                title_->stinger_switch_mode ==
+                    StingerSwitchMode::ManualSceneAnimation);
+
         /* Timeline playback changes only the session time. Model snapshots are
          * replaced only after an actual edit, avoiding a deep copy of every
          * layer/keyframe on each preview frame. */
@@ -186,6 +208,8 @@ void CanvasPreview::render_to_frame()
     force_live_full_quality_render_ = false;
     const int cost_ms = std::max(1, (int)render_cost.elapsed());
     last_full_quality_render_cost_ms_ = cost_ms;
+    render_cost_accumulator_ms_ += cost_ms;
+    ++render_cost_sample_count_;
     BGL_LOG_TRACE("Performance", QStringLiteral(
         "Canvas frame prepared title=%1 time=%2 costMs=%3 scale=%4")
         .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
@@ -477,6 +501,7 @@ void CanvasPreview::draw_static_checkerboard(QPainter &p, const QRect &canvas_re
     constexpr int checker_size = 12;
     constexpr int tile_size = checker_size * 2;
     if (checkerboard_tile_.isNull() || checkerboard_tile_pattern_ != checkerboard_pattern_) {
+        bgl::perf::add(bgl::perf::Counter::PatternRenderCacheMisses);
         const auto [checker_a, checker_b] = checkerboard_colors();
         checkerboard_tile_ = QPixmap(tile_size, tile_size);
         checkerboard_tile_.fill(checker_a);
@@ -488,6 +513,8 @@ void CanvasPreview::draw_static_checkerboard(QPainter &p, const QRect &canvas_re
             tile_painter.drawRect(checker_size, checker_size, checker_size, checker_size);
         }
         checkerboard_tile_pattern_ = checkerboard_pattern_;
+    } else {
+        bgl::perf::add(bgl::perf::Counter::PatternRenderCacheHits);
     }
 
     p.save();
@@ -519,6 +546,39 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
     const QRect canvas_rect_px = canvas_rect_f.toAlignedRect();
     if (pass != CanvasPaintPass::Overlay)
         draw_static_checkerboard(p, canvas_rect_px);
+    if (pass != CanvasPaintPass::Overlay &&
+        title_->graphic_type == TitleGraphicType::Stinger &&
+        title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint &&
+        title_->stinger_editor_background !=
+            StingerEditorBackground::CanvasTransparency) {
+        /* Scene A/B is an editor-only representation of the two OBS scenes.
+         * It follows the authored switch point instead of being a static color
+         * choice: A before the point, B at and after it. */
+        const bool scene_b = playhead_ + 1e-9 >=
+            stinger_transition_point_seconds(*title_);
+        p.save();
+        p.setClipRect(canvas_rect_px);
+        QLinearGradient background(canvas_rect_f.topLeft(), canvas_rect_f.bottomRight());
+        background.setColorAt(0.0, scene_b ? QColor(104, 48, 24) : QColor(20, 66, 112));
+        background.setColorAt(1.0, scene_b ? QColor(42, 18, 12) : QColor(8, 24, 48));
+        p.fillRect(canvas_rect_f, background);
+        QPen grid_pen(QColor(255, 255, 255, 30));
+        grid_pen.setCosmetic(true);
+        p.setPen(grid_pen);
+        const double grid = std::max(24.0, std::min(dw, dh) / 12.0);
+        for (double x = canvas_rect_f.left(); x <= canvas_rect_f.right(); x += grid)
+            p.drawLine(QPointF(x, canvas_rect_f.top()), QPointF(x, canvas_rect_f.bottom()));
+        for (double y = canvas_rect_f.top(); y <= canvas_rect_f.bottom(); y += grid)
+            p.drawLine(QPointF(canvas_rect_f.left(), y), QPointF(canvas_rect_f.right(), y));
+        QFont label_font = p.font();
+        label_font.setBold(true);
+        label_font.setPixelSize(std::max(32, std::min(dw, dh) / 4));
+        p.setFont(label_font);
+        p.setPen(QColor(255, 255, 255, 185));
+        p.drawText(canvas_rect_f, Qt::AlignCenter, scene_b ? QStringLiteral("B")
+                                                          : QStringLiteral("A"));
+        p.restore();
+    }
     if (pass == CanvasPaintPass::Underlay)
         return;
 
@@ -614,7 +674,8 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
     const SelectionOverlayGeometry &selection_overlay = selection_overlay_geometry();
 
     if (active_tool_ == CanvasTool::Selection && selection_overlay.layers.size() == 1 &&
-        selection_overlay.layers.front().layer) {
+        selection_overlay.layers.front().layer &&
+        selection_overlay.layers.front().layer->type != LayerType::Audio) {
         draw_position_motion_path(p, *selection_overlay.layers.front().layer);
     }
 
@@ -622,6 +683,8 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
         if (!layer_geometry.layer)
             return;
         const Layer &layer = *layer_geometry.layer;
+        if (layer.type == LayerType::Audio)
+            return;
         const bool editing_text_layer = layer_geometry.editing_text_layer;
         QColor outline_color = layer_color(layer, 0);
         if (!handles && outline_color.alpha() > 150)
@@ -686,6 +749,27 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
                                   pt.y() - CANVAS_CONTROL_SIZE_PX / 2.0,
                                   CANVAS_CONTROL_SIZE_PX, CANVAS_CONTROL_SIZE_PX));
         }
+    }
+
+    if (selection_overlay.layers.size() == 1 && selection_overlay.layers.front().layer &&
+        selection_overlay.layers.front().layer->type == LayerType::Audio) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QPointF c(ox + dw - 24.0, oy + 24.0);
+        QPainterPath speaker;
+        speaker.moveTo(c.x() - 10.0, c.y() - 5.0);
+        speaker.lineTo(c.x() - 5.0, c.y() - 5.0);
+        speaker.lineTo(c.x() + 2.0, c.y() - 11.0);
+        speaker.lineTo(c.x() + 2.0, c.y() + 11.0);
+        speaker.lineTo(c.x() - 5.0, c.y() + 5.0);
+        speaker.lineTo(c.x() - 10.0, c.y() + 5.0);
+        speaker.closeSubpath();
+        p.setPen(QPen(Qt::black, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::white);
+        p.drawPath(speaker);
+        p.drawArc(QRectF(c.x() - 2.0, c.y() - 8.0, 14.0, 16.0), -55 * 16, 110 * 16);
+        p.drawArc(QRectF(c.x() - 2.0, c.y() - 12.0, 22.0, 24.0), -50 * 16, 100 * 16);
+        p.restore();
     }
 
     if (active_tool_ == CanvasTool::DirectSelection) {
@@ -830,7 +914,14 @@ void CanvasPreview::paintEvent(QPaintEvent *)
                                std::max(1, qRound(height() * dpr)));
         const QPointF origin = title_ ? view_origin() : QPointF();
         const double scale = title_ ? view_scale() : 1.0;
-        const QString underlay_key = QStringLiteral("%1|%2x%3|%4|%5|%6|%7|%8|%9|%10")
+        const bool stinger_scene_background_active = title_ &&
+            title_->graphic_type == TitleGraphicType::Stinger &&
+            title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint &&
+            title_->stinger_editor_background !=
+                StingerEditorBackground::CanvasTransparency;
+        const bool stinger_scene_b = stinger_scene_background_active &&
+            playhead_ + 1e-9 >= stinger_transition_point_seconds(*title_);
+        const QString underlay_key = QStringLiteral("%1|%2x%3|%4|%5|%6|%7|%8|%9|%10|%11|%12")
             .arg(QString::number(static_cast<qulonglong>(
                      reinterpret_cast<quintptr>(title_.get())), 16))
             .arg(pixel_size.width()).arg(pixel_size.height())
@@ -839,7 +930,12 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             .arg(scale, 0, 'f', 8)
             .arg(origin.x(), 0, 'f', 4).arg(origin.y(), 0, 'f', 4)
             .arg(QString::number(palette().cacheKey()) + QLatin1Char(':') +
-                 QString::number(checkerboard_pattern_));
+                 QString::number(checkerboard_pattern_))
+            .arg(title_ ? static_cast<int>(title_->stinger_switch_mode) : 0)
+            .arg(title_ ? QStringLiteral("%1:%2")
+                     .arg(static_cast<int>(title_->stinger_editor_background))
+                     .arg(stinger_scene_b ? 1 : 0)
+                   : QStringLiteral("0:0"));
 
         QImage underlay;
         const bool update_underlay = gpu_underlay_key_ != underlay_key;

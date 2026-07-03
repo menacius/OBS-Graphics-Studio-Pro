@@ -1,8 +1,10 @@
 from pathlib import Path
+import re
 root = Path(__file__).resolve().parents[1]
 cmake = (root / 'CMakeLists.txt').read_text(encoding='utf-8')
 bootstrap = (root / 'cmake' / 'BootstrapQtWebSockets.cmake').read_text(encoding='utf-8')
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "110")' in cmake
+version = re.search(r'set\(OBS_BGS_DEVELOPMENT_VERSION \"(\d+)\"\)', cmake)
+assert version and int(version.group(1)) >= 110
 assert 'include(ExternalProject)' in bootstrap
 assert 'ExternalProject_Add(obs_bgs_qtwebsockets_external' in bootstrap
 assert 'FetchContent_MakeAvailable' not in bootstrap

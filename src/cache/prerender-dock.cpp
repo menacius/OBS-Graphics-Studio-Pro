@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -23,10 +24,14 @@ PrerenderDock::PrerenderDock(QWidget *parent)
     : QWidget(parent)
 {
     buildUi();
-    connect(&CacheManager::instance(), &CacheManager::queueChanged, this, &PrerenderDock::updateStatus);
-    connect(&CacheManager::instance(), &CacheManager::cacheStatesChanged, this, [this]() { updateStatus(); });
-    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this, [this](bool) { updateStatus(); });
-    connect(&CacheManager::instance(), &CacheManager::diagnosticsChanged, this, &PrerenderDock::updateStatus);
+    status_update_timer_ = new QTimer(this);
+    status_update_timer_->setSingleShot(true);
+    status_update_timer_->setInterval(100);
+    connect(status_update_timer_, &QTimer::timeout, this, &PrerenderDock::updateStatus);
+    connect(&CacheManager::instance(), &CacheManager::queueChanged, this, &PrerenderDock::scheduleStatusUpdate);
+    connect(&CacheManager::instance(), &CacheManager::cacheStatesChanged, this, [this]() { scheduleStatusUpdate(); });
+    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this, [this](bool) { scheduleStatusUpdate(); });
+    connect(&CacheManager::instance(), &CacheManager::diagnosticsChanged, this, &PrerenderDock::scheduleStatusUpdate);
 }
 
 void PrerenderDock::setTitle(std::shared_ptr<Title> title)
@@ -131,6 +136,12 @@ void PrerenderDock::applySettings()
     if (start_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderStartModeKey), start_mode_->currentIndex());
     if (playback_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlaybackModeKey), playback_mode_->currentIndex());
     if (cached_only_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), cached_only_->isChecked());
+}
+
+void PrerenderDock::scheduleStatusUpdate()
+{
+    if (status_update_timer_ && !status_update_timer_->isActive())
+        status_update_timer_->start();
 }
 
 void PrerenderDock::updateStatus()

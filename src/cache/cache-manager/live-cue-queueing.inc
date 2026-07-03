@@ -141,6 +141,8 @@ void CacheManager::queueLiveCueVariantSet(
 
     int queued = 0;
     bool active_or_queued = false;
+    QVector<RenderQueueManager::Job> pending_jobs;
+    pending_jobs.reserve(required_frames.size());
     for (const RequiredFrame &required : required_frames) {
         const bool in_ram = cache_ram_frame_contains(ram_cache_, required.key);
         const bool on_disk = !in_ram && disk_cache_.contains(required.key);
@@ -188,9 +190,9 @@ void CacheManager::queueLiveCueVariantSet(
         job.cue_state_key = state_key;
         job.cache_epoch = cache_epoch_.load();
         job.title_generation = titleGeneration(required.key.title_id);
-        if (queue_.enqueue(job))
-            ++queued;
+        pending_jobs.push_back(job);
     }
+    queued = queue_.enqueueMany(pending_jobs);
 
     if (urgent && queued == 0 && !active_or_queued) {
         /* A manual rebuild can be satisfied entirely by resident/shared frames.
@@ -210,15 +212,15 @@ void CacheManager::queueLiveCueVariantSet(
                                   .arg(live_cue_transition_state_keys_.contains(state_key))
                                   .arg(queued).arg(static_cast<int>(required_keys.size()))
                                   .arg(progress).arg(state_key));
-        emit liveCueStateChanged(title_id, row);
-        emit diagnosticsChanged();
+        scheduleLiveCueStateChanged(title_id, row);
+        scheduleDiagnosticsChanged();
         wakeWorker();
     } else {
         const FrameCacheState resolved_state = liveCueStoredState(state_key);
         live_cue_states_[state_key] = resolved_state;
         live_cue_progress_percent_[state_key] = progress;
         if (shouldEmitLiveCueUpdate(state_key, resolved_state, progress))
-            emit liveCueStateChanged(title_id, row);
+            scheduleLiveCueStateChanged(title_id, row);
     }
 
     if (requirements_changed)
@@ -379,17 +381,16 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
         live_cue_known_keys_.insert(key);
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
         return image;
     }
-    if (existing_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
-        if (!liveCueUseDiskStreaming())
-            ram_cache_.put(key, image);
-        live_cue_known_keys_.insert(key);
-        ++live_cue_stats_.hits;
-        ++live_cue_stats_.reuses;
-        emit diagnosticsChanged();
-        return image;
+    if (existing_state != FrameCacheState::Stale && disk_cache_.contains(key)) {
+        /* Keep tile reads/decompression off the UI and OBS render threads. */
+        queueRealtimeJob(cue_title, clamped_time, true, row, state_key);
+        BGL_LOG_DEBUG("LiveCue", QStringLiteral(
+            "Queued disk hydration title=%1 row=%2 frame=%3 stateKey=%4")
+            .arg(key.title_id).arg(row).arg(key.frame).arg(state_key));
+        return QImage();
     }
 
     if (queue_if_missing) {
@@ -435,13 +436,20 @@ QString CacheManager::requestLiveCueFrameGpuToken(
         live_cue_known_keys_.insert(key);
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
         return key.toString();
     }
 
-    if (queue_if_missing && !disk_cache_.contains(key)) {
-        if (title->pending_cue_row >= 0 && title->current_cue_row >= 0 &&
-            title->current_cue_row != title->pending_cue_row) {
+    if (queue_if_missing) {
+        QString state_key = liveCueStateKey(title, row);
+        const QString referenced_state =
+            liveCueStateReferencingKey(key, state_key);
+        if (!referenced_state.isEmpty())
+            state_key = referenced_state;
+        if (disk_cache_.contains(key)) {
+            queueRealtimeJob(cue_title, clamped_time, true, row, state_key);
+        } else if (title->pending_cue_row >= 0 && title->current_cue_row >= 0 &&
+                   title->current_cue_row != title->pending_cue_row) {
             queueLiveCueTransition(title, title->current_cue_row,
                                    title->pending_cue_row);
         } else {
@@ -478,12 +486,11 @@ QImage CacheManager::requestLiveCueFrameRealtime(const std::shared_ptr<Title> &t
             .arg(image.width()).arg(image.height()).arg(key.toString()));
         return image;
     }
-    if (initial_state == FrameCacheState::CachedDisk && disk_cache_.get(key, image)) {
-        ram_cache_.put(key, image);
-        state_tracker_.setState(key, FrameCacheState::CachedRam);
-        log_cache_playback(QStringLiteral("result=disk-hit-promoted kind=live-cue title=%1 row=%2 frame=%3 cacheKey=%4 key=%5")
-            .arg(key.title_id).arg(row).arg(key.frame).arg(image.cacheKey()).arg(key.toString()));
-        return image;
+    if (initial_state != FrameCacheState::Stale && disk_cache_.contains(key)) {
+        queueRealtimeJob(title, clamped_time, false, row, QString(), known_content_hash);
+        log_cache_playback(QStringLiteral("result=disk-hydration-queued kind=live-cue title=%1 row=%2 frame=%3 key=%4")
+            .arg(key.title_id).arg(row).arg(key.frame).arg(key.toString()));
+        return QImage();
     }
 
     queueRealtimeJob(title, clamped_time, false, row, QString(), known_content_hash);
@@ -732,7 +739,7 @@ bool CacheManager::isLiveCueReady(const std::shared_ptr<Title> &title, int row)
     if (ready) {
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
     }
     return ready;
 }
@@ -853,8 +860,8 @@ void CacheManager::invalidateLiveCue(const std::shared_ptr<Title> &title, int ro
     BGL_LOG_INFO("LiveCue", QStringLiteral("Invalidated live cue identity title=%1 row=%2 rowId=%3 removedStates=%4")
                               .arg(title_id).arg(row).arg(row_id)
                               .arg(static_cast<int>(affected_states.size())));
-    emit diagnosticsChanged();
-    emit liveCueStateChanged(title_id, row);
+    scheduleDiagnosticsChanged();
+    scheduleLiveCueStateChanged(title_id, row);
 }
 
 void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
@@ -873,7 +880,7 @@ void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
         const int row = live_cue_rows_.value(state_key, -1);
         removeLiveCueState(state_key);
         if (row >= 0)
-            emit liveCueStateChanged(title_id, row);
+            scheduleLiveCueStateChanged(title_id, row);
     }
     live_cue_structure_row_ids_.remove(title_id);
     live_cue_row_fingerprints_.remove(title_id);
@@ -881,7 +888,7 @@ void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
     live_cue_paused_row_ids_.remove(title_id);
     ++live_cue_stats_.invalidations;
     pruneUnreferencedLiveCueRam(title_id);
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
@@ -891,7 +898,7 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
         return;
     if (titleCacheability(title) == TitleCacheability::NonCacheable) {
         removeTitleCache(QString::fromStdString(title->id), true);
-        emit liveCueStateChanged(QString::fromStdString(title->id), -1);
+        scheduleLiveCueStateChanged(QString::fromStdString(title->id), -1);
         return;
     }
     std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);

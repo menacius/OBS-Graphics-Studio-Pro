@@ -78,6 +78,8 @@ class QActionGroup;
 class QVBoxLayout;
 class QTextEdit;
 struct RichTextCharFormat;
+struct obs_source;
+typedef struct obs_source obs_source_t;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -244,6 +246,11 @@ private:
     void force_next_title_visual_update();
     void apply_playhead_change(double t, bool playback_frame);
     void update_display_refresh_pacing();
+    void ensure_editor_audio_preview();
+    void release_editor_audio_preview();
+    void sync_editor_audio_preview(bool discontinuity);
+    void publish_editor_audio_runtime_state();
+    void update_footer_diagnostics();
     void begin_shutdown();
 
     /* Current editing state */
@@ -325,6 +332,7 @@ private:
     QLineEdit       *title_name_edit_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
     QStatusBar      *editor_status_bar_ = nullptr;
+    QLabel          *status_diagnostics_label_ = nullptr;
     QLabel          *status_activity_label_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;
@@ -392,6 +400,8 @@ private:
     bool             panels_locked_ = false;
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
+    obs_source_t     *editor_audio_preview_source_ = nullptr;
+    bool              editor_audio_preview_seeking_ = false;
     std::vector<std::shared_ptr<Layer>> layer_clipboard_;
     std::set<std::string> pending_text_layer_auto_names_;
 };

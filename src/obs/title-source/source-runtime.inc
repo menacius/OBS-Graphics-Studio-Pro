@@ -347,14 +347,25 @@ static bool take_source_cache_wake_frame(
 
 struct TitleSourceData {
     obs_source_t *source  = nullptr;
+    std::unique_ptr<bgl::audio::SourceAudioRuntime> audio_runtime;
 
     /* Settings */
     std::string title_id;
     std::atomic<bool> output_visible {true};
     std::atomic<bool> shown_on_display {true};
     bool        manual_uncue = false;
+    double      manual_uncue_floor = -1.0; /* Terminal uncue may never rewind below its starting playhead. */
     bool        auto_advance = false;  /* future: playlist mode */
     bool        cue_first_row_when_active = false;
+    bool        editor_audio_preview = false; /* private monitor-only source; never mutates program cue state */
+    bool        editor_transport_controlled = false; /* real editor preview follows the editor playhead/direction exactly */
+    bool        editor_playback_reverse = false;
+    std::atomic<double> editor_transport_time {0.0};
+    std::atomic<bool> editor_transport_reverse {false};
+    bool        source_audio_active_known = false;
+    bool        source_audio_active = false;
+    uint64_t    seen_audio_membership_revision =
+        std::numeric_limits<uint64_t>::max();
 
     enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro, OutroOnly };
 
@@ -434,6 +445,90 @@ struct TitleSourceData {
     bool scene_mask_foreground_active = false;
     std::vector<ActiveSceneMaskScene> active_scene_mask_scenes;
 };
+
+static std::mutex g_title_source_instances_mutex;
+static std::unordered_map<obs_source_t *, TitleSourceData *>
+    g_title_source_instances;
+
+static void register_title_source_instance(TitleSourceData *data)
+{
+    if (!data || !data->source)
+        return;
+    std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+    g_title_source_instances[data->source] = data;
+}
+
+static void unregister_title_source_instance(TitleSourceData *data)
+{
+    if (!data || !data->source)
+        return;
+    std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+    const auto it = g_title_source_instances.find(data->source);
+    if (it != g_title_source_instances.end() && it->second == data)
+        g_title_source_instances.erase(it);
+}
+
+void title_source_set_editor_transport(obs_source_t *source, double time,
+                                       bool reverse)
+{
+    if (!source)
+        return;
+    std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+    const auto it = g_title_source_instances.find(source);
+    if (it == g_title_source_instances.end() || !it->second ||
+        !it->second->editor_transport_controlled)
+        return;
+    it->second->editor_transport_time.store(std::max(0.0, time),
+                                            std::memory_order_release);
+    it->second->editor_transport_reverse.store(reverse,
+                                               std::memory_order_release);
+}
+
+static bool title_has_audio_track(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return false;
+    return std::any_of(title->layers.cbegin(), title->layers.cend(),
+                       [](const std::shared_ptr<Layer> &layer) {
+                           return layer && layer->type == LayerType::Audio;
+                       });
+}
+
+static void sync_source_audio_active(TitleSourceData *data,
+                                     const std::shared_ptr<Title> &title,
+                                     const char *reason)
+{
+    if (!data || !data->source)
+        return;
+
+    const bool active = title_has_audio_track(title);
+    if (data->source_audio_active_known &&
+        data->source_audio_active == active)
+        return;
+
+    data->source_audio_active_known = true;
+    data->source_audio_active = active;
+    obs_source_set_audio_active(data->source, active);
+    if (!active && data->audio_runtime)
+        data->audio_runtime->stop(false);
+
+    BGL_LOG_INFO(
+        "Audio",
+        QStringLiteral("[mixer-visibility] title=%1 active=%2 reason=%3")
+            .arg(QString::fromStdString(data->title_id))
+            .arg(active ? 1 : 0)
+            .arg(QString::fromUtf8(reason ? reason : "unspecified")));
+}
+
+static void sync_editor_transport_override(TitleSourceData *data)
+{
+    if (!data || !data->editor_transport_controlled)
+        return;
+    data->playhead = data->editor_transport_time.load(
+        std::memory_order_acquire);
+    data->editor_playback_reverse = data->editor_transport_reverse.load(
+        std::memory_order_acquire);
+}
 
 static void clear_live_cue_runtime_for_source(
     TitleSourceData *data, const std::string &title_id)
@@ -887,10 +982,12 @@ static void release_active_scene_mask_scenes(TitleSourceData *data)
 
 static bool title_has_valid_scene_mask_cue(const TitleSourceData *data, const Title &title)
 {
-    /* Titles without exposed live-text fields are ordinary, continuously
-     * visible sources. They do not require a dock cue before their configured
-     * OBS scene masks may render. Requiring live_text_rows here left every
-     * static scene-mask title permanently inactive in Preview/Program. */
+    if (!data || data->waiting_for_cue)
+        return false;
+
+    /* A source with no exposed rows still has a normal dock cue lifecycle.
+     * waiting_for_cue is the authoritative state for it; row identities only
+     * refine the check for titles that actually expose live-text rows. */
     if (exposed_text_layers(title).empty())
         return true;
 
@@ -904,7 +1001,7 @@ static bool title_has_valid_scene_mask_cue(const TitleSourceData *data, const Ti
 
     return valid_row(title.current_cue_row) ||
            valid_row(title.pending_cue_row) ||
-           (data && valid_row(data->active_cue_row));
+           valid_row(data->active_cue_row);
 }
 
 static bool scene_mask_active_scenes_match_configs(const TitleSourceData *data)
@@ -1254,17 +1351,14 @@ static double layer_asset_resolved_time(const Title &title, const Layer &layer,
 /* Keep one root-title clock at every compositor boundary. Asset descendants
  * resolve that clock into their owning Asset Layer's local timeline here;
  * ordinary layers keep the root clock (or the cue-persistence hold clock). */
-static double gpu_layer_render_time(const Title &title, const Layer &layer,
-                                    double title_time)
+static bool gpu_layer_uses_cue_persistence(const Title &title,
+                                           const Layer &layer)
 {
-    if (!layer.asset_owner_id.empty())
-        return layer_asset_resolved_time(title, layer, title_time);
-
     const bool persistence = title.cue_background_persistence &&
         title.cue_persistence_transition && title.current_cue_row >= 0 &&
         !title.live_text_rows.empty() && !layer.ignore_persistence;
-    if (!persistence)
-        return title_time;
+    if (!persistence || !layer.asset_owner_id.empty())
+        return false;
 
     const auto exposed = exposed_text_layers(title);
     int exposed_index = -1;
@@ -1278,7 +1372,26 @@ static double gpu_layer_render_time(const Title &title, const Layer &layer,
     const bool persistent_text = exposed_index >= 0 && title.cue_text_persistence &&
         exposed_index < (int)title.cue_persistent_text_columns.size() &&
         title.cue_persistent_text_columns[exposed_index];
-    return (exposed_index < 0 || persistent_text)
+    return exposed_index < 0 || persistent_text;
+}
+
+static double gpu_layer_render_time(const Title &title, const Layer &layer,
+                                    double title_time)
+{
+    if (!layer.asset_owner_id.empty())
+        return layer_asset_resolved_time(title, layer, title_time);
+    return gpu_layer_uses_cue_persistence(title, layer)
+        ? cue_persistence_hold_time(title)
+        : title_time;
+}
+
+/* Keyframes and transitions are one visual state. A persistent layer must use
+ * the same frozen title clock for both; allowing the transition clock to keep
+ * advancing retriggered or changed the layer during manual uncue/row changes. */
+static double gpu_layer_transition_time(const Title &title, const Layer &layer,
+                                        double title_time)
+{
+    return gpu_layer_uses_cue_persistence(title, layer)
         ? cue_persistence_hold_time(title)
         : title_time;
 }

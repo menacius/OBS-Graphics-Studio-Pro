@@ -25,6 +25,54 @@
 #include <mutex>
 #include "layer-model.h"
 
+enum class TitleGraphicType : int {
+    Title = 0,
+    Graphic = 1,
+    Mask = 2,
+    Stinger = 3,
+};
+
+enum class StingerRenderMode : int {
+    ProceduralLive = 0,
+    PrerenderedProxy = 1,
+};
+
+enum class StingerSwitchMode : int {
+    SwitchAtPoint = 0,
+    ManualSceneAnimation = 1,
+};
+
+enum class StingerEditorBackground : int {
+    /* Values 0/1 were used by the temporary static A/B selector in v168-v169.
+     * They remain readable for compatibility and are migrated to FollowSwitchPoint. */
+    SceneA = 0,
+    SceneB = 1,
+    CanvasTransparency = 2,
+    FollowSwitchPoint = 3,
+};
+
+struct TitleProxyMetadata {
+    int schema_version = 0;
+    std::string content_hash;
+    std::string cache_namespace;
+    std::string proxy_path;
+    std::string generated_at;
+    int generated_development_version = 0;
+    int width = 0;
+    int height = 0;
+    double frame_rate = 0.0;
+    int frame_count = 0;
+    bool has_audio = false;
+    bool complete = false;
+};
+
+struct StingerValidationResult {
+    std::vector<std::string> errors;
+    std::vector<std::string> warnings;
+
+    bool valid() const { return errors.empty(); }
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Title
  * ══════════════════════════════════════════════════════════════════ */
@@ -44,6 +92,20 @@ struct Title {
     uint32_t    bg_color    = 0x00000000;  /* transparent by default */
     int         width       = 1920;
     int         height      = 1080;
+
+    TitleGraphicType graphic_type = TitleGraphicType::Title;
+
+    /* Stinger document settings. The transition point is stored canonically
+     * in seconds and is always edited/displayed as timecode. */
+    double      stinger_transition_point = 2.5;
+    bool        stinger_audio_enabled = true;
+    bool        stinger_alpha_output = true;
+    double      stinger_pre_roll = 0.0;
+    double      stinger_post_roll = 0.0;
+    StingerRenderMode stinger_render_mode = StingerRenderMode::ProceduralLive;
+    StingerSwitchMode stinger_switch_mode = StingerSwitchMode::SwitchAtPoint;
+    StingerEditorBackground stinger_editor_background = StingerEditorBackground::FollowSwitchPoint;
+    TitleProxyMetadata proxy_metadata; /* advisory only; stale/missing files never block title loading */
 
     /* Titles saved as reusable assets remain in the shared data store, but
      * are excluded from the Titles & Graphics dock and OBS source selector. */
@@ -100,6 +162,13 @@ struct Title {
     void move_layer(const std::string &layer_id, int delta);
 };
 
+double stinger_transition_point_seconds(const Title &title);
+void set_stinger_transition_point_seconds(Title &title, double seconds);
+StingerValidationResult validate_stinger_title(const Title &title);
+std::shared_ptr<Layer> stinger_transition_input_layer(const Title &title, int slot);
+void ensure_stinger_transition_input_layers(Title &title);
+bool stinger_transition_input_layer_is_protected(const Layer &layer);
+
 struct LiveCueRuntimeSnapshot {
     int row = -1;
     double playhead = 0.0;
@@ -130,11 +199,12 @@ std::string layer_render_fingerprint(const Layer &layer);
 struct TitleImportDiagnostics {
     std::vector<std::string> missing_effects;
     std::vector<std::string> missing_images;
+    std::vector<std::string> missing_audio;
     std::vector<std::string> missing_fonts;
 
     bool empty() const
     {
-        return missing_effects.empty() && missing_images.empty() && missing_fonts.empty();
+        return missing_effects.empty() && missing_images.empty() && missing_audio.empty() && missing_fonts.empty();
     }
 };
 

@@ -186,8 +186,13 @@ static gs_texture_t *render_gpu_mask_graph_texture(
     auto raster_found = session->layers.find(resolved_raster_id);
     if (raster_found == session->layers.end())
         return nullptr;
-    if (!upload_gpu_layer_raster(session, raster_found->second) ||
-        !raster_found->second.texture)
+    const bool runtime_transition_input =
+        layer.type == LayerType::TransitionInput &&
+        layer.transition_input_slot >= 0 && layer.transition_input_slot <= 1 &&
+        session->transition_input_textures[layer.transition_input_slot];
+    if (!runtime_transition_input &&
+        (!upload_gpu_layer_raster(session, raster_found->second) ||
+         !raster_found->second.texture))
         return nullptr;
     const std::string visit_id = layer.id + '|' + resolved_raster_id;
     if (!visiting.insert(visit_id).second) {
@@ -234,6 +239,9 @@ static gs_texture_t *render_gpu_mask_graph_texture(
         gpu_layer_compositor_opacity(title, layer, title_time,
                                      compositor_group_id);
     desired_key += "|opacity=" + std::to_string(graph_opacity);
+    if (layer.type == LayerType::TransitionInput)
+        desired_key += "|runtime-input=" +
+            std::to_string(session->transition_input_generation);
     if (has_nested_mask) {
         const auto nested_cache = session->mask_texture_cache.find(
             nested_cache_slot);

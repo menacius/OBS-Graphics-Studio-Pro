@@ -583,73 +583,27 @@ static bool title_has_scene_mask(const std::shared_ptr<Title> &title)
     return false;
 }
 
-static QString font_awesome_family()
+static bool title_has_external_data_connection(const Title &title)
 {
-    static const QString family = []() {
-        const QStringList preferred = {
-            QStringLiteral("Font Awesome 6 Free"),
-            QStringLiteral("Font Awesome 5 Free"),
-            QStringLiteral("FontAwesome")
-        };
-        const QStringList available = QFontDatabase().families();
-        for (const QString &candidate : preferred) {
-            if (available.contains(candidate, Qt::CaseInsensitive))
-                return candidate;
-        }
-        return QString();
-    }();
-    return family;
+    if (!title.external_data_enabled)
+        return false;
+    for (const auto &source : title.external_data_sources) {
+        if (source.provider.enabled)
+            return true;
+    }
+    return !title.external_data_sources.empty();
 }
 
-static QString font_awesome_glyph(ushort codepoint, const QString &fallback)
+static QIcon title_list_status_icon(const Title &title, bool, bool)
 {
-    return font_awesome_family().isEmpty() ? fallback : QString(QChar(codepoint));
-}
-
-static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask)
-{
-    const int dpr_size = kTitleListIconExtent;
-    QPixmap pixmap(dpr_size, dpr_size);
-    pixmap.fill(Qt::transparent);
-
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::TextAntialiasing, true);
-
-    const QColor icon_color(205, 205, 205);
-    const QRect icon_rect = pixmap.rect();
-
-    QString glyph;
-    int glyph_size = 12;
-    if (has_exposed_text) {
-        glyph = font_awesome_glyph(0xf031, QStringLiteral("T")); // fa-font
-        glyph_size = 11;
-        if (has_scene_mask) {
-            painter.setPen(QPen(QColor(160, 160, 160), 1));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(icon_rect.adjusted(1, 1, -2, -2), 2, 2);
-        }
-    } else if (has_scene_mask) {
-        glyph = font_awesome_glyph(0xf6fa, bgl_tr("OBSTitles.M")); // fa-mask
-    } else {
-        glyph = font_awesome_glyph(0xf61f, bgl_tr("OBSTitles.G")); // fa-shapes
+    const char *icon_name = "graphic.svg";
+    switch (title.graphic_type) {
+    case TitleGraphicType::Title:   icon_name = "text.svg"; break;
+    case TitleGraphicType::Graphic: icon_name = "graphic.svg"; break;
+    case TitleGraphicType::Mask:    icon_name = "mask.svg"; break;
+    case TitleGraphicType::Stinger: icon_name = "stinger.svg"; break;
     }
-
-    QFont font;
-    const QString fa_family = font_awesome_family();
-    if (!fa_family.isEmpty()) {
-        font.setFamily(fa_family);
-        font.setWeight(QFont::Black);
-    } else {
-        font.setBold(true);
-    }
-    font.setPixelSize(glyph_size);
-    painter.setFont(font);
-    painter.setPen(icon_color);
-    painter.drawText(icon_rect, Qt::AlignCenter, glyph);
-    painter.end();
-
-    return QIcon(pixmap);
+    return obs_icon(icon_name);
 }
 
 static void paint_playlist_badge(QPainter &painter, const QRect &rect,
@@ -694,8 +648,9 @@ static QPixmap title_preview_pixmap(const Title &title, const QSize &size)
 
 static void paint_transparency_grid(QPainter &painter, const QRect &rect, int cell = 8)
 {
-    const QColor light(196, 196, 196);
-    const QColor dark(144, 144, 144);
+    const bool dark_theme = QApplication::palette().color(QPalette::Window).lightness() < 128;
+    const QColor light = dark_theme ? QColor(74, 74, 74) : QColor(224, 224, 224);
+    const QColor dark = dark_theme ? QColor(48, 48, 48) : QColor(184, 184, 184);
     for (int y = rect.top(); y <= rect.bottom(); y += cell) {
         for (int x = rect.left(); x <= rect.right(); x += cell) {
             const bool alternate = (((x - rect.left()) / cell) + ((y - rect.top()) / cell)) % 2;
@@ -768,7 +723,7 @@ static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, boo
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(full_rect.adjusted(0, 0, -1, -1));
 
-    const QPixmap type_pixmap = title_list_status_icon(has_exposed_text, has_scene_mask).pixmap(QSize(18, 18));
+    const QPixmap type_pixmap = title_list_status_icon(title, has_exposed_text, has_scene_mask).pixmap(QSize(18, 18));
     QRect badge_rect(5, 5, 24, 24);
     if (!type_pixmap.isNull())
         painter.drawPixmap(badge_rect.center() - QPoint(type_pixmap.width() / 2, type_pixmap.height() / 2), type_pixmap);
@@ -778,8 +733,13 @@ static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, boo
     QRect cache_badge_rect(thumb_size.width() - 29, 5, 24, 24);
     if (show_cache && !cache_pixmap.isNull())
         painter.drawPixmap(cache_badge_rect.center() - QPoint(cache_pixmap.width() / 2, cache_pixmap.height() / 2), cache_pixmap);
+    if (title_has_external_data_connection(title)) {
+        const QPixmap globe = obs_icon("globe.svg").pixmap(QSize(18, 18));
+        if (!globe.isNull())
+            painter.drawPixmap(7, thumb_size.height() - globe.height() - 7, globe);
+    }
     if (playlist_active)
-        paint_playlist_badge(painter, QRect(thumb_size.width() - 29, thumb_size.height() - 29, 24, 24));
+        paint_playlist_badge(painter, QRect(thumb_size.width() - 29, thumb_size.height() - 29, 24, 24), false);
     painter.end();
 
     return QIcon(composed);
@@ -838,7 +798,7 @@ public:
 
             if (index.data(kTitleShowStatusIconRole).toBool()) {
                 const QIcon status_icon = index.data(Qt::DecorationRole).value<QIcon>();
-                const QPixmap status = status_icon.pixmap(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
+                const QPixmap status = status_icon.pixmap(QSize(kTitleListIconExtent * 3 + 6, kTitleListIconExtent));
                 if (!status.isNull())
                     painter->drawPixmap(row.right() - status.width() - 4,
                                         row.center().y() - status.height() / 2, status);
@@ -849,7 +809,7 @@ public:
             if (cue_color.isValid())
                 paint_cue_state_border(painter, thumb_rect.adjusted(1, 1, -1, -1), 3, cue_color);
             if (index.data(kTitlePlaylistActiveRole).toBool())
-                paint_playlist_badge(*painter, QRect(thumb_rect.right() - 22, thumb_rect.bottom() - 22, 20, 20));
+                paint_playlist_badge(*painter, QRect(thumb_rect.right() - 22, thumb_rect.bottom() - 22, 20, 20), false);
             return;
         }
 

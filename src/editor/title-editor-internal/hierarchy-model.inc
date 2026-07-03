@@ -957,6 +957,12 @@ struct TimelinePropertyRef {
 
 static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
 {
+    if (layer.type == LayerType::Audio) {
+        return {
+            {&layer.audio_volume_prop, nullptr},
+            {&layer.audio_pan_prop, nullptr}
+        };
+    }
     std::vector<TimelinePropertyRef> props {
         {nullptr, &layer.position},
         {nullptr, &layer.scale},
@@ -1500,6 +1506,12 @@ static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
 {
     std::vector<LayerHierarchyRow> rows;
     if (!title) return rows;
+    const bool show_transition_inputs =
+        title->graphic_type == TitleGraphicType::Stinger &&
+        title->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation;
+    auto layer_is_editor_visible = [show_transition_inputs](const std::shared_ptr<Layer> &layer) {
+        return layer && (!layer_type_is_transition_input(layer->type) || show_transition_inputs);
+    };
 
     std::map<std::string, std::vector<std::shared_ptr<Layer>>> children;
     auto valid_group_parent = [&](const std::string &parent_id) {
@@ -1508,14 +1520,14 @@ static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
     };
     for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
         const auto &layer = *it;
-        if (layer && !layer->parent_id.empty() && valid_group_parent(layer->parent_id))
+        if (layer_is_editor_visible(layer) && !layer->parent_id.empty() && valid_group_parent(layer->parent_id))
             children[layer->parent_id].push_back(layer);
     }
 
     std::set<std::string> emitted;
     std::function<void(const std::shared_ptr<Layer> &, int)> append;
     append = [&](const std::shared_ptr<Layer> &layer, int depth) {
-        if (!layer || !emitted.insert(layer->id).second)
+        if (!layer_is_editor_visible(layer) || !emitted.insert(layer->id).second)
             return;
         rows.push_back({layer, depth});
         if (layer->type == LayerType::Asset ||
@@ -1575,6 +1587,7 @@ static int group_descendant_object_count(const std::shared_ptr<Title> &title,
  * animated-property rows in both panels. */
 static bool layer_keyframe_sections_expanded(const Layer &layer)
 {
+    if (layer.type == LayerType::Audio) return false;
     return layer.properties_expanded ||
         (layer.type == LayerType::Group && !layer.group_collapsed);
 }

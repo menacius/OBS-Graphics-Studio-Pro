@@ -64,6 +64,8 @@ signals:
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
     void layer_visibility_changed(const std::string &layer_id, bool v);
+    void layer_audio_mute_changed(const std::string &layer_id, bool muted);
+    void layer_audio_volume_changed(const std::string &layer_id, float volume);
     void layer_matte_visibility_changed(const std::string &layer_id, MatteVisibilityMode mode);
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
@@ -98,6 +100,7 @@ private slots:
     void on_add_ticker();
     void on_add_rect();
     void on_add_image();
+    void on_add_audio();
     void on_add_adjustment();
     void on_add_color_solid();
     void on_move_up();

@@ -1,111 +1,12 @@
 # Broadcast Graphics Live
 
-<img width="3840" height="2088" alt="image" src="https://github.com/user-attachments/assets/36e33aaf-2ee1-4102-9978-ffdcbde8ea8e" />
-
-**Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, reusable templates, GPU-assisted rendering, and native OBS source playback without requiring browser sources or a separate titling application.
-
-**Current build:** `v0.8.8-alpha` · `Development Version 144`
-
-## What’s new in v0.8.8-alpha
-
-`v0.8.8-alpha` consolidates the editor, animation, text, and live-data work completed since `v0.8.7-alpha` Development Version 107. The release adds a fully asynchronous external-data workflow, table-driven Live Text Cues, spatial and temporal Bezier authoring, a Value/Speed Graph Editor, learned Auto Styling, the unified Text Animator runtime, improved transition editing, synchronized layer/timeline keyframe controls, and a broad theme-aware editor UI refresh.
-
-- **External data and live production:** asynchronous JSON, CSV, HTTP, WebSocket, text-file, and manual providers; automatic field discovery; formatting pipelines; table-to-cue mapping; managed table cells; reliable cue switching; and privacy-safe diagnostics.
-- **Advanced animation:** spatial Bezier paths, on-canvas motion handles, Value and Speed Graphs, manual temporal velocity handles, Easy Ease commands, modifier-aware graph dragging, and synchronized keyframe sections and controls across the layer list and timeline.
-- **Smarter text workflows:** structural and invisible-character recognition, learned regex rules, smart rule generalization, reusable style rules, and a unified Text Animator system for text, ticker, clock, and legacy text-transition presets.
-- **Transition and rendering reliability:** larger strip handles, full-area transition replacement with preserved duration, deterministic text-transition cleanup, corrected glyph envelopes, shared blur behavior, Unicode-aware unit segmentation, and safer cache/runtime migration.
-- **Editor and dock refinements:** collapsible Titles and Graphics dock, improved timeline ruler and cache bands, safer layer-list sizing, theme-aware icons, updated Graph Editor controls, matte-role cleanup, and full-width font family/style selectors in the Character panel.
-
-## Highlights
-
-- Redesigned Auto Styling panel with Quick Setup, clearer rule priority, contextual fields, and collapsible advanced conflict controls.
-- Reusable Auto Styling rule sets can be saved and loaded as `.gsp-auto-style.json` files, with Replace or Append import modes.
-
-- Native OBS dock and source integration for titles, graphics, live text cues, playlists, and scene insertion.
-- Layered editor with text, shapes, images, clocks, tickers, assets, groups, parenting, mattes, masks, blend modes, and adjustment-style compositing.
-- After Effects-style timeline with Value/Speed Graph Editor, manual temporal velocity handles, Easy Ease commands, manual spatial Bezier motion paths, transform tools, rulers, guides, snapping, panel reordering, and persistent inspector layouts.
-- Panel-based effect stack with drag-and-drop ordering, per-effect enable switches, presets, animated parameters, and GPU-backed effects.
-- Rich text, inline editing, text styles, auto-styling rules, visual external-data bindings, formatter pipelines, table-to-cue row mapping, live cue bindings, and asynchronous JSON, CSV, HTTP, WebSocket, text-file, and manual providers.
-- RAM and disk frame caching, prerender queues, dirty-region invalidation, live-cue cache reuse, and project-rate playback.
-- Reusable title templates, animated asset layers, style libraries, effect presets, transition presets, and extension manifests.
-- Theme-aware Qt UI that follows the active OBS palette while preserving explicit per-control colors.
-
-## Requirements
-
-- OBS Studio with a compatible Qt 6 plugin SDK including Qt Network and Qt WebSockets.
-- CMake 3.16 or newer.
-- A C++17 compiler supported by the target OBS build.
-- Platform dependencies described in [INSTALL.txt](INSTALL.txt) and [docs/ARCHITECTURE_AND_BUILD.md](docs/ARCHITECTURE_AND_BUILD.md).
-
-
-### Automatic Qt WebSockets bootstrap
-
-When the selected OBS Qt6 SDK does not ship `Qt6WebSockets`, CMake now downloads the official `qt/qtwebsockets` source at the exact `v<Qt6_VERSION>` tag and builds it against that same SDK. The dependency is cached under the build tree (`_deps`) and is not downloaded or rebuilt on every build. Set `OBS_BGS_BOOTSTRAP_QT_WEBSOCKETS=OFF` to require a preinstalled module, or override `OBS_BGS_QT_WEBSOCKETS_GIT_TAG` only when deliberately testing a matching Qt tag. A complete matching Qt development SDK, including `Qt6BuildInternals`, is required for the standalone module build.
-
-### External-data diagnostics
-
-Open **Broadcast Graphics Live Preferences → Logging**, enable logging, select **Debug** or **Trace**, and keep the **External data** category enabled. The session log records provider and table-mapping flow without writing authentication tokens or raw external values; value summaries use type/size/emptiness plus a fingerprint so repeated and changed values can still be compared safely.
-The same category also records Live Text Cue row-switch decisions. This includes pending-row transitions for Loop/Pause playback and the final source-side application of the resolved mapped value.
-
-## Build and install
-
-### Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
-```
-
-The script configures, builds, stages the OBS plugin layout, and creates a distributable ZIP. Use `update-and-build.ps1` for incremental update/build/package workflows.
-
-### Linux
-
-Use `build-ubuntu-wsl.ps1` from Windows/WSL or configure the project directly against the same Qt/libobs stack used by the target OBS package.
-
-### macOS
-
-Configure CMake against an OBS development bundle and a matching Qt toolchain, then build the `broadcast-graphics-live` target.
-
-## Installed layout
-
-```text
-obs-plugins/64bit/broadcast-graphics-live.dll   # Windows
-obs-plugins/broadcast-graphics-live.so          # Linux
-obs-plugins/broadcast-graphics-live.plugin      # macOS bundle form
-
-data/obs-plugins/broadcast-graphics-live/
-  locale/
-  icons/
-  effect-transitions/
-```
-
-## Documentation
-
-The consolidated documentation starts at [docs/README.md](docs/README.md):
-
-- [User guide](docs/USER_GUIDE.md)
-- [Editor workflow](docs/EDITOR_WORKFLOW.md)
-- [Text and live data](docs/TEXT_AND_LIVE_DATA.md)
-- [Text Animators](docs/TEXT_ANIMATORS.md)
-- [Rendering and cache](docs/RENDERING_AND_CACHE.md)
-- [Effects and extensions](docs/EFFECTS_AND_EXTENSIONS.md)
-- [Architecture and build](docs/ARCHITECTURE_AND_BUILD.md)
-- [Changelog](docs/CHANGELOG.md)
-
-## Tests and audits
-
-Contract tests live in `tests/`. Source and packaging audits live in `tools/`. Most audits are source-only and can run without launching OBS; rendering and integration validation still require a matching OBS/libobs SDK and runtime.
-
-## Versioning
-
-Public releases use semantic versions such as `v0.8.8-alpha`. Development packages append the development revision and platform, for example:
-
-```text
-Broadcast_Graphics_Live_v0.8.8-alpha_development-version-144_windows-x64.zip
-```
-
 <p align="center">
   <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
 </p>
+
+**Broadcast Graphics Live** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered motion-graphics editor, live text and image cueing, audio layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
+
+**Current build:** `v0.8.9-alpha` · `Development Version 189`
 
 <p align="center"><strong>Developed by: omniatv</strong></p>
 <p align="center">
@@ -117,62 +18,88 @@ Broadcast_Graphics_Live_v0.8.8-alpha_development-version-144_windows-x64.zip
   </a>
 </p>
 
-## Support the Project
-Broadcast Graphics Live is an independent project developed through a significant amount of personal work, testing, experimentation, and ongoing maintenance.
-If you find the project useful and would like to support its continued development, you can contribute here:
+## What is new in v0.8.9-alpha
 
-<a href="https://omniatv.com/en/support/">Support OmniaTV</a>
+This release consolidates the work completed since `v0.8.8-alpha` Development Version 144.
 
-Your support helps fund continued development, testing, documentation, performance work, and the time required to turn Broadcast Graphics Live into a more complete and reliable production tool.
+### Complete audio-layer workflow
+
+Audio is now a first-class layer type with asynchronous decoding, waveform generation, timeline range and fade handles, gain, pan, mute, solo, looping, independent playback, keyframes, and an audio-effect stack. The editor has synchronized monitor playback, including real reverse audio during reverse and ping-pong transport. OBS Audio Mixer devices are shown only for titles that actually contain audio layers and update dynamically when the title structure changes.
+
+### Native OBS Stinger graphics
+
+Stinger titles run as native OBS transitions with synchronized video and audio, transition-point switching, pre-roll/post-roll timeline regions, proxy validation, and safe live-render fallback. They support both **Switch at Point** and **Manual Scene Animation** modes; manual Scene A/B inputs behave like ordinary visual layers and can use transforms, timing, keyframes, hierarchy, masks, mattes, blend modes, transitions, and effects.
+
+### Faster cache, prerender, and live cue playback
+
+The cache pipeline now uses batched scheduling, an urgent realtime lane, constant-time duplicate/LRU bookkeeping, asynchronous disk hydration, bounded non-blocking disk writes, and coalesced UI progress updates. Live Cue Persistence treats transitions and keyframes as one persistent visual state, preventing transition replay during manual uncue or cue-row changes. Background caching yields to editing, cueing, and realtime playback.
+
+### Reliability, migration, and editor improvements
+
+Serialization now has a contiguous migration/validation path for the features introduced after Development Version 144, including audio, Stinger metadata, proxy state, temporal/spatial Bezier data, external bindings, and dock state. The release also includes cue/source and thumbnail fixes, dense-text GPU overdraw reduction, cross-platform compile repairs, broader automated contracts, and a clearer layer-list state: an inactive effect stack keeps its FX badge visible with a diagonal strike-through.
+
+## Main features
+
+- Native OBS title sources and native OBS Stinger transitions.
+- Layered editor for text, clocks, tickers, shapes, images, audio, assets, groups, adjustment layers, and Stinger Scene A/B inputs.
+- Rich text, inline editing, style presets, automatic formatting rules, and unified Text Animators.
+- Timeline keyframes, spatial motion paths, temporal Value/Speed Graph Editor, easing, and transition handles.
+- Masks, track mattes, parenting, grouping, blend modes, layer transitions, and reorderable effect stacks.
+- Live Text Cues with exposed text/image properties, cue persistence, table mapping, and external JSON/CSV/HTTP/WebSocket/text data providers.
+- Audio waveform editing, fades, mixer controls, DSP effects, synchronized editor monitoring, and forward/reverse playback.
+- RAM and optional disk frame cache with background prerender, cue-row progress, persistence states, and dirty invalidation.
+- Reusable title templates, assets, effect presets, transition presets, and portable effect extensions.
+- OBS-theme-aware UI, collapsible title dock, persistent panel layout, guides, snapping, safe areas, and external drag-and-drop.
+
+## Build and install
+
+Requirements are listed in [INSTALL.txt](INSTALL.txt). The build must use an OBS/libobs SDK and Qt toolchain compatible with the target OBS installation.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
+```
+
+### Linux / WSL
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-ubuntu-wsl.ps1
+```
+
+### Incremental update, build, and package
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\update-and-build.ps1
+```
+
+A development source package follows this naming scheme:
+
+```text
+Broadcast_Graphics_Live_v0.8.9-alpha_development-version-189.zip
+```
+
+## Documentation
+
+Documentation has been consolidated into maintained thematic guides instead of per-development-version notes:
+
+- [Documentation index](docs/README.md)
+- [User guide](docs/USER_GUIDE.md)
+- [Editor workflow](docs/EDITOR_WORKFLOW.md)
+- [Text, Text Animators, and live data](docs/TEXT_AND_LIVE_DATA.md)
+- [Effects and extensions](docs/EFFECTS_AND_EXTENSIONS.md)
+- [Rendering, audio, and cache](docs/RENDERING_AND_CACHE.md)
+- [Architecture, build, and testing](docs/ARCHITECTURE_AND_BUILD.md)
+- [Development changelog](docs/CHANGELOG.md)
+
+## Tests and audits
+
+Source contracts live in `tests/`; architecture, packaging, and regression audits live in `tools/`. Many source-only checks run without OBS, while native rendering and integration validation require a matching OBS/libobs SDK and runtime.
+
+## Support
+
+Broadcast Graphics Live is free and open source. Development can be supported through [OmniaTV](https://omniatv.com/en/support/).
 
 ## License
 
-Broadcast Graphics Live is distributed under the terms in [LICENSE](LICENSE). Third-party libraries and optional extension packages retain their own compatible licenses. No external application-wide Qt theme package is bundled.
-
-
-
-### Development version 144 — v0.8.8-alpha and Character panel cleanup
-
-- Updated the public release identity to `v0.8.8-alpha` across CMake, runtime metadata, dependency manifests, documentation, audits, installation examples, and package naming.
-- Removed the redundant Font and Style labels from the Character section and expanded both selectors across the full inspector width.
-- Added a consolidated README summary of the major editor, animation, text, transition, and external-data changes completed since `v0.8.7-alpha` Development Version 107.
-
-### Development version 136 — Complete unified BGL text transitions
-
-- Restored the existing BGL text-transition workflow and timeline handles while making editable managed Text Animators the only runtime implementation.
-- Fade, Slide, Scale, Blur, Wipe, and Blur Slide preserve entrance/exit timing, character/word/sentence units, stagger, reverse order, direction, duration, easing, and layer-local playback.
-- Transition Editor previews, editor output, OBS source output, cache/prerender evaluation, color-font/emoji fallback, and long-text fallback all consume the shared shaped-layout evaluator.
-- Added common word/sentence transform origins, directional shaped-unit wipe clipping, contracting multi-sample blur, live duration/trim synchronization, binding-safe manual editing, and Development Version 134/135 recovery.
-- Removed the former descriptor-driven text-transition runtime renderers; legacy fields remain only for authoring metadata and automatic project migration.
-
-### Development version 134 — Unified Text Animator Core and Legacy Preset Migration
-
-- Added the renderer-neutral Text Animator stack for text, ticker, and clock layers, with multiple ordered animators, generic properties, Range/Procedural/Text-based/Wiggly selectors, deterministic composition, and shared `AnimatedProperty` keyframes.
-- Migrated all six existing text-transition preset identifiers (`text.fade`, `text.slide-in`, `text.scale`, `text.blur`, `text.wipe`, and `text.blur-slide-in`) to concrete editable Text Animator structures on apply/load; legacy text runtime transitions are removed after conversion.
-- Added shaped-cluster unit maps for graphemes, characters excluding spaces, words, lines, paragraphs, rich-text runs, and whole-layer selection, including Greek, combining marks, emoji ZWJ, and RTL test coverage.
-- Integrated animator tracks into the existing timeline/Graph Editor property adapter and added a Text Animators Properties section for stack, property, selector, keyframe, and dynamic-text behaviour editing.
-- Added deterministic content-change remapping for Live Text Cues, clocks, and external-data updates, plus animator-aware cache signatures, dynamic-frame detection, and visual padding.
-- Extended the batched GPU glyph compositor with per-cluster transform, reveal/opacity, colour, stroke-width, tracking, baseline, skew, size scaling, and SDF-softness data without creating one draw call per character.
-- Added standalone `.obgtextanim` import/export and schema validation for editable custom animator presets.
-- Added core, timeline-contract, preset round-trip, migration, Unicode, determinism, and 1,200-cluster/10-animator stress tests, plus canonical Text Animator documentation.
-
-### Development version 132 — Collapsible Titles and Graphics Dock
-
-- Added a persistent collapse/expand caret to the Titles and Graphics header.
-- Collapsed mode keeps a compact status rail with the dock icon, selected-title active state, cue state, and aggregate cache/prerender progress while Live Text Cues remains fully available.
-- Preserves the title list model, selection, cue/playback state, prerender work, splitter size, expanded width, and last dock area across sessions.
-- Adapts caret direction and placement for left-docked, right-docked, and floating layouts without resizing the OBS dock during collapse.
-
-### Development version 131 — Auto Styling Rule Save Preset Fix
-
-- Saving a learned regex rule no longer converts it into a marker-range rule.
-- The selected per-rule preset remains bound to the selected rule after Save Rule.
-- Inferred regex patterns and capture groups are preserved, so the rule continues matching and does not fall back visually to the base preset.
-
-### Development version 130 — Auto Styling Rule State Synchronization
-- Fixed per-rule preset display in the Rule Editor.
-- Learned rules explicitly show “Embedded / learned style”.
-- Missing preset references are visible instead of silently showing another rule's preset.
-- Preset changes apply immediately to only the selected rule.
-- Rule selection is preserved during property refreshes.
-- Added signal blocking while loading every rule field to prevent cross-rule state leakage.
+Broadcast Graphics Live is distributed under the terms in [LICENSE](LICENSE). Third-party dependencies and optional extension packages retain their own compatible licenses.

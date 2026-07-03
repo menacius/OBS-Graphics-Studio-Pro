@@ -58,12 +58,12 @@ int main(int argc, char **argv)
 
     require(cache_source, "const bool gpu_ram_stored = title_gpu_frame_cache_store_image(");
     require(cache_source, "A CPU/disk-resident frame does not need to be rerendered");
-    require(cache_source, "in_flight < 4");
+    require(cache_source, "in_flight >= writer_queue_limit_");
     require(cache_source, "writer_pending_bytes_ <= writer_queue_budget_ - job.bytes");
-    require(cache_source, "writer_space_cv_.wait");
+    reject(cache_source, "writer_space_cv_.wait");
     require(cache_source, "16ull * 1024ull * 1024ull");
     require(cache_source, "ram_cache_.bytesUsed()");
-    require(cache_header, "writer_queue_budget_ = 64ull * 1024ull * 1024ull");
+    require(cache_header, "writer_queue_budget_ = 128ull * 1024ull * 1024ull");
     require(cache_header, "quint64 writer_pending_bytes_ = 0");
 
     reject(title_source, "store_global_gpu_frame_locked");

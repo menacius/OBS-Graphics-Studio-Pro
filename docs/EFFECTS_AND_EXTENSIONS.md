@@ -6,6 +6,8 @@ Effects Settings is a direct representation of the layer effect stack. Each effe
 
 The bottom toolbar contains **Add Effect** and **Respect Masks**. Effect settings are bound to their own effect instance so several expanded panels can remain visible without controls writing into the wrong stack entry.
 
+The layer list keeps the **FX** badge visible whenever a stack exists. An enabled stack uses the active badge state; disabling the whole stack draws a diagonal strike-through over the badge so the user can distinguish “effects present but bypassed” from “no effects”. External-data binding dots remain independent from this visual state.
+
 ## Built-in effects and presets
 
 Built-in effects use stable namespaced IDs (`bgl.builtin.*`) while retaining legacy numeric adapters for older project files. Presets and Add Effect menus are generated from the shared catalog. Built-ins include color/generate effects, blur families, shadows, glow, outline, grading, noise, vignette, emboss, lens flare, motion blur, and generated gradients.

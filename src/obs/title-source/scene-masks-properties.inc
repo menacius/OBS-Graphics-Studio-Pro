@@ -50,7 +50,8 @@ static double gpu_layer_chain_opacity(const Title &title, const Layer &layer,
     const double layer_time = gpu_layer_render_time(title, layer, title_time);
     const double lt = std::max(0.0, layer_time - layer.in_time);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, layer_time);
+        layer.transitions, layer.in_time, layer.out_time,
+        gpu_layer_transition_time(title, layer, title_time));
     double opacity = layer.opacity.evaluate(lt) * transition.opacity;
     if (!layer.parent_id.empty()) {
         if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
@@ -69,7 +70,8 @@ static double gpu_layer_compositor_opacity(
     const double layer_time = gpu_layer_render_time(title, layer, title_time);
     const double lt = std::max(0.0, layer_time - layer.in_time);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, layer_time);
+        layer.transitions, layer.in_time, layer.out_time,
+        gpu_layer_transition_time(title, layer, title_time));
     double opacity = layer.opacity.evaluate(lt) * transition.opacity;
     if (layer.parent_id.empty() || layer.parent_id == compositor_group_id)
         return opacity;

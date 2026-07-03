@@ -64,6 +64,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     add_playback_button(1, "restart-loop.svg", bgl_tr("OBSTitles.RestartLoop"));
     add_playback_button(2, "ping-pong-loop.svg", bgl_tr("OBSTitles.PingPongLoop"));
     add_playback_button(3, "pause-at-timeline-position.svg", bgl_tr("OBSTitles.PauseAtTimelinePosition"));
+    add_playback_button(4, "stinger.svg", bgl_tr("OBSTitles.GraphicTypeStinger"));
     playback_layout->addStretch(1);
     add_form_row(fl, bgl_tr("OBSTitles.PlaybackModeLabel"), playback_row);
 
@@ -98,20 +99,84 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     loop_area_layout->addWidget(spn_loop_end_, 1);
     add_form_row(fl, bgl_tr("OBSTitles.LoopAreaLabel"), loop_area_row_);
 
+    cmb_stinger_switch_mode_ = new QComboBox(this);
+    cmb_stinger_switch_mode_->addItem(
+        bgl_tr("OBSTitles.StingerSwitchAtPoint"),
+        static_cast<int>(StingerSwitchMode::SwitchAtPoint));
+    cmb_stinger_switch_mode_->addItem(
+        bgl_tr("OBSTitles.StingerManualSceneAnimation"),
+        static_cast<int>(StingerSwitchMode::ManualSceneAnimation));
+    cmb_stinger_switch_mode_->setFixedHeight(22);
+    add_form_row(fl, bgl_tr("OBSTitles.StingerSwitchMode"), cmb_stinger_switch_mode_);
+
+    spn_stinger_transition_timecode_ = new TimecodeSpinBox(this);
+    spn_stinger_transition_timecode_->setRange(0.0, 3600.0);
+    spn_stinger_transition_timecode_->setFixedHeight(22);
+    add_form_row(fl, bgl_tr("OBSTitles.StingerTransitionPoint"), spn_stinger_transition_timecode_);
+
+    chk_stinger_audio_ = new QCheckBox(bgl_tr("OBSTitles.StingerOptionalAudio"), this);
+    chk_stinger_alpha_ = new QCheckBox(bgl_tr("OBSTitles.StingerAlphaOutput"), this);
+    fl->addRow(QString(), chk_stinger_audio_);
+    fl->addRow(QString(), chk_stinger_alpha_);
+
+    spn_stinger_pre_roll_ = new TimecodeSpinBox(this);
+    spn_stinger_post_roll_ = new TimecodeSpinBox(this);
+    spn_stinger_pre_roll_->setRange(0.0, 3600.0);
+    spn_stinger_post_roll_->setRange(0.0, 3600.0);
+    spn_stinger_pre_roll_->setFixedHeight(22);
+    spn_stinger_post_roll_->setFixedHeight(22);
+    add_form_row(fl, bgl_tr("OBSTitles.StingerPreRoll"), spn_stinger_pre_roll_);
+    add_form_row(fl, bgl_tr("OBSTitles.StingerPostRoll"), spn_stinger_post_roll_);
+
+    cmb_stinger_render_mode_ = new QComboBox(this);
+    cmb_stinger_render_mode_->addItem(bgl_tr("OBSTitles.StingerProceduralLive"),
+                                      static_cast<int>(StingerRenderMode::ProceduralLive));
+    cmb_stinger_render_mode_->addItem(bgl_tr("OBSTitles.StingerPrerenderedProxy"),
+                                      static_cast<int>(StingerRenderMode::PrerenderedProxy));
+    cmb_stinger_render_mode_->setFixedHeight(22);
+    add_form_row(fl, bgl_tr("OBSTitles.StingerRenderMode"), cmb_stinger_render_mode_);
+
+    lbl_stinger_validation_ = new QLabel(this);
+    lbl_stinger_validation_->setWordWrap(true);
+    lbl_stinger_validation_->setTextFormat(Qt::RichText);
+    fl->addRow(bgl_tr("OBSTitles.StingerValidation"), lbl_stinger_validation_);
+
     connect(grp_playback_mode_, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
             this, [this](QAbstractButton *button) {
                 if (!title_ || loading_values_ || !button) return;
-                int selection = grp_playback_mode_->id(button);
-                if (selection == 1 || selection == 2) {
-                    title_->playback_mode = 1;
-                    title_->loop_type = selection == 2 ? 1 : 0;
+                const int selection = grp_playback_mode_->id(button);
+                if (selection == 4) {
+                    const bool entering_stinger = title_->graphic_type != TitleGraphicType::Stinger;
+                    if (entering_stinger)
+                        previous_non_stinger_graphic_type_ = title_->graphic_type;
+                    title_->graphic_type = TitleGraphicType::Stinger;
+                    title_->playback_mode = 0;
+                    if (entering_stinger) {
+                        set_stinger_transition_point_seconds(*title_, title_->duration * 0.5);
+                        title_->stinger_alpha_output = true;
+                        title_->stinger_render_mode = StingerRenderMode::ProceduralLive;
+                        title_->stinger_switch_mode = StingerSwitchMode::SwitchAtPoint;
+                        title_->stinger_editor_background = StingerEditorBackground::FollowSwitchPoint;
+                        title_->cue_end_behavior = 1;
+                    }
                 } else {
-                    title_->playback_mode = selection == 3 ? 2 : 0;
+                    if (title_->graphic_type == TitleGraphicType::Stinger) {
+                        title_->graphic_type = previous_non_stinger_graphic_type_ == TitleGraphicType::Stinger
+                                                   ? TitleGraphicType::Title
+                                                   : previous_non_stinger_graphic_type_;
+                    }
+                    if (selection == 1 || selection == 2) {
+                        title_->playback_mode = 1;
+                        title_->loop_type = selection == 2 ? 1 : 0;
+                    } else {
+                        title_->playback_mode = selection == 3 ? 2 : 0;
+                    }
+                    if (title_->playback_mode == 2 && title_->pause_time <= 0.0)
+                        title_->pause_time = title_->duration;
                 }
-                if (title_->playback_mode == 2 && title_->pause_time <= 0.0)
-                    title_->pause_time = title_->duration;
                 load_values();
                 emit title_changed(!numeric_label_dragging_);
+                emit stinger_structure_changed();
             });
 
     connect(spn_pause_frame_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -142,6 +207,10 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                 title_->loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
                 title_->loop_end = std::clamp(title_->loop_end, title_->loop_start, title_->duration);
                 title_->pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
+                set_stinger_transition_point_seconds(*title_, title_->stinger_transition_point);
+                if (title_->graphic_type == TitleGraphicType::Stinger &&
+                    title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
+                    ensure_stinger_transition_input_layers(*title_);
                 load_values();
                 emit title_changed(!numeric_label_dragging_);
             });
@@ -161,6 +230,61 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                 title_->loop_end = std::clamp(v, title_->loop_start, title_->duration);
                 load_values();
                 emit title_changed(!numeric_label_dragging_);
+            });
+
+    connect(cmb_stinger_switch_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (!title_ || loading_values_ ||
+                    title_->graphic_type != TitleGraphicType::Stinger)
+                    return;
+                title_->stinger_switch_mode = static_cast<StingerSwitchMode>(
+                    std::clamp(cmb_stinger_switch_mode_->itemData(index).toInt(), 0, 1));
+                if (title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
+                    ensure_stinger_transition_input_layers(*title_);
+                load_values();
+                emit title_changed(true);
+                emit stinger_structure_changed();
+            });
+    connect(spn_stinger_transition_timecode_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double seconds) {
+                if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+                set_stinger_transition_point_seconds(*title_, seconds);
+                load_values();
+                emit title_changed(!numeric_label_dragging_);
+            });
+    connect(chk_stinger_audio_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+        title_->stinger_audio_enabled = enabled;
+        update_stinger_validation();
+        emit title_changed(true);
+    });
+    connect(chk_stinger_alpha_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+        title_->stinger_alpha_output = enabled;
+        update_stinger_validation();
+        emit title_changed(true);
+    });
+    connect(spn_stinger_pre_roll_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double seconds) {
+                if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+                title_->stinger_pre_roll = std::max(0.0, seconds);
+                update_stinger_validation();
+                emit title_changed(!numeric_label_dragging_);
+            });
+    connect(spn_stinger_post_roll_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double seconds) {
+                if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+                title_->stinger_post_roll = std::max(0.0, seconds);
+                update_stinger_validation();
+                emit title_changed(!numeric_label_dragging_);
+            });
+    connect(cmb_stinger_render_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (!title_ || loading_values_ || title_->graphic_type != TitleGraphicType::Stinger) return;
+                title_->stinger_render_mode = static_cast<StingerRenderMode>(
+                    std::clamp(cmb_stinger_render_mode_->itemData(index).toInt(), 0, 1));
+                update_stinger_validation();
+                emit title_changed(true);
             });
 }
 
@@ -224,9 +348,16 @@ void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
 {
     const bool same_title = title_ && t && title_.get() == t.get();
     title_ = t;
+    if (!same_title) {
+        previous_non_stinger_graphic_type_ =
+            title_ && title_->graphic_type != TitleGraphicType::Stinger
+                ? title_->graphic_type
+                : TitleGraphicType::Title;
+    }
     setTitle(QString());
 
-    if (same_title && !loading_values_) {
+    if (same_title && !loading_values_ &&
+        (!title_ || title_->graphic_type != TitleGraphicType::Stinger)) {
         const double duration = title_ ? title_->duration : 5.0;
         const double loop_start = title_ ? title_->loop_start : 1.0;
         const double loop_end = title_ ? title_->loop_end : 4.0;
@@ -266,8 +397,10 @@ void TitlePropertiesPanel::load_values()
     int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
     int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
     int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 2) : 0;
-    int playback_selection = playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
-                                                : (playback_mode == 2 ? 3 : 0);
+    int playback_selection = title_ && title_->graphic_type == TitleGraphicType::Stinger
+                                 ? 4
+                                 : (playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
+                                                       : (playback_mode == 2 ? 3 : 0));
     double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;
 
     if (auto *button = grp_playback_mode_->button(playback_selection))
@@ -291,7 +424,67 @@ void TitlePropertiesPanel::load_values()
     if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(loop_area_row_))) label->setVisible(show_loop);
     spn_pause_frame_->setVisible(show_pause);
     if (form) if (auto *label = qobject_cast<QWidget *>(form->labelForField(spn_pause_frame_))) label->setVisible(show_pause);
+
+    const bool is_stinger = title_ && title_->graphic_type == TitleGraphicType::Stinger;
+    auto set_form_field_visible = [form](QWidget *field, bool visible) {
+        if (!field)
+            return;
+        field->setVisible(visible);
+        if (form) {
+            if (auto *label = qobject_cast<QWidget *>(form->labelForField(field)))
+                label->setVisible(visible);
+        }
+    };
+    const bool point_switch = is_stinger &&
+        title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint;
+    set_form_field_visible(cmb_stinger_switch_mode_, is_stinger);
+    set_form_field_visible(spn_stinger_transition_timecode_, point_switch);
+    set_form_field_visible(chk_stinger_audio_, is_stinger);
+    set_form_field_visible(chk_stinger_alpha_, is_stinger);
+    set_form_field_visible(spn_stinger_pre_roll_, is_stinger);
+    set_form_field_visible(spn_stinger_post_roll_, is_stinger);
+    set_form_field_visible(cmb_stinger_render_mode_, is_stinger);
+    set_form_field_visible(lbl_stinger_validation_, is_stinger);
+    if (is_stinger) {
+        const int switch_mode = std::clamp(static_cast<int>(title_->stinger_switch_mode), 0, 1);
+        const int switch_index = cmb_stinger_switch_mode_->findData(switch_mode);
+        cmb_stinger_switch_mode_->setCurrentIndex(switch_index >= 0 ? switch_index : 0);
+        const double point = stinger_transition_point_seconds(*title_);
+        spn_stinger_transition_timecode_->setMaximum(title_->duration);
+        spn_stinger_transition_timecode_->setValue(point);
+        chk_stinger_audio_->setChecked(title_->stinger_audio_enabled);
+        chk_stinger_alpha_->setChecked(title_->stinger_alpha_output);
+        spn_stinger_pre_roll_->setValue(std::max(0.0, title_->stinger_pre_roll));
+        spn_stinger_post_roll_->setValue(std::max(0.0, title_->stinger_post_roll));
+        const int render_mode = std::clamp(static_cast<int>(title_->stinger_render_mode), 0, 1);
+        const int render_index = cmb_stinger_render_mode_->findData(render_mode);
+        cmb_stinger_render_mode_->setCurrentIndex(render_index >= 0 ? render_index : 0);
+    }
     loading_values_ = false;
+    update_stinger_validation();
+}
+
+void TitlePropertiesPanel::update_stinger_validation()
+{
+    if (!lbl_stinger_validation_)
+        return;
+    if (!title_ || title_->graphic_type != TitleGraphicType::Stinger) {
+        lbl_stinger_validation_->clear();
+        return;
+    }
+
+    const StingerValidationResult validation = validate_stinger_title(*title_);
+    QStringList lines;
+    for (const auto &error : validation.errors)
+        lines << QStringLiteral("<span style='color:#e35d6a'>● %1</span>")
+                     .arg(QString::fromStdString(error).toHtmlEscaped());
+    for (const auto &warning : validation.warnings)
+        lines << QStringLiteral("<span style='color:#d6a94d'>▲ %1</span>")
+                     .arg(QString::fromStdString(warning).toHtmlEscaped());
+    if (lines.isEmpty())
+        lines << QStringLiteral("<span style='color:#55b87a'>✓ %1</span>")
+                     .arg(bgl_tr("OBSTitles.StingerValidationOk").toHtmlEscaped());
+    lbl_stinger_validation_->setText(lines.join(QStringLiteral("<br/>")));
 }
 
 /* ══════════════════════════════════════════════════════════════════

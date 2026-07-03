@@ -443,7 +443,8 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
      * order and make the children impossible to select from the canvas. */
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
         const auto &layer = *it;
-        if (!layer || layer_type_is_container(layer->type) || !layer->visible) continue;
+        if (!layer || !layer_is_editor_visible(*layer) ||
+            layer_type_is_container(layer->type) || !layer->visible) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
         const QRectF local_rect = layer_local_rect(*layer);
         if (!local_rect.isValid() || local_rect.isEmpty() ||
@@ -459,7 +460,8 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
      * while collapsed groups naturally remain the sole container target. */
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
         const auto &layer = *it;
-        if (!layer || !layer_type_is_container(layer->type) || !layer->visible ||
+        if (!layer || !layer_is_editor_visible(*layer) ||
+            !layer_type_is_container(layer->type) || !layer->visible ||
             layer->locked)
             continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
@@ -618,7 +620,8 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
         std::shared_ptr<Layer> hit_child;
         for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
             const auto &layer = *it;
-            if (!layer || layer_type_is_container(layer->type) || !layer->visible || layer->locked)
+            if (!layer || !layer_is_editor_visible(*layer) ||
+                layer_type_is_container(layer->type) || !layer->visible || layer->locked)
                 continue;
             if (playhead_ < layer->in_time || playhead_ > layer->out_time)
                 continue;

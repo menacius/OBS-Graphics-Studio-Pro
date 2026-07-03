@@ -5,7 +5,13 @@
 void TimelineWidget::set_graph_editor_enabled(bool enabled)
 {
     if (graph_editor_enabled_ == enabled) return;
+    const double old_offset = timeline_pre_roll();
     graph_editor_enabled_ = enabled;
+    const double new_offset = timeline_pre_roll();
+    /* Graph Editor uses document time only. Preserve the on-screen position of
+     * document time zero while entering or leaving the Stinger roll view. */
+    scroll_x_ += (int)std::round((new_offset - old_offset) * pixels_per_sec_);
+    clamp_scroll();
     drag_mode_ = DragMode::None;
     graph_fit_pending_ = true;
     unsetCursor();

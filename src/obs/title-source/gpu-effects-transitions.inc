@@ -4,6 +4,7 @@ static void source_hide(void *priv)
     if (!data)
         return;
     data->shown_on_display.store(false, std::memory_order_release);
+    if (data->audio_runtime) data->audio_runtime->stop(true);
     clear_live_cue_runtime_for_source(data, data->title_id);
     data->cue_timer_row = -1;
     data->cue_timer_elapsed_seconds = 0.0;
@@ -42,11 +43,14 @@ static void source_video_tick(void *priv, float seconds)
             std::memory_order_acquire))
         return;
 
-    if (data->title_id.empty())
+    if (data->title_id.empty()) {
+        sync_source_audio_active(data, nullptr, "empty-title-binding");
         return;
+    }
 
     auto title = TitleDataStore::instance().get_title(data->title_id);
     if (!title) {
+        sync_source_audio_active(data, nullptr, "title-missing");
         clear_live_cue_runtime_for_source(data, data->title_id);
         data->cue_timer_row = -1;
         data->cue_timer_elapsed_seconds = 0.0;
@@ -67,6 +71,14 @@ static void source_video_tick(void *priv, float seconds)
         return;
     }
 
+    const uint64_t audio_membership_revision =
+        TitleDataStore::instance().revision();
+    if (audio_membership_revision !=
+        data->seen_audio_membership_revision) {
+        sync_source_audio_active(data, title, "title-revision-changed");
+        data->seen_audio_membership_revision = audio_membership_revision;
+    }
+
     /* Provider threads never touch GPU state. The atomic revision avoids
      * polling/locking the queue on unchanged video ticks; pending notifications
      * are consumed only after a real external state transition. */
@@ -84,6 +96,23 @@ static void source_video_tick(void *priv, float seconds)
         apply_source_presentation_reset(data, "title-restored");
         data->visual_identity_hash.clear();
         ++data->visual_model_revision;
+    }
+
+    /* The editor owns its transport clock. Its private monitored source must
+     * never run the program cue state machine or advance a second playhead;
+     * it only decodes/mixes audio at the exact editor time and direction. */
+    if (data->editor_transport_controlled) {
+        sync_editor_transport_override(data);
+        const uint64_t revision = TitleDataStore::instance().revision();
+        if (data->audio_runtime) {
+            data->audio_runtime->bind_title(title, revision);
+            data->audio_runtime->transport(
+                data->playhead, data->playing,
+                obs_source_active(data->source), false,
+                data->editor_playback_reverse);
+            data->audio_runtime->pump();
+        }
+        return;
     }
 
     if (data->force_cue_state_sync || title->cue_revision != data->seen_cue_revision) {
@@ -131,6 +160,10 @@ static void source_video_tick(void *priv, float seconds)
                                title->current_cue_row < cue_row_count;
             bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
             data->manual_uncue = is_uncue;
+            if (is_uncue)
+                data->manual_uncue_floor = std::clamp(data->playhead, 0.0, title->duration);
+            else
+                data->manual_uncue_floor = -1.0;
             ExternalDataLog::write_lazy(
                 ExternalDataLogLevel::Debug, "CuePlayback", [&]() {
                     std::ostringstream stream;
@@ -170,6 +203,14 @@ static void source_video_tick(void *priv, float seconds)
                 data->cue_phase = has_pending
                     ? TitleSourceData::CuePhase::OutroThenIntro
                     : TitleSourceData::CuePhase::OutroOnly;
+            } else if (is_uncue) {
+                /* Manual uncue is a terminal transition for every playback
+                 * mode. Never return to FreeRun here: that would set
+                 * playing=true below and restart/continue the title as normal
+                 * playback. OutroOnly preserves the current playhead and
+                 * funnels all modes through the single end-behavior
+                 * finalization path. */
+                data->cue_phase = TitleSourceData::CuePhase::OutroOnly;
             } else {
                 if (has_pending) {
                     const int committed_row = title->pending_cue_row;
@@ -229,6 +270,10 @@ static void source_video_tick(void *priv, float seconds)
                           data->cue_phase != TitleSourceData::CuePhase::FreeRun)) {
         double dt = (double)seconds;
         double duration = std::max(0.001, title->duration);
+        if (data->manual_uncue && data->manual_uncue_floor >= 0.0 &&
+            data->playhead < data->manual_uncue_floor) {
+            data->playhead = data->manual_uncue_floor;
+        }
         double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
         double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
 
@@ -274,6 +319,8 @@ static void source_video_tick(void *priv, float seconds)
                 title->cue_persistence_transition = false;
                 title->cue_persistent_text_columns.clear();
                 data->active_cue_row = -1;
+                data->waiting_for_cue = true;
+                release_active_scene_mask_scenes(data);
                 if (title->cue_end_behavior == 1) {
                     set_source_output_visible(data, false,
                                               "cue-ended-show-nothing");
@@ -284,6 +331,7 @@ static void source_video_tick(void *priv, float seconds)
                         data->playhead = 0.0;
                 }
                 data->manual_uncue = false;
+                data->manual_uncue_floor = -1.0;
                 TitleDataStore::instance().touch_runtime_change();
             } else {
                 if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
@@ -354,6 +402,8 @@ static void source_video_tick(void *priv, float seconds)
                     title->cue_persistence_transition = false;
                     title->cue_persistent_text_columns.clear();
                     data->active_cue_row = -1;
+                    data->waiting_for_cue = true;
+                    release_active_scene_mask_scenes(data);
                     if (title->cue_end_behavior == 1) {
                         set_source_output_visible(data, false,
                                                   "play-once-show-nothing");
@@ -367,6 +417,7 @@ static void source_video_tick(void *priv, float seconds)
                     }
                     title->cue_uncue_requested = false;
                     data->manual_uncue = false;
+                    data->manual_uncue_floor = -1.0;
                     TitleDataStore::instance().touch_runtime_change();
                 }
             }
@@ -391,6 +442,17 @@ static void source_video_tick(void *priv, float seconds)
     }
 
     const uint64_t revision = TitleDataStore::instance().revision();
+    if (data->audio_runtime) {
+        data->audio_runtime->bind_title(title, revision);
+        const bool audible = data->editor_audio_preview
+            ? obs_source_active(data->source)
+            : (data->output_visible.load(std::memory_order_acquire) &&
+               data->shown_on_display.load(std::memory_order_acquire) &&
+               obs_source_active(data->source));
+        data->audio_runtime->transport(data->playhead, data->playing, audible,
+                                       false, data->playback_reverse);
+        data->audio_runtime->pump();
+    }
     const uint64_t external_revision = pending_external_revision;
     const bool store_revision_changed =
         revision != data->seen_store_revision;

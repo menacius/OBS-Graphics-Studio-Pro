@@ -179,6 +179,9 @@ QString CacheManager::tileStateKey(const QString &title_id, int frame) const
 
 void CacheManager::markDirtyTiles(const QString &title_id, int first_frame, int last_frame, const QVector<CacheTileRegion> &tiles)
 {
+    if (!tiles.isEmpty())
+        bgl::perf::add(bgl::perf::Counter::DirtyRegionInvalidations,
+                       static_cast<std::uint64_t>(tiles.size()));
     if (title_id.isEmpty() || first_frame > last_frame || tiles.isEmpty())
         return;
     QMutexLocker lock(&dirty_tiles_mutex_);
@@ -772,7 +775,7 @@ void CacheManager::pruneUnreferencedLiveCueRam(const QString &title_id)
                                   .arg(removed_keys)
                                   .arg(removed_ram)
                                   .arg(cancelled_jobs));
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
     }
 }
 

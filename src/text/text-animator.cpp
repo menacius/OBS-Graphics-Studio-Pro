@@ -1,4 +1,5 @@
 #include "text-animator.h"
+#include "pattern-resource-cache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -379,15 +380,11 @@ bool unit_text_matches(const TextSelector &selector,
             };
             return lower_ascii(value) == lower_ascii(selector.match_text);
         }
-    case TextMatchMode::RegularExpression:
-        try {
-            return std::regex_search(value,
-                std::regex(selector.regular_expression,
-                           selector.case_sensitive ? std::regex::ECMAScript
-                                                   : std::regex::ECMAScript | std::regex::icase));
-        } catch (const std::regex_error &) {
-            return false;
-        }
+    case TextMatchMode::RegularExpression: {
+        const auto expression = bgl::text::cached_pattern(
+            selector.regular_expression, selector.case_sensitive);
+        return expression && std::regex_search(value, *expression);
+    }
     case TextMatchMode::Whitespace:
         return byte_range_all(layout.text, start, end - start, unicode_whitespace, false);
     case TextMatchMode::Numbers:

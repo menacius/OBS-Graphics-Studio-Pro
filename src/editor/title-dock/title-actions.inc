@@ -209,12 +209,47 @@ void TitleDock::create_title_from_template(const std::string &default_name,
  * ══════════════════════════════════════════════════════════════════ */
 void TitleDock::on_add()
 {
-    bool ok;
-    QString name = QInputDialog::getText(
-        this, bgl_tr("OBSTitles.NewTitle"), bgl_tr("OBSTitles.TitleNamePrompt"), QLineEdit::Normal, bgl_tr("OBSTitles.NewTitle"), &ok);
-    if (!ok || name.trimmed().isEmpty()) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(bgl_tr("OBSTitles.NewTitle"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *name_edit = new QLineEdit(bgl_tr("OBSTitles.NewTitle"), &dialog);
+    auto *type_combo = new QComboBox(&dialog);
+    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeTitle"), static_cast<int>(TitleGraphicType::Title));
+    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeGraphic"), static_cast<int>(TitleGraphicType::Graphic));
+    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeMask"), static_cast<int>(TitleGraphicType::Mask));
+    type_combo->addItem(obs_icon("stinger.svg"), bgl_tr("OBSTitles.GraphicTypeStinger"),
+                        static_cast<int>(TitleGraphicType::Stinger));
+    form->addRow(bgl_tr("OBSTitles.TitleNamePrompt"), name_edit);
+    form->addRow(bgl_tr("OBSTitles.GraphicTypeLabel"), type_combo);
+    layout->addLayout(form);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    name_edit->selectAll();
+    name_edit->setFocus();
 
-    auto title = TitleDataStore::instance().create_title(name.trimmed().toStdString());
+    if (dialog.exec() != QDialog::Accepted || name_edit->text().trimmed().isEmpty())
+        return;
+
+    auto title = TitleDataStore::instance().create_title(name_edit->text().trimmed().toStdString());
+    title->graphic_type = static_cast<TitleGraphicType>(std::clamp(type_combo->currentData().toInt(), 0, 3));
+    if (title->graphic_type == TitleGraphicType::Stinger) {
+        title->duration = 2.0;
+        title->stinger_transition_point = 1.0;
+        title->stinger_audio_enabled = true;
+        title->stinger_alpha_output = true;
+        title->stinger_render_mode = StingerRenderMode::ProceduralLive;
+        title->stinger_switch_mode = StingerSwitchMode::SwitchAtPoint;
+        title->stinger_editor_background = StingerEditorBackground::FollowSwitchPoint;
+        title->playback_mode = 0;
+        title->cue_end_behavior = 1;
+        for (auto &layer : title->layers) {
+            if (layer)
+                layer->out_time = title->duration;
+        }
+    }
     title->preview_screenshot_png_base64 = title_screenshot_png_base64(title_screenshot_image(*title)).toStdString();
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
@@ -481,7 +516,7 @@ void TitleDock::on_add_from_templates_library()
         const bool use_list = templates->viewMode() == QListView::IconMode;
         if (use_list) {
             templates->setViewMode(QListView::ListMode);
-            templates->setIconSize(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
+            templates->setIconSize(QSize(kTitleListIconExtent * 3 + 6, kTitleListIconExtent));
             templates->setGridSize(QSize());
             templates->setResizeMode(QListView::Fixed);
             templates->setSpacing(0);
@@ -647,7 +682,7 @@ void TitleDock::on_rename()
                                   bgl_tr("OBSTitles.EditTemplateMetadata")))
         return;
 
-    title->name = metadata.title;
+    TitleDataStore::instance().rename_title(title->id, metadata.title);
     title->description = metadata.description;
     title->creator = metadata.creator;
     title->creation_date = metadata.creation_date;

@@ -22,6 +22,8 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QSlider>
+#include <QStackedWidget>
+#include <QStringList>
 #include <QPointF>
 #include <QPoint>
 #include <QRectF>
@@ -54,6 +56,8 @@ public:
 
 signals:
     void title_changed(bool push_undo_snapshot = true);
+    void stinger_structure_changed();
+    void stinger_editor_preview_changed();
 
 protected:
     bool event(QEvent *event) override;
@@ -61,11 +65,13 @@ protected:
 private:
     void apply_theme_style();
     void load_values();
+    void update_stinger_validation();
 
     std::shared_ptr<Title> title_;
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
     bool applying_theme_style_ = false;
+    TitleGraphicType previous_non_stinger_graphic_type_ = TitleGraphicType::Title;
     QButtonGroup   *grp_playback_mode_ = nullptr;
     QWidget        *loop_area_row_ = nullptr;
     QComboBox      *cmb_cue_end_behavior_ = nullptr;
@@ -73,6 +79,15 @@ private:
     QDoubleSpinBox *spn_duration_ = nullptr;
     QDoubleSpinBox *spn_loop_start_ = nullptr;
     QDoubleSpinBox *spn_loop_end_ = nullptr;
+
+    QComboBox      *cmb_stinger_switch_mode_ = nullptr;
+    QDoubleSpinBox *spn_stinger_transition_timecode_ = nullptr;
+    QCheckBox      *chk_stinger_audio_ = nullptr;
+    QCheckBox      *chk_stinger_alpha_ = nullptr;
+    QDoubleSpinBox *spn_stinger_pre_roll_ = nullptr;
+    QDoubleSpinBox *spn_stinger_post_roll_ = nullptr;
+    QComboBox      *cmb_stinger_render_mode_ = nullptr;
+    QLabel         *lbl_stinger_validation_ = nullptr;
 };
 
 

@@ -129,6 +129,49 @@ QPointF CanvasPreview::position_segment_canvas_point(
     return parent.map(QPointF(local.x, local.y));
 }
 
+void CanvasPreview::invalidate_motion_path_sample_cache() const
+{
+    motion_path_sample_cache_ = MotionPathSampleCache{};
+}
+
+const std::vector<std::vector<QPointF>> &
+CanvasPreview::motion_path_canvas_samples(const Layer &layer,
+                                          int samples_per_segment) const
+{
+    samples_per_segment = std::max(1, samples_per_segment);
+    const std::string title_id = title_ ? title_->id : std::string{};
+    if (motion_path_sample_cache_.valid &&
+        motion_path_sample_cache_.title_id == title_id &&
+        motion_path_sample_cache_.layer_id == layer.id &&
+        motion_path_sample_cache_.keyframe_count == layer.position.keyframes.size() &&
+        motion_path_sample_cache_.samples_per_segment == samples_per_segment) {
+        bgl::perf::add(bgl::perf::Counter::MotionPathCacheHits);
+        return motion_path_sample_cache_.canvas_segments;
+    }
+
+    bgl::perf::add(bgl::perf::Counter::MotionPathCacheMisses);
+    MotionPathSampleCache rebuilt;
+    rebuilt.title_id = title_id;
+    rebuilt.layer_id = layer.id;
+    rebuilt.keyframe_count = layer.position.keyframes.size();
+    rebuilt.samples_per_segment = samples_per_segment;
+    if (title_ && layer.position.keyframes.size() >= 2) {
+        rebuilt.canvas_segments.resize(layer.position.keyframes.size() - 1);
+        for (size_t segment = 0; segment < rebuilt.canvas_segments.size(); ++segment) {
+            auto &points = rebuilt.canvas_segments[segment];
+            points.reserve(static_cast<size_t>(samples_per_segment + 1));
+            for (int sample = 0; sample <= samples_per_segment; ++sample) {
+                points.push_back(position_segment_canvas_point(
+                    layer, segment,
+                    static_cast<double>(sample) / samples_per_segment));
+            }
+        }
+    }
+    rebuilt.valid = true;
+    motion_path_sample_cache_ = std::move(rebuilt);
+    return motion_path_sample_cache_.canvas_segments;
+}
+
 int CanvasPreview::hit_test_position_keyframe_vertices(
     const Layer &layer, const QPointF &view_pt) const
 {
@@ -196,14 +239,15 @@ bool CanvasPreview::hit_test_position_motion_path(
         : segment_count > 96 ? 8
         : 24;
 
-    for (size_t segment = 0; segment < segment_count; ++segment) {
-        QPointF previous = canvas_to_view(position_segment_canvas_point(
-            layer, segment, 0.0));
-        for (int sample = 1; sample <= samples_per_segment; ++sample) {
-            const double sample_progress =
-                static_cast<double>(sample) / samples_per_segment;
-            const QPointF current = canvas_to_view(position_segment_canvas_point(
-                layer, segment, sample_progress));
+    const auto &segments = motion_path_canvas_samples(
+        layer, samples_per_segment);
+    for (size_t segment = 0; segment < segments.size(); ++segment) {
+        const auto &points = segments[segment];
+        if (points.size() < 2)
+            continue;
+        QPointF previous = canvas_to_view(points.front());
+        for (size_t sample = 1; sample < points.size(); ++sample) {
+            const QPointF current = canvas_to_view(points[sample]);
             double line_progress = 0.0;
             const double distance = motion_path_point_segment_distance(
                 view_pt, previous, current, &line_progress);
@@ -252,13 +296,14 @@ void CanvasPreview::draw_position_motion_path(QPainter &p, const Layer &layer)
     const int samples_per_segment = segment_count > 256 ? 4
         : segment_count > 96 ? 8
         : 24;
-    for (size_t segment = 0; segment < segment_count; ++segment) {
-        for (int sample = 0; sample <= samples_per_segment; ++sample) {
-            if (segment > 0 && sample == 0) continue;
-            const double progress =
-                static_cast<double>(sample) / samples_per_segment;
-            const QPointF view = canvas_to_view(position_segment_canvas_point(
-                layer, segment, progress));
+    const auto &segments = motion_path_canvas_samples(
+        layer, samples_per_segment);
+    for (size_t segment = 0; segment < segments.size(); ++segment) {
+        const auto &points = segments[segment];
+        for (size_t sample = 0; sample < points.size(); ++sample) {
+            if (segment > 0 && sample == 0)
+                continue;
+            const QPointF view = canvas_to_view(points[sample]);
             if (!started) {
                 path.moveTo(view);
                 started = true;
@@ -729,6 +774,7 @@ bool CanvasPreview::show_position_motion_path_context_menu(QContextMenuEvent *ev
     if (changed) {
         dirty_ = true;
         gpu_model_dirty_ = true;
+        invalidate_motion_path_sample_cache();
         invalidate_canvas_overlay_caches();
         emit layer_geometry_changed();
         update();

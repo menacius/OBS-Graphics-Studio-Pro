@@ -138,7 +138,7 @@
                               .arg(static_cast<int>(changed_ids.size()))
                               .arg(static_cast<int>(removed_ids.size()))
                               .arg(static_cast<int>(obsolete_states.size())));
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::refreshLiveCueStructureAsync(const std::shared_ptr<Title> &title)
@@ -219,8 +219,8 @@ void CacheManager::setLiveCueRowRenderPaused(const std::shared_ptr<Title> &title
                                 .arg(paused ? QStringLiteral("Paused") : QStringLiteral("Resumed"))
                                 .arg(title_id).arg(row).arg(row_id)
                                 .arg(static_cast<int>(affected_states.size())));
-    emit liveCueStateChanged(title_id, row);
-    emit diagnosticsChanged();
+    scheduleLiveCueStateChanged(title_id, row);
+    scheduleDiagnosticsChanged();
 
     if (!paused) {
         refreshLiveCueStructure(title);
@@ -251,6 +251,7 @@ void CacheManager::cancelTitleWork(const QString &title_id)
         std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
         bumpTitleGeneration(title_id);
         queue_.cancelTitle(title_id);
+        disk_cache_.cancelTitleWrites(title_id);
     }
     resetCancelledWorkState(title_id);
     wakeWorker();
@@ -269,6 +270,7 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     }
     bumpTitleGeneration(title_id);
     queue_.cancelTitle(title_id);
+    disk_cache_.cancelTitleWrites(title_id);
 
     QVector<QString> state_keys;
     for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
@@ -312,6 +314,32 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
                 ++it;
         }
     }
+    {
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        const QString prefix = title_id + QLatin1Char('|');
+        for (auto it = job_snapshots_.begin(); it != job_snapshots_.end();) {
+            if (it.key().startsWith(prefix))
+                it = job_snapshots_.erase(it);
+            else
+                ++it;
+        }
+    }
+    {
+        QMutexLocker dirty_lock(&dirty_tiles_mutex_);
+        const QString prefix = title_id + QLatin1Char(':');
+        for (auto it = dirty_tiles_by_frame_.begin();
+             it != dirty_tiles_by_frame_.end();) {
+            if (it.key().startsWith(prefix))
+                it = dirty_tiles_by_frame_.erase(it);
+            else
+                ++it;
+        }
+    }
+    {
+        QMutexLocker visual_lock(&visual_hash_mutex_);
+        last_visual_hash_by_title_.remove(title_id);
+        last_layer_rects_by_title_.remove(title_id);
+    }
     state_tracker_.clearTitle(title_id);
     live_cue_structure_row_ids_.remove(title_id);
     live_cue_row_fingerprints_.remove(title_id);
@@ -320,7 +348,7 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     BGL_LOG_INFO("Cache", QStringLiteral("Removed title cache title=%1 ramFrames=%2 states=%3 disk=%4")
                             .arg(title_id).arg(static_cast<int>(ram_keys.size()))
                             .arg(static_cast<int>(state_keys.size())).arg(remove_disk));
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 
@@ -369,7 +397,7 @@ void CacheManager::abandonJobState(const RenderQueueManager::Job &job,
         live_cue_last_emit_states_.remove(state_key);
         live_cue_last_emit_buckets_.remove(state_key);
         if (signal_row >= 0)
-            emit liveCueStateChanged(job.key.title_id, signal_row);
+            scheduleLiveCueStateChanged(job.key.title_id, signal_row);
         return;
     }
 
@@ -404,8 +432,9 @@ void CacheManager::workerLoop()
                     if (!pending_live_cue_structure_refreshes_.isEmpty())
                         return true;
                 }
-                const bool live_only = paused_.load() || interactive_bypass_.load();
-                if (live_only)
+                const bool urgent_only =
+                    paused_.load() || interactive_bypass_.load();
+                if (urgent_only)
                     return queue_.hasAvailableJob(true);
                 bool editor_focus_active = false;
                 QString editor_title_id;
@@ -452,7 +481,12 @@ void CacheManager::workerLoop()
             if (!have_job)
                 have_job = queue_.takeNextForTitle(editor_title_id, job);
         } else {
-            have_job = queue_.takeNext(job);
+            /* OBS/live playback requests preempt background prerender work even
+             * when the editor is closed. The urgent lane is extracted without
+             * resorting the complete background queue. */
+            have_job = queue_.takeNextUrgent(job);
+            if (!have_job)
+                have_job = queue_.takeNext(job);
         }
 
         if (!have_job) {
@@ -463,9 +497,6 @@ void CacheManager::workerLoop()
             continue;
         }
 
-        if (job.live_cue && !job.urgent && !job.realtime)
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
-
         const bool readback_submitted = renderJob(job);
         if (!readback_submitted)
             queue_.complete(job);
@@ -475,8 +506,10 @@ void CacheManager::workerLoop()
         if (worker_pipeline_->pending_readbacks.size() >= 3)
             resolveOldestGpuReadback(true);
 
-        const int cooldown_ms = (job.live_cue && !job.urgent && !job.realtime)
-            ? 12 : (job.urgent || (job.live_cue && job.realtime)) ? 0 : 1;
+        /* Interactive bypass/editor-focus selection already suspends unrelated
+         * background work. Do not add per-frame live-cue sleeps: they made a
+         * nominal 50-frame cue take roughly one extra second to prerender. */
+        const int cooldown_ms = (job.urgent || job.realtime) ? 0 : 1;
         if (cooldown_ms > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_ms));
     }
@@ -511,7 +544,7 @@ bool CacheManager::retryFailedJob(RenderQueueManager::Job job,
             live_cue_last_emit_states_.remove(state_key);
             live_cue_last_emit_buckets_.remove(state_key);
             if (job.cue_row >= 0)
-                emit liveCueStateChanged(job.key.title_id, job.cue_row);
+                scheduleLiveCueStateChanged(job.key.title_id, job.cue_row);
         }
     } else {
         state_tracker_.setState(job.key, FrameCacheState::Queued);
@@ -537,7 +570,7 @@ bool CacheManager::retryFailedJob(RenderQueueManager::Job job,
                     live_cue_last_emit_states_.remove(state_key);
                     live_cue_last_emit_buckets_.remove(state_key);
                     if (signal_row >= 0)
-                        emit liveCueStateChanged(job.key.title_id, signal_row);
+                        scheduleLiveCueStateChanged(job.key.title_id, signal_row);
                 }
             }
             state_tracker_.setState(job.key, FrameCacheState::Stale);
@@ -575,6 +608,7 @@ bool CacheManager::retryFailedJob(RenderQueueManager::Job job,
 
 bool CacheManager::renderJob(RenderQueueManager::Job job)
 {
+    bgl::perf::BackgroundJobScope performance_job_scope;
     if (!job.title || !jobIsCurrent(job))
         return false;
 
@@ -600,7 +634,7 @@ bool CacheManager::renderJob(RenderQueueManager::Job job)
             if (shouldEmitLiveCueUpdate(
                     rebound_state, FrameCacheState::Rendering,
                     live_cue_progress_percent_.value(rebound_state)))
-                emit liveCueStateChanged(job.key.title_id, job.cue_row);
+                scheduleLiveCueStateChanged(job.key.title_id, job.cue_row);
         }
     } else {
         was_stale = job.force_render ||
@@ -630,8 +664,12 @@ bool CacheManager::renderJob(RenderQueueManager::Job job)
      * an application restart. */
     if (!was_stale) {
         QImage resident_image;
-        const bool found_resident = ram_cache_.get(job.key, resident_image) ||
+        const bool found_in_ram = ram_cache_.get(job.key, resident_image);
+        const bool found_on_disk = !found_in_ram &&
             disk_cache_.get(job.key, resident_image);
+        const bool found_resident = found_in_ram || found_on_disk;
+        if (found_on_disk)
+            ram_cache_.put(job.key, resident_image);
         if (found_resident &&
             title_gpu_frame_cache_store_image(
                 job.key.toString().toStdString(), resident_image,
@@ -666,13 +704,13 @@ bool CacheManager::renderJob(RenderQueueManager::Job job)
                 live_cue_progress_percent_[live_state_key] = progress;
                 if (job.cue_row >= 0 && shouldEmitLiveCueUpdate(
                         live_state_key, next_state, progress))
-                    emit liveCueStateChanged(job.key.title_id,
+                    scheduleLiveCueStateChanged(job.key.title_id,
                                              job.cue_row);
             } else {
-                emit frameReady(job.key.title_id, job.key.frame);
+                scheduleFrameReady(job.key.title_id, job.key.frame);
             }
             publication_lock.unlock();
-            emit diagnosticsChanged();
+            scheduleDiagnosticsChanged();
             return false;
         }
     }
@@ -742,13 +780,13 @@ bool CacheManager::renderJob(RenderQueueManager::Job job)
                 }
                 state_tracker_.setState(job.key,
                                         FrameCacheState::CachedRam);
-                emit frameReady(job.key.title_id, job.key.frame);
+                scheduleFrameReady(job.key.title_id, job.key.frame);
                 publication_lock.unlock();
                 BGL_LOG_TRACE("Prerender", QStringLiteral(
                     "Reused temporal visual state title=%1 frame=%2 canonicalFrame=%3")
                     .arg(job.key.title_id).arg(job.key.frame)
                     .arg(canonical_key.frame));
-                emit diagnosticsChanged();
+                scheduleDiagnosticsChanged();
                 return false;
             }
 
@@ -857,10 +895,18 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         std::move(worker_pipeline_->pending_readbacks.front());
     worker_pipeline_->pending_readbacks.pop_front();
 
+    RenderQueueManager::Job job = std::move(pending.job);
+    if (!jobIsCurrent(job)) {
+        title_gpu_render_session_cancel_readback(pending.ticket);
+        queue_.complete(job);
+        abandonJobState(job, pending.live_state_key);
+        return false;
+    }
+
+    bgl::perf::BackgroundJobScope performance_job_scope;
     QImage staged;
     const bool resolved = title_gpu_render_session_resolve_readback(
         pending.ticket, staged);
-    RenderQueueManager::Job job = std::move(pending.job);
     struct QueueCompletionGuard {
         RenderQueueManager &queue;
         RenderQueueManager::Job &job;
@@ -874,7 +920,7 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         title_gpu_frame_cache_remove(job.key.toString().toStdString());
         if (retryFailedJob(job, live_state_key, "resolve")) {
             completion_guard.disarm();
-            emit diagnosticsChanged();
+            scheduleDiagnosticsChanged();
             return false;
         }
         abandonJobState(job, live_state_key);
@@ -882,7 +928,7 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         BGL_LOG_ERROR("Prerender", QStringLiteral(
             "stage=resolve action=failed-final title=%1 frame=%2 retries=%3")
             .arg(job.key.title_id).arg(job.key.frame).arg(job.retry_count));
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
         return false;
     }
 
@@ -917,7 +963,7 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         title_gpu_frame_cache_remove(job.key.toString().toStdString());
         if (retryFailedJob(job, live_state_key, "payload")) {
             completion_guard.disarm();
-            emit diagnosticsChanged();
+            scheduleDiagnosticsChanged();
             return false;
         }
         abandonJobState(job, live_state_key);
@@ -925,7 +971,7 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         BGL_LOG_ERROR("Prerender", QStringLiteral(
             "stage=payload action=failed-final title=%1 frame=%2 retries=%3")
             .arg(job.key.title_id).arg(job.key.frame).arg(job.retry_count));
-        emit diagnosticsChanged();
+        scheduleDiagnosticsChanged();
         return false;
     }
 
@@ -976,10 +1022,16 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         }
     }
 
-    /* The readback image is not retained by RamFrameCache. Its pixels have
-     * already been offered to the sparse GPU tile cache; the same payload now
-     * continues asynchronously to the bounded SSD compression writer. */
-    disk_cache_.enqueuePut(job.key, image);
+    /* Disk persistence is best-effort and nonblocking. If both the sparse GPU
+     * cache and the bounded writer reject this frame, keep the already-rendered
+     * payload in RAM rather than publishing a false CachedDisk state or forcing
+     * the frame to be rendered again immediately. */
+    const bool disk_write_queued = disk_cache_.enqueuePut(job.key, image);
+    bool resident_frame_stored = gpu_ram_stored;
+    if (!resident_frame_stored && !disk_write_queued) {
+        ram_cache_.put(job.key, image);
+        resident_frame_stored = ram_cache_.contains(job.key);
+    }
 
     if (!job.live_cue && !job.realtime) {
         if (!pending.temporal_state_key.isEmpty()) {
@@ -1019,15 +1071,15 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
             live_cue_progress_percent_[state_key] = progress;
             if (signal_row >= 0 &&
                 shouldEmitLiveCueUpdate(state_key, next_state, progress))
-                emit liveCueStateChanged(job.key.title_id, signal_row);
+                scheduleLiveCueStateChanged(job.key.title_id, signal_row);
         }
     } else {
         state_tracker_.setState(
-            job.key, gpu_ram_stored
+            job.key, resident_frame_stored
                 ? FrameCacheState::CachedRam
                 : FrameCacheState::CachedDisk);
-        emit frameReady(job.key.title_id, job.key.frame);
+        scheduleFrameReady(job.key.title_id, job.key.frame);
     }
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
     return true;
 }

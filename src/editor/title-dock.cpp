@@ -6,6 +6,7 @@
 #include "bgl-modern-controls.h"
 #include "title-editor.h"
 #include "title-data.h"
+#include "title-serialization-schema.h"
 #include "live-text-cue-utils.h"
 #include "title-source.h"
 #include "title-assets.h"
@@ -120,6 +121,9 @@
 
 
 #include "long-press-tool-button.h"
+
+/* Used by dock-lifecycle.inc before the implementation module that defines it. */
+static bool title_has_bound_obs_source(const std::string &title_id);
 
 /* Ordered implementation modules. Keep this list in source order. */
 #include "title-dock/template-library-helpers.inc"

@@ -64,11 +64,13 @@ public:
     void update_playhead(double playhead);
     void begin_shutdown();
     bool add_effect_from_preset_file(const QString &file_path);
+    bool add_audio_effect(AudioEffectType type);
     QJsonArray extension_canvas_handles() const;
     void set_extension_canvas_handle_position(const QString &path, const QPointF &normalized_position, bool final_change);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
+    void audio_property_changed(bool push_undo_snapshot = true);
     void extension_canvas_handles_changed(const QJsonArray &handles);
 
 protected:

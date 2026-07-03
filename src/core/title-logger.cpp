@@ -28,6 +28,8 @@ const QVector<TitleLogCategory> &all_categories()
          QStringLiteral("Module load, unload and OBS frontend events."), true},
         {QStringLiteral("Source"), QStringLiteral("OBS sources"),
          QStringLiteral("Source creation, activation, visibility and presentation state."), true},
+        {QStringLiteral("Audio"), QStringLiteral("Audio"),
+         QStringLiteral("Audio decode, editor monitoring, packet scheduling, transport and underrun diagnostics."), true},
         {QStringLiteral("TitleStore"), QStringLiteral("Titles and persistence"),
          QStringLiteral("Title loading, saving, revision and project storage."), true},
         {QStringLiteral("Dock"), QStringLiteral("Dock"),

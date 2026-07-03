@@ -5,6 +5,7 @@
 #include "external-data.h"
 #include "bgl-modern-controls.h"
 #include "title-logger.h"
+#include "title-serialization-schema.h"
 
 #include <memory>
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QInputDialog>
 #include <QDataStream>
 #include <QBuffer>

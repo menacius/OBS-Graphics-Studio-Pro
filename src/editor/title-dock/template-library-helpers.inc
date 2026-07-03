@@ -144,6 +144,15 @@ static void complete_import_diagnostics(const Title &title, TitleImportDiagnosti
                          QString::fromStdString(layer->image_path)));
         }
 
+        if (layer->type == LayerType::Audio && !layer->audio_source.empty() &&
+            !QFileInfo::exists(QString::fromStdString(layer->audio_source))) {
+            append_unique_diagnostic(
+                diagnostics.missing_audio,
+                QStringLiteral("%1: %2")
+                    .arg(QString::fromStdString(layer->name),
+                         QString::fromStdString(layer->audio_source)));
+        }
+
         if (layer->type == LayerType::Text || layer->type == LayerType::Clock ||
             layer->type == LayerType::Ticker) {
             inspect_font(layer->font_family, layer->name);
@@ -230,6 +239,7 @@ static QString import_diagnostics_text(const QString &title_name, const TitleImp
     };
     append_section(bgl_tr("OBSTitles.MissingEffectsHeading"), diagnostics.missing_effects);
     append_section(bgl_tr("OBSTitles.MissingImagesHeading"), diagnostics.missing_images);
+    append_section(bgl_tr("OBSTitles.MissingAudioHeading"), diagnostics.missing_audio);
     append_section(bgl_tr("OBSTitles.MissingFontsHeading"), diagnostics.missing_fonts);
     return sections.join(QLatin1Char('\n'));
 }
@@ -397,8 +407,10 @@ static const char *live_cue_cache_icon_name(FrameCacheState state, int progress_
     }
 }
 
+static QIcon obs_icon(const char *file_name);
 static QIcon obs_icon(const char *file_name, const QColor &color);
-static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask);
+static QIcon title_list_status_icon(const Title &title, bool has_exposed_text, bool has_scene_mask);
+static bool title_has_external_data_connection(const Title &title);
 
 struct LiveCueAggregateCacheStatus {
     FrameCacheState state = FrameCacheState::NotCached;
@@ -450,22 +462,34 @@ static QString aggregate_live_cue_cache_tooltip(const LiveCueAggregateCacheStatu
         .arg(status.total_rows);
 }
 
-static QIcon title_list_combined_status_icon(bool has_exposed_text, bool has_scene_mask,
+static QIcon title_list_combined_status_icon(const Title &title, bool has_exposed_text, bool has_scene_mask,
                                              const LiveCueAggregateCacheStatus &cache_status,
                                              bool show_cache)
 {
     constexpr int gap = 3;
-    const int width = show_cache ? kTitleListIconExtent * 2 + gap : kTitleListIconExtent;
+    const bool show_external = title_has_external_data_connection(title);
+    const int icon_count = 1 + (show_cache ? 1 : 0) + (show_external ? 1 : 0);
+    const int width = kTitleListIconExtent * icon_count + gap * (icon_count - 1);
     QPixmap pixmap(width, kTitleListIconExtent);
     pixmap.fill(Qt::transparent);
 
     QPainter painter(&pixmap);
-    const QPixmap type_pixmap = title_list_status_icon(has_exposed_text, has_scene_mask).pixmap(kTitleListIconExtent, kTitleListIconExtent);
-    const QPixmap cache_pixmap = obs_icon(live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
-                                          live_cue_cache_color(cache_status.state)).pixmap(kTitleListIconExtent, kTitleListIconExtent);
-    painter.drawPixmap(0, 0, type_pixmap);
-    if (show_cache)
-        painter.drawPixmap(kTitleListIconExtent + gap, 0, cache_pixmap);
+    int x = 0;
+    if (show_external) {
+        const QPixmap globe = obs_icon("globe.svg").pixmap(kTitleListIconExtent, kTitleListIconExtent);
+        painter.drawPixmap(x, 0, globe);
+        x += kTitleListIconExtent + gap;
+    }
+    const QPixmap type_pixmap = title_list_status_icon(title, has_exposed_text, has_scene_mask)
+                                    .pixmap(kTitleListIconExtent, kTitleListIconExtent);
+    painter.drawPixmap(x, 0, type_pixmap);
+    x += kTitleListIconExtent + gap;
+    if (show_cache) {
+        const QPixmap cache_pixmap = obs_icon(
+            live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
+            live_cue_cache_color(cache_status.state)).pixmap(kTitleListIconExtent, kTitleListIconExtent);
+        painter.drawPixmap(x, 0, cache_pixmap);
+    }
     painter.end();
     return QIcon(pixmap);
 }

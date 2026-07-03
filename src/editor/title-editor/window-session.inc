@@ -1294,6 +1294,7 @@ void TitleEditor::begin_shutdown()
         external_data_callback_id_ = 0;
     }
     playing_ = false;
+    release_editor_audio_preview();
     if (canvas_) canvas_->set_playback_active(false);
 
     if (qApp)
@@ -1337,6 +1338,9 @@ void TitleEditor::begin_shutdown()
         canvas_->prepare_for_shutdown();
 
     CacheManager::instance().setInteractiveBypass(false);
+    if (title_ && !title_->id.empty())
+        CacheManager::instance().cancelTitleWork(
+            QString::fromStdString(title_->id));
     CacheManager::instance().setEditorPrerenderFocus(QString(), false);
 }
 

@@ -28,6 +28,11 @@ void title_source_invalidate_all_presentations();
 void title_source_begin_scene_collection_transition();
 void title_source_begin_shutdown();
 void title_source_end_scene_collection_transition();
+/* Updates the private editor monitor source without routing every playback
+ * frame through obs_data/source_update. Safe to call from the Qt/UI thread;
+ * the source video/audio path consumes the atomic snapshot. */
+void title_source_set_editor_transport(obs_source_t *source, double time,
+                                       bool reverse);
 
 struct TitleGpuRenderSession;
 
@@ -53,6 +58,8 @@ void title_gpu_render_session_update(TitleGpuRenderSession *session, const Title
                                      bool transform_only_update = false);
 void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session,
                                                    double scale, bool editor_draft);
+void title_gpu_render_session_set_transition_input_preview(
+    TitleGpuRenderSession *session, bool enabled);
 void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                                            const Title &title, double time,
                                            uint64_t model_revision,
@@ -68,6 +75,10 @@ bool title_gpu_render_session_submit_cached_prefix(
     double time, std::size_t first_dynamic_layer, uint64_t model_revision);
 bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
                                    uint32_t output_width, uint32_t output_height);
+bool title_gpu_render_session_draw_transition_inputs(
+    TitleGpuRenderSession *session, gs_texture_t *scene_a, gs_texture_t *scene_b,
+    uint32_t input_width, uint32_t input_height,
+    uint32_t output_width, uint32_t output_height);
 /* Destination-aware presentation used by AE-style layer modes. The canvas
  * variant samples a rectangle from an already available background texture;
  * the OBS variant snapshots the current scene render target before the source
@@ -96,6 +107,8 @@ bool render_title_gpu_cache_submit_readback(
 bool title_gpu_render_session_resolve_readback(
     const TitleGpuReadbackTicket &ticket, QImage &image);
 void title_gpu_render_session_discard_readback(
+    const TitleGpuReadbackTicket &ticket);
+void title_gpu_render_session_cancel_readback(
     const TitleGpuReadbackTicket &ticket);
 
 /* Process-wide sparse GPU-resident RAM cache. Frames reference shared 128x128

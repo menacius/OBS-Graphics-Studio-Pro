@@ -104,9 +104,11 @@ signals:
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
     void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
+    void audio_effect_dropped(int effect_type, const std::string &layer_id);
     void transition_preset_dropped(const QString &file_path, const std::string &layer_id, int edge);
     void transition_edit_requested(const std::string &layer_id, int edge);
     void transition_modified();
+    void audio_layer_property_changed(bool commit_undo);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
@@ -126,6 +128,11 @@ protected:
 private:
     double x_to_time(int x) const;
     int    time_to_x(double t) const;
+    double timeline_pre_roll() const;
+    double timeline_post_roll() const;
+    double timeline_display_duration() const;
+    double x_to_display_time(int x) const;
+    int    display_time_to_x(double t) const;
     int    ruler_height() const { return 44; }
     int    row_height()   const { return 28; }
     double snap_time(double t) const;
@@ -167,7 +174,7 @@ private:
         double start_out = 0.0;
         std::vector<KeyframeTime> keyframes;
     };
-    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, LoopStart, LoopEnd, PauseMarker, GraphKeyframe, GraphIncomingHandle, GraphOutgoingHandle, GraphMarquee, GraphPan };
+    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, AudioFadeIn, AudioFadeOut, LoopStart, LoopEnd, PauseMarker, StingerTransitionPoint, GraphKeyframe, GraphIncomingHandle, GraphOutgoingHandle, GraphMarquee, GraphPan };
     enum class GraphViewMode { Value = 0, Speed = 1 };
     enum class GraphHitType { None, Keyframe, IncomingHandle, OutgoingHandle };
     struct GraphHit {

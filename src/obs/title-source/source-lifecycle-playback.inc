@@ -735,6 +735,10 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             key += "|clock=" + std::to_string(clock_second);
         else if (layer.type == LayerType::Ticker)
             key += "|ticker=" + std::to_string(QDateTime::currentMSecsSinceEpoch());
+        if (layer.type == LayerType::TransitionInput)
+            key += session->transition_input_preview_enabled
+                ? "|transition-input-preview=1"
+                : "|transition-input-preview=0";
 
         auto &entry = session->layers[id];
         /* Moving/rotating a layer or one of its parents changes only the GPU
@@ -747,6 +751,32 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const bool local_geometry_changed =
             std::abs(current_box_width - entry.base_box_width) > 0.0001 ||
             std::abs(current_box_height - entry.base_box_height) > 0.0001;
+
+        if (layer.type == LayerType::TransitionInput &&
+            !session->transition_input_preview_enabled) {
+            /* Runtime A/B inputs are shape-like boxes whose pixels arrive from
+             * obs_transition_video_render(). Do not manufacture a CPU
+             * placeholder raster or inherit its cropped geometry. Keeping the
+             * exact current box metadata makes Scene A and Scene B map 1:1 to
+             * their authored Size at every frame. */
+            entry.key = std::move(key);
+            entry.gpu_text = false;
+            entry.gpu_primitive = false;
+            entry.pending_image = QImage();
+            entry.pending_upload = false;
+            entry.base_box_width = current_box_width;
+            entry.base_box_height = current_box_height;
+            entry.logical_width = current_box_width;
+            entry.logical_height = current_box_height;
+            entry.origin = QPointF(
+                -eval_origin_x(layer, base_local_time) * current_box_width,
+                -eval_origin_y(layer, base_local_time) * current_box_height);
+            entry.layer_box_rect = QRectF(0.0, 0.0,
+                                          current_box_width, current_box_height);
+            entry.image_clip_rect = QRectF();
+            raster_changed = raster_changed || local_geometry_changed;
+            continue;
+        }
         /* During interactive resize, direct image layers keep their decoded
          * texture resident and update only logical box geometry. This works for
          * Stretch/Fit/Fill because layout is metadata; no bitmap rescale, SVG
@@ -783,10 +813,11 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             (entry.texture || entry.pending_upload || !entry.pending_image.isNull()) &&
             !entry.key.empty())
             continue;
-        const bool dynamic_raster = layer.type == LayerType::Clock ||
-            layer.type == LayerType::Ticker ||
-            layer_has_non_transform_animation(base_key_layer) ||
-            text_animator_stack_is_time_dependent(layer.text_animators);
+        const bool dynamic_raster = layer.type != LayerType::TransitionInput &&
+            (layer.type == LayerType::Clock ||
+             layer.type == LayerType::Ticker ||
+             layer_has_non_transform_animation(base_key_layer) ||
+             text_animator_stack_is_time_dependent(layer.text_animators));
         if (!model_changed && !dynamic_raster && !local_geometry_changed &&
             !entry.key.empty())
             continue;
@@ -940,6 +971,19 @@ void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session
             pair.second.key.clear();
         }
     }
+}
+
+void title_gpu_render_session_set_transition_input_preview(
+    TitleGpuRenderSession *session, bool enabled)
+{
+    if (!session || session->destroying.load())
+        return;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        session->transition_input_preview_enabled == enabled)
+        return;
+    session->transition_input_preview_enabled = enabled;
+    session->frame_dirty = true;
 }
 
 void title_gpu_render_session_update(TitleGpuRenderSession *session,

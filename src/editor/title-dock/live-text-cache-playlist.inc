@@ -431,6 +431,7 @@ void TitleDock::populate_exposed_text()
 
         auto *cue = live_cue_button(text_table_, 0, kStaticCueColumn);
         if (cue) {
+            cue->setEnabled(title_has_bound_obs_source(title->id));
             const bool current = title->current_cue_row == 0;
             const bool queued = title->pending_cue_row == 0 ||
                 (cache_waiting_title_id_ == QString::fromStdString(title->id) && cache_waiting_cue_row_ == 0);
@@ -721,6 +722,7 @@ void TitleDock::populate_exposed_text()
             cache_waiting_cue_row_ == row;
         auto *cue = live_cue_button(text_table_, row, kLiveCueColumn);
         if (cue) {
+            cue->setEnabled(title_has_bound_obs_source(title->id));
             cue->setToolTip(bgl_tr("OBSTitles.PlayCueTooltip"));
             const bool ending = row == title->current_cue_row && title->cue_uncue_requested;
             cue->setIcon(obs_icon("cue.svg", live_cue_state_color(

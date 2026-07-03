@@ -8,6 +8,7 @@
 #include "title-logger.h"
 #include "ticker-runtime.h"
 #include "asset-runtime.h"
+#include "performance-counters.h"
 
 #include <obs.h>
 #include <graphics/graphics.h>
@@ -27,6 +28,8 @@
 #include <QWindow>
 #include <QScreen>
 #include <QPaintEngine>
+#include <QPainterPath>
+#include <QLinearGradient>
 
 #include <algorithm>
 #include <map>

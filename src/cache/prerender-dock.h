@@ -9,6 +9,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QTimer;
 
 class PrerenderDock : public QWidget {
     Q_OBJECT
@@ -24,6 +25,7 @@ signals:
 private:
     void buildUi();
     void applySettings();
+    void scheduleStatusUpdate();
     void updateStatus();
 
     std::shared_ptr<Title> title_;
@@ -36,4 +38,5 @@ private:
     QPushButton *cache_work_area_ = nullptr;
     QPushButton *cache_timeline_ = nullptr;
     QLabel *diagnostics_ = nullptr;
+    QTimer *status_update_timer_ = nullptr;
 };

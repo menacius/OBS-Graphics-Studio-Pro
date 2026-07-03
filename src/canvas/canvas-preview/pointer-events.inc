@@ -241,6 +241,8 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
 
         auto clone = std::make_shared<Layer>(*layer);
         clone->id = TitleDataStore::make_uuid();
+        if (clone->type == LayerType::TransitionInput)
+            clone->transition_input_required = false;
         clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy") :
                                             clone->name + editor_text_std("OBSTitles.CopySuffix");
         clone->name = unique_canvas_layer_name(*title_, clone->name, {}, &reserved_names);

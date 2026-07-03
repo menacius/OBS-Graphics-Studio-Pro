@@ -49,7 +49,7 @@ TitlePreferences::CanvasHelperColorRole snap_feedback_role_from_label(const QStr
 
 bool layer_is_shape_sized(const Layer &layer)
 {
-    return layer.type == LayerType::Shape || layer.type == LayerType::SolidRect;
+    return layer_type_uses_shape_geometry(layer.type);
 }
 
 bool layer_has_fixed_canvas_geometry(const Layer &)
@@ -872,6 +872,7 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
     if (title_)
         bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     title_ = t;
+    invalidate_motion_path_sample_cache();
     selected_position_keyframe_index_ = -1;
     motion_path_hover_type_ = MotionPathHoverType::None;
     motion_path_hover_keyframe_index_ = -1;
@@ -1046,10 +1047,16 @@ void CanvasPreview::refresh_runtime_dynamic_content()
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
-    const bool changed = sel_layer_id_ != lid;
-    sel_layer_id_ = lid;
+    std::string visible_id = lid;
+    if (!visible_id.empty()) {
+        const auto layer = title_ ? title_->find_layer(visible_id) : nullptr;
+        if (!layer || !layer_is_editor_visible(*layer))
+            visible_id.clear();
+    }
+    const bool changed = sel_layer_id_ != visible_id;
+    sel_layer_id_ = visible_id;
     selected_layer_ids_.clear();
-    if (!lid.empty()) selected_layer_ids_.push_back(lid);
+    if (!visible_id.empty()) selected_layer_ids_.push_back(visible_id);
     if (changed) {
         clear_path_point_selection();
         clear_corner_selection();
@@ -1064,9 +1071,16 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
 
 void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
 {
-    const std::string next = ids.empty() ? std::string() : ids.back();
-    const bool changed = sel_layer_id_ != next || selected_layer_ids_ != ids;
-    selected_layer_ids_ = ids;
+    std::vector<std::string> visible_ids;
+    visible_ids.reserve(ids.size());
+    for (const auto &id : ids) {
+        const auto layer = title_ ? title_->find_layer(id) : nullptr;
+        if (layer && layer_is_editor_visible(*layer))
+            visible_ids.push_back(id);
+    }
+    const std::string next = visible_ids.empty() ? std::string() : visible_ids.back();
+    const bool changed = sel_layer_id_ != next || selected_layer_ids_ != visible_ids;
+    selected_layer_ids_ = std::move(visible_ids);
     sel_layer_id_ = next;
     if (changed) {
         clear_path_point_selection();
@@ -1219,6 +1233,7 @@ bool CanvasPreview::prepare_cached_playback_frame(double time)
 
 void CanvasPreview::refresh_preview()
 {
+    invalidate_motion_path_sample_cache();
     gpu_model_dirty_ = true;
     prefetched_cache_frame_ = QImage();
     prefetched_cache_time_ = -1.0;

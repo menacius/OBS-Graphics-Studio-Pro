@@ -1,5 +1,6 @@
 #include "style-presets.h"
 #include "title-localization.h"
+#include "title-serialization-schema.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -8,6 +9,7 @@
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -22,16 +24,92 @@
 #include <QUuid>
 #include <QMessageBox>
 #include <QPointer>
+#include <QSaveFile>
+#include <QSet>
 #include <QBrush>
 #include <QLinearGradient>
 #include <QRadialGradient>
 #include <QConicalGradient>
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace obsbgs {
 namespace {
+
+constexpr int kStylePresetFileVersion = 3;
+constexpr int kMaxStylePresets = 4096;
+constexpr int kMaxPresetIdLength = 256;
+constexpr int kMaxPresetNameLength = 512;
+constexpr int kMaxPresetCategoryLength = 256;
+
+QString kindToString(StylePresetKind kind);
+StylePresetKind stringToKind(const QString &value);
+
+QString boundedJsonString(const QJsonObject &object, const char *key,
+                          const QString &fallback, int max_length)
+{
+    const QJsonValue value = object.value(QString::fromUtf8(key));
+    if (!value.isString())
+        return fallback;
+    QString result = value.toString();
+    if (result.size() > max_length)
+        result.truncate(max_length);
+    return result;
+}
+
+bool presetFromJson(const QJsonValue &entry, StylePreset *out,
+                    const QString &default_category, bool require_id)
+{
+    if (!out || !entry.isObject())
+        return false;
+    const QJsonObject object = entry.toObject();
+    if (!object.value(QStringLiteral("payload")).isObject())
+        return false;
+
+    StylePreset preset;
+    preset.id = boundedJsonString(object, "id", QString(), kMaxPresetIdLength);
+    preset.name = boundedJsonString(object, "name", QString(), kMaxPresetNameLength).trimmed();
+    preset.category = boundedJsonString(object, "category", default_category,
+                                        kMaxPresetCategoryLength).trimmed();
+    if (preset.category.isEmpty())
+        preset.category = default_category;
+    preset.kind = stringToKind(boundedJsonString(object, "kind",
+                                                  QStringLiteral("text"), 32));
+    preset.payload = object.value(QStringLiteral("payload")).toObject();
+    if (preset.name.isEmpty() || (require_id && preset.id.isEmpty()))
+        return false;
+    *out = std::move(preset);
+    return true;
+}
+
+QJsonObject presetFileRoot(const QList<StylePreset> &presets,
+                           std::optional<StylePresetKind> kind_filter = std::nullopt)
+{
+    QJsonArray array;
+    for (const auto &preset : presets) {
+        if (kind_filter && preset.kind != *kind_filter)
+            continue;
+        QJsonObject object;
+        object[QStringLiteral("id")] = preset.id;
+        object[QStringLiteral("name")] = preset.name;
+        object[QStringLiteral("category")] = preset.category;
+        object[QStringLiteral("kind")] = kindToString(preset.kind);
+        object[QStringLiteral("payload")] = preset.payload;
+        array.append(object);
+    }
+    QJsonObject root;
+    root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
+    root[QStringLiteral("version")] = kStylePresetFileVersion;
+    root[QStringLiteral("schema_version")] =
+        bgs::serialization::kCurrentFormattingSchemaVersion;
+    root[QStringLiteral("development_version")] =
+        bgs::serialization::kCurrentDevelopmentVersion;
+    root[QStringLiteral("presets")] = array;
+    return root;
+}
 
 struct PresetChangeListener {
     QPointer<QObject> context;
@@ -285,18 +363,27 @@ bool StylePresetLibrary::load()
         save();
         return true;
     }
-    if (!file.open(QIODevice::ReadOnly)) return false;
-    const auto doc = QJsonDocument::fromJson(file.readAll());
-    const auto arr = doc.object().value(QStringLiteral("presets")).toArray();
-    for (const auto &entry : arr) {
-        const auto o = entry.toObject();
-        StylePreset p;
-        p.id = o.value(QStringLiteral("id")).toString();
-        p.name = o.value(QStringLiteral("name")).toString();
-        p.category = o.value(QStringLiteral("category")).toString(QStringLiteral("Default"));
-        p.kind = stringToKind(o.value(QStringLiteral("kind")).toString());
-        p.payload = o.value(QStringLiteral("payload")).toObject();
-        if (!p.id.isEmpty() && !p.name.isEmpty()) presets_.append(p);
+    if (!file.open(QIODevice::ReadOnly)) {
+        ensureDefaults();
+        return false;
+    }
+    QJsonParseError parse_error;
+    const auto doc = QJsonDocument::fromJson(file.readAll(), &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !doc.isObject()) {
+        ensureDefaults();
+        return false;
+    }
+    const QJsonValue presets_value = doc.object().value(QStringLiteral("presets"));
+    if (!presets_value.isArray()) {
+        ensureDefaults();
+        return false;
+    }
+    const auto array = presets_value.toArray();
+    const int count = static_cast<int>(std::min<qsizetype>(array.size(), kMaxStylePresets));
+    for (int index = 0; index < count; ++index) {
+        StylePreset preset;
+        if (presetFromJson(array.at(index), &preset, QStringLiteral("Default"), true))
+            presets_.append(std::move(preset));
     }
     ensureDefaults();
     return true;
@@ -304,24 +391,15 @@ bool StylePresetLibrary::load()
 
 bool StylePresetLibrary::save() const
 {
-    QFile file(storagePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    QJsonArray arr;
-    for (const auto &p : presets_) {
-        QJsonObject o;
-        o[QStringLiteral("id")] = p.id;
-        o[QStringLiteral("name")] = p.name;
-        o[QStringLiteral("category")] = p.category;
-        o[QStringLiteral("kind")] = kindToString(p.kind);
-        o[QStringLiteral("payload")] = p.payload;
-        arr.append(o);
+    QSaveFile file(storagePath());
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    const QByteArray data = QJsonDocument(presetFileRoot(presets_)).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size()) {
+        file.cancelWriting();
+        return false;
     }
-    QJsonObject root;
-    root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
-    root[QStringLiteral("version")] = 2;
-    root[QStringLiteral("presets")] = arr;
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    return true;
+    return file.commit();
 }
 
 bool StylePresetLibrary::importFromFile(const QString &path, QString *error)
@@ -331,46 +409,65 @@ bool StylePresetLibrary::importFromFile(const QString &path, QString *error)
         if (error) *error = file.errorString();
         return false;
     }
-    const auto doc = QJsonDocument::fromJson(file.readAll());
-    const auto arr = doc.object().value(QStringLiteral("presets")).toArray();
-    for (const auto &entry : arr) {
-        const auto o = entry.toObject();
-        StylePreset p;
-        p.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        p.name = o.value(QStringLiteral("name")).toString();
-        p.category = o.value(QStringLiteral("category")).toString(QStringLiteral("Imported"));
-        p.kind = stringToKind(o.value(QStringLiteral("kind")).toString());
-        p.payload = o.value(QStringLiteral("payload")).toObject();
-        if (!p.name.isEmpty()) presets_.append(p);
+    QJsonParseError parse_error;
+    const auto doc = QJsonDocument::fromJson(file.readAll(), &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !doc.isObject() ||
+        !doc.object().value(QStringLiteral("presets")).isArray()) {
+        if (error)
+            *error = parse_error.error == QJsonParseError::NoError
+                         ? QStringLiteral("Invalid style preset document")
+                         : parse_error.errorString();
+        return false;
+    }
+    QSet<QString> used_ids;
+    for (const auto &preset : presets_)
+        used_ids.insert(preset.id);
+    const int original_count = presets_.size();
+    const auto array = doc.object().value(QStringLiteral("presets")).toArray();
+    const qsizetype remaining_capacity =
+        std::max<qsizetype>(0, kMaxStylePresets - presets_.size());
+    const int count = static_cast<int>(
+        std::min<qsizetype>(array.size(), remaining_capacity));
+    int imported = 0;
+    for (int index = 0; index < count; ++index) {
+        StylePreset preset;
+        if (!presetFromJson(array.at(index), &preset, QStringLiteral("Imported"), false))
+            continue;
+        if (preset.id.isEmpty() || used_ids.contains(preset.id))
+            preset.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        used_ids.insert(preset.id);
+        presets_.append(std::move(preset));
+        ++imported;
+    }
+    if (imported == 0) {
+        if (error)
+            *error = QStringLiteral("The file does not contain any valid style presets");
+        return false;
     }
     const bool saved = save();
-    if (saved) notifyChanged();
-    return saved;
+    if (!saved) {
+        while (presets_.size() > original_count)
+            presets_.removeLast();
+        if (error)
+            *error = QStringLiteral("Could not save the imported style presets");
+        return false;
+    }
+    notifyChanged();
+    return true;
 }
 
 bool StylePresetLibrary::exportToFile(const QString &path, StylePresetKind kind, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
         if (error) *error = file.errorString();
         return false;
     }
-    QJsonArray arr;
-    for (const auto &p : presets_) {
-        if (p.kind != kind) continue;
-        QJsonObject o;
-        o[QStringLiteral("id")] = p.id;
-        o[QStringLiteral("name")] = p.name;
-        o[QStringLiteral("category")] = p.category;
-        o[QStringLiteral("kind")] = kindToString(p.kind);
-        o[QStringLiteral("payload")] = p.payload;
-        arr.append(o);
+    const QByteArray data = QJsonDocument(presetFileRoot(presets_, kind)).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit()) {
+        if (error) *error = file.errorString();
+        return false;
     }
-    QJsonObject root;
-    root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
-    root[QStringLiteral("version")] = 2;
-    root[QStringLiteral("presets")] = arr;
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return true;
 }
 

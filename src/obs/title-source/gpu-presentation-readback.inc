@@ -740,7 +740,8 @@ static gs_texture_t *mix_gpu_adjustment_layer(
     }
     set_effect_int_param(effect, "coverageInvert", invert_coverage ? 1 : 0);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, resolved_time);
+        layer.transitions, layer.in_time, layer.out_time,
+        gpu_layer_transition_time(title, layer, title_time));
     set_gpu_transition_effect_params(session, effect, transition);
     gs_enable_blending(false);
     while (gs_effect_loop(effect, "Draw"))
@@ -918,9 +919,12 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     gs_effect_set_texture(image, texture);
     gs_effect_set_float(weight_param, weight);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, resolved_time);
+        layer.transitions, layer.in_time, layer.out_time,
+        gpu_layer_transition_time(title, layer, title_time));
     set_gpu_transition_effect_params(session, session->copy_effect, transition);
-    const bool gpu_image_clip = layer.type == LayerType::Image &&
+    const bool gpu_image_clip =
+        (layer.type == LayerType::Image ||
+         layer.type == LayerType::TransitionInput) &&
         image_clip_rect.isValid() && !image_clip_rect.isEmpty() &&
         (layer.image_crop_when_outside_box ||
          layer.corner_radius_tl > 0.01f || layer.corner_radius_tr > 0.01f ||
@@ -1035,19 +1039,70 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                                        double opacity_override = -1.0,
                                        const std::string &visibility_group_id = std::string())
 {
+    if (layer.type == LayerType::TransitionInput &&
+        (title.graphic_type != TitleGraphicType::Stinger ||
+         title.stinger_switch_mode != StingerSwitchMode::ManualSceneAnimation))
+        return false;
     const double resolved_time = gpu_layer_render_time(title, layer, title_time);
 
     const std::string resolved_raster_id = raster_id.empty()
         ? gpu_session_layer_id(layer) : raster_id;
     auto found = session->layers.find(resolved_raster_id);
-    if (found == session->layers.end() || !found->second.texture)
+    if (found == session->layers.end())
         return false;
     auto &entry = found->second;
+    const bool transition_input = layer.type == LayerType::TransitionInput &&
+        layer.transition_input_slot >= 0 && layer.transition_input_slot <= 1 &&
+        session->transition_input_textures[layer.transition_input_slot];
+    if (!transition_input && !entry.texture)
+        return false;
+    if (layer.type == LayerType::TransitionInput && !transition_input &&
+        !session->transition_input_preview_enabled)
+        return false;
+    gs_texture_t *source_texture = transition_input
+        ? session->transition_input_textures[layer.transition_input_slot]
+        : entry.texture;
+    const uint32_t source_width = transition_input
+        ? std::max(1u, session->transition_input_width) : entry.width;
+    const uint32_t source_height = transition_input
+        ? std::max(1u, session->transition_input_height) : entry.height;
+
+    QPointF draw_origin = entry.origin;
+    double draw_logical_width = entry.logical_width;
+    double draw_logical_height = entry.logical_height;
+    QRectF draw_clip_rect = entry.image_clip_rect;
+    double draw_base_box_width = entry.base_box_width;
+    double draw_base_box_height = entry.base_box_height;
+    if (transition_input) {
+        /* Scene inputs are rectangular shape surfaces. Map the complete OBS
+         * scene texture directly into the authored layer box instead of using
+         * dimensions cropped from the editor placeholder raster. */
+        const double local_time = std::max(0.0, resolved_time - layer.in_time);
+        draw_base_box_width = std::max(0.0001, eval_box_width(layer, local_time));
+        draw_base_box_height = std::max(0.0001, eval_box_height(layer, local_time));
+        draw_logical_width = draw_base_box_width;
+        draw_logical_height = draw_base_box_height;
+        draw_origin = QPointF(
+            -eval_origin_x(layer, local_time) * draw_base_box_width,
+            -eval_origin_y(layer, local_time) * draw_base_box_height);
+        draw_clip_rect = QRectF();
+        entry.base_box_width = draw_base_box_width;
+        entry.base_box_height = draw_base_box_height;
+        entry.logical_width = draw_logical_width;
+        entry.logical_height = draw_logical_height;
+        entry.origin = draw_origin;
+        entry.layer_box_rect = QRectF(0.0, 0.0, draw_logical_width,
+                                      draw_logical_height);
+        entry.image_clip_rect = QRectF();
+    }
+    /* Scene A/B pixels change every transition frame. input != entry.texture
+     * disables the ordinary effect cache, while passing the entry preserves
+     * the same local shape geometry used by masks and effects. */
     gs_texture_t *local_texture = apply_pixel_effects
         ? apply_gpu_layer_effect_stack(session, layer, resolved_time,
-                                       entry.texture, entry.width, entry.height,
+                                       source_texture, source_width, source_height,
                                        &entry)
-        : entry.texture;
+        : source_texture;
     if (!local_texture)
         return false;
 
@@ -1097,17 +1152,17 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
         if (travel < 0.01) {
-            draw_gpu_layer_texture(session, &entry, title, layer, local_texture, entry.origin,
-                                   entry.width, entry.height,
-                                   entry.logical_width, entry.logical_height,
-                                   entry.image_clip_rect, entry.base_box_width, entry.base_box_height,
+            draw_gpu_layer_texture(session, &entry, title, layer, local_texture, draw_origin,
+                                   source_width, source_height,
+                                   draw_logical_width, draw_logical_height,
+                                   draw_clip_rect, draw_base_box_width, draw_base_box_height,
                                    title_time, static_cast<float>(current_opacity));
         } else {
             if (mix < 1.0)
                 draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
-                                       entry.origin, entry.width, entry.height,
-                                       entry.logical_width, entry.logical_height,
-                                       entry.image_clip_rect, entry.base_box_width, entry.base_box_height,
+                                       draw_origin, source_width, source_height,
+                                       draw_logical_width, draw_logical_height,
+                                       draw_clip_rect, draw_base_box_width, draw_base_box_height,
                                        title_time,
                                        static_cast<float>(current_opacity *
                                                           (1.0 - mix)));
@@ -1133,20 +1188,20 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                 current_opacity * mix / static_cast<double>(samples));
             for (double sample_time : visible_samples) {
                 draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
-                                       entry.origin, entry.width,
-                                       entry.height, entry.logical_width,
-                                       entry.logical_height, entry.image_clip_rect,
-                                       entry.base_box_width, entry.base_box_height, sample_time,
+                                       draw_origin, source_width,
+                                       source_height, draw_logical_width,
+                                       draw_logical_height, draw_clip_rect,
+                                       draw_base_box_width, draw_base_box_height, sample_time,
                                        sample_weight);
             }
         }
     } else if (current_opacity > 0.0) {
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-        draw_gpu_layer_texture(session, &entry, title, layer, local_texture, entry.origin,
-                               entry.width, entry.height, entry.logical_width,
-                               entry.logical_height, entry.image_clip_rect,
-                               entry.base_box_width, entry.base_box_height, title_time,
+        draw_gpu_layer_texture(session, &entry, title, layer, local_texture, draw_origin,
+                               source_width, source_height, draw_logical_width,
+                               draw_logical_height, draw_clip_rect,
+                               draw_base_box_width, draw_base_box_height, title_time,
                                (float)current_opacity);
     }
     gs_texrender_end(target);

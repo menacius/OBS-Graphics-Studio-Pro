@@ -24,22 +24,26 @@
                                                    : (is_ticker ? bgl_tr("OBSTitles.TickerBox")
                                                                 : bgl_tr("OBSTitles.TextBox"))));
     }
-    const bool is_shape_layer = layer_->type == LayerType::Shape || layer_->type == LayerType::SolidRect;
-    const ShapeType current_shape = layer_->type == LayerType::SolidRect ? ShapeType::RoundedRectangle : layer_->shape_type;
-    const bool show_corner_radius = is_image ||
-                                    (is_shape_layer &&
+    const bool is_shape_geometry = layer_type_uses_shape_geometry(layer_->type);
+    const bool is_authored_shape = layer_type_is_authored_shape(layer_->type);
+    const ShapeType current_shape =
+        (layer_->type == LayerType::SolidRect || is_transition_input)
+            ? ShapeType::RoundedRectangle
+            : layer_->shape_type;
+    const bool show_corner_radius = is_image || is_transition_input ||
+                                    (is_authored_shape &&
                                      (current_shape == ShapeType::Rectangle ||
                                       current_shape == ShapeType::RoundedRectangle));
-    const bool show_star_controls = is_shape_layer && current_shape == ShapeType::Star;
-    const bool show_polygon_controls = is_shape_layer && current_shape == ShapeType::Polygon;
-    const bool show_roundness = is_shape_layer &&
+    const bool show_star_controls = is_authored_shape && current_shape == ShapeType::Star;
+    const bool show_polygon_controls = is_authored_shape && current_shape == ShapeType::Polygon;
+    const bool show_roundness = is_authored_shape &&
                                 current_shape != ShapeType::Ellipse &&
                                 current_shape != ShapeType::Line &&
                                 current_shape != ShapeType::Rectangle &&
                                 current_shape != ShapeType::RoundedRectangle;
-    const bool show_transform_scale = !is_shape_layer;
-    const bool show_transform_size = is_shape_layer;
-    const bool show_shape_panel_size = !is_shape_layer && (is_text_like || is_image);
+    const bool show_transform_scale = !is_shape_geometry;
+    const bool show_transform_size = is_shape_geometry;
+    const bool show_shape_panel_size = !is_shape_geometry && (is_text_like || is_image);
     auto set_visible = [](QWidget *widget, bool visible) {
         if (widget) widget->setVisible(visible);
     };
@@ -53,9 +57,9 @@
     set_visible(transform_size_field_w_, show_transform_size);
     set_visible(chk_transform_size_lock_, show_transform_size);
     set_visible(transform_size_field_h_, show_transform_size);
-    set_visible(row_shape_scale_options_, is_shape_layer || is_image);
-    set_visible(chk_shape_scale_stroke_, is_shape_layer);
-    set_visible(chk_shape_scale_corners_, is_shape_layer || is_image);
+    set_visible(row_shape_scale_options_, is_authored_shape || is_image || is_transition_input);
+    set_visible(chk_shape_scale_stroke_, is_authored_shape);
+    set_visible(chk_shape_scale_corners_, is_authored_shape || is_image || is_transition_input);
     set_visible(btn_kf_width_, show_shape_panel_size);
     set_visible(shape_size_label_, show_shape_panel_size);
     set_visible(shape_size_field_w_, show_shape_panel_size);
@@ -66,14 +70,15 @@
     if (spn_corner_bevel_roundness_) spn_corner_bevel_roundness_->setVisible(show_corner_radius);
     if (grp_shape_type_) {
         for (auto *button : grp_shape_type_->buttons())
-            button->setVisible(is_shape_layer);
+            button->setVisible(is_authored_shape);
     }
     if (auto *shape_types_row = rect_box_->findChild<QWidget *>(QStringLiteral("OBSTitlesShapeTypeButtonsRow")))
-        shape_types_row->setVisible(is_shape_layer);
+        shape_types_row->setVisible(is_authored_shape);
     if (btn_shape_defaults_) {
-        btn_shape_defaults_->setVisible(is_shape_layer || is_image);
-        btn_shape_defaults_->setToolTip(is_image ? bgl_tr("OBSTitles.RestoreImageSizeDefaults")
-                                                    : bgl_tr("OBSTitles.RestoreShapeDefaults"));
+        btn_shape_defaults_->setVisible(is_authored_shape || is_image || is_transition_input);
+        btn_shape_defaults_->setToolTip((is_image || is_transition_input)
+            ? bgl_tr("OBSTitles.RestoreImageSizeDefaults")
+            : bgl_tr("OBSTitles.RestoreShapeDefaults"));
     }
     if (spn_shape_points_) spn_shape_points_->setVisible(show_star_controls);
     if (spn_shape_sides_) spn_shape_sides_->setVisible(show_polygon_controls);

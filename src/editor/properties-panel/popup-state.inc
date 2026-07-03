@@ -264,7 +264,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     };
 
-    auto add_form_row = [this](QFormLayout *form, const QString &label_text, QWidget *field) {
+    auto add_form_row = [this, panel_text_name](QFormLayout *form, const QString &label_text, QWidget *field) {
         if (!form || label_text.isEmpty()) {
             if (form) form->addRow(label_text, field);
             return;
@@ -282,6 +282,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                emit property_changed(true);
                                            });
         label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        label->setStyleSheet(QStringLiteral("color:%1;font-size:12px;background:transparent;").arg(panel_text_name));
         form->addRow(label, field);
     };
 
@@ -572,6 +573,143 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_anchor_->hide();
     tform_layout->addLayout(transform_grid);
     bgl_add_panel_section(vl, transform_box_, bgl_tr("OBSTitles.Transform"), btn_transform_defaults_);
+
+    /* ── Audio Layer ── */
+    audio_box_ = new QGroupBox(bgl_tr("OBSTitles.AudioLayer"), inner);
+    audio_box_->setStyleSheet(section_style);
+    auto *audio_form = new QFormLayout(audio_box_);
+    style_form(audio_form);
+    edt_audio_source_ = new QLineEdit(audio_box_);
+    edt_audio_source_->setReadOnly(true);
+    edt_audio_source_->setStyleSheet(control_style);
+    btn_audio_browse_ = new QToolButton(audio_box_);
+    btn_audio_browse_->setText(QStringLiteral("…"));
+    btn_audio_browse_->setToolTip(QStringLiteral("Choose replacement audio file"));
+    auto *source_row = new QWidget(audio_box_);
+    auto *source_layout = new QHBoxLayout(source_row);
+    source_layout->setContentsMargins(0,0,0,0); source_layout->setSpacing(4);
+    source_layout->addWidget(edt_audio_source_, 1); source_layout->addWidget(btn_audio_browse_);
+
+    spn_audio_in_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_in_->setSuffix(QStringLiteral(" s"));
+    spn_audio_out_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_out_->setSuffix(QStringLiteral(" s"));
+    spn_audio_volume_ = mk_dspin(0.0, 400.0, 1.0); spn_audio_volume_->setSuffix(QStringLiteral(" %"));
+    spn_audio_pan_ = mk_dspin(-100.0, 100.0, 1.0); spn_audio_pan_->setSuffix(QStringLiteral(" %"));
+    spn_audio_fade_in_ = mk_dspin(0.0, 60.0, 0.01); spn_audio_fade_in_->setSuffix(QStringLiteral(" s"));
+    spn_audio_fade_out_ = mk_dspin(0.0, 60.0, 0.01); spn_audio_fade_out_->setSuffix(QStringLiteral(" s"));
+    sld_audio_volume_ = new QSlider(Qt::Horizontal, audio_box_); sld_audio_volume_->setRange(0, 400);
+    sld_audio_pan_ = new QSlider(Qt::Horizontal, audio_box_); sld_audio_pan_->setRange(-100, 100);
+    btn_kf_audio_volume_ = new QToolButton(audio_box_); btn_kf_audio_volume_->setIcon(keyframe_diamond_icon(false));
+    btn_kf_audio_pan_ = new QToolButton(audio_box_); btn_kf_audio_pan_->setIcon(keyframe_diamond_icon(false));
+    for (auto *b : {btn_kf_audio_volume_, btn_kf_audio_pan_}) {
+        b->setAutoRaise(true); b->setFixedSize(24,22); b->setToolTip(QStringLiteral("Toggle keyframe at current time"));
+    }
+    auto make_audio_pair_row = [this, panel_text_name](const QString &first_label, QDoubleSpinBox *first,
+                                                               const QString &second_label, QDoubleSpinBox *second) {
+        auto *row = new QWidget(audio_box_);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(5);
+        auto make_drag_label = [this, panel_text_name, row](const QString &text, QDoubleSpinBox *spin) {
+            auto *label = new NumericDragLabel(text, spin, row,
+                [this]() {
+                    if (loading_values_) return;
+                    numeric_label_dragging_ = true;
+                    emit audio_property_changed(false);
+                },
+                [this]() {
+                    if (loading_values_) return;
+                    numeric_label_dragging_ = false;
+                    emit audio_property_changed(true);
+                });
+            label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            label->setStyleSheet(QStringLiteral("color:%1;font-size:11px;background:transparent;").arg(panel_text_name));
+            return label;
+        };
+        layout->addWidget(make_drag_label(first_label, first));
+        layout->addWidget(first, 1);
+        layout->addWidget(make_drag_label(second_label, second));
+        layout->addWidget(second, 1);
+        return row;
+    };
+    auto make_slider_row = [this](QWidget *numeric, QWidget *slider, QWidget *kf) {
+        auto *row = new QWidget(audio_box_); auto *l = new QHBoxLayout(row);
+        l->setContentsMargins(0,0,0,0); l->setSpacing(5); l->addWidget(numeric); l->addWidget(slider,1); l->addWidget(kf); return row;
+    };
+
+    cmb_audio_fade_curve_ = new QComboBox(audio_box_);
+    cmb_audio_fade_curve_->addItem(QStringLiteral("Linear"), (int)AudioFadeCurve::Linear);
+    cmb_audio_fade_curve_->addItem(QStringLiteral("Smooth"), (int)AudioFadeCurve::Smooth);
+    cmb_audio_fade_curve_->addItem(QStringLiteral("Equal Power"), (int)AudioFadeCurve::EqualPower);
+    cmb_audio_fade_curve_->setStyleSheet(control_style);
+    cmb_audio_playback_ = new QComboBox(audio_box_);
+    cmb_audio_playback_->addItem(QStringLiteral("Play once"), (int)AudioPlaybackMode::PlayOnce);
+    cmb_audio_playback_->addItem(QStringLiteral("Loop"), (int)AudioPlaybackMode::Loop);
+    cmb_audio_playback_->addItem(QStringLiteral("Pause at end"), (int)AudioPlaybackMode::PauseAtOut);
+    cmb_audio_playback_->setStyleSheet(control_style);
+    chk_audio_mute_ = new BglSwitch(QString(), audio_box_);
+    chk_audio_solo_ = new BglSwitch(QString(), audio_box_);
+    chk_audio_loop_ = new BglSwitch(QString(), audio_box_);
+    chk_audio_independent_ = new BglSwitch(QString(), audio_box_);
+    for (auto *box : {chk_audio_mute_, chk_audio_solo_, chk_audio_loop_, chk_audio_independent_}) style_checkbox(box);
+    add_form_row(audio_form, QStringLiteral("Source"), source_row);
+    add_form_row(audio_form, QStringLiteral("Range"), make_audio_pair_row(QStringLiteral("In"), spn_audio_in_, QStringLiteral("Out"), spn_audio_out_));
+    add_form_row(audio_form, QStringLiteral("Volume"), make_slider_row(spn_audio_volume_, sld_audio_volume_, btn_kf_audio_volume_));
+    add_form_row(audio_form, QStringLiteral("Pan"), make_slider_row(spn_audio_pan_, sld_audio_pan_, btn_kf_audio_pan_));
+    add_form_row(audio_form, QStringLiteral("Fade"), make_audio_pair_row(QStringLiteral("In"), spn_audio_fade_in_, QStringLiteral("Out"), spn_audio_fade_out_));
+    add_form_row(audio_form, QStringLiteral("Fade curve"), cmb_audio_fade_curve_);
+    add_form_row(audio_form, QStringLiteral("Playback mode"), cmb_audio_playback_);
+    add_form_row(audio_form, QStringLiteral("Mute"), chk_audio_mute_);
+    add_form_row(audio_form, QStringLiteral("Solo"), chk_audio_solo_);
+    add_form_row(audio_form, QStringLiteral("Loop"), chk_audio_loop_);
+    add_form_row(audio_form, QStringLiteral("Independent playback"), chk_audio_independent_);
+    audio_box_->setVisible(false);
+    bgl_add_panel_section(vl, audio_box_);
+
+    auto audio_changed = [this](bool commit = false) {
+        if (!loading_values_ && layer_ && layer_->type == LayerType::Audio)
+            emit audio_property_changed(commit);
+    };
+    connect(btn_audio_browse_, &QToolButton::clicked, this, [this, audio_changed]() {
+        if (!layer_ || layer_->type != LayerType::Audio) return;
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Choose audio file"),
+            QFileInfo(QString::fromStdString(layer_->audio_source)).absolutePath(),
+            QStringLiteral("Audio and video (*.wav *.flac *.mp3 *.aac *.m4a *.mp4 *.mov *.mkv *.webm);;All files (*.*)"));
+        if (path.isEmpty()) return;
+        layer_->audio_source = path.toStdString();
+        layer_->audio_waveform.clear();
+        layer_->audio_waveform_duration = 0.0;
+        layer_->audio_in_point = 0.0;
+        layer_->audio_out_point = 0.0;
+        edt_audio_source_->setText(path);
+        {
+            QSignalBlocker block_in(spn_audio_in_);
+            QSignalBlocker block_out(spn_audio_out_);
+            spn_audio_in_->setValue(0.0);
+            spn_audio_out_->setValue(0.0);
+        }
+        /* A file replacement changes asset identity, so publish it immediately.
+         * The runtime worker will retire the old decode/waveform cache and queue
+         * the new asset without waiting for focus loss or editor save. */
+        audio_changed(true);
+    });
+    connect(spn_audio_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_in_point=v; audio_changed(false); }});
+    connect(spn_audio_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_out_point=v; audio_changed(false); }});
+    connect(spn_audio_volume_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_volume_); sld_audio_volume_->setValue(qRound(v)); audio_changed(false); }});
+    connect(sld_audio_volume_, &QSlider::valueChanged, this, [this, audio_changed](int v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(spn_audio_volume_); spn_audio_volume_->setValue(v); audio_changed(false); }});
+    connect(spn_audio_pan_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_pan=float(v/100.0); set_animated_value(layer_->audio_pan_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_pan_); sld_audio_pan_->setValue(qRound(v)); audio_changed(false); }});
+    connect(sld_audio_pan_, &QSlider::valueChanged, this, [this, audio_changed](int v){ if (layer_ && !loading_values_) { layer_->audio_pan=float(v/100.0); set_animated_value(layer_->audio_pan_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(spn_audio_pan_); spn_audio_pan_->setValue(v); audio_changed(false); }});
+    connect(btn_kf_audio_volume_, &QToolButton::clicked, this, [this, audio_changed]() { if (!layer_) return; const double t=std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)); toggle_keyframe(layer_->audio_volume_prop,t,layer_->audio_volume_prop.evaluate(t)); audio_changed(true); });
+    connect(btn_kf_audio_pan_, &QToolButton::clicked, this, [this, audio_changed]() { if (!layer_) return; const double t=std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)); toggle_keyframe(layer_->audio_pan_prop,t,layer_->audio_pan_prop.evaluate(t)); audio_changed(true); });
+    connect(spn_audio_fade_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_fade_in=v; audio_changed(false); }});
+    connect(spn_audio_fade_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_fade_out=v; audio_changed(false); }});
+    connect(cmb_audio_fade_curve_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, audio_changed](int){ if (layer_ && !loading_values_) { layer_->audio_fade_curve=(AudioFadeCurve)cmb_audio_fade_curve_->currentData().toInt(); audio_changed(true); }});
+    connect(cmb_audio_playback_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, audio_changed](int){ if (layer_ && !loading_values_) { layer_->audio_playback_mode=(AudioPlaybackMode)cmb_audio_playback_->currentData().toInt(); audio_changed(true); }});
+    connect(chk_audio_mute_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_muted=v; audio_changed(true); }});
+    connect(chk_audio_solo_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_solo=v; audio_changed(true); }});
+    connect(chk_audio_loop_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_loop=v; audio_changed(true); }});
+    connect(chk_audio_independent_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_independent=v; audio_changed(true); }});
+    for (auto *spin : {spn_audio_in_, spn_audio_out_, spn_audio_volume_, spn_audio_pan_, spn_audio_fade_in_, spn_audio_fade_out_})
+        connect(spin, &QDoubleSpinBox::editingFinished, this, [audio_changed]() { audio_changed(true); });
 
     /* ── Asset Layer ── */
     asset_box_ = new QGroupBox(bgl_tr("OBSTitles.AssetLayer"), inner);

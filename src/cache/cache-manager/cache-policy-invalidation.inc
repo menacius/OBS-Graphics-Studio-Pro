@@ -1,6 +1,7 @@
     for (const auto &layer : title.layers) {
         if (!layer) continue;
-        add(layer->visible && time >= layer->in_time && time <= layer->out_time);
+        sample_time = cache_layer_sample_time(title, *layer, time);
+        add(layer->visible && sample_time >= layer->in_time && sample_time <= layer->out_time);
         add_vec(layer->position, 0.25);
         add_vec(layer->scale, 0.0005);
         add_anim(layer->rotation, 0.05);
@@ -63,7 +64,7 @@
         for (const auto &transition : layer->transitions) {
             if (!transition.enabled)
                 continue;
-            add(quant(layer_transition_progress(transition, layer->in_time, layer->out_time, time), 0.002));
+            add(quant(layer_transition_progress(transition, layer->in_time, layer->out_time, sample_time), 0.002));
         }
     }
     return QString::fromLatin1(hash.result().toHex());
@@ -224,20 +225,23 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
     QImage image;
     if (initial_state != FrameCacheState::Stale && ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
+        bgl::perf::add(bgl::perf::Counter::CachePlaybackHits);
         log_cache_playback(QStringLiteral("result=ram-hit kind=editor title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
             .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
         return finish_cached_frame(image);
     }
 
-    if (initial_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
-        ram_cache_.put(key, image);
-        state_tracker_.setState(key, FrameCacheState::CachedRam);
-        emit diagnosticsChanged();
-        log_cache_playback(QStringLiteral("result=disk-hit-promoted kind=editor title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
-            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
-        return finish_cached_frame(image);
+    if (initial_state != FrameCacheState::Stale && disk_cache_.contains(key)) {
+        /* Disk decompression and file I/O never run on the editor/UI path. The
+         * cache worker promotes the frame to RAM/GPU and coalesces duplicate
+         * hydration requests while the uncached renderer remains responsive. */
+        queueRealtimeJob(title, clamped_time, false, -1, QString(), content_hash);
+        log_cache_playback(QStringLiteral("result=disk-hydration-queued kind=editor title=%1 frame=%2 key=%3")
+            .arg(key.title_id).arg(key.frame).arg(key.toString()));
+        return QImage();
     }
 
+    bgl::perf::add(bgl::perf::Counter::CachePlaybackMisses);
     queueRealtimeJob(title, clamped_time, false, -1, QString(), content_hash);
     log_cache_playback(QStringLiteral("result=miss-queued kind=editor title=%1 frame=%2 initialState=%3 cachedOnly=%4 key=%5")
         .arg(key.title_id).arg(key.frame).arg(QString::fromUtf8(cache_playback_state_name(initial_state)))
@@ -269,6 +273,28 @@ QString CacheManager::requestFrameGpuToken(
                          known_content_hash);
     }
     return QString();
+}
+
+bool CacheManager::frameReadyForPlayback(
+    const std::shared_ptr<Title> &title, double time) const
+{
+    if (!title || !cache_enabled_.load() || interactive_bypass_.load() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
+        return false;
+
+    const double clamped_time = std::clamp(
+        time, 0.0, std::max(0.0, title->duration));
+    const CacheFrameKey key = keyForTime(
+        *title, clamped_time, contentHash(*title));
+    const FrameCacheState state = state_tracker_.state(key);
+    if (state == FrameCacheState::Stale ||
+        state == FrameCacheState::Disabled)
+        return false;
+
+    if (title_gpu_frame_cache_contains(key.toString().toStdString()) ||
+        ram_cache_.contains(key))
+        return true;
+    return disk_cache_.contains(key);
 }
 
 quint64 CacheManager::ramBytesUsed() const
@@ -325,7 +351,7 @@ void CacheManager::rejectFramePayload(const std::shared_ptr<Title> &title,
         "Rejected invalid cache payload title=%1 frame=%2 key=%3")
         .arg(key.title_id).arg(key.frame).arg(key.toString()));
     queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 QImage CacheManager::requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
@@ -352,19 +378,20 @@ QImage CacheManager::requestFrameRealtime(const std::shared_ptr<Title> &title, d
     QImage image;
     if (ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
+        bgl::perf::add(bgl::perf::Counter::CachePlaybackHits);
         log_cache_playback(QStringLiteral("result=ram-hit title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
             .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
         return image;
     }
 
-    if (initial_state == FrameCacheState::CachedDisk && disk_cache_.get(key, image)) {
-        ram_cache_.put(key, image);
-        state_tracker_.setState(key, FrameCacheState::CachedRam);
-        log_cache_playback(QStringLiteral("result=disk-hit-promoted title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
-            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
-        return image;
+    if (initial_state != FrameCacheState::Stale && disk_cache_.contains(key)) {
+        queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
+        log_cache_playback(QStringLiteral("result=disk-hydration-queued title=%1 frame=%2 key=%3")
+            .arg(key.title_id).arg(key.frame).arg(key.toString()));
+        return QImage();
     }
 
+    bgl::perf::add(bgl::perf::Counter::CachePlaybackMisses);
     queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
     log_cache_playback(QStringLiteral("result=miss-queued title=%1 frame=%2 initialState=%3 diskAttempt=%4 key=%5")
         .arg(key.title_id).arg(key.frame)
@@ -439,7 +466,7 @@ void CacheManager::restoreDiskStates(const std::shared_ptr<Title> &title)
      * disk. Without this, the first cue-list-only edit looked like an unknown
      * visual change and invalidateAll() discarded every live-cue state. */
     rememberVisualHash(*title, current_hash);
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::queueFrame(const std::shared_ptr<Title> &title, double time,
@@ -498,8 +525,46 @@ void CacheManager::queueRange(const std::shared_ptr<Title> &title, double start,
     const int first = std::clamp(frameForTime(std::clamp(start, 0.0, title->duration)), 0, max_frame);
     const int last = std::clamp(frameForTime(std::clamp(end, 0.0, title->duration)), 0, max_frame);
     const QString content_hash = contentHash(*title);
-    for (int frame = first; frame <= last; ++frame)
-        queueFrameWithHash(title, timeForFrame(frame), band, content_hash);
+    const QString title_id = QString::fromStdString(title->id);
+    const quint64 generation = titleGeneration(title_id);
+    const quint64 epoch = cache_epoch_.load();
+    const int band_offset = static_cast<int>(band) * 100000;
+    QVector<RenderQueueManager::Job> jobs;
+    QVector<CacheFrameKey> queued_keys;
+    jobs.reserve(last - first + 1);
+    queued_keys.reserve(last - first + 1);
+    std::shared_ptr<Title> snapshot;
+    for (int frame = first; frame <= last; ++frame) {
+        const CacheFrameKey key{title_id, content_hash, frame, title->width, title->height};
+        const FrameCacheState state = state_tracker_.state(key);
+        if (state != FrameCacheState::Stale &&
+            (cache_ram_frame_contains(ram_cache_, key) || disk_cache_.contains(key)))
+            continue;
+        if (state == FrameCacheState::Rendering || queue_.contains(key))
+            continue;
+        if (!snapshot)
+            snapshot = snapshotForJob(title, key);
+        if (!snapshot)
+            break;
+        RenderQueueManager::Job job;
+        job.key = key;
+        job.title = snapshot;
+        job.time = timeForFrame(frame);
+        job.priority = band_offset + std::abs(frame);
+        job.force_render = state == FrameCacheState::Stale;
+        job.cache_epoch = epoch;
+        job.title_generation = generation;
+        jobs.push_back(job);
+        queued_keys.push_back(key);
+    }
+    if (jobs.isEmpty())
+        return;
+    queue_.enqueueMany(jobs);
+    for (const CacheFrameKey &key : queued_keys) {
+        if (queue_.contains(key))
+            state_tracker_.setState(key, FrameCacheState::Queued);
+    }
+    wakeWorker();
 }
 
 void CacheManager::queueWholeTimeline(const std::shared_ptr<Title> &title)
@@ -512,11 +577,11 @@ void CacheManager::queueWholeTimeline(const std::shared_ptr<Title> &title)
     const int start_frame = last_reprioritize_title_id_ == title_id
         ? std::clamp(last_reprioritize_frame_, 0, max_frame)
         : 0;
-    const QString content_hash = contentHash(*title);
-    for (int frame = start_frame; frame <= max_frame; ++frame)
-        queueFrameWithHash(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline, content_hash);
-    for (int frame = 0; frame < start_frame; ++frame)
-        queueFrameWithHash(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline, content_hash);
+    queueRange(title, timeForFrame(start_frame), timeForFrame(max_frame),
+               RenderQueueManager::PriorityBand::FullTimeline);
+    if (start_frame > 0)
+        queueRange(title, 0.0, timeForFrame(start_frame - 1),
+                   RenderQueueManager::PriorityBand::FullTimeline);
 }
 
 void CacheManager::queueWorkArea(const std::shared_ptr<Title> &title)
@@ -537,7 +602,9 @@ void CacheManager::reprioritize(const std::shared_ptr<Title> &title, double curr
         return;
     last_reprioritize_title_id_ = title_id;
     last_reprioritize_frame_ = current;
-    queue_.reprioritizeAround(title_id, current);
+    /* Realtime editor/OBS lookups promote the exact requested frame through
+     * queueRealtimeJob. This neighbourhood fill must not rewrite and resort the
+     * complete title queue on every playback tick. */
     const QString content_hash = contentHash(*title);
     queueFrameWithHash(title, current_time, RenderQueueManager::PriorityBand::Visible, content_hash);
     const int lookahead = std::min(6, std::max(2, (int)std::round(effectiveFrameRate() / 4.0)));
@@ -574,7 +641,7 @@ void CacheManager::resetCancelledWorkState(const QString &title_id)
     }
     for (const auto &changed : changed_rows) {
         if (!changed.first.isEmpty() && changed.second >= 0)
-            emit liveCueStateChanged(changed.first, changed.second);
+            scheduleLiveCueStateChanged(changed.first, changed.second);
     }
 }
 
@@ -597,8 +664,8 @@ void CacheManager::clearRam()
     }
     state_tracker_.clear();
     wakeWorker();
-    emit liveCueStateChanged(QString(), -1);
-    emit diagnosticsChanged();
+    scheduleLiveCueStateChanged(QString(), -1);
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::clearDisk()
@@ -615,8 +682,8 @@ void CacheManager::clearDisk()
     resetCancelledWorkState();
     state_tracker_.clear();
     wakeWorker();
-    emit liveCueStateChanged(QString(), -1);
-    emit diagnosticsChanged();
+    scheduleLiveCueStateChanged(QString(), -1);
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::clearAll()
@@ -655,8 +722,8 @@ void CacheManager::clearAll()
         live_cue_known_keys_.clear();
     }
     wakeWorker();
-    emit liveCueStateChanged(QString(), -1);
-    emit diagnosticsChanged();
+    scheduleLiveCueStateChanged(QString(), -1);
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::pausePrerender()
@@ -689,7 +756,7 @@ void CacheManager::setCacheEnabled(bool enabled)
     state_tracker_.clear();
     wakeWorker();
     emit cacheEnabledChanged(enabled);
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::setInteractiveBypass(bool bypass)
@@ -732,7 +799,7 @@ void CacheManager::setRamCacheLimitMb(int megabytes)
         bytes > compatibility_ram_budget
             ? bytes - compatibility_ram_budget
             : bytes);
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 void CacheManager::setDiskCacheLocation(const QString &path)
@@ -751,7 +818,7 @@ void CacheManager::setDiskCacheLocation(const QString &path)
     BGL_LOG_INFO("Cache", QStringLiteral("Disk cache location changed to %1").arg(clean));
     state_tracker_.clear();
     wakeWorker();
-    emit diagnosticsChanged();
+    scheduleDiagnosticsChanged();
 }
 
 TitleCacheability CacheManager::titleCacheability(const std::shared_ptr<Title> &title) const

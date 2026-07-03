@@ -494,7 +494,7 @@ bool EffectsPanel::eventFilter(QObject *watched, QEvent *event)
 
 bool EffectsPanel::add_effect_from_preset_file(const QString &file_path)
 {
-    if (!layer_ || layer_->locked)
+    if (!layer_ || layer_->locked || layer_->type == LayerType::Audio)
         return false;
 
     bgs::effects::EffectPresetDescriptor descriptor;
@@ -505,6 +505,19 @@ bool EffectsPanel::add_effect_from_preset_file(const QString &file_path)
     selected_index_ = static_cast<int>(layer_->effects.size()) - 1;
     rebuild_stack();
     emit_effect_changed();
+    return true;
+}
+
+bool EffectsPanel::add_audio_effect(AudioEffectType type)
+{
+    if (!layer_ || layer_->locked) return false;
+    const bool audio_capable = layer_->type == LayerType::Audio || layer_type_is_container(layer_->type);
+    if (!audio_capable) return false;
+    AudioEffect effect;
+    effect.type = type;
+    layer_->audio_effects.push_back(effect);
+    rebuild_stack();
+    emit audio_property_changed(true);
     return true;
 }
 
@@ -1030,6 +1043,143 @@ void EffectsPanel::load_settings()
 {
     build_settings();
     effect_panels_.clear();
+    if (layer_ && !layer_->audio_effects.empty() &&
+        (layer_->type == LayerType::Audio || layer_type_is_container(layer_->type))) {
+        auto audio_name = [](AudioEffectType type) {
+            switch (type) {
+            case AudioEffectType::Gain: return bgl_tr("OBSTitles.AudioEffectGain");
+            case AudioEffectType::Fade: return bgl_tr("OBSTitles.AudioEffectFade");
+            case AudioEffectType::HighPass: return bgl_tr("OBSTitles.AudioEffectHighPass");
+            case AudioEffectType::LowPass: return bgl_tr("OBSTitles.AudioEffectLowPass");
+            case AudioEffectType::CompressorLimiter: return bgl_tr("OBSTitles.AudioEffectCompressorLimiter");
+            }
+            return bgl_tr("OBSTitles.AudioEffects");
+        };
+        for (int i = 0; i < static_cast<int>(layer_->audio_effects.size()); ++i) {
+            const QString title = audio_name(layer_->audio_effects[static_cast<size_t>(i)].type);
+            auto *box = new QGroupBox(title, settings_container_);
+            auto *form = new QFormLayout(box);
+            auto add_spin = [this, form, box, i](const QString &label_text, double value,
+                                                 double minimum, double maximum,
+                                                 std::function<void(AudioEffect &, double)> setter) {
+                auto *spin = new QDoubleSpinBox(box);
+                spin->setRange(minimum, maximum);
+                spin->setDecimals(2);
+                spin->setValue(value);
+                auto *label = new NumericDragLabel(label_text, spin, box,
+                    [this]() { numeric_label_dragging_ = true; },
+                    [this]() { numeric_label_dragging_ = false; emit audio_property_changed(true); });
+                label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                form->addRow(label, spin);
+                connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                        [this, i, setter](double v) {
+                    if (!layer_ || loading_values_ ||
+                        i >= static_cast<int>(layer_->audio_effects.size())) return;
+                    setter(layer_->audio_effects[static_cast<size_t>(i)], v);
+                    emit audio_property_changed(false);
+                });
+                connect(spin, &QDoubleSpinBox::editingFinished, this,
+                        [this]() { emit audio_property_changed(true); });
+            };
+            AudioEffect &fx = layer_->audio_effects[static_cast<size_t>(i)];
+            if (fx.type == AudioEffectType::Gain)
+                add_spin(QStringLiteral("Gain (dB)"), fx.gain_db, -60, 24,
+                         [](AudioEffect &e,double v){e.gain_db=float(v);});
+            else if (fx.type == AudioEffectType::Fade) {
+                add_spin(QStringLiteral("Fade in (s)"), fx.fade_in, 0, 60,
+                         [](AudioEffect &e,double v){e.fade_in=v;});
+                add_spin(QStringLiteral("Fade out (s)"), fx.fade_out, 0, 60,
+                         [](AudioEffect &e,double v){e.fade_out=v;});
+            } else if (fx.type == AudioEffectType::HighPass ||
+                       fx.type == AudioEffectType::LowPass) {
+                add_spin(QStringLiteral("Frequency (Hz)"), fx.frequency_hz, 20, 20000,
+                         [](AudioEffect &e,double v){e.frequency_hz=float(v);});
+            } else {
+                add_spin(QStringLiteral("Threshold (dB)"), fx.threshold_db, -60, 0,
+                         [](AudioEffect &e,double v){e.threshold_db=float(v);});
+                add_spin(QStringLiteral("Ratio"), fx.ratio, 1, 20,
+                         [](AudioEffect &e,double v){e.ratio=float(v);});
+                add_spin(QStringLiteral("Attack (ms)"), fx.attack_ms, 0.1, 200,
+                         [](AudioEffect &e,double v){e.attack_ms=float(v);});
+                add_spin(QStringLiteral("Release (ms)"), fx.release_ms, 1, 2000,
+                         [](AudioEffect &e,double v){e.release_ms=float(v);});
+            }
+
+            BglCollapsiblePanel *panel = bgl_add_panel_section(settings_layout_, box);
+            if (!panel) continue;
+            panel->setProperty("bglAudioEffectIndex", i);
+            panel->setOrderPersistenceEnabled(false);
+            effect_panels_.push_back(panel);
+
+            auto *enabled = new BglSwitch(panel);
+            enabled->setToolTip(bgl_tr("OBSTitles.Enabled"));
+            enabled->setChecked(fx.enabled);
+            panel->addHeaderLeadingWidget(enabled);
+            connect(enabled, &QCheckBox::toggled, this, [this, panel](bool value) {
+                if (!layer_ || !panel) return;
+                const int index = panel->property("bglAudioEffectIndex").toInt();
+                if (index < 0 || index >= static_cast<int>(layer_->audio_effects.size())) return;
+                layer_->audio_effects[static_cast<size_t>(index)].enabled = value;
+                emit audio_property_changed(true);
+            });
+
+            auto *more = new QToolButton(panel);
+            more->setText(QStringLiteral("⋮"));
+            more->setAutoRaise(true);
+            more->setFixedSize(20, 20);
+            panel->addHeaderWidget(more);
+            connect(panel, &BglCollapsiblePanel::orderChanged, this, [this]() {
+                if (!layer_ || layer_->audio_effects.empty()) return;
+                std::vector<AudioEffect> reordered;
+                reordered.reserve(layer_->audio_effects.size());
+                std::set<int> used;
+                for (const auto &candidate : effect_panels_) {
+                    if (!candidate) continue;
+                    const QVariant value = candidate->property("bglAudioEffectIndex");
+                    if (!value.isValid()) continue;
+                    const int source = value.toInt();
+                    if (source < 0 || source >= static_cast<int>(layer_->audio_effects.size()) ||
+                        !used.insert(source).second) continue;
+                    reordered.push_back(layer_->audio_effects[static_cast<size_t>(source)]);
+                }
+                if (reordered.size() != layer_->audio_effects.size()) return;
+                layer_->audio_effects = std::move(reordered);
+                rebuild_stack();
+                emit audio_property_changed(true);
+            });
+            connect(more, &QToolButton::clicked, this, [this, panel, more]() {
+                if (!layer_ || !panel) return;
+                const int index = panel->property("bglAudioEffectIndex").toInt();
+                if (index < 0 || index >= static_cast<int>(layer_->audio_effects.size())) return;
+                QMenu menu(more);
+                QAction *duplicate = menu.addAction(obs_icon("duplicate.svg"), bgl_tr("OBSTitles.DuplicateEffect"));
+                QAction *remove = menu.addAction(obs_icon("delete.svg"), bgl_tr("OBSTitles.DeleteEffect"));
+                menu.addSeparator();
+                QAction *up = menu.addAction(obs_icon("move-up.svg"), bgl_tr("OBSTitles.MoveEffectUp"));
+                QAction *down = menu.addAction(obs_icon("move-down.svg"), bgl_tr("OBSTitles.MoveEffectDown"));
+                up->setEnabled(index > 0);
+                down->setEnabled(index + 1 < static_cast<int>(layer_->audio_effects.size()));
+                QAction *chosen = menu.exec(more->mapToGlobal(QPoint(more->width(), more->height())));
+                if (chosen == duplicate) {
+                    layer_->audio_effects.insert(layer_->audio_effects.begin() + index + 1,
+                                                 layer_->audio_effects[static_cast<size_t>(index)]);
+                } else if (chosen == remove) {
+                    layer_->audio_effects.erase(layer_->audio_effects.begin() + index);
+                } else if (chosen == up) {
+                    std::swap(layer_->audio_effects[static_cast<size_t>(index)],
+                              layer_->audio_effects[static_cast<size_t>(index - 1)]);
+                } else if (chosen == down) {
+                    std::swap(layer_->audio_effects[static_cast<size_t>(index)],
+                              layer_->audio_effects[static_cast<size_t>(index + 1)]);
+                } else return;
+                rebuild_stack();
+                emit audio_property_changed(true);
+            });
+        }
+        settings_layout_->addStretch(1);
+        return;
+    }
+
     if (!layer_ || layer_->effects.empty()) {
         auto *label = new QLabel(layer_ ? bgl_tr("OBSTitles.AddEffectSettingsHint")
                                         : bgl_tr("OBSTitles.SelectLayerEditEffectsHint"),

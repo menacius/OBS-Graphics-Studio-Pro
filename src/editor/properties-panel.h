@@ -68,6 +68,7 @@ public slots:
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
+    void audio_property_changed(bool commit_undo = false);
     void live_visual_changed();
     void runtime_visual_changed();
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
@@ -106,6 +107,26 @@ private:
     std::string external_gradient_layer_id_;
     int external_gradient_stop_index_ = -1;
     bool external_gradient_stroke_ = false;
+
+    QGroupBox       *audio_box_    = nullptr;
+    QLineEdit       *edt_audio_source_ = nullptr;
+    QToolButton     *btn_audio_browse_ = nullptr;
+    QDoubleSpinBox  *spn_audio_in_ = nullptr;
+    QDoubleSpinBox  *spn_audio_out_ = nullptr;
+    QDoubleSpinBox  *spn_audio_volume_ = nullptr;
+    QDoubleSpinBox  *spn_audio_pan_ = nullptr;
+    QSlider         *sld_audio_volume_ = nullptr;
+    QSlider         *sld_audio_pan_ = nullptr;
+    QToolButton     *btn_kf_audio_volume_ = nullptr;
+    QToolButton     *btn_kf_audio_pan_ = nullptr;
+    QDoubleSpinBox  *spn_audio_fade_in_ = nullptr;
+    QDoubleSpinBox  *spn_audio_fade_out_ = nullptr;
+    QComboBox       *cmb_audio_fade_curve_ = nullptr;
+    QComboBox       *cmb_audio_playback_ = nullptr;
+    QCheckBox       *chk_audio_mute_ = nullptr;
+    QCheckBox       *chk_audio_solo_ = nullptr;
+    QCheckBox       *chk_audio_loop_ = nullptr;
+    QCheckBox       *chk_audio_independent_ = nullptr;
 
     QGroupBox       *asset_box_    = nullptr;
     QLabel          *lbl_asset_name_ = nullptr;
