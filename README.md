@@ -1,22 +1,10 @@
 # Broadcast Graphics Live
 
-<p align="center">
-  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
-</p>
+<img width="1920" height="1044" alt="Screenshot 2026-07-03 105852" src="https://github.com/user-attachments/assets/28b51b4c-929a-4461-9568-a134d16e4d4d" />
 
 **Broadcast Graphics Live** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered motion-graphics editor, live text and image cueing, audio layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
 
 **Current build:** `v0.8.9-alpha` · `Development Version 189`
-
-<p align="center"><strong>Developed by: omniatv</strong></p>
-<p align="center">
-  <a href="https://omniatv.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
-      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
-    </picture>
-  </a>
-</p>
 
 ## What is new in v0.8.9-alpha
 
@@ -95,6 +83,20 @@ Documentation has been consolidated into maintained thematic guides instead of p
 ## Tests and audits
 
 Source contracts live in `tests/`; architecture, packaging, and regression audits live in `tools/`. Many source-only checks run without OBS, while native rendering and integration validation require a matching OBS/libobs SDK and runtime.
+
+<p align="center">
+  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
+</p>
+
+<p align="center"><strong>Developed by: omniatv</strong></p>
+<p align="center">
+  <a href="https://omniatv.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
+      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
+    </picture>
+  </a>
+</p>
 
 ## Support
 
