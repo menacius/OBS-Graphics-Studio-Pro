@@ -279,6 +279,20 @@ Run `python tools/run_automated_test_suite.py --profile source` for source-only 
   </a>
 </p>
 
+<p align="center">
+  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
+</p>
+
+<p align="center"><strong>Developed by: omniatv</strong></p>
+<p align="center">
+  <a href="https://omniatv.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
+      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
+    </picture>
+  </a>
+</p>
+
 ## Support
 
 Broadcast Graphics Live is free and open source. Development can be supported through [OmniaTV](https://omniatv.com/en/support/).
