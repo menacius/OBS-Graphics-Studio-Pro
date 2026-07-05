@@ -17,13 +17,23 @@ def main() -> int:
 
     failures: list[str] = []
     for test in tests:
-        result = subprocess.run(
-            [sys.executable, str(test)],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, str(test)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=90,
+            )
+        except subprocess.TimeoutExpired as exc:
+            failures.append(test.name)
+            print(f"TIMEOUT {test.name} (90 seconds)", file=sys.stderr)
+            if exc.stdout:
+                print(exc.stdout, file=sys.stderr, end="")
+            if exc.stderr:
+                print(exc.stderr, file=sys.stderr, end="")
+            continue
         if result.returncode == 0:
             print(f"PASS {test.name}")
             continue

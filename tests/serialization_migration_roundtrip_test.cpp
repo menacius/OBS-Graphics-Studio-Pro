@@ -72,10 +72,17 @@ json make_legacy_title()
                             {"temporal_out_speed", 34.5},
                             {"spatial_in_tangent", {{"x", -20.0}, {"y", 5.0}}},
                             {"spatial_out_tangent", {{"x", 40.0}, {"y", -10.0}}},
-                            {"spatial_tangents_linked", false}
+                            {"spatial_tangents_linked", false},
+                            {"future_keyframe_field", {{"preserve", true}}}
                         }
                     })}
                 }},
+                {"effects", json::array({
+                    {{"type", 0}, {"future_effect_field", "preserve-me"}}
+                })},
+                {"transitions", json::array({
+                    {{"id", "transition-1"}, {"edge", 0}, {"future_transition_field", 91}}
+                })},
                 {"future_layer_field", {"nested", true}}
             },
             {
@@ -146,6 +153,15 @@ int main()
     require(migrated.at("external_data_sources").at(0).at("future_provider_field") ==
                 "preserve-me",
             "unknown provider field was not preserved");
+    require(migrated.at("layers").at(0).at("position").at("keyframes").at(0)
+                .at("future_keyframe_field").at("preserve") == true,
+            "unknown keyframe field was not preserved");
+    require(migrated.at("layers").at(0).at("effects").at(0)
+                .at("future_effect_field") == "preserve-me",
+            "unknown effect field was not preserved");
+    require(migrated.at("layers").at(0).at("transitions").at(0)
+                .at("future_transition_field") == 91,
+            "unknown transition field was not preserved");
 
     const auto &document = migrated.at("layers").at(0).at("rich_text");
     require(document.at("formatting_schema_version") ==
@@ -202,16 +218,49 @@ int main()
 
     json malformed = {
         {"id", "malformed-but-recoverable"},
-        {"layers", "not-an-array"},
-        {"external_data_sources", 123},
+        {"layers", json::array({
+            false,
+            {
+                {"id", "layer-ok"},
+                {"effects", json::array({false, {{"type", 0}}})},
+                {"transitions", "not-an-array"},
+                {"audio_effects", json::array({nullptr, {{"type", 0}}})},
+                {"external_bindings", 42},
+                {"parent_bind_enabled", true},
+                {"parent_bind_matrix", json::array({1.0, 2.0})}
+            }
+        })},
+        {"cameras", json::array({false, {{"id", "camera-ok"}}})},
+        {"external_data_sources", json::array({
+            false,
+            {{"id", "source-ok"}, {"fields", json::array({false, {{"path", "headline"}}})},
+             {"provider", "not-an-object"}}
+        })},
         {"live_text_external_bindings", json::array({false, {{"layer_id", "ok"}}})},
         {"proxy_metadata", "not-an-object"}
     };
     MigrationReport malformed_report;
     const json recovered = bgs::serialization::migrate_title_json(malformed, &malformed_report);
-    require(recovered.at("layers").is_array(), "malformed layers were not recovered");
-    require(recovered.at("external_data_sources").is_array(),
-            "malformed external data sources were not recovered");
+    require(recovered.at("layers").size() == 1,
+            "malformed layer entries were not isolated");
+    require(recovered.at("cameras").size() == 1,
+            "malformed camera entries were not isolated");
+    require(recovered.at("layers").at(0).at("effects").size() == 1,
+            "malformed effect entries were not isolated");
+    require(recovered.at("layers").at(0).at("transitions").is_array(),
+            "malformed transition array was not recovered");
+    require(recovered.at("layers").at(0).at("audio_effects").size() == 1,
+            "malformed audio-effect entries were not isolated");
+    require(recovered.at("layers").at(0).at("external_bindings").is_array(),
+            "malformed external bindings were not recovered");
+    require(recovered.at("layers").at(0).at("parent_bind_enabled") == false,
+            "malformed parent bind matrix was not disabled");
+    require(recovered.at("external_data_sources").size() == 1,
+            "malformed external data source entries were not isolated");
+    require(recovered.at("external_data_sources").at(0).at("fields").size() == 1,
+            "malformed external field entries were not isolated");
+    require(recovered.at("external_data_sources").at(0).at("provider").is_object(),
+            "malformed external provider was not recovered");
     require(recovered.at("live_text_external_bindings").size() == 1,
             "only malformed binding entries should be discarded");
     require(recovered.at("proxy_metadata").is_object(),

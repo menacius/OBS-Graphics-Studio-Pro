@@ -67,6 +67,95 @@ static double finite_or(double value, double fallback)
     return std::isfinite(value) ? value : fallback;
 }
 
+static json passthrough_json_object(const std::string &payload)
+{
+    if (payload.empty())
+        return json::object();
+    json parsed = json::parse(payload, nullptr, false);
+    return parsed.is_object() ? std::move(parsed) : json::object();
+}
+
+static json passthrough_json_object(const OpaqueSerializationPassthrough &payload)
+{
+    return passthrough_json_object(payload.str());
+}
+
+static json passthrough_array_item(const json &owner, const char *key, size_t index)
+{
+    if (!owner.is_object())
+        return json::object();
+    const auto it = owner.find(key);
+    if (it == owner.end() || !it->is_array() || index >= it->size() || !(*it)[index].is_object())
+        return json::object();
+    return (*it)[index];
+}
+
+
+static const json *matching_passthrough_array_item(const json &base_array,
+                                                    const json &known_item,
+                                                    size_t fallback_index)
+{
+    if (!base_array.is_array() || !known_item.is_object())
+        return nullptr;
+    const char *keys[] = {"id", "time", "path", "property_path", "layer_id"};
+    for (const char *key : keys) {
+        const auto known = known_item.find(key);
+        if (known == known_item.end() || known->is_null())
+            continue;
+        for (const auto &candidate : base_array) {
+            if (candidate.is_object() && candidate.contains(key) && candidate[key] == *known)
+                return &candidate;
+        }
+    }
+    if (fallback_index < base_array.size() && base_array[fallback_index].is_object())
+        return &base_array[fallback_index];
+    return nullptr;
+}
+
+static json merge_nested_passthrough(const json &base, const json &known)
+{
+    if (known.is_object()) {
+        json result = base.is_object() ? base : json::object();
+        for (auto it = known.begin(); it != known.end(); ++it) {
+            const auto base_it = result.find(it.key());
+            result[it.key()] = base_it != result.end()
+                ? merge_nested_passthrough(*base_it, it.value())
+                : it.value();
+        }
+        return result;
+    }
+    if (known.is_array()) {
+        json result = json::array();
+        result.get_ref<json::array_t&>().reserve(known.size());
+        for (size_t index = 0; index < known.size(); ++index) {
+            const json *candidate = matching_passthrough_array_item(base, known[index], index);
+            result.push_back(candidate
+                ? merge_nested_passthrough(*candidate, known[index])
+                : known[index]);
+        }
+        return result;
+    }
+    return known;
+}
+
+/* The root object already contains only fields that should survive. This pass
+ * deep-merges just those surviving keys, preserving unknown members inside
+ * animated properties, keyframes, effects, cameras and provider definitions. */
+static json merge_surviving_passthrough(const json &base, const json &known_root)
+{
+    if (!known_root.is_object())
+        return known_root;
+    json result = known_root;
+    if (!base.is_object())
+        return result;
+    for (auto it = result.begin(); it != result.end(); ++it) {
+        const auto base_it = base.find(it.key());
+        if (base_it != base.end())
+            it.value() = merge_nested_passthrough(*base_it, it.value());
+    }
+    return result;
+}
+
 static void append_unique_import_diagnostic(std::vector<std::string> &items, const std::string &value)
 {
     if (value.empty())
@@ -359,9 +448,11 @@ static std::map<std::string, std::string> external_string_map_from_json(
     return result;
 }
 
-static json external_provider_to_json(const ExternalDataProviderConfig &provider)
+static json external_provider_to_json(const ExternalDataProviderConfig &provider,
+                                      const json &passthrough = json::object())
 {
-    json result = {
+    json result = passthrough.is_object() ? passthrough : json::object();
+    result.update(json{
         {"type", static_cast<int>(provider.type)},
         {"enabled", provider.enabled},
         {"location", provider.location},
@@ -382,7 +473,7 @@ static json external_provider_to_json(const ExternalDataProviderConfig &provider
         {"csv_row_index", provider.csv_row_index},
         {"csv_column_mapping", external_string_map_to_json(provider.csv_column_mapping)},
         {"text_field_path", provider.text_field_path},
-    };
+    });
     if (!provider.manual_values.empty()) {
         json manual = json::object();
         for (const auto &entry : provider.manual_values) {
@@ -390,8 +481,10 @@ static json external_provider_to_json(const ExternalDataProviderConfig &provider
                 manual[entry.first] = external_value_to_json(entry.second);
         }
         result["manual_values"] = std::move(manual);
+    } else {
+        result.erase("manual_values");
     }
-    return result;
+    return merge_surviving_passthrough(passthrough, result);
 }
 
 static ExternalDataProviderConfig external_provider_from_json(const json &j)
@@ -624,23 +717,32 @@ static LiveTextTableBinding live_text_table_binding_from_json(const json &j)
     return mapping;
 }
 
-static json external_source_to_json(const ExternalDataSourceDefinition &source)
+static json external_source_to_json(const ExternalDataSourceDefinition &source,
+                                    const json &passthrough = json::object())
 {
+    json result = passthrough.is_object() ? passthrough : json::object();
     json fields = json::array();
-    for (const auto &field : source.fields) {
-        json item = {
+    for (size_t index = 0; index < source.fields.size(); ++index) {
+        const auto &field = source.fields[index];
+        json item = passthrough_array_item(result, "fields", index);
+        item.update(json{
             {"path", field.path},
             {"name", field.name},
             {"type", static_cast<int>(field.type)},
             {"has_default_value", field.has_default_value},
-        };
+        });
         if (field.has_default_value)
             item["default_value"] = external_value_to_json(field.default_value);
+        else
+            item.erase("default_value");
         fields.push_back(std::move(item));
     }
-    return json{{"id", source.id}, {"name", source.name},
-                {"fields", std::move(fields)},
-                {"provider", external_provider_to_json(source.provider)}};
+    const json provider_passthrough = result.contains("provider") && result["provider"].is_object()
+        ? result["provider"] : json::object();
+    result.update(json{{"id", source.id}, {"name", source.name},
+                       {"fields", std::move(fields)},
+                       {"provider", external_provider_to_json(source.provider, provider_passthrough)}});
+    return merge_surviving_passthrough(passthrough, result);
 }
 
 static ExternalDataSourceDefinition external_source_from_json(const json &j)
@@ -1263,7 +1365,7 @@ static void set_stinger_transition_input_default_surface(
     layer.out_time = std::max(0.001, title.duration);
     layer.position.static_value = {canvas_width * 0.5, canvas_height * 0.5};
     layer.position.keyframes.clear();
-    layer.scale.static_value = {1.0, 1.0};
+    layer.scale.static_value = {1.0, 1.0, 1.0};
     layer.scale.keyframes.clear();
     layer.lock_aspect_ratio = false;
     layer.shape_type = ShapeType::Rectangle;
@@ -1271,7 +1373,7 @@ static void set_stinger_transition_input_default_surface(
     layer.rotation.keyframes.clear();
     layer.opacity.static_value = 1.0;
     layer.opacity.keyframes.clear();
-    layer.origin_prop.static_value = {0.5, 0.5};
+    layer.origin_prop.static_value = {0.5, 0.5, 0.0};
     layer.origin_prop.keyframes.clear();
     layer.origin_x = 0.5f;
     layer.origin_y = 0.5f;
@@ -1646,6 +1748,43 @@ static AnimatedProperty aprop_from_json(const json &j, const std::string &name)
 }
 
 
+static json discrete_property_to_json(const AnimatedDiscreteProperty &property)
+{
+    json result = {{"static_value", property.static_value}};
+    json keys = json::array();
+    for (const DiscreteKeyframe &keyframe : property.keyframes) {
+        keys.push_back({{"time", keyframe.time}, {"value", keyframe.value}});
+    }
+    result["keyframes"] = std::move(keys);
+    return result;
+}
+
+static AnimatedDiscreteProperty discrete_property_from_json(
+    const json &value, const std::string &name, const std::string &fallback)
+{
+    AnimatedDiscreteProperty property{name, fallback};
+    if (!value.is_object())
+        return property;
+    property.static_value = bounded_string(value, "static_value", fallback, kMaxNameLength);
+    if (value.contains("keyframes") && value["keyframes"].is_array()) {
+        const size_t count = std::min(value["keyframes"].size(), kMaxKeyframesPerProperty);
+        property.keyframes.reserve(count);
+        for (size_t index = 0; index < count; ++index) {
+            const json &entry = value["keyframes"][index];
+            if (!entry.is_object()) continue;
+            DiscreteKeyframe keyframe;
+            keyframe.time = std::clamp(
+                finite_or(json_double(entry, "time", 0.0), 0.0),
+                0.0, kMaxDuration);
+            keyframe.value = bounded_string(entry, "value", fallback, kMaxNameLength);
+            property.keyframes.push_back(std::move(keyframe));
+        }
+        property.sort_keyframes();
+    }
+    return property;
+}
+
+
 
 static json text_animator_property_to_json(const TextAnimatorProperty &property)
 {
@@ -1879,11 +2018,12 @@ static TextAnimatorStack text_animator_stack_from_json(const json &j)
 static json vec2_aprop_to_json(const AnimatedVec2Property &p)
 {
     json j;
-    j["static_value"] = {{"x", p.static_value.x}, {"y", p.static_value.y}};
+    j["static_value"] = {{"x", p.static_value.x}, {"y", p.static_value.y},
+                         {"z", p.static_value.z}};
     json kf = json::array();
     for (const auto &k : p.keyframes) {
         kf.push_back({{"time", k.time},
-                      {"value", {{"x", k.value.x}, {"y", k.value.y}}},
+                      {"value", {{"x", k.value.x}, {"y", k.value.y}, {"z", k.value.z}}},
                       {"easing", (int)k.easing},
                       {"cx1", k.cx1}, {"cy1", k.cy1},
                       {"cx2", k.cx2}, {"cy2", k.cy2},
@@ -1895,9 +2035,11 @@ static json vec2_aprop_to_json(const AnimatedVec2Property &p)
                       {"temporal_tangents_linked", k.temporal_tangents_linked},
                       {"temporal_velocity_explicit", k.temporal_velocity_explicit},
                       {"spatial_in_tangent", {{"x", k.incoming_tangent.x},
-                                               {"y", k.incoming_tangent.y}}},
+                                               {"y", k.incoming_tangent.y},
+                                               {"z", k.incoming_tangent.z}}},
                       {"spatial_out_tangent", {{"x", k.outgoing_tangent.x},
-                                                {"y", k.outgoing_tangent.y}}},
+                                                {"y", k.outgoing_tangent.y},
+                                                {"z", k.outgoing_tangent.z}}},
                       {"spatial_mode", (int)k.spatial_mode},
                       {"spatial_tangents_linked", k.spatial_tangents_linked},
                       {"rove_across_time", k.rove_across_time}});
@@ -1915,6 +2057,11 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
                                       -kMaxPropertyValue, kMaxPropertyValue);
         p.static_value.y = std::clamp(finite_or(json_double(j["static_value"], "y", p.static_value.y), p.static_value.y),
                                       -kMaxPropertyValue, kMaxPropertyValue);
+        /* Pre-212 vector2d payloads have no z member.  The field-specific
+         * constructor default (0 for position/size, 1 for scale) preserves the
+         * historical 2D result while allowing the same track to carry XYZ. */
+        p.static_value.z = std::clamp(finite_or(json_double(j["static_value"], "z", p.static_value.z), p.static_value.z),
+                                      -kMaxPropertyValue, kMaxPropertyValue);
     }
     if (j.contains("keyframes") && j["keyframes"].is_array()) {
         const size_t count = std::min(j["keyframes"].size(), kMaxKeyframesPerProperty);
@@ -1929,6 +2076,8 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
                 k.value.x = std::clamp(finite_or(json_double(item["value"], "x", 0.0), 0.0),
                                        -kMaxPropertyValue, kMaxPropertyValue);
                 k.value.y = std::clamp(finite_or(json_double(item["value"], "y", 0.0), 0.0),
+                                       -kMaxPropertyValue, kMaxPropertyValue);
+                k.value.z = std::clamp(finite_or(json_double(item["value"], "z", p.static_value.z), p.static_value.z),
                                        -kMaxPropertyValue, kMaxPropertyValue);
             }
             k.easing = (EasingType)std::clamp(json_int(item, "easing", 0), 0, (int)EasingType::Hold);
@@ -1962,6 +2111,9 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
                 tangent.y = std::clamp(
                     finite_or(json_double(item[name], "y", 0.0), 0.0),
                     -kMaxPropertyValue, kMaxPropertyValue);
+                tangent.z = std::clamp(
+                    finite_or(json_double(item[name], "z", 0.0), 0.0),
+                    -kMaxPropertyValue, kMaxPropertyValue);
             };
             read_spatial_tangent("spatial_in_tangent", k.incoming_tangent);
             read_spatial_tangent("spatial_out_tangent", k.outgoing_tangent);
@@ -1981,6 +2133,202 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
                   [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
         p.recalculate_rove_times();
     }
+}
+
+static bool vector_payload_has_z(const json &j)
+{
+    if (!j.is_object()) return false;
+    if (j.contains("static_value") && j["static_value"].is_object() &&
+        j["static_value"].contains("z"))
+        return true;
+    if (!j.contains("keyframes") || !j["keyframes"].is_array())
+        return false;
+    for (const auto &item : j["keyframes"]) {
+        if (item.is_object() && item.contains("value") &&
+            item["value"].is_object() && item["value"].contains("z"))
+            return true;
+    }
+    return false;
+}
+
+static void copy_scalar_temporal_metadata(const Keyframe &source,
+                                          VectorKeyframe &destination)
+{
+    destination.easing = source.easing;
+    destination.cx1 = source.cx1; destination.cy1 = source.cy1;
+    destination.cx2 = source.cx2; destination.cy2 = source.cy2;
+    destination.temporal_mode = source.temporal_mode;
+    destination.incoming_influence = source.incoming_influence;
+    destination.outgoing_influence = source.outgoing_influence;
+    destination.incoming_speed = source.incoming_speed;
+    destination.outgoing_speed = source.outgoing_speed;
+    destination.temporal_tangents_linked = source.temporal_tangents_linked;
+    destination.temporal_velocity_explicit = source.temporal_velocity_explicit;
+}
+
+/* Development Version 212 migration: older 3D layers stored Z in an adjacent
+ * scalar track. Promote the union of XY and Z key times into the unified XYZ
+ * vector while retaining the scalar as a compatibility mirror. 2D documents
+ * simply receive their constructor-default Z and remain on the affine path. */
+static void promote_legacy_scalar_z_track(AnimatedVec2Property &vector,
+                                          const AnimatedProperty &legacy_z)
+{
+    const AnimatedVec2Property previous = vector;
+    vector.static_value.z = legacy_z.static_value;
+
+    std::vector<double> times;
+    times.reserve(previous.keyframes.size() + legacy_z.keyframes.size());
+    for (const VectorKeyframe &key : previous.keyframes) times.push_back(key.time);
+    for (const Keyframe &key : legacy_z.keyframes) times.push_back(key.time);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end(), [](double a, double b) {
+        return std::abs(a - b) <= 1.0e-9;
+    }), times.end());
+
+    std::vector<VectorKeyframe> promoted;
+    promoted.reserve(times.size());
+    for (double time : times) {
+        VectorKeyframe key;
+        key.time = time;
+        key.value = previous.evaluate(time);
+        key.value.z = legacy_z.evaluate(time);
+
+        const auto vector_key = std::find_if(
+            previous.keyframes.begin(), previous.keyframes.end(),
+            [time](const VectorKeyframe &candidate) {
+                return std::abs(candidate.time - time) <= 1.0e-9;
+            });
+        if (vector_key != previous.keyframes.end()) {
+            key = *vector_key;
+            key.value.z = legacy_z.evaluate(time);
+        } else {
+            const auto z_key = std::find_if(
+                legacy_z.keyframes.begin(), legacy_z.keyframes.end(),
+                [time](const Keyframe &candidate) {
+                    return std::abs(candidate.time - time) <= 1.0e-9;
+                });
+            if (z_key != legacy_z.keyframes.end())
+                copy_scalar_temporal_metadata(*z_key, key);
+        }
+        promoted.push_back(key);
+    }
+    vector.keyframes = std::move(promoted);
+    vector.recalculate_rove_times();
+}
+
+static json vec3_aprop_to_json(const AnimatedVec3Property &p)
+{
+    json j;
+    j["static_value"] = {{"x", p.static_value.x}, {"y", p.static_value.y},
+                         {"z", p.static_value.z}};
+    json kf = json::array();
+    for (const Vector3Keyframe &k : p.keyframes) {
+        kf.push_back({
+            {"time", k.time},
+            {"value", {{"x", k.value.x}, {"y", k.value.y}, {"z", k.value.z}}},
+            {"easing", (int)k.easing},
+            {"cx1", k.cx1}, {"cy1", k.cy1},
+            {"cx2", k.cx2}, {"cy2", k.cy2},
+            {"temporal_mode", (int)k.temporal_mode},
+            {"temporal_in_influence", k.incoming_influence},
+            {"temporal_out_influence", k.outgoing_influence},
+            {"temporal_in_speed", k.incoming_speed},
+            {"temporal_out_speed", k.outgoing_speed},
+            {"temporal_tangents_linked", k.temporal_tangents_linked},
+            {"temporal_velocity_explicit", k.temporal_velocity_explicit},
+            {"spatial_in_tangent", {{"x", k.incoming_tangent.x},
+                                    {"y", k.incoming_tangent.y},
+                                    {"z", k.incoming_tangent.z}}},
+            {"spatial_out_tangent", {{"x", k.outgoing_tangent.x},
+                                     {"y", k.outgoing_tangent.y},
+                                     {"z", k.outgoing_tangent.z}}},
+            {"spatial_mode", (int)k.spatial_mode},
+            {"spatial_tangents_linked", k.spatial_tangents_linked},
+            {"rove_across_time", k.rove_across_time}
+        });
+    }
+    j["keyframes"] = std::move(kf);
+    return j;
+}
+
+static void vec3_aprop_from_json(const json &j, AnimatedVec3Property &p)
+{
+    if (!j.is_object()) return;
+    auto clamp_component = [](double value) {
+        return std::clamp(finite_or(value, 0.0),
+                          -kMaxPropertyValue, kMaxPropertyValue);
+    };
+    if (j.contains("static_value") && j["static_value"].is_object()) {
+        const json &value = j["static_value"];
+        p.static_value.x = clamp_component(json_double(value, "x", p.static_value.x));
+        p.static_value.y = clamp_component(json_double(value, "y", p.static_value.y));
+        p.static_value.z = clamp_component(json_double(value, "z", p.static_value.z));
+    }
+    if (!j.contains("keyframes") || !j["keyframes"].is_array()) return;
+
+    const size_t count = std::min(j["keyframes"].size(), kMaxKeyframesPerProperty);
+    p.keyframes.clear();
+    p.keyframes.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const json &item = j["keyframes"][i];
+        if (!item.is_object()) continue;
+        Vector3Keyframe k;
+        k.time = std::clamp(finite_or(json_double(item, "time", 0.0), 0.0),
+                            0.0, kMaxDuration);
+        if (item.contains("value") && item["value"].is_object()) {
+            const json &value = item["value"];
+            k.value.x = clamp_component(json_double(value, "x", 0.0));
+            k.value.y = clamp_component(json_double(value, "y", 0.0));
+            k.value.z = clamp_component(json_double(value, "z", 0.0));
+        }
+        k.easing = (EasingType)std::clamp(
+            json_int(item, "easing", 0), 0, (int)EasingType::Hold);
+        k.cx1 = std::clamp(finite_or(json_double(item, "cx1", 0.333), 0.333), 0.0, 1.0);
+        k.cy1 = std::clamp(finite_or(json_double(item, "cy1", 0.0), 0.0), 0.0, 1.0);
+        k.cx2 = std::clamp(finite_or(json_double(item, "cx2", 0.667), 0.667), 0.0, 1.0);
+        k.cy2 = std::clamp(finite_or(json_double(item, "cy2", 1.0), 1.0), 0.0, 1.0);
+        k.temporal_mode = (TemporalInterpolationMode)std::clamp(
+            json_int(item, "temporal_mode", (int)TemporalInterpolationMode::AutoBezier),
+            (int)TemporalInterpolationMode::Linear,
+            (int)TemporalInterpolationMode::ManualBezier);
+        k.incoming_influence = std::clamp(finite_or(
+            json_double(item, "temporal_in_influence", 33.3333333333),
+            33.3333333333), 0.0, 100.0);
+        k.outgoing_influence = std::clamp(finite_or(
+            json_double(item, "temporal_out_influence", 33.3333333333),
+            33.3333333333), 0.0, 100.0);
+        k.incoming_speed = clamp_component(
+            json_double(item, "temporal_in_speed", 0.0));
+        k.outgoing_speed = clamp_component(
+            json_double(item, "temporal_out_speed", 0.0));
+        k.temporal_tangents_linked = json_bool(
+            item, "temporal_tangents_linked", true);
+        k.temporal_velocity_explicit = json_bool(
+            item, "temporal_velocity_explicit", false);
+
+        auto read_tangent = [&](const char *name, Vec3Value &tangent) {
+            if (!item.contains(name) || !item[name].is_object()) return;
+            const json &value = item[name];
+            tangent.x = clamp_component(json_double(value, "x", 0.0));
+            tangent.y = clamp_component(json_double(value, "y", 0.0));
+            tangent.z = clamp_component(json_double(value, "z", 0.0));
+        };
+        read_tangent("spatial_in_tangent", k.incoming_tangent);
+        read_tangent("spatial_out_tangent", k.outgoing_tangent);
+        k.spatial_mode = (SpatialInterpolationMode)std::clamp(
+            json_int(item, "spatial_mode", (int)SpatialInterpolationMode::Linear),
+            (int)SpatialInterpolationMode::Linear,
+            (int)SpatialInterpolationMode::ManualBezier);
+        k.spatial_tangents_linked = json_bool(
+            item, "spatial_tangents_linked", true);
+        k.rove_across_time = json_bool(item, "rove_across_time", false);
+        p.keyframes.push_back(k);
+    }
+    std::sort(p.keyframes.begin(), p.keyframes.end(),
+              [](const Vector3Keyframe &a, const Vector3Keyframe &b) {
+                  return a.time < b.time;
+              });
+    p.recalculate_rove_times();
 }
 
 
@@ -2378,9 +2726,16 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
 
 static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr,
-                          bool *asset_embed_failed = nullptr)
+                          bool *asset_embed_failed = nullptr,
+                          bool preserve_serialization_passthrough = true)
 {
-    json j;
+    /* Serialization passthrough is load/save metadata, never render input.
+     * Render fingerprints explicitly disable it so the hot path performs no
+     * JSON parse/deep merge and is independent of future-schema payload size. */
+    const json source_passthrough = preserve_serialization_passthrough
+        ? passthrough_json_object(l.serialization_passthrough_json)
+        : json::object();
+    json j = source_passthrough;
     j["id"]       = l.id;
     j["name"]     = l.name;
     j["type"]     = (int)l.type;
@@ -2391,9 +2746,21 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     if (l.type == LayerType::TransitionInput) {
         j["transition_input_slot"] = l.transition_input_slot;
         j["transition_input_required"] = l.transition_input_required;
+    } else {
+        j.erase("transition_input_slot");
+        j.erase("transition_input_required");
     }
     j["parent_id"] = l.parent_id;
     j["transform_parent_id"] = l.transform_parent_id;
+    j["parent_bind_enabled"] = l.parent_bind_enabled;
+    if (l.parent_bind_enabled) {
+        json bind = json::array();
+        for (double value : l.parent_bind_matrix)
+            bind.push_back(std::isfinite(value) ? value : 0.0);
+        j["parent_bind_matrix"] = std::move(bind);
+    } else {
+        j.erase("parent_bind_matrix");
+    }
     j["asset_title_id"] = l.asset_title_id;
     j["asset_owner_id"] = l.asset_owner_id;
     j["asset_source_layer_id"] = l.asset_source_layer_id;
@@ -2425,14 +2792,16 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["audio_fade_curve"] = (int)l.audio_fade_curve;
     json audio_effects = json::array();
     for (const auto &fx : l.audio_effects) {
-        audio_effects.push_back({
+        const json fx_passthrough = passthrough_json_object(fx.serialization_passthrough_json);
+        json serialized_fx = {
             {"type", (int)fx.type}, {"enabled", fx.enabled},
             {"gain_db", fx.gain_db}, {"frequency_hz", fx.frequency_hz},
             {"threshold_db", fx.threshold_db}, {"ratio", fx.ratio},
             {"attack_ms", fx.attack_ms}, {"release_ms", fx.release_ms},
             {"makeup_db", fx.makeup_db}, {"fade_in", fx.fade_in},
             {"fade_out", fx.fade_out}, {"fade_curve", (int)fx.fade_curve}
-        });
+        };
+        audio_effects.push_back(merge_surviving_passthrough(fx_passthrough, serialized_fx));
     }
     j["audio_effects"] = std::move(audio_effects);
     j["audio_loop"] = l.audio_loop;
@@ -2454,6 +2823,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
         for (const auto &binding : l.external_bindings)
             bindings.push_back(external_binding_to_json(binding));
         j["external_bindings"] = std::move(bindings);
+    } else {
+        j.erase("external_bindings");
     }
     json effects = json::array();
     for (const auto &effect : l.effects) {
@@ -2592,6 +2963,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"secondary_color_r", aprop_to_json(effect.secondary_color_r)},
                            {"secondary_color_g", aprop_to_json(effect.secondary_color_g)},
                            {"secondary_color_b", aprop_to_json(effect.secondary_color_b)}});
+        const json preserved_effect = passthrough_json_object(effect.serialization_passthrough_json);
+        effects.back() = merge_surviving_passthrough(preserved_effect, effects.back());
     }
     j["effects"] = effects;
     json transitions = json::array();
@@ -2627,6 +3000,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
             {"aspect", transition.aspect},
             {"profile", transition.profile},
         });
+        const json preserved_transition = passthrough_json_object(transition.serialization_passthrough_json);
+        transitions.back() = merge_surviving_passthrough(preserved_transition, transitions.back());
     }
     j["transitions"] = transitions;
     j["in_time"]  = l.in_time;
@@ -2647,6 +3022,28 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["scale_lock"] = l.scale_lock;
     j["rotation"] = aprop_to_json(l.rotation);
     j["opacity"]  = aprop_to_json(l.opacity);
+    j["dimension_mode"] = static_cast<int>(l.dimension_mode);
+    j["transform_axis_space"] = static_cast<int>(l.transform_axis_space);
+    j["position_z"] = aprop_to_json(l.position_z);
+    j["position_3d_path_enabled"] = l.position_3d_path_enabled;
+    if (l.position_3d_path_enabled)
+        j["position_3d"] = vec3_aprop_to_json(l.position_3d);
+    else
+        j.erase("position_3d");
+    j["rotation_x"] = aprop_to_json(l.rotation_x);
+    j["rotation_y"] = aprop_to_json(l.rotation_y);
+    j["scale_z"] = aprop_to_json(l.scale_z);
+    j["anchor_z"] = aprop_to_json(l.anchor_z);
+    j["orientation_x"] = aprop_to_json(l.orientation_x);
+    j["orientation_y"] = aprop_to_json(l.orientation_y);
+    j["orientation_z"] = aprop_to_json(l.orientation_z);
+    j["camera_id"] = l.camera_assignment.static_value;
+    j["camera_assignment"] = discrete_property_to_json(l.camera_assignment);
+    j["depth_mode"] = static_cast<int>(l.depth_mode);
+    j["depth_test"] = l.depth_test;
+    j["write_to_depth"] = l.write_to_depth;
+    j["double_sided"] = l.double_sided;
+    j["backface_culling"] = l.backface_culling;
 
     j["text_content"]  = l.text_content;
     /* rich_text is the only style source of truth; do not serialize legacy HTML. */
@@ -2883,20 +3280,27 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["image_width"] = l.image_width;
     j["image_height"] = l.image_height;
     j["image_size"] = vec2_aprop_to_json(l.image_size);
+    /* Embedded template payloads are regenerated explicitly and must not leak
+     * into render fingerprints or normal scene-collection saves. */
+    j.erase("embedded_image");
     if (include_embedded_assets && !attach_embedded_image_asset(l, j, require_embedded_assets, error)) {
         if (asset_embed_failed)
             *asset_embed_failed = true;
     }
     j["lock_aspect_ratio"] = l.lock_aspect_ratio;
-    return j;
+    json merged = merge_surviving_passthrough(source_passthrough, j);
+    merged["audio_effects"] = j["audio_effects"];
+    merged["effects"] = j["effects"];
+    merged["transitions"] = j["transitions"];
+    return merged;
 }
 
 std::string layer_render_fingerprint(const Layer &layer)
 {
-    json j = layer_to_json(layer, false, false, nullptr, nullptr);
+    json j = layer_to_json(layer, false, false, nullptr, nullptr, false);
     static constexpr const char *kCompositorOnlyKeys[] = {
         "id", "name", "visible", "locked", "properties_expanded",
-        "group_collapsed", "parent_id", "transform_parent_id", "mask_source_id", "mask_mode",
+        "group_collapsed", "parent_id", "transform_parent_id", "parent_bind_enabled", "parent_bind_matrix", "mask_source_id", "mask_mode",
         "matte_visibility_mode", "blend_mode",
         "use_as_scene_mask", "effect_stack_respects_masks",
         "in_time", "out_time", "position", "scale", "scale_lock",
@@ -2978,6 +3382,11 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (!j.is_object())
         return l;
 
+    {
+        json layer_passthrough = j;
+        layer_passthrough.erase("embedded_image");
+        l->serialization_passthrough_json = layer_passthrough.dump();
+    }
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
     l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::TransitionInput);
@@ -2989,6 +3398,31 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->transition_input_required = json_bool(j, "transition_input_required", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
     l->transform_parent_id = bounded_string(j, "transform_parent_id", "", kMaxNameLength);
+    l->parent_bind_enabled = json_bool(j, "parent_bind_enabled", false);
+    if (l->parent_bind_enabled && j.contains("parent_bind_matrix") &&
+        j["parent_bind_matrix"].is_array() &&
+        j["parent_bind_matrix"].size() == l->parent_bind_matrix.size()) {
+        bool valid_bind = true;
+        for (std::size_t index = 0; index < l->parent_bind_matrix.size(); ++index) {
+            const auto &item = j["parent_bind_matrix"][index];
+            if (!item.is_number() || !std::isfinite(item.get<double>())) {
+                valid_bind = false;
+                break;
+            }
+            l->parent_bind_matrix[index] = item.get<double>();
+        }
+        if (!valid_bind) {
+            l->parent_bind_enabled = false;
+            l->parent_bind_matrix = {
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0
+            };
+        }
+    } else if (l->parent_bind_enabled) {
+        l->parent_bind_enabled = false;
+    }
     l->asset_title_id = bounded_string(j, "asset_title_id", "", kMaxNameLength);
     l->asset_owner_id = bounded_string(j, "asset_owner_id", "", kMaxNameLength);
     l->asset_source_layer_id = bounded_string(j, "asset_source_layer_id", "", kMaxNameLength);
@@ -3028,6 +3462,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &a = j["audio_effects"][i];
             if (!a.is_object()) continue;
             AudioEffect fx;
+            fx.serialization_passthrough_json = a.dump();
             fx.type = (AudioEffectType)std::clamp(json_int(a, "type", 0), 0, 4);
             fx.enabled = json_bool(a, "enabled", true);
             fx.gain_db = (float)std::clamp(finite_or(json_double(a, "gain_db", 0.0), 0.0), -96.0, 24.0);
@@ -3110,6 +3545,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                 continue;
             }
             LayerEffect effect;
+            effect.serialization_passthrough_json = effect_json.dump();
             effect.type = extension_is_builtin ? resolved_type
                                                : (valid_legacy_type ? (LayerEffectType)raw_effect_type
                                                                     : LayerEffectType::BackgroundColor);
@@ -3353,6 +3789,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &transition_json = j["transitions"][i];
             if (!transition_json.is_object()) continue;
             LayerTransition transition;
+            transition.serialization_passthrough_json = transition_json.dump();
             transition.id = bounded_string(transition_json, "id", "", kMaxNameLength);
             transition.preset_id = bounded_string(transition_json, "preset_id", "", kMaxNameLength);
             transition.display_name = bounded_string(transition_json, "display_name", "Transition", kMaxNameLength);
@@ -3440,6 +3877,48 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->scale_lock = json_bool(j, "scale_lock", true);
     if (j.contains("rotation")) l->rotation = aprop_from_json(j["rotation"], "rotation");
     if (j.contains("opacity"))  l->opacity  = aprop_from_json(j["opacity"],  "opacity");
+    l->dimension_mode = static_cast<LayerDimensionMode>(std::clamp(
+        json_int(j, "dimension_mode", static_cast<int>(LayerDimensionMode::TwoD)),
+        static_cast<int>(LayerDimensionMode::TwoD),
+        static_cast<int>(LayerDimensionMode::ThreeD)));
+    l->transform_axis_space = static_cast<TransformAxisSpace>(std::clamp(
+        json_int(j, "transform_axis_space", static_cast<int>(TransformAxisSpace::Local)),
+        static_cast<int>(TransformAxisSpace::Local),
+        static_cast<int>(TransformAxisSpace::World)));
+    if (j.contains("position_z")) l->position_z = aprop_from_json(j["position_z"], "position_z");
+    const bool has_position_3d = j.contains("position_3d");
+    l->position_3d_path_enabled = json_bool(
+        j, "position_3d_path_enabled", has_position_3d);
+    if (has_position_3d)
+        vec3_aprop_from_json(j["position_3d"], l->position_3d);
+    if (j.contains("rotation_x")) l->rotation_x = aprop_from_json(j["rotation_x"], "rotation_x");
+    if (j.contains("rotation_y")) l->rotation_y = aprop_from_json(j["rotation_y"], "rotation_y");
+    if (j.contains("scale_z")) l->scale_z = aprop_from_json(j["scale_z"], "scale_z");
+    if (j.contains("anchor_z")) l->anchor_z = aprop_from_json(j["anchor_z"], "anchor_z");
+    if (j.contains("orientation_x")) l->orientation_x = aprop_from_json(j["orientation_x"], "orientation_x");
+    if (j.contains("orientation_y")) l->orientation_y = aprop_from_json(j["orientation_y"], "orientation_y");
+    if (j.contains("orientation_z")) l->orientation_z = aprop_from_json(j["orientation_z"], "orientation_z");
+    l->camera_id = bounded_string(j, "camera_id", "", kMaxNameLength);
+    l->camera_assignment = j.contains("camera_assignment")
+        ? discrete_property_from_json(j["camera_assignment"], "camera_assignment", l->camera_id)
+        : AnimatedDiscreteProperty{"camera_assignment", l->camera_id};
+    l->camera_id = l->camera_assignment.static_value;
+    l->depth_mode = static_cast<LayerDepthMode>(std::clamp(
+        json_int(j, "depth_mode", static_cast<int>(LayerDepthMode::Automatic)),
+        static_cast<int>(LayerDepthMode::Automatic),
+        static_cast<int>(LayerDepthMode::LayerOrder)));
+    l->depth_test = json_bool(j, "depth_test", true);
+    l->write_to_depth = json_bool(j, "write_to_depth", true);
+    l->double_sided = json_bool(j, "double_sided", true);
+    l->backface_culling = json_bool(j, "backface_culling", false);
+    l->position_z.static_value = std::clamp(l->position_z.static_value, -1000000.0, 1000000.0);
+    l->rotation_x.static_value = finite_or(l->rotation_x.static_value, 0.0);
+    l->rotation_y.static_value = finite_or(l->rotation_y.static_value, 0.0);
+    l->scale_z.static_value = std::clamp(l->scale_z.static_value, -100.0, 100.0);
+    l->anchor_z.static_value = std::clamp(l->anchor_z.static_value, -1000000.0, 1000000.0);
+    l->orientation_x.static_value = finite_or(l->orientation_x.static_value, 0.0);
+    l->orientation_y.static_value = finite_or(l->orientation_y.static_value, 0.0);
+    l->orientation_z.static_value = finite_or(l->orientation_z.static_value, 0.0);
     l->scale.static_value.x = std::clamp(l->scale.static_value.x, -100.0, 100.0);
     l->scale.static_value.y = std::clamp(l->scale.static_value.y, -100.0, 100.0);
     l->opacity.static_value = std::clamp(l->opacity.static_value, 0.0, 1.0);
@@ -4000,20 +4479,140 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("image_size")) vec2_aprop_from_json(j["image_size"], l->image_size);
     l->image_size.static_value.x = std::clamp(l->image_size.static_value.x, 0.0, (double)kMaxCanvasDimension);
     l->image_size.static_value.y = std::clamp(l->image_size.static_value.y, 0.0, (double)kMaxCanvasDimension);
+
+    if (!j.contains("position") || !vector_payload_has_z(j["position"]))
+        promote_legacy_scalar_z_track(l->position, l->position_z);
+    if (!j.contains("scale") || !vector_payload_has_z(j["scale"]))
+        promote_legacy_scalar_z_track(l->scale, l->scale_z);
+    if (!j.contains("origin") || !vector_payload_has_z(j["origin"]))
+        promote_legacy_scalar_z_track(l->origin_prop, l->anchor_z);
+
+    l->scale.static_value.z = std::clamp(l->scale.static_value.z, -100.0, 100.0);
+    l->origin_prop.static_value.z = std::clamp(
+        l->origin_prop.static_value.z, -1000000.0, 1000000.0);
     return l;
+}
+
+static json camera_to_json(const TitleCamera &camera)
+{
+    const json source_passthrough = passthrough_json_object(camera.serialization_passthrough_json);
+    json result = source_passthrough;
+    result.update(json{
+        {"id", camera.id},
+        {"name", camera.name},
+        {"use_canvas_default", camera.use_canvas_default},
+        {"position_x", aprop_to_json(camera.position_x)},
+        {"position_y", aprop_to_json(camera.position_y)},
+        {"position_z", aprop_to_json(camera.position_z)},
+        {"position_3d_path_enabled", camera.position_3d_path_enabled},
+        {"target_x", aprop_to_json(camera.target_x)},
+        {"target_y", aprop_to_json(camera.target_y)},
+        {"target_z", aprop_to_json(camera.target_z)},
+        {"target_3d_path_enabled", camera.target_3d_path_enabled},
+        {"orientation_x", aprop_to_json(camera.orientation_x)},
+        {"orientation_y", aprop_to_json(camera.orientation_y)},
+        {"orientation_z", aprop_to_json(camera.orientation_z)},
+        {"rotation_x", aprop_to_json(camera.rotation_x)},
+        {"rotation_y", aprop_to_json(camera.rotation_y)},
+        {"rotation_z", aprop_to_json(camera.rotation_z)},
+        {"focal_length", aprop_to_json(camera.focal_length)},
+        {"field_of_view", aprop_to_json(camera.field_of_view)},
+        {"zoom", aprop_to_json(camera.zoom)},
+        {"near_clip", aprop_to_json(camera.near_clip)},
+        {"far_clip", aprop_to_json(camera.far_clip)},
+        {"projection_mode", aprop_to_json(camera.projection_mode)},
+        {"projection", static_cast<int>(camera.projection)},
+        {"timeline_expanded", camera.timeline_expanded},
+    });
+    if (camera.position_3d_path_enabled)
+        result["position_3d"] = vec3_aprop_to_json(camera.position_3d);
+    else
+        result.erase("position_3d");
+    if (camera.target_3d_path_enabled)
+        result["target_3d"] = vec3_aprop_to_json(camera.target_3d);
+    else
+        result.erase("target_3d");
+    return merge_surviving_passthrough(source_passthrough, result);
+}
+
+static TitleCamera camera_from_json(const json &j, size_t index)
+{
+    TitleCamera camera;
+    if (!j.is_object())
+        return camera;
+    camera.serialization_passthrough_json = j.dump();
+    camera.id = bounded_string(j, "id", index == 0 ? "default" : TitleDataStore::make_uuid(), kMaxNameLength);
+    camera.name = bounded_string(j, "name", index == 0 ? "Default Camera" : "Camera", kMaxNameLength);
+    camera.use_canvas_default = json_bool(j, "use_canvas_default", index == 0);
+    auto read_prop = [&](const char *key, AnimatedProperty &property) {
+        if (j.contains(key))
+            property = aprop_from_json(j[key], property.name);
+    };
+    read_prop("position_x", camera.position_x);
+    read_prop("position_y", camera.position_y);
+    read_prop("position_z", camera.position_z);
+    const bool has_position_3d = j.contains("position_3d");
+    camera.position_3d_path_enabled = json_bool(
+        j, "position_3d_path_enabled", has_position_3d);
+    if (has_position_3d)
+        vec3_aprop_from_json(j["position_3d"], camera.position_3d);
+    read_prop("target_x", camera.target_x);
+    read_prop("target_y", camera.target_y);
+    read_prop("target_z", camera.target_z);
+    const bool has_target_3d = j.contains("target_3d");
+    camera.target_3d_path_enabled = json_bool(
+        j, "target_3d_path_enabled", has_target_3d);
+    if (has_target_3d)
+        vec3_aprop_from_json(j["target_3d"], camera.target_3d);
+    read_prop("orientation_x", camera.orientation_x);
+    read_prop("orientation_y", camera.orientation_y);
+    read_prop("orientation_z", camera.orientation_z);
+    read_prop("rotation_x", camera.rotation_x);
+    read_prop("rotation_y", camera.rotation_y);
+    read_prop("rotation_z", camera.rotation_z);
+    read_prop("focal_length", camera.focal_length);
+    read_prop("field_of_view", camera.field_of_view);
+    read_prop("zoom", camera.zoom);
+    read_prop("near_clip", camera.near_clip);
+    read_prop("far_clip", camera.far_clip);
+    camera.focal_length.static_value = std::clamp(camera.focal_length.static_value, 1.0, 1000000.0);
+    camera.field_of_view.static_value = std::clamp(camera.field_of_view.static_value, 0.1, 179.0);
+    camera.zoom.static_value = std::clamp(camera.zoom.static_value, 0.0001, 10000.0);
+    camera.near_clip.static_value = std::clamp(camera.near_clip.static_value, 0.0001, 1000000.0);
+    camera.far_clip.static_value = std::max(camera.near_clip.static_value + 0.001,
+                                             std::clamp(camera.far_clip.static_value, 0.001, 1000000000.0));
+    camera.projection = static_cast<CameraProjection>(std::clamp(
+        json_int(j, "projection", static_cast<int>(CameraProjection::Perspective)),
+        static_cast<int>(CameraProjection::Perspective),
+        static_cast<int>(CameraProjection::Orthographic)));
+    camera.projection_mode.static_value = static_cast<double>(camera.projection);
+    if (j.contains("projection_mode"))
+        camera.projection_mode = aprop_from_json(j["projection_mode"], "camera_projection");
+    camera.projection_mode.static_value = std::clamp(camera.projection_mode.static_value, 0.0, 1.0);
+    for (Keyframe &keyframe : camera.projection_mode.keyframes) {
+        keyframe.value = std::clamp(std::round(keyframe.value), 0.0, 1.0);
+        keyframe.easing = EasingType::Hold;
+        keyframe.temporal_mode = TemporalInterpolationMode::Hold;
+        keyframe.temporal_velocity_explicit = true;
+    }
+    camera.projection = static_cast<CameraProjection>(
+        static_cast<int>(std::round(camera.projection_mode.static_value)));
+    camera.timeline_expanded = json_bool(j, "timeline_expanded", false);
+    return camera;
 }
 
 static json title_to_json(const Title &t, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr)
 {
-    json jt;
+    json jt = passthrough_json_object(t.serialization_passthrough_json);
+    const json source_passthrough = jt;
     jt["schema_version"] = bgs::serialization::kCurrentTitleSchemaVersion;
     jt["development_version"] = bgs::serialization::kCurrentDevelopmentVersion;
     jt["id"]       = t.id;
     jt["name"]     = t.name;
-    if (!t.description.empty()) jt["description"] = t.description;
-    if (!t.creator.empty()) jt["creator"] = t.creator;
-    if (!t.creation_date.empty()) jt["creation_date"] = t.creation_date;
+    if (!t.description.empty()) jt["description"] = t.description; else jt.erase("description");
+    if (!t.creator.empty()) jt["creator"] = t.creator; else jt.erase("creator");
+    if (!t.creation_date.empty()) jt["creation_date"] = t.creation_date; else jt.erase("creation_date");
     jt["duration"] = t.duration;
     jt["loop_start"] = t.loop_start;
     jt["loop_end"] = t.loop_end;
@@ -4025,6 +4624,21 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["width"]    = t.width;
     jt["height"]   = t.height;
     jt["graphic_type"] = static_cast<int>(t.graphic_type);
+    jt["active_camera_id"] = t.active_camera.static_value;
+    jt["active_camera"] = discrete_property_to_json(t.active_camera);
+    jt["camera_switches_expanded"] = t.camera_switches_expanded;
+    if (!t.expanded_property_channels.empty()) {
+        json expanded = json::array();
+        for (const std::string &key : t.expanded_property_channels)
+            expanded.push_back(key);
+        jt["expanded_property_channels"] = std::move(expanded);
+    } else {
+        jt.erase("expanded_property_channels");
+    }
+    json cameras = json::array();
+    for (const auto &camera : t.cameras)
+        cameras.push_back(camera_to_json(camera));
+    jt["cameras"] = std::move(cameras);
     if (t.graphic_type == TitleGraphicType::Stinger) {
         jt["stinger_transition_point"] = t.stinger_transition_point;
         jt["stinger_audio_enabled"] = t.stinger_audio_enabled;
@@ -4034,6 +4648,15 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
         jt["stinger_render_mode"] = static_cast<int>(t.stinger_render_mode);
         jt["stinger_switch_mode"] = static_cast<int>(t.stinger_switch_mode);
         jt["stinger_editor_background"] = static_cast<int>(t.stinger_editor_background);
+    } else {
+        jt.erase("stinger_transition_point");
+        jt.erase("stinger_audio_enabled");
+        jt.erase("stinger_alpha_output");
+        jt.erase("stinger_pre_roll");
+        jt.erase("stinger_post_roll");
+        jt.erase("stinger_render_mode");
+        jt.erase("stinger_switch_mode");
+        jt.erase("stinger_editor_background");
     }
     if (t.proxy_metadata.schema_version > 0 || !t.proxy_metadata.content_hash.empty() ||
         !t.proxy_metadata.proxy_path.empty() || t.proxy_metadata.complete) {
@@ -4051,6 +4674,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
             {"has_audio", t.proxy_metadata.has_audio},
             {"complete", t.proxy_metadata.complete},
         };
+    } else {
+        jt.erase("proxy_metadata");
     }
     jt["is_asset"] = t.is_asset;
     jt["asset_animated"] = t.asset_animated;
@@ -4065,6 +4690,10 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
         jt["editor_default_layer_style"] = defaults;
         jt["editor_default_foreground_color"] = t.editor_default_foreground_color;
         jt["editor_default_background_color"] = t.editor_default_background_color;
+    } else {
+        jt.erase("editor_default_layer_style");
+        jt.erase("editor_default_foreground_color");
+        jt.erase("editor_default_background_color");
     }
     if (!t.editor_recent_color_hexes.empty()) {
         json recent = json::array();
@@ -4073,6 +4702,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
                 recent.push_back(hex);
         }
         jt["editor_recent_color_hexes"] = recent;
+    } else {
+        jt.erase("editor_recent_color_hexes");
     }
     json layers = json::array();
     for (auto &l : t.layers) {
@@ -4096,19 +4727,28 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
         for (const auto &cell : t.live_text_external_bindings)
             cell_bindings.push_back(live_text_external_binding_to_json(cell));
         jt["live_text_external_bindings"] = std::move(cell_bindings);
+    } else {
+        jt.erase("live_text_external_bindings");
     }
     if (!t.live_text_table_bindings.empty()) {
         json table_bindings = json::array();
         for (const auto &mapping : t.live_text_table_bindings)
             table_bindings.push_back(live_text_table_binding_to_json(mapping));
         jt["live_text_table_bindings"] = std::move(table_bindings);
+    } else {
+        jt.erase("live_text_table_bindings");
     }
     jt["live_text_header_state"] = t.live_text_header_state;
     if (!t.external_data_sources.empty()) {
         json external_sources = json::array();
-        for (const auto &source : t.external_data_sources)
-            external_sources.push_back(external_source_to_json(source));
+        for (size_t index = 0; index < t.external_data_sources.size(); ++index) {
+            const auto &source = t.external_data_sources[index];
+            external_sources.push_back(external_source_to_json(
+                source, passthrough_array_item(source_passthrough, "external_data_sources", index)));
+        }
         jt["external_data_sources"] = std::move(external_sources);
+    } else {
+        jt.erase("external_data_sources");
     }
     jt["external_data_enabled"] = t.external_data_enabled;
     jt["playlist_loop"] = t.playlist_loop;
@@ -4118,7 +4758,14 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["playlist_hold_seconds"] = t.playlist_hold_seconds;
     if (!t.preview_screenshot_png_base64.empty())
         jt["preview_screenshot_png_base64"] = t.preview_screenshot_png_base64;
-    return jt;
+    else
+        jt.erase("preview_screenshot_png_base64");
+    json merged = merge_surviving_passthrough(source_passthrough, jt);
+    merged["layers"] = jt["layers"];
+    merged["cameras"] = jt["cameras"];
+    if (jt.contains("external_data_sources"))
+        merged["external_data_sources"] = jt["external_data_sources"];
+    return merged;
 }
 
 static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate_ids,
@@ -4133,6 +4780,12 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
     auto t = std::make_shared<Title>();
     if (!jt.is_object())
         return t;
+    {
+        json title_passthrough = jt;
+        title_passthrough.erase("layers");
+        title_passthrough.erase("cameras");
+        t->serialization_passthrough_json = title_passthrough.dump();
+    }
     if (!migration_report.recoveries.empty() || !migration_report.warnings.empty()) {
         BGL_LOG_WARNING("Serialization", QStringLiteral(
             "Recovered title JSON sourceSchema=%1 sourceDevelopment=%2 recoveries=%3 warnings=%4")
@@ -4140,6 +4793,15 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
             .arg(migration_report.source_development_version)
             .arg(static_cast<int>(migration_report.recoveries.size()))
             .arg(static_cast<int>(migration_report.warnings.size())));
+        constexpr size_t kMaxLoggedMigrationDetails = 8;
+        for (size_t index = 0; index < std::min(kMaxLoggedMigrationDetails, migration_report.recoveries.size()); ++index)
+            BGL_LOG_WARNING("Serialization", QStringLiteral("Recovery[%1]: %2")
+                .arg(static_cast<int>(index))
+                .arg(QString::fromStdString(migration_report.recoveries[index])));
+        for (size_t index = 0; index < std::min(kMaxLoggedMigrationDetails, migration_report.warnings.size()); ++index)
+            BGL_LOG_WARNING("Serialization", QStringLiteral("Warning[%1]: %2")
+                .arg(static_cast<int>(index))
+                .arg(QString::fromStdString(migration_report.warnings[index])));
     }
 
     t->id       = bounded_string(jt, "id", TitleDataStore::make_uuid(), kMaxNameLength);
@@ -4162,6 +4824,55 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         json_int(jt, "graphic_type", 0),
         static_cast<int>(TitleGraphicType::Title),
         static_cast<int>(TitleGraphicType::Stinger)));
+    t->cameras.clear();
+    if (jt.contains("cameras") && jt["cameras"].is_array()) {
+        const size_t camera_count = std::min<size_t>(jt["cameras"].size(), 32);
+        for (size_t i = 0; i < camera_count; ++i)
+            t->cameras.push_back(camera_from_json(jt["cameras"][i], i));
+    }
+    if (t->cameras.empty())
+        t->cameras.push_back(TitleCamera{});
+    {
+        std::unordered_set<std::string> camera_ids;
+        for (size_t i = 0; i < t->cameras.size(); ++i) {
+            TitleCamera &camera = t->cameras[i];
+            if (camera.id.empty() || !camera_ids.insert(camera.id).second) {
+                camera.id = i == 0 ? "default" : TitleDataStore::make_uuid();
+                while (!camera_ids.insert(camera.id).second)
+                    camera.id = TitleDataStore::make_uuid();
+            }
+            if (camera.name.empty())
+                camera.name = i == 0 ? "Default Camera" : "Camera";
+        }
+    }
+    t->active_camera_id = bounded_string(jt, "active_camera_id", t->cameras.front().id, kMaxNameLength);
+    t->active_camera = jt.contains("active_camera")
+        ? discrete_property_from_json(jt["active_camera"], "active_camera", t->active_camera_id)
+        : AnimatedDiscreteProperty{"active_camera", t->active_camera_id};
+    t->camera_switches_expanded = json_bool(jt, "camera_switches_expanded", false);
+    t->expanded_property_channels.clear();
+    if (jt.contains("expanded_property_channels") &&
+        jt["expanded_property_channels"].is_array()) {
+        const size_t count = std::min<size_t>(
+            jt["expanded_property_channels"].size(), 4096);
+        for (size_t index = 0; index < count; ++index) {
+            const json &value = jt["expanded_property_channels"][index];
+            if (!value.is_string()) continue;
+            const std::string key = value.get<std::string>();
+            if (!key.empty() && key.size() <= 1024)
+                t->expanded_property_channels.insert(key);
+        }
+    }
+    if (std::none_of(t->cameras.begin(), t->cameras.end(), [&](const TitleCamera &camera) {
+            return camera.id == t->active_camera.static_value;
+        }))
+        t->active_camera.static_value = t->cameras.front().id;
+    t->active_camera_id = t->active_camera.static_value;
+    for (DiscreteKeyframe &keyframe : t->active_camera.keyframes) {
+        if (std::none_of(t->cameras.begin(), t->cameras.end(),
+                [&](const TitleCamera &camera) { return camera.id == keyframe.value; }))
+            keyframe.value = t->active_camera_id;
+    }
     t->stinger_transition_point = finite_or(json_double(
         jt, "stinger_transition_point", t->duration * 0.5), t->duration * 0.5);
     /* Legacy transition-point display-mode values are intentionally ignored.
@@ -4252,6 +4963,81 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
                 return t;
         }
     }
+    /* Development Version 218: repair identity/reference damage after the
+     * bounded model load. Unknown JSON remains in each object's passthrough
+     * payload, while known hierarchy links are made safe for runtime use. */
+    {
+        std::unordered_set<std::string> layer_ids;
+        int repaired_ids = 0;
+        for (auto &layer : t->layers) {
+            if (!layer)
+                continue;
+            if (layer->id.empty() || !layer_ids.insert(layer->id).second) {
+                do { layer->id = TitleDataStore::make_uuid(); }
+                while (!layer_ids.insert(layer->id).second);
+                ++repaired_ids;
+            }
+        }
+        int repaired_links = 0;
+        const auto repair_link = [&](std::string &link, const std::string &self) {
+            if (!link.empty() && (link == self || layer_ids.find(link) == layer_ids.end())) {
+                link.clear();
+                ++repaired_links;
+            }
+        };
+        for (auto &layer : t->layers) {
+            if (!layer)
+                continue;
+            repair_link(layer->parent_id, layer->id);
+            repair_link(layer->transform_parent_id, layer->id);
+            repair_link(layer->mask_source_id, layer->id);
+        }
+        /* Break group/transform-parent cycles deterministically at the first
+         * repeated node instead of allowing recursive evaluation to hang. */
+        const auto break_cycles = [&](bool transform_parent) {
+            for (auto &layer : t->layers) {
+                if (!layer) continue;
+                std::unordered_set<std::string> visited;
+                std::shared_ptr<Layer> cursor = layer;
+                while (cursor) {
+                    const std::string next = transform_parent
+                        ? cursor->transform_parent_id : cursor->parent_id;
+                    if (next.empty()) break;
+                    if (!visited.insert(cursor->id).second || visited.find(next) != visited.end()) {
+                        if (transform_parent) layer->transform_parent_id.clear();
+                        else layer->parent_id.clear();
+                        ++repaired_links;
+                        break;
+                    }
+                    cursor = t->find_layer(next);
+                }
+            }
+        };
+        break_cycles(false);
+        break_cycles(true);
+        if (repaired_ids > 0 || repaired_links > 0) {
+            BGL_LOG_WARNING("Serialization", QStringLiteral(
+                "Repaired title references duplicateOrMissingIds=%1 danglingOrCyclicLinks=%2")
+                .arg(repaired_ids).arg(repaired_links));
+        }
+    }
+    const auto valid_camera_assignment = [&](const std::string &camera_id) {
+        return camera_id.empty() || std::any_of(
+            t->cameras.begin(), t->cameras.end(),
+            [&](const TitleCamera &camera) { return camera.id == camera_id; });
+    };
+    for (auto &layer : t->layers) {
+        if (!layer) continue;
+        if (!valid_camera_assignment(layer->camera_id))
+            layer->camera_id.clear();
+        if (!valid_camera_assignment(layer->camera_assignment.static_value))
+            layer->camera_assignment.static_value.clear();
+        for (DiscreteKeyframe &keyframe : layer->camera_assignment.keyframes)
+            if (!valid_camera_assignment(keyframe.value))
+                keyframe.value.clear();
+        layer->camera_id = layer->camera_assignment.static_value;
+    }
+
     if (t->graphic_type == TitleGraphicType::Stinger &&
         t->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
         ensure_stinger_transition_input_layers(*t);
@@ -4392,10 +5178,25 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
                                                        kMaxScreenshotBase64Length);
 
     if (regenerate_ids) {
-        /* Imported templates need a new title identity, but layer IDs remain
-         * stable because they are scoped to their title and are referenced by
-         * external bindings, masks, parents and asset metadata. */
+        /* Imported templates need a new title identity, but layer and camera
+         * IDs remain stable inside the imported document because masks,
+         * parenting, bindings and camera-assignment tracks reference them.
+         * Proxy manifests are machine/title-instance specific and must never
+         * be adopted by a new title identity; the imported title will generate
+         * its own proxy/prerender data on demand. */
         t->id = TitleDataStore::make_uuid();
+        t->proxy_metadata = TitleProxyMetadata{};
+        t->render_camera_override_id.clear();
+        t->current_cue_row = -1;
+        t->pending_cue_row = -1;
+        t->cue_uncue_requested = false;
+        t->cue_revision = 0;
+        t->playlist_active = false;
+        t->playlist_next_row = 0;
+        t->playlist_next_due_ms = 0;
+        t->playlist_stop_after_due = false;
+        t->cue_persistence_transition = false;
+        t->cue_persistent_text_columns.clear();
     }
 
     /* Asset animation is derived from the cloned nested composition, not from
@@ -4646,6 +5447,21 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     exported_copy.creator = export_metadata.creator;
     exported_copy.creation_date = export_metadata.creation_date;
     exported_copy.preview_screenshot_png_base64 = export_metadata.screenshot_png_base64;
+    /* A reusable template contains authored title data, not the source
+     * machine's advisory proxy path/cache namespace. Import assigns a new
+     * title identity and regenerates cache/proxy data safely. */
+    exported_copy.proxy_metadata = TitleProxyMetadata{};
+    exported_copy.render_camera_override_id.clear();
+    exported_copy.current_cue_row = -1;
+    exported_copy.pending_cue_row = -1;
+    exported_copy.cue_uncue_requested = false;
+    exported_copy.cue_revision = 0;
+    exported_copy.playlist_active = false;
+    exported_copy.playlist_next_row = 0;
+    exported_copy.playlist_next_due_ms = 0;
+    exported_copy.playlist_stop_after_due = false;
+    exported_copy.cue_persistence_transition = false;
+    exported_copy.cue_persistent_text_columns.clear();
     json exported_title = title_to_json(exported_copy, true, true, error);
     if ((error && !error->empty()) || exported_title.empty()) {
         if (error && error->empty())

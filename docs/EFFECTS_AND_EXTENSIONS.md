@@ -14,6 +14,16 @@ Built-in effects use stable namespaced IDs (`bgl.builtin.*`) while retaining leg
 
 Effect parameters may be static or animated. Position-like parameters can expose canvas handles, and keyframe diamonds use the same animation model as ordinary layer properties.
 
+## 3D execution spaces
+
+The host classifies every enabled effect into three stable effect execution spaces. This is derived from the existing effect type and flags, so projects require no migration:
+
+- **Layer space:** standard artwork effects operate on the padded transform-neutral raster before 2D/3D projection. Expanding effects such as shadow, glow, blur, and outline therefore keep their complete bounds after perspective rotation.
+- **Post-transform space:** Motion Blur evaluates projected transform samples, including parent and camera movement.
+- **Screen space:** effects marked **Affect layers behind** read the already composited destination.
+
+Track mattes are projected coverage rather than layer-space effects. Compatible hardware-depth planes sample their full-canvas matte during the same depth-tested draw; effects configured to respect the matte after masking remain on the full-frame compositor to preserve stack order. Groups resolve child depth in an offscreen surface before the group-level stack is applied once.
+
 ## Transition presets
 
 Layer transitions are stored separately from effects but use the same preset/data packaging area. Text and general transitions can expose host-owned controls and previews without embedding third-party Qt widgets.
@@ -47,3 +57,15 @@ Compatibility rules:
 ## Compound graphs
 
 API v2 can flatten ordered graph elements to bounded shader uniforms (`elementCount`, `element0_*` through `element15_*`). Animation paths use the same element/property names, allowing compound effect elements to be keyframed without extension-specific timeline code.
+
+
+## 3D depth and material interaction
+
+Depth Test and Write Depth are independent for compatible planar layers:
+
+- **Test enabled, Write enabled:** compare against existing depth and publish passing depth.
+- **Test enabled, Write disabled:** compare against persistent depth without contaminating later layers.
+- **Test disabled, Write enabled:** draw in authored order and publish depth with the always-pass state.
+- **Test disabled, Write disabled:** remain an authored-order compositing layer.
+
+Backface classification uses final projected winding so negative scale, mirrored parents and perspective remain predictable. Transparent compatible planes are ordered far-to-near with authored order as the coplanar tie-break. Masks, destination-aware blend modes and groups retain their required compatibility/offscreen boundaries.

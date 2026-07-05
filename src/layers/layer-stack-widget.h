@@ -69,6 +69,10 @@ signals:
     void layer_matte_visibility_changed(const std::string &layer_id, MatteVisibilityMode mode);
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
+    void camera_expand_changed(const std::string &owner_id, bool expanded);
+    void property_channels_expanded_changed(const std::string &owner_id,
+                                             const std::string &property_name,
+                                             bool expanded);
     void group_expansion_state_changed(const std::string &layer_id, int state);
     void group_layers_requested();
     void ungroup_layers_requested();
@@ -78,15 +82,22 @@ signals:
     void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
     void layer_blend_mode_changed(const std::string &layer_id, EffectBlendMode blend_mode);
     void layer_effects_enabled_changed(const std::string &layer_id, bool enabled);
+    void layer_dimension_mode_changed(const std::string &layer_id, LayerDimensionMode mode);
     void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
+    void add_camera_requested();
     void clone_layer_requested(const std::string &layer_id);
     void copy_layer_requested(const std::string &layer_id);
     void paste_layer_requested(const std::string &layer_id);
     void delete_layer_requested(const std::string &layer_id);
     void property_keyframe_toggled(const std::string &layer_id, const std::string &property_name);
-    void property_value_changed(const std::string &layer_id, const std::string &property_name, double x, double y);
+    void property_value_changed(const std::string &layer_id, const std::string &property_name, double x, double y, double z);
+    void property_channel_value_changed(const std::string &layer_id, const std::string &property_name,
+                                        int channel, double value);
+    void property_graph_target_requested(const std::string &layer_id,
+                                         const std::string &property_name,
+                                         int channel_mode);
     void property_temporal_mode_changed(const std::string &layer_id, const std::string &property_name, int mode);
     void property_easy_ease_requested(const std::string &layer_id, const std::string &property_name, bool ease_in, bool ease_out);
     void property_velocity_requested(const std::string &layer_id, const std::string &property_name);
@@ -103,6 +114,7 @@ private slots:
     void on_add_audio();
     void on_add_adjustment();
     void on_add_color_solid();
+    void on_add_camera();
     void on_move_up();
     void on_move_down();
     void on_delete();

@@ -1,26 +1,12 @@
     dirty_ = true;
     drag_changed_ = true;
-    invalidate_canvas_overlay_caches();
-    update();
+    refresh_preview();
 }
 void CanvasPreview::render_to_frame()
 {
     if (render_in_progress_)
         return;
     render_in_progress_ = true;
-    if (!live_fps_timer_.isValid()) live_fps_timer_.start();
-    ++live_fps_frame_count_;
-    const qint64 fps_elapsed = live_fps_timer_.elapsed();
-    if (fps_elapsed >= 1000) {
-        measured_live_fps_ = 1000.0 * double(live_fps_frame_count_) / double(fps_elapsed);
-        average_render_cost_ms_ = render_cost_sample_count_ > 0
-            ? double(render_cost_accumulator_ms_) / double(render_cost_sample_count_)
-            : 0.0;
-        live_fps_frame_count_ = 0;
-        render_cost_accumulator_ms_ = 0;
-        render_cost_sample_count_ = 0;
-        live_fps_timer_.restart();
-    }
     QElapsedTimer render_cost;
     render_cost.start();
 
@@ -29,7 +15,11 @@ void CanvasPreview::render_to_frame()
     frame_image_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
     frame_image_preview_scale_ = 1.0;
 
-    if (title_ && gpu_render_session_) {
+    const std::shared_ptr<Title> render_title = projection_title();
+    const bool editor_view_override = render_title && title_ &&
+        render_title.get() != title_.get();
+
+    if (title_ && render_title && gpu_render_session_) {
         /* Transition-input placeholders are an editor-only affordance. Normal
          * OBS title sources keep these layers transparent; the native manual
          * transition path supplies the live Scene A/B textures explicitly. */
@@ -55,9 +45,16 @@ void CanvasPreview::render_to_frame()
          * through the existing GPU texture when the layer contract permits it;
          * the render session selectively refreshes rasters whose local layout
          * actually depends on the resized box. */
-        const bool transform_only_update = drag_changed_ &&
-            (drag_mode_ == DragMode::Move || drag_mode_ == DragMode::Rotate ||
-             resize_drag);
+        const bool transform_only_requested =
+            editor_camera_transform_only_pending_ ||
+            (gizmo_drag_.active && interactive_transform_pending_) ||
+            (drag_changed_ &&
+             (drag_mode_ == DragMode::Move || drag_mode_ == DragMode::Rotate ||
+              resize_drag));
+        /* Keyframe topology and other authoritative model edits must be cloned
+         * once before the lightweight transform snapshot path can resume. */
+        const bool transform_only_update = transform_only_requested &&
+            !full_gpu_model_refresh_pending_;
 
         bool submitted_cached_frame = false;
         bool preserve_previous_cached_frame = false;
@@ -66,7 +63,9 @@ void CanvasPreview::render_to_frame()
         const TitleCacheability cacheability = cache.titleCacheability(title_);
         const bool destination_composite =
             title_requires_destination_compositing(*title_);
-        const bool direct_interaction = drag_changed_ || adaptive_interaction_active_;
+        const bool direct_interaction = editor_view_override || gizmo_drag_.active ||
+            drag_changed_ || adaptive_interaction_active_ ||
+            full_gpu_model_refresh_pending_ || interactive_settle_pending_;
 
         /* The editor and OBS source must present the same cache payload. The
          * previous editor path used requestFrame() only as a transport gate and
@@ -195,20 +194,27 @@ void CanvasPreview::render_to_frame()
                                                          adaptive_scale,
                                                          adaptive_draft);
             frame_image_preview_scale_ = adaptive_scale;
-            title_gpu_render_session_update(gpu_render_session_, *title_, playhead_,
-                                            gpu_model_revision_,
+            title_gpu_render_session_update(gpu_render_session_, *render_title,
+                                            playhead_, gpu_model_revision_,
                                             transform_only_update);
         }
-        if (!preserve_previous_cached_frame)
+        if (!preserve_previous_cached_frame) {
             gpu_model_dirty_ = false;
+            full_gpu_model_refresh_pending_ = false;
+        }
     }
+    editor_camera_transform_only_pending_ = false;
+    interactive_transform_pending_ = false;
+    interactive_settle_pending_ = false;
 
     dirty_ = false;
     playback_frame_pending_ = false;
     force_live_full_quality_render_ = false;
-    const int cost_ms = std::max(1, (int)render_cost.elapsed());
+    const qint64 cost_ns = std::max<qint64>(1, render_cost.nsecsElapsed());
+    const double cost_ms_exact = double(cost_ns) / 1000000.0;
+    const int cost_ms = std::max(1, static_cast<int>(std::ceil(cost_ms_exact)));
     last_full_quality_render_cost_ms_ = cost_ms;
-    render_cost_accumulator_ms_ += cost_ms;
+    render_cost_accumulator_ns_ += cost_ns;
     ++render_cost_sample_count_;
     BGL_LOG_TRACE("Performance", QStringLiteral(
         "Canvas frame prepared title=%1 time=%2 costMs=%3 scale=%4")
@@ -239,8 +245,25 @@ void CanvasPreview::render_dirty_frame_if_due()
      * different: its updates are already generated by the transport timer at
      * the project frame rate, so those exact frame requests are not throttled
      * by the monitor cadence here. */
-    const int editing_cadence_ms = std::max(display_refresh_interval_ms_,
-                                             render_interval_ms_);
+    /* Active matrix drags and the first exact post-release snapshot are
+     * presented at monitor cadence. The settle snapshot remains a full model
+     * update, so inserted/changed keyframes cannot leave the GPU session stale. */
+    const bool resize_drag = drag_mode_ == DragMode::ResizeNW ||
+        drag_mode_ == DragMode::ResizeN || drag_mode_ == DragMode::ResizeNE ||
+        drag_mode_ == DragMode::ResizeE || drag_mode_ == DragMode::ResizeSE ||
+        drag_mode_ == DragMode::ResizeS || drag_mode_ == DragMode::ResizeSW ||
+        drag_mode_ == DragMode::ResizeW;
+    const bool canvas_transform_drag = drag_changed_ &&
+        (drag_mode_ == DragMode::Move || drag_mode_ == DragMode::Rotate ||
+         resize_drag);
+    const bool realtime_transform =
+        (gizmo_drag_.active && interactive_transform_pending_) ||
+        editor_camera_transform_only_pending_ || canvas_transform_drag;
+    const bool priority_edit_frame = realtime_transform ||
+                                     interactive_settle_pending_;
+    const int editing_cadence_ms = priority_edit_frame
+        ? std::max(1, display_refresh_interval_ms_)
+        : std::max(display_refresh_interval_ms_, render_interval_ms_);
     const int cadence_ms = playback_frame_pending_ ? 0 : editing_cadence_ms;
 
     if ((!gpu_render_session_ && frame_image_.isNull()) || elapsed >= cadence_ms) {
@@ -620,7 +643,7 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 
         p.save();
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setTransform(editor_layer_world_transform(title_, *layer, playhead_), true);
+        p.setTransform(editor_layer_world_transform(projection_title(), *layer, playhead_), true);
         p.setPen(border);
         /* Scene masks remain matte controls in the editor. Preserve the
          * familiar hatched fill while the live OBS scene is visible through
@@ -695,25 +718,50 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 
         p.save();
         p.setBrush(Qt::NoBrush);
-        const Qt::PenStyle outline_style = editing_text_layer ? Qt::SolidLine : Qt::DashLine;
-        p.setPen(QPen(outline_color, editing_text_layer ? 2.0 : 1.5, outline_style));
+        const bool projected_3d = title_ &&
+            bgs::transform3d::layer_or_ancestor_uses_3d(*title_, layer);
+        /* Animated dash phase on a perspective-projected polygon produces
+         * visible subpixel flicker while the layer or camera moves. 3D bounds
+         * therefore use a cosmetic solid outline; legacy 2D bounds retain the
+         * established dashed appearance. */
+        const Qt::PenStyle outline_style =
+            (editing_text_layer || projected_3d) ? Qt::SolidLine : Qt::DashLine;
+        QPen outline_pen(outline_color, editing_text_layer ? 2.0 : 1.5,
+                         outline_style, Qt::SquareCap, Qt::RoundJoin);
+        outline_pen.setCosmetic(true);
+        p.setPen(outline_pen);
         p.drawPolygon(layer_geometry.outline);
         if (handles) {
             p.setPen(QPen(handle_stroke_color, 1.0));
             p.setBrush(QColor(255, 255, 255));
             const double half_handle = CANVAS_CONTROL_SIZE_PX / 2.0;
-            for (const QPointF &pt : layer_geometry.handles)
-                p.drawRect(QRectF(pt.x() - half_handle, pt.y() - half_handle,
-                                  CANVAS_CONTROL_SIZE_PX, CANVAS_CONTROL_SIZE_PX));
+            for (int index = 0; index < 8; ++index) {
+                if (!layer_geometry.handle_visible[index])
+                    continue;
+                const QPointF &pt = layer_geometry.handles[index];
+                p.drawRect(QRectF(pt.x() - half_handle,
+                                  pt.y() - half_handle,
+                                  CANVAS_CONTROL_SIZE_PX,
+                                  CANVAS_CONTROL_SIZE_PX));
+            }
 
-            QPointF origin = layer_geometry.origin;
-            p.setPen(QPen(QColor(255, 160, 0), 1.5));
-            p.setBrush(QColor(255, 220, 80));
-            p.drawEllipse(origin, CANVAS_ORIGIN_RADIUS_PX, CANVAS_ORIGIN_RADIUS_PX);
-            p.drawLine(QPointF(origin.x() - CANVAS_CONTROL_SIZE_PX, origin.y()),
-                       QPointF(origin.x() + CANVAS_CONTROL_SIZE_PX, origin.y()));
-            p.drawLine(QPointF(origin.x(), origin.y() - CANVAS_CONTROL_SIZE_PX),
-                       QPointF(origin.x(), origin.y() + CANVAS_CONTROL_SIZE_PX));
+            if (layer_geometry.origin_visible) {
+                const QPointF origin = layer_geometry.origin;
+                p.setPen(QPen(QColor(255, 160, 0), 1.5));
+                p.setBrush(QColor(255, 220, 80));
+                p.drawEllipse(origin, CANVAS_ORIGIN_RADIUS_PX,
+                              CANVAS_ORIGIN_RADIUS_PX);
+                p.drawLine(
+                    QPointF(origin.x() - CANVAS_CONTROL_SIZE_PX,
+                            origin.y()),
+                    QPointF(origin.x() + CANVAS_CONTROL_SIZE_PX,
+                            origin.y()));
+                p.drawLine(
+                    QPointF(origin.x(),
+                            origin.y() - CANVAS_CONTROL_SIZE_PX),
+                    QPointF(origin.x(),
+                            origin.y() + CANVAS_CONTROL_SIZE_PX));
+            }
 
             if (gradient_handles_visible())
                 draw_gradient_handles(p, layer);
@@ -824,6 +872,9 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
     draw_pen_path_preview(p);
     draw_toolbar_preview(p);
     draw_snap_cursor_indicator(p);
+    draw_editor_3d_view_overlay(p);
+    draw_3d_material_debug_overlay(p);
+    draw_3d_gizmo(p);
 
     QPolygonF text_caret;
     if (inline_text_caret_view_polygon(text_caret)) {

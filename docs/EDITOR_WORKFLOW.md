@@ -46,6 +46,40 @@ Enable **Graph Editor** from the timeline footer to edit temporal interpolation 
 
 When a layer with animated Position is selected with the Selection tool, the canvas shows its final transformed motion path, keyframe vertices, the selected vertex's incoming/outgoing handles, the current evaluated position, and a direction arrow. Drag a diamond vertex to edit its Position keyframe, drag a round handle to edit the tangent, hold **Shift** for 45-degree angle steps, or **Alt-drag** a handle to break only that tangent pair. Double-click a path segment to insert a keyframe on the existing curve. Right-click a vertex or path for Linear, Auto Bezier, Continuous Bezier, Manual Bezier, Rove Across Time, Break Tangents, and Join Tangents. Motion vertices snap to guides and other keyframe positions; holding **Ctrl** temporarily disables snapping. Locked layers and inline text-edit mode keep the editable handles hidden.
 
+## 3D layers, cameras, and views
+
+The 2D/3D layer toggle is opt-in. Pure 2D layers keep the legacy affine path, while promoted layers use Position, Scale and Anchor XYZ plus Rotation and Orientation XYZ. All authored Transform values are stored and keyframed in layer-local coordinates relative to the effective group or transform parent. Local, Parent and World affect gizmo-axis orientation only.
+
+Title cameras support perspective and orthographic projection, Position, Point of Interest, Rotation, Orientation, focal length, field of view, zoom, near/far clipping and active-camera selection. The editor provides Active Camera, Front, Back, Left, Right, Top, Bottom and Custom Perspective views. Editor view navigation is never serialized or included in title cache identity.
+
+Move, Rotate and Scale gizmos support axis and plane handles, snapping, multi-selection and Local/Parent/World orientation. Hover highlights the exact axis, plane or ring that will receive the click. Projected gizmo geometry is shared by hit-testing and painting to avoid duplicate work.
+
+## Camera Timeline and Vector3 channels
+
+Cameras appear as first-class Timeline rows. Camera switching, Camera Switches rows, camera assignment and projection switching are discrete Hold tracks; continuous camera properties use ordinary temporal interpolation. Static cameras and unkeyed assignments retain the same render/cache behavior as the pre-animation 3D pipeline.
+
+Layer List, Timeline and Graph Editor consume the same flattened row model. Expanding a Vector3 or four-channel property reveals X/Y/Z/W or A/R/G/B child rows on both sides. Aggregate rows target all channels, child rows target one component, and checked channel toggles use the same color as the rendered curve.
+
+Graph keyframes move at sub-frame precision by default. Ctrl/Command enables explicit project-frame snapping. Double-clicking an empty property row creates a keyframe; double-clicking an existing temporal key opens Keyframe Velocity. Copy, cut, paste and delete are shared by Timeline and Graph Editor, and paste at an occupied time replaces the existing key instead of creating a duplicate.
+
+## Full XYZ spatial motion paths
+
+Temporal and spatial interpolation are independent. A 3D Position keyframe stores one XYZ value plus incoming/outgoing XYZ tangents, interpolation mode and optional roving state. Paths are stored in parent space, evaluated through the complete parent hierarchy and projected through the selected camera for display.
+
+Dragging a path point or handle reverses that process: the canvas point is unprojected to the working plane and transformed back into parent space. Segment insertion splits the cubic curve without changing its shape. Frame Selected includes layer geometry, keyframes and sampled spatial segments, including off-axis Z motion.
+
+## Keyframe-safe parenting and grouping
+
+Grouping, ungrouping, adding/removing from a group, changing Transform Parent and deleting a parent use one static parent-bind matrix evaluated at the edit playhead. The matrix preserves the visible world transform at that moment while leaving the authored Position, Scale, Rotation, Orientation, easing, tangents, roving metadata and keyframe count unchanged. It does not generate a keyframe for every project frame.
+
+The bind is evaluated consistently by Canvas manipulation, 2D compatibility rendering, projected 3D rendering, masks, mattes, effects, motion blur and overlays. It is serialized, validated, included in visual/cache identity and disabled safely if malformed.
+
+## Editor interaction and frame pacing
+
+Canvas, Layer List, Timeline and Graph Editor use one guarded selection-synchronization path. Right-clicking a normal Timeline layer row opens the same multi-layer menu as the Canvas while keyframe, transition, property and camera rows keep specialized menus. A direct keyframe handle is required for spatial-keyframe actions; a motion-path segment otherwise falls through to the layer menu.
+
+Playback cadence uses fractional millisecond accumulation for project rates such as 59.94 or 29.97 fps. Diagnostics publish one elapsed-time sample per second: FPS counts successfully presented frames, and average render time covers the frames rendered in the same interval. Monitor-rate interaction timers run only during active pointer gestures, while stopped clocks/tickers refresh at a bounded rate.
+
 ## Assets and libraries
 
 A saved title can become a reusable Asset Layer. Assets may be synchronized to the parent playhead or independent when their animation mode supports it. Animated assets use a stable bounds envelope covering the full authored motion rather than resizing the selection box every frame.

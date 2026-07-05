@@ -622,6 +622,18 @@
     ticker_status_timer_->start();
 }
 
+void PropertiesPanel::apply_anchor_preset(int index)
+{
+    if (!layer_ || !cmb_anchor_)
+        return;
+    index = std::clamp(index, 0, 8);
+    if (cmb_anchor_->currentIndex() == index) {
+        /* Re-applying the same preset is intentionally a no-op. */
+        return;
+    }
+    cmb_anchor_->setCurrentIndex(index);
+}
+
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
 {
     title_ = t;
@@ -758,16 +770,46 @@ void PropertiesPanel::update_playhead(double t)
     auto set_vec_kf_icon = [&](QPushButton *button, const AnimatedVec2Property &prop) {
         set_kf_icon(button, keyframe_at_time(prop, lt), prop.is_animated());
     };
+    auto set_vec3_kf_icon = [&](QPushButton *button,
+                                const AnimatedVec2Property &xy,
+                                const AnimatedProperty &z) {
+        set_kf_icon(button,
+                    keyframe_at_time(xy, lt) || keyframe_at_time(z, lt),
+                    xy.is_animated() || z.is_animated());
+    };
+    auto set_position3_kf_icon = [&](QPushButton *button) {
+        if (layer_->position_3d_path_enabled)
+            set_kf_icon(button, keyframe_at_time(layer_->position_3d, lt),
+                        layer_->position_3d.is_animated());
+        else
+            set_vec3_kf_icon(button, layer_->position, layer_->position_z);
+    };
+    auto set_scalar3_kf_icon = [&](QPushButton *button,
+                                   const AnimatedProperty &x,
+                                   const AnimatedProperty &y,
+                                   const AnimatedProperty &z) {
+        set_kf_icon(button,
+                    any_keyframe_at_time({&x, &y, &z}, lt),
+                    any_keyframes({&x, &y, &z}));
+    };
 
-    const Vec2Value position = layer_->position.evaluate(lt);
+    const LayerVector3Value position3 = evaluated_layer_position_3d(*layer_, lt);
     const Vec2Value scale = layer_->scale.evaluate(lt);
-    set_double(spn_px_, position.x);
-    set_double(spn_py_, position.y);
+    set_double(spn_px_, position3.x);
+    set_double(spn_py_, position3.y);
     set_double(spn_scale_x_, scale.x * 100.0);
     set_double(spn_scale_y_, scale.y * 100.0);
     set_double(spn_transform_size_w_, eval_box_width(*layer_, lt));
     set_double(spn_transform_size_h_, eval_box_height(*layer_, lt));
     set_double(spn_rot_, layer_->rotation.evaluate(lt));
+    set_double(spn_pz_, position3.z);
+    set_double(spn_rot_x_, layer_->rotation_x.evaluate(lt));
+    set_double(spn_rot_y_, layer_->rotation_y.evaluate(lt));
+    set_double(spn_scale_z_, layer_->scale.evaluate(lt).z * 100.0);
+    set_double(spn_anchor_z_, layer_->origin_prop.evaluate(lt).z);
+    set_double(spn_orientation_x_, layer_->orientation_x.evaluate(lt));
+    set_double(spn_orientation_y_, layer_->orientation_y.evaluate(lt));
+    set_double(spn_orientation_z_, layer_->orientation_z.evaluate(lt));
     set_double(spn_opacity_, layer_->opacity.evaluate(lt));
     if (spn_appearance_opacity_)
         set_double(spn_appearance_opacity_, layer_->opacity.evaluate(lt) * 100.0);
@@ -832,14 +874,34 @@ void PropertiesPanel::update_playhead(double t)
         }
     }
 
-    set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
-    set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
-    set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+    const bool transform_is_3d = layer_->dimension_mode == LayerDimensionMode::ThreeD;
+    if (transform_is_3d) {
+        set_position3_kf_icon(btn_kf_pos_x_);
+        set_vec3_kf_icon(btn_kf_scale_x_, layer_->scale, layer_->scale_z);
+        set_vec3_kf_icon(btn_kf_origin_x_, layer_->origin_prop, layer_->anchor_z);
+        set_scalar3_kf_icon(btn_kf_rotation_, layer_->rotation_x,
+                            layer_->rotation_y, layer_->rotation);
+        set_scalar3_kf_icon(btn_kf_orientation_x_, layer_->orientation_x,
+                            layer_->orientation_y, layer_->orientation_z);
+    } else {
+        set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
+        set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+        set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
+        set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
+    }
+    if (transform_is_3d) set_position3_kf_icon(btn_kf_pos_y_);
+    else set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
     set_vec_kf_icon(btn_kf_scale_y_, layer_->scale);
     set_vec_kf_icon(btn_kf_transform_size_, layer_->size);
-    set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
+    if (transform_is_3d) set_position3_kf_icon(btn_kf_position_z_);
+    else set_prop_kf_icon(btn_kf_position_z_, layer_->position_z);
+    set_prop_kf_icon(btn_kf_rotation_x_, layer_->rotation_x);
+    set_prop_kf_icon(btn_kf_rotation_y_, layer_->rotation_y);
+    set_prop_kf_icon(btn_kf_scale_z_, layer_->scale_z);
+    set_prop_kf_icon(btn_kf_anchor_z_, layer_->anchor_z);
+    set_prop_kf_icon(btn_kf_orientation_y_, layer_->orientation_y);
+    set_prop_kf_icon(btn_kf_orientation_z_, layer_->orientation_z);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
-    set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
     set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
@@ -919,6 +981,16 @@ void PropertiesPanel::load_values()
         spn_px_->setValue(0.0);
         spn_py_->setValue(0.0);
         spn_rot_->setValue(0.0);
+        if (cmb_dimension_mode_) cmb_dimension_mode_->setCurrentIndex(0);
+        update_transform_dimension_ui(false, LayerDimensionMode::TwoD);
+        if (spn_pz_) spn_pz_->setValue(0.0);
+        if (spn_rot_x_) spn_rot_x_->setValue(0.0);
+        if (spn_rot_y_) spn_rot_y_->setValue(0.0);
+        if (spn_scale_z_) spn_scale_z_->setValue(100.0);
+        if (spn_anchor_z_) spn_anchor_z_->setValue(0.0);
+        if (spn_orientation_x_) spn_orientation_x_->setValue(0.0);
+        if (spn_orientation_y_) spn_orientation_y_->setValue(0.0);
+        if (spn_orientation_z_) spn_orientation_z_->setValue(0.0);
         spn_opacity_->setValue(1.0);
         spn_origin_x_->setValue(0.5);
         spn_origin_y_->setValue(0.5);

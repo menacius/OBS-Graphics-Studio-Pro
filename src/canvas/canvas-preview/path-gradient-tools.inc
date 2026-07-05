@@ -422,42 +422,127 @@ double CanvasPreview::corner_control_bevel_roundness(bool *mixed) const
     return have_value ? value : 100.0;
 }
 
-QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer,
-                                                     const bgs::LiveCornerGeometry &corner) const
+bool CanvasPreview::corner_radius_handle_view_geometry(
+    const Layer &layer, const bgs::LiveCornerGeometry &corner,
+    QPointF &anchor_view, QPointF &handle_view) const
 {
     constexpr double kCornerRadiusHandleOffsetPx = 20.0;
     const QPointF toward_previous = corner.previous - corner.anchor;
     const QPointF toward_next = corner.next - corner.anchor;
     const double previous_length = std::hypot(toward_previous.x(), toward_previous.y());
     const double next_length = std::hypot(toward_next.x(), toward_next.y());
-    if (previous_length <= 1e-9 || next_length <= 1e-9)
-        return canvas_to_view(layer_to_canvas(layer, corner.anchor));
+
+    const QRectF local_rect = layer_local_rect(layer);
+    const auto projected_title = projection_title();
+    const bool projected_3d = projected_title &&
+        bgs::transform3d::layer_or_ancestor_uses_3d(*projected_title, layer);
+    const qreal overlay_pixel_scale = std::max<qreal>(1.0, devicePixelRatioF());
+
+    auto local_to_view = [&](const QPointF &local_point, QPointF &view_point) {
+        if (!projected_3d || !projected_title) {
+            view_point = canvas_to_view(layer_to_canvas(layer, local_point));
+            return std::isfinite(view_point.x()) && std::isfinite(view_point.y());
+        }
+
+        const QPointF warped = editor_warped_layer_local_point(
+            layer, local_rect, local_point, playhead_);
+        QVector4D clip;
+        if (!bgs::transform3d::layer_local_clip_point(
+                *projected_title, layer, playhead_,
+                QVector3D(static_cast<float>(warped.x()),
+                          static_cast<float>(warped.y()), 0.0f), clip))
+            return false;
+        const double w = static_cast<double>(clip.w());
+        if (!std::isfinite(w) || w <= 1.0e-8)
+            return false;
+        const double ndc_x = static_cast<double>(clip.x()) / w;
+        const double ndc_y = static_cast<double>(clip.y()) / w;
+        const double ndc_z = static_cast<double>(clip.z()) / w;
+        if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) ||
+            !std::isfinite(ndc_z) || ndc_x < -1.000001 ||
+            ndc_x > 1.000001 || ndc_y < -1.000001 ||
+            ndc_y > 1.000001 || ndc_z < -1.000001 ||
+            ndc_z > 1.000001)
+            return false;
+
+        const QPointF canvas_point(
+            (ndc_x + 1.0) * 0.5 * std::max(1, projected_title->width),
+            (1.0 - ndc_y) * 0.5 * std::max(1, projected_title->height));
+        view_point = canvas_to_view(canvas_point);
+        view_point.setX(std::round(view_point.x() * overlay_pixel_scale) /
+                        overlay_pixel_scale);
+        view_point.setY(std::round(view_point.y() * overlay_pixel_scale) /
+                        overlay_pixel_scale);
+        return std::isfinite(view_point.x()) && std::isfinite(view_point.y());
+    };
+
+    if (!local_to_view(corner.anchor, anchor_view))
+        return false;
+    if (previous_length <= 1e-9 || next_length <= 1e-9) {
+        handle_view = anchor_view;
+        return true;
+    }
 
     const QPointF previous_unit = toward_previous / previous_length;
     const QPointF next_unit = toward_next / next_length;
     QPointF inward = previous_unit + next_unit;
     const double inward_length = std::hypot(inward.x(), inward.y());
-    if (inward_length <= 1e-9)
-        return canvas_to_view(layer_to_canvas(layer, corner.anchor));
+    if (inward_length <= 1e-9) {
+        handle_view = anchor_view;
+        return true;
+    }
     inward /= inward_length;
 
-    const double cosine = std::clamp(QPointF::dotProduct(previous_unit, next_unit), -1.0, 1.0);
-    const double sin_half_angle = std::max(1e-6, std::sqrt(std::max(0.0, (1.0 - cosine) * 0.5)));
+    const double cosine = std::clamp(
+        QPointF::dotProduct(previous_unit, next_unit), -1.0, 1.0);
+    const double sin_half_angle = std::max(
+        1e-6, std::sqrt(std::max(0.0, (1.0 - cosine) * 0.5)));
     const double center_distance = corner.radius / sin_half_angle;
     const QPointF geometric_local = corner.anchor + inward * center_distance;
-    const QPointF geometric_view = canvas_to_view(layer_to_canvas(layer, geometric_local));
-    const QPointF anchor_view = canvas_to_view(layer_to_canvas(layer, corner.anchor));
-    const QPointF inward_view_probe = canvas_to_view(layer_to_canvas(layer, corner.anchor + inward));
+    QPointF geometric_view;
+    QPointF inward_view_probe;
+    if (!local_to_view(geometric_local, geometric_view) ||
+        !local_to_view(corner.anchor + inward, inward_view_probe))
+        return false;
+
     const QPointF inward_view_delta = inward_view_probe - anchor_view;
-    const double inward_view_length = std::hypot(inward_view_delta.x(), inward_view_delta.y());
+    const double inward_view_length = std::hypot(
+        inward_view_delta.x(), inward_view_delta.y());
     const QPointF inward_view = inward_view_length > 1e-9
         ? inward_view_delta / inward_view_length
         : QPointF();
     const double radius_fraction = corner.max_radius > 1e-9
         ? std::clamp(corner.radius / corner.max_radius, 0.0, 1.0)
         : 0.0;
-    const double offset_px = kCornerRadiusHandleOffsetPx * (1.0 - 2.0 * radius_fraction);
-    return geometric_view + inward_view * offset_px;
+    const double offset_px = kCornerRadiusHandleOffsetPx *
+        (1.0 - 2.0 * radius_fraction);
+    handle_view = geometric_view + inward_view * offset_px;
+    if (!std::isfinite(handle_view.x()) || !std::isfinite(handle_view.y()))
+        return false;
+
+    /* Corner controls are optional editor chrome. Hide them once their
+     * projected anchors leave the viewport instead of feeding QPainter huge
+     * near-plane coordinates, which caused the remaining 3D overlay flicker. */
+    if (projected_3d) {
+        const QRectF padded_view = QRectF(rect()).adjusted(-24.0, -24.0,
+                                                        24.0, 24.0);
+        if (!padded_view.contains(anchor_view) ||
+            !padded_view.contains(handle_view))
+            return false;
+    }
+    return true;
+}
+
+QPointF CanvasPreview::corner_radius_handle_view_pos(
+    const Layer &layer, const bgs::LiveCornerGeometry &corner) const
+{
+    QPointF anchor_view;
+    QPointF handle_view;
+    if (!corner_radius_handle_view_geometry(
+            layer, corner, anchor_view, handle_view))
+        return QPointF(std::numeric_limits<qreal>::quiet_NaN(),
+                       std::numeric_limits<qreal>::quiet_NaN());
+    return handle_view;
 }
 
 int CanvasPreview::hit_test_corner_radius_handle_index(const Layer &layer, const QPointF &view_pt) const
@@ -468,7 +553,12 @@ int CanvasPreview::hit_test_corner_radius_handle_index(const Layer &layer, const
     double best_distance = CANVAS_CONTROL_HIT_RADIUS_PX * 1.5;
     int best_index = -1;
     for (const auto &corner : corners) {
-        const double distance = QLineF(view_pt, corner_radius_handle_view_pos(layer, corner)).length();
+        QPointF anchor_view;
+        QPointF handle_view;
+        if (!corner_radius_handle_view_geometry(
+                layer, corner, anchor_view, handle_view))
+            continue;
+        const double distance = QLineF(view_pt, handle_view).length();
         if (distance <= best_distance) {
             best_distance = distance;
             best_index = corner.point_index;
@@ -899,8 +989,11 @@ void CanvasPreview::draw_corner_radius_handles(QPainter &p, const Layer &layer)
     QPen guide_pen(QColor(255, 255, 255, 170), 1.0, Qt::DashLine);
     guide_pen.setCosmetic(true);
     for (const auto &corner : corners) {
-        const QPointF anchor_view = canvas_to_view(layer_to_canvas(layer, corner.anchor));
-        const QPointF handle_view = corner_radius_handle_view_pos(layer, corner);
+        QPointF anchor_view;
+        QPointF handle_view;
+        if (!corner_radius_handle_view_geometry(
+                layer, corner, anchor_view, handle_view))
+            continue;
         const bool selected = selected_corner_layer_id_ == layer.id &&
             selected_corner_indices_.find(corner.point_index) != selected_corner_indices_.end();
         p.setPen(guide_pen);

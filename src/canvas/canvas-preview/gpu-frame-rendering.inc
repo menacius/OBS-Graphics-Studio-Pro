@@ -1,7 +1,9 @@
     double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                            std::max(0.0, layer->out_time - layer->in_time));
-    drag_start_x_ = layer->position.evaluate(lt).x;
-    drag_start_y_ = layer->position.evaluate(lt).y;
+    const QPointF local_position =
+        editor_evaluated_local_position_xy(*layer, lt);
+    drag_start_x_ = local_position.x();
+    drag_start_y_ = local_position.y();
     if (layer_type_is_container(layer->type)) {
         const QRectF group_rect = layer_local_rect(*layer);
         drag_start_w_ = static_cast<float>(std::max(1.0, group_rect.width()));
@@ -55,6 +57,16 @@
 
 void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 {
+    if (update_editor_3d_navigation(ev) || update_3d_gizmo_drag(ev))
+        return;
+
+    if (ev->buttons() == Qt::NoButton)
+        update_3d_gizmo_hover(ev->position());
+    else if (gizmo_hover_axis_ != GizmoAxis::None) {
+        gizmo_hover_axis_ = GizmoAxis::None;
+        gpu_overlay_dirty_ = true;
+        update();
+    }
     update_hover_layer(ev->pos());
 
     if (drag_mode_ == DragMode::ExtensionPoint && active_extension_handle_ >= 0 &&
@@ -471,6 +483,11 @@ void CanvasPreview::leaveEvent(QEvent *ev)
         gpu_overlay_dirty_ = true;
         needs_update = true;
     }
+    if (gizmo_hover_axis_ != GizmoAxis::None) {
+        gizmo_hover_axis_ = GizmoAxis::None;
+        gpu_overlay_dirty_ = true;
+        needs_update = true;
+    }
     if (snap_cursor_visible_ || final_snap_cursor_visible_) {
         snap_cursor_visible_ = false;
         final_snap_cursor_visible_ = false;
@@ -483,6 +500,34 @@ void CanvasPreview::leaveEvent(QEvent *ev)
 
 void CanvasPreview::keyPressEvent(QKeyEvent *ev)
 {
+    if (ev && inline_text_layer_id_.empty() &&
+        !ev->modifiers().testFlag(Qt::ControlModifier) &&
+        !ev->modifiers().testFlag(Qt::AltModifier)) {
+        if (ev->key() == Qt::Key_W) {
+            set_3d_gizmo_mode(GizmoMode::Move);
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_E) {
+            set_3d_gizmo_mode(GizmoMode::Rotate);
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_R) {
+            set_3d_gizmo_mode(GizmoMode::Scale);
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_F) {
+            if (ev->modifiers().testFlag(Qt::ShiftModifier))
+                frame_3d_all();
+            else
+                frame_3d_selection();
+            ev->accept();
+            return;
+        }
+    }
+
     if (ev && inline_text_layer_id_.empty() && ev->matches(QKeySequence::Paste)) {
         const QPointF paste_pt = view_to_canvas(QPointF(width() * 0.5, height() * 0.5));
         if (handle_external_canvas_mime(QApplication::clipboard() ? QApplication::clipboard()->mimeData() : nullptr, paste_pt)) {
@@ -604,6 +649,9 @@ void CanvasPreview::keyReleaseEvent(QKeyEvent *ev)
 
 void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 {
+    if (finish_editor_3d_navigation(ev) || finish_3d_gizmo_drag(ev))
+        return;
+
     if (ev->button() == Qt::LeftButton && drag_mode_ == DragMode::ExtensionPoint) {
         if (active_extension_handle_ >= 0 && active_extension_handle_ < extension_canvas_handles_.size()) {
             const QJsonObject handle = extension_canvas_handles_.at(active_extension_handle_).toObject();
@@ -932,16 +980,32 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 }
 
 
+void CanvasPreview::show_selected_layers_context_menu(const QPoint &global_pos)
+{
+    if (!title_ || selected_layer_ids_.empty())
+        return;
+
+    context_menu_selection_override_ = selected_layer_ids_;
+    QContextMenuEvent synthetic_event(QContextMenuEvent::Other,
+                                      mapFromGlobal(global_pos), global_pos);
+    contextMenuEvent(&synthetic_event);
+    context_menu_selection_override_.clear();
+}
+
 
 void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
 {
-    if (active_tool_ == CanvasTool::Pen && pen_path_active_) {
+    const bool forced_layer_selection =
+        !context_menu_selection_override_.empty();
+    if (!forced_layer_selection &&
+        active_tool_ == CanvasTool::Pen && pen_path_active_) {
         ev->accept();
         return;
     }
 
     bool x_axis = true;
-    const int guide_index = guide_hit_test(ev->pos(), x_axis, true);
+    const int guide_index = forced_layer_selection
+        ? -1 : guide_hit_test(ev->pos(), x_axis, true);
     if (guide_index >= 0) {
         QMenu guide_menu(this);
         QAction *delete_guide = guide_menu.addAction(bgl_tr("OBSTitles.DeleteGuide"));
@@ -966,15 +1030,17 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
         return;
     }
 
-    if (show_position_motion_path_context_menu(ev))
+    if (!forced_layer_selection &&
+        show_position_motion_path_context_menu(ev))
         return;
 
-    std::shared_ptr<Layer> hit = layer_at_view_pos(ev->pos());
+    std::shared_ptr<Layer> hit = forced_layer_selection
+        ? nullptr : layer_at_view_pos(ev->pos());
     const bool clicked_current_selection = hit &&
         std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hit->id) !=
             selected_layer_ids_.end();
 
-    if (!clicked_current_selection) {
+    if (!forced_layer_selection && !clicked_current_selection) {
         if (hit) {
             selected_layer_ids_ = {hit->id};
             sel_layer_id_ = hit->id;
@@ -984,9 +1050,17 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
         }
     }
 
-    std::vector<std::string> selection = selected_layer_ids_;
-    if (selection.empty() && !sel_layer_id_.empty())
-        selection.push_back(sel_layer_id_);
+    /* Context actions are scoped to the object under the pointer. A right-click
+     * on empty canvas must never act on a stale selection elsewhere. Keep the
+     * visual selection unchanged, but expose only canvas-level actions. */
+    std::vector<std::string> selection;
+    if (forced_layer_selection) {
+        selection = context_menu_selection_override_;
+    } else if (hit) {
+        selection = selected_layer_ids_;
+        if (selection.empty() && !sel_layer_id_.empty())
+            selection.push_back(sel_layer_id_);
+    }
     const bool has_selection = !selection.empty();
 
     auto selected_layer_is_group = [this](const std::string &layer_id) {
@@ -1194,7 +1268,13 @@ void CanvasPreview::wheelEvent(QWheelEvent *ev)
     }
 
     const Qt::KeyboardModifiers mods = ev->modifiers();
-    if (mods.testFlag(Qt::AltModifier)) {
+    if (editor_3d_view_ != Editor3DView::ActiveCamera &&
+        mods.testFlag(Qt::AltModifier)) {
+        const double dolly_delta = !qFuzzyIsNull(wheel_delta.y())
+            ? wheel_delta.y() : wheel_delta.x();
+        if (!qFuzzyIsNull(dolly_delta))
+            dolly_editor_3d_view(dolly_delta);
+    } else if (mods.testFlag(Qt::AltModifier)) {
         const double zoom_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
         if (qFuzzyIsNull(zoom_delta)) {
             ev->accept();

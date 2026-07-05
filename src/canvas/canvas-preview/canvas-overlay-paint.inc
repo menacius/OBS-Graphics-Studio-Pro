@@ -532,7 +532,7 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
 void CanvasPreview::draw_hover_layer_box(QPainter &p)
 {
     const HoverOverlayGeometry &hover_overlay = hover_overlay_geometry();
-    if (!hover_overlay.layer)
+    if (!hover_overlay.layer || hover_overlay.outline.size() < 3)
         return;
     const Layer &layer = *hover_overlay.layer;
 
@@ -687,6 +687,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
 
+    if (begin_editor_3d_navigation(ev))
+        return;
+
     if (ev->button() == Qt::LeftButton && !extension_canvas_handles_.isEmpty()) {
         const auto handle_layer = selected_layer();
         for (int i = extension_canvas_handles_.size() - 1; i >= 0; --i) {
@@ -720,6 +723,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         ev->accept();
         return;
     }
+
+    if (begin_3d_gizmo_drag(ev))
+        return;
 
     /*
      * Gradient handles are an editor overlay, not normal layer geometry.
@@ -1070,10 +1076,12 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         const float selected_height = layer_type_is_container(selected->type)
             ? static_cast<float>(selected_local_bounds.height())
             : static_cast<float>(eval_box_height(*selected, lt));
+        const QPointF selected_local_position =
+            editor_evaluated_local_position_xy(*selected, lt);
         drag_layer_states_.push_back({selected->id,
                                       {},
-                                      selected->position.evaluate(lt).x,
-                                      selected->position.evaluate(lt).y,
+                                      selected_local_position.x(),
+                                      selected_local_position.y(),
                                       selected_width,
                                       selected_height,
                                       selected_local_bounds.left(),
@@ -1117,10 +1125,12 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
             double child_lt = std::clamp(playhead_ - candidate->in_time, 0.0,
                                          std::max(0.0, candidate->out_time - candidate->in_time));
             const QRectF child_local_bounds = layer_local_rect(*candidate);
+            const QPointF child_local_position =
+                editor_evaluated_local_position_xy(*candidate, child_lt);
             drag_child_layer_states_.push_back({candidate->id,
                                                 resize_root_id,
-                                                candidate->position.evaluate(child_lt).x,
-                                                candidate->position.evaluate(child_lt).y,
+                                                child_local_position.x(),
+                                                child_local_position.y(),
                                                 (float)eval_box_width(*candidate, child_lt),
                                                 (float)eval_box_height(*candidate, child_lt),
                                                 child_local_bounds.left(),

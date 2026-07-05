@@ -3,6 +3,8 @@
 #include "bgl-modern-controls.h"
 #include "title-editor-internal.h"
 #include "title-logger.h"
+#include "layer-transform-3d.h"
+#include "title-snapshot.h"
 #include "build-info.h"
 #include "style-presets.h"
 #include "transition-editor-dialog.h"
@@ -37,6 +39,7 @@
 #include <QStringList>
 
 #include <cmath>
+#include <chrono>
 #include <obs.h>
 
 

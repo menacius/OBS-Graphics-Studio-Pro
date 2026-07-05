@@ -13,7 +13,8 @@ double editor_playback_ui_frame_duration()
 
 int editor_playback_ui_timer_interval_ms()
 {
-    return std::max(1, static_cast<int>(std::lround(editor_playback_ui_frame_duration() * 1000.0)));
+    return std::max(1, static_cast<int>(std::floor(
+        editor_playback_ui_frame_duration() * 1000.0)));
 }
 
 QString editor_recent_color_hex(const QColor &color)
@@ -176,8 +177,9 @@ static QTransform editor_layer_local_transform_for_parenting(
         ? evaluate_layer_general_transitions(
               layer.transitions, layer.in_time, layer.out_time, resolved_time)
         : LayerTransitionVisualState{};
-    local.translate(layer.position.evaluate(lt).x + transition.translate_x,
-                    layer.position.evaluate(lt).y + transition.translate_y);
+    const LayerVector3Value position = evaluated_layer_position_3d(layer, lt);
+    local.translate(position.x + transition.translate_x,
+                    position.y + transition.translate_y);
     local.rotate(layer.rotation.evaluate(lt));
     local.scale(layer.scale.evaluate(lt).x * transition.scale,
                 layer.scale.evaluate(lt).y * transition.scale);
@@ -229,7 +231,7 @@ static QTransform editor_layer_world_transform_for_parenting_impl(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
     std::set<std::string> &visiting, bool include_general_transitions);
 
-static QTransform editor_parent_basis_for_parenting(
+static QTransform editor_structural_parent_basis_for_parenting(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
     const std::string &group_parent_id, const std::string &transform_parent_id,
     std::set<std::string> &visiting, bool include_general_transitions)
@@ -271,6 +273,29 @@ static QTransform editor_parent_basis_for_parenting(
                       : group_world * transform_world;
 }
 
+static QTransform editor_parent_bind_transform_for_parenting(
+    const Layer &layer)
+{
+    if (!layer.parent_bind_enabled)
+        return QTransform();
+    const auto &m = layer.parent_bind_matrix;
+    return QTransform(
+        m[0], m[4], 0.0,
+        m[1], m[5], 0.0,
+        m[3], m[7], 1.0);
+}
+
+static QTransform editor_parent_basis_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const std::string &group_parent_id, const std::string &transform_parent_id,
+    std::set<std::string> &visiting, bool include_general_transitions)
+{
+    const QTransform structural = editor_structural_parent_basis_for_parenting(
+        title, layer, playhead, group_parent_id, transform_parent_id, visiting,
+        include_general_transitions);
+    return editor_parent_bind_transform_for_parenting(layer) * structural;
+}
+
 static QTransform editor_layer_world_transform_for_parenting_impl(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
     std::set<std::string> &visiting, bool include_general_transitions)
@@ -297,16 +322,82 @@ QTransform editor_layer_world_transform_for_parenting(const std::shared_ptr<Titl
                                                       int /*depth*/ = 0)
 {
     std::set<std::string> visiting;
-    return editor_layer_world_transform_for_parenting_impl(
+    const QTransform legacy = editor_layer_world_transform_for_parenting_impl(
         title, layer, playhead, visiting, false);
+    return title ? bgs::transform3d::projected_or_legacy(
+                       *title, layer, playhead, legacy)
+                 : legacy;
+}
+
+static QTransform editor_parent_world_transform_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead)
+{
+    std::set<std::string> visiting;
+    return editor_parent_basis_for_parenting(
+        title, layer, playhead, layer.parent_id, layer.transform_parent_id,
+        visiting, false);
+}
+
+static QPointF editor_evaluated_local_position_xy_for_parenting(
+    const Layer &layer, double local_time)
+{
+    const LayerVector3Value value =
+        evaluated_layer_position_3d(layer, local_time);
+    return QPointF(value.x, value.y);
+}
+
+static void editor_set_local_position_xy_for_parenting(
+    Layer &layer, double local_time, const QPointF &value)
+{
+    if (layer.dimension_mode == LayerDimensionMode::ThreeD ||
+        layer.position_3d_path_enabled) {
+        promote_layer_position_to_3d_path(layer);
+        set_animated_component(layer.position_3d, local_time, 0, value.x());
+        set_animated_component(layer.position_3d, local_time, 1, value.y());
+        mirror_position_3d_to_legacy(layer, local_time);
+        return;
+    }
+    set_animated_x(layer.position, local_time, value.x());
+    set_animated_y(layer.position, local_time, value.y());
+}
+
+static QPointF editor_canvas_delta_to_parent_local_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const QPointF &canvas_delta)
+{
+    const QTransform parent_world =
+        editor_parent_world_transform_for_parenting(title, layer, playhead);
+    bool invertible = false;
+    const QTransform canvas_to_parent = parent_world.inverted(&invertible);
+    if (!invertible) return canvas_delta;
+    return canvas_to_parent.map(canvas_delta) -
+           canvas_to_parent.map(QPointF(0.0, 0.0));
+}
+
+static void editor_translate_layer_in_canvas_for_parenting(
+    const std::shared_ptr<Title> &title, Layer &layer, double playhead,
+    const QPointF &canvas_delta)
+{
+    const double local_time = std::clamp(
+        playhead - layer.in_time, 0.0,
+        std::max(0.0, layer.out_time - layer.in_time));
+    const QPointF current =
+        editor_evaluated_local_position_xy_for_parenting(layer, local_time);
+    editor_set_local_position_xy_for_parenting(
+        layer, local_time,
+        current + editor_canvas_delta_to_parent_local_for_parenting(
+                      title, layer, playhead, canvas_delta));
 }
 
 static QTransform editor_layer_world_transform_for_animation_bounds(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead)
 {
     std::set<std::string> visiting;
-    return editor_layer_world_transform_for_parenting_impl(
+    const QTransform legacy = editor_layer_world_transform_for_parenting_impl(
         title, layer, playhead, visiting, true);
+    return title ? bgs::transform3d::projected_or_legacy(
+                       *title, layer, playhead, legacy)
+                 : legacy;
 }
 
 bool editor_paths_geometrically_equal(const QPainterPath &a, const QPainterPath &b)
@@ -700,6 +791,683 @@ void editor_offset_position_track(AnimatedVec2Property &position,
     }
 }
 
+void editor_offset_layer_position_track(Layer &layer, double dx, double dy)
+{
+    if (layer.position_3d_path_enabled) {
+        promote_layer_position_to_3d_path(layer);
+        layer.position_3d.static_value.x += dx;
+        layer.position_3d.static_value.y += dy;
+        for (Vector3Keyframe &keyframe : layer.position_3d.keyframes) {
+            keyframe.value.x += dx;
+            keyframe.value.y += dy;
+        }
+        mirror_position_3d_track_to_legacy(layer);
+    } else {
+        editor_offset_position_track(layer.position, dx, dy);
+    }
+}
+
+static void editor_offset_layer_position_track_3d(Layer &layer,
+                                                  double dx, double dy,
+                                                  double dz)
+{
+    constexpr double kZPromotionEpsilon = 1.0e-7;
+    const bool needs_3d_track =
+        layer.dimension_mode == LayerDimensionMode::ThreeD ||
+        layer.position_3d_path_enabled || std::abs(dz) > kZPromotionEpsilon;
+    if (!needs_3d_track) {
+        editor_offset_layer_position_track(layer, dx, dy);
+        return;
+    }
+
+    promote_layer_position_to_3d_path(layer);
+    layer.position_3d_path_enabled = true;
+    if (std::abs(dz) > kZPromotionEpsilon)
+        layer.dimension_mode = LayerDimensionMode::ThreeD;
+    layer.position_3d.static_value.x += dx;
+    layer.position_3d.static_value.y += dy;
+    layer.position_3d.static_value.z += dz;
+    for (Vector3Keyframe &keyframe : layer.position_3d.keyframes) {
+        keyframe.value.x += dx;
+        keyframe.value.y += dy;
+        keyframe.value.z += dz;
+    }
+    mirror_position_3d_track_to_legacy(layer);
+}
+
+
+void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
+                                           Layer &layer,
+                                           const QTransform &world,
+                                           const std::string &new_group_parent_id,
+                                           const std::string &new_transform_parent_id,
+                                           double playhead);
+
+struct EditorWorldTransformSnapshot {
+    bool uses_3d = false;
+    bool has_3d_matrix = false;
+    QTransform affine;
+    QMatrix4x4 world_3d;
+};
+
+/* Reparenting is a track operation, not a single-frame operation.  The old
+ * editor contract captured only the current world transform and rewrote one
+ * local key. Every other key remained expressed in the previous parent basis,
+ * which made an otherwise local animation jump as soon as it was grouped or
+ * assigned a transform parent. */
+struct EditorWorldTransformTrackSnapshot {
+    std::vector<double> title_times;
+    std::vector<EditorWorldTransformSnapshot> world_samples;
+    bool multi_sampled = false;
+};
+
+static bool editor_scalar_property_varies(const AnimatedProperty &property)
+{
+    if (property.keyframes.size() < 2)
+        return false;
+    constexpr double kEpsilon = 1.0e-7;
+    const double reference = property.evaluate(property.keyframes.front().time);
+    for (std::size_t index = 0; index + 1 < property.keyframes.size(); ++index) {
+        const double start = property.keyframes[index].time;
+        const double end = property.keyframes[index + 1].time;
+        for (double alpha : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+            const double value = property.evaluate(start + (end - start) * alpha);
+            if (std::abs(value - reference) > kEpsilon)
+                return true;
+        }
+    }
+    return false;
+}
+
+static bool editor_vector_property_varies(const AnimatedVec2Property &property)
+{
+    if (property.keyframes.size() < 2)
+        return false;
+    constexpr double kEpsilon = 1.0e-6;
+    const Vec2Value reference = property.evaluate(property.keyframes.front().time);
+    auto differs = [&](const Vec2Value &value) {
+        return std::abs(value.x - reference.x) > kEpsilon ||
+               std::abs(value.y - reference.y) > kEpsilon ||
+               std::abs(value.z - reference.z) > kEpsilon;
+    };
+    for (std::size_t index = 0; index + 1 < property.keyframes.size(); ++index) {
+        const double start = property.keyframes[index].time;
+        const double end = property.keyframes[index + 1].time;
+        for (double alpha : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+            if (differs(property.evaluate(start + (end - start) * alpha)))
+                return true;
+        }
+    }
+    return false;
+}
+
+static bool editor_vector3_property_varies(const AnimatedVec3Property &property)
+{
+    if (property.keyframes.size() < 2)
+        return false;
+    constexpr double kEpsilon = 1.0e-6;
+    const Vec3Value reference = property.evaluate(property.keyframes.front().time);
+    auto differs = [&](const Vec3Value &value) {
+        return std::abs(value.x - reference.x) > kEpsilon ||
+               std::abs(value.y - reference.y) > kEpsilon ||
+               std::abs(value.z - reference.z) > kEpsilon;
+    };
+    for (std::size_t index = 0; index + 1 < property.keyframes.size(); ++index) {
+        const double start = property.keyframes[index].time;
+        const double end = property.keyframes[index + 1].time;
+        for (double alpha : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+            if (differs(property.evaluate(start + (end - start) * alpha)))
+                return true;
+        }
+    }
+    return false;
+}
+
+static bool editor_layer_transform_is_animated(const Layer &layer)
+{
+    return editor_vector_property_varies(layer.position) ||
+        (layer.position_3d_path_enabled &&
+         editor_vector3_property_varies(layer.position_3d)) ||
+        editor_scalar_property_varies(layer.position_z) ||
+        editor_vector_property_varies(layer.scale) ||
+        editor_scalar_property_varies(layer.scale_z) ||
+        editor_scalar_property_varies(layer.rotation) ||
+        editor_scalar_property_varies(layer.rotation_x) ||
+        editor_scalar_property_varies(layer.rotation_y) ||
+        editor_scalar_property_varies(layer.orientation_x) ||
+        editor_scalar_property_varies(layer.orientation_y) ||
+        editor_scalar_property_varies(layer.orientation_z) ||
+        editor_vector_property_varies(layer.origin_prop) ||
+        editor_scalar_property_varies(layer.anchor_z);
+}
+
+static std::size_t editor_layer_transform_keyframe_count(const Layer &layer)
+{
+    return layer.position.keyframes.size() + layer.position_3d.keyframes.size() +
+        layer.position_z.keyframes.size() + layer.scale.keyframes.size() +
+        layer.scale_z.keyframes.size() + layer.rotation.keyframes.size() +
+        layer.rotation_x.keyframes.size() + layer.rotation_y.keyframes.size() +
+        layer.orientation_x.keyframes.size() +
+        layer.orientation_y.keyframes.size() +
+        layer.orientation_z.keyframes.size() +
+        layer.origin_prop.keyframes.size() + layer.anchor_z.keyframes.size();
+}
+
+static uint64_t editor_elapsed_us(
+    const std::chrono::steady_clock::time_point &started)
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count());
+}
+
+static bool editor_transform_chain_is_animated_impl(
+    const std::shared_ptr<Title> &title, const std::string &layer_id,
+    std::set<std::string> &visited)
+{
+    if (!title || layer_id.empty() || !visited.insert(layer_id).second)
+        return false;
+    const Layer *layer = editor_layer_by_id_for_parenting(title, layer_id);
+    if (!layer)
+        return false;
+    if (editor_layer_transform_is_animated(*layer))
+        return true;
+    return editor_transform_chain_is_animated_impl(
+               title, layer->parent_id, visited) ||
+           editor_transform_chain_is_animated_impl(
+               title, layer->transform_parent_id, visited);
+}
+
+static bool editor_transform_chain_is_animated(
+    const std::shared_ptr<Title> &title, const std::string &layer_id)
+{
+    std::set<std::string> visited;
+    return editor_transform_chain_is_animated_impl(title, layer_id, visited);
+}
+
+template<typename Property>
+static void editor_append_property_key_times(const Layer &owner,
+                                             const Property &property,
+                                             std::vector<double> &times)
+{
+    const double start = std::max(0.0, owner.in_time);
+    const double end = std::max(start, owner.out_time);
+    for (const auto &keyframe : property.keyframes)
+        times.push_back(std::clamp(owner.in_time + keyframe.time, start, end));
+}
+
+static void editor_append_layer_transform_key_times(const Layer &layer,
+                                                    std::vector<double> &times)
+{
+    editor_append_property_key_times(layer, layer.position, times);
+    editor_append_property_key_times(layer, layer.position_3d, times);
+    editor_append_property_key_times(layer, layer.position_z, times);
+    editor_append_property_key_times(layer, layer.scale, times);
+    editor_append_property_key_times(layer, layer.scale_z, times);
+    editor_append_property_key_times(layer, layer.rotation, times);
+    editor_append_property_key_times(layer, layer.rotation_x, times);
+    editor_append_property_key_times(layer, layer.rotation_y, times);
+    editor_append_property_key_times(layer, layer.orientation_x, times);
+    editor_append_property_key_times(layer, layer.orientation_y, times);
+    editor_append_property_key_times(layer, layer.orientation_z, times);
+    editor_append_property_key_times(layer, layer.origin_prop, times);
+    editor_append_property_key_times(layer, layer.anchor_z, times);
+}
+
+static void editor_append_transform_chain_key_times_impl(
+    const std::shared_ptr<Title> &title, const std::string &layer_id,
+    std::vector<double> &times, std::set<std::string> &visited)
+{
+    if (!title || layer_id.empty() || !visited.insert(layer_id).second)
+        return;
+    const Layer *layer = editor_layer_by_id_for_parenting(title, layer_id);
+    if (!layer)
+        return;
+    editor_append_layer_transform_key_times(*layer, times);
+    editor_append_transform_chain_key_times_impl(
+        title, layer->parent_id, times, visited);
+    editor_append_transform_chain_key_times_impl(
+        title, layer->transform_parent_id, times, visited);
+}
+
+static void editor_append_transform_chain_key_times(
+    const std::shared_ptr<Title> &title, const std::string &layer_id,
+    std::vector<double> &times)
+{
+    std::set<std::string> visited;
+    editor_append_transform_chain_key_times_impl(title, layer_id, times,
+                                                 visited);
+}
+
+static bool editor_parent_bind_is_identity(const Layer &layer)
+{
+    if (!layer.parent_bind_enabled)
+        return true;
+    constexpr double epsilon = 1.0e-9;
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            const double expected = row == column ? 1.0 : 0.0;
+            if (std::abs(layer.parent_bind_matrix[
+                    static_cast<std::size_t>(row * 4 + column)] - expected) > epsilon)
+                return false;
+        }
+    }
+    return true;
+}
+
+static void editor_store_parent_bind_matrix(Layer &layer,
+                                            const QMatrix4x4 &matrix)
+{
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            layer.parent_bind_matrix[static_cast<std::size_t>(row * 4 + column)] =
+                static_cast<double>(matrix(row, column));
+    layer.parent_bind_enabled = true;
+    if (editor_parent_bind_is_identity(layer))
+        layer.parent_bind_enabled = false;
+}
+
+static void editor_store_parent_bind_transform(Layer &layer,
+                                               const QTransform &transform)
+{
+    layer.parent_bind_matrix = {
+        transform.m11(), transform.m21(), 0.0, transform.dx(),
+        transform.m12(), transform.m22(), 0.0, transform.dy(),
+        0.0,             0.0,             1.0, 0.0,
+        0.0,             0.0,             0.0, 1.0
+    };
+    layer.parent_bind_enabled = true;
+    if (editor_parent_bind_is_identity(layer))
+        layer.parent_bind_enabled = false;
+}
+
+/* Development Version 216: reparenting is represented by one static bind
+ * matrix evaluated at the user's playhead. The authored local animation is
+ * never sampled or rewritten. This matches normal DCC parenting semantics:
+ * the layer does not jump at the parenting frame, retains its exact authored
+ * keyframes/curves, and then inherits subsequent motion from the new parent. */
+static bool editor_reparent_layer_with_parent_bind(
+    const std::shared_ptr<Title> &title, Layer &layer,
+    const std::string &new_group_parent_id,
+    const std::string &new_transform_parent_id, double playhead)
+{
+    const auto started = std::chrono::steady_clock::now();
+    const std::size_t keyframes_before =
+        editor_layer_transform_keyframe_count(layer);
+    if (!title) {
+        BGL_LOG_WARNING("Grouping", QStringLiteral(
+            "Bind reparent rejected layer=%1 reason=no-title")
+            .arg(QString::fromStdString(layer.id)));
+        return false;
+    }
+
+    Layer destination_probe = layer;
+    destination_probe.parent_id = new_group_parent_id;
+    destination_probe.transform_parent_id = new_transform_parent_id;
+    destination_probe.parent_bind_enabled = false;
+
+    const bool source_uses_3d =
+        bgs::transform3d::layer_or_ancestor_uses_3d(*title, layer);
+    const bool destination_uses_3d =
+        bgs::transform3d::layer_or_ancestor_uses_3d(*title, destination_probe);
+    const std::string old_group_parent_id = layer.parent_id;
+    const std::string old_transform_parent_id = layer.transform_parent_id;
+
+    if (source_uses_3d || destination_uses_3d) {
+        const QMatrix4x4 source_basis =
+            bgs::transform3d::layer_parent_world_matrix(*title, layer, playhead);
+        const QMatrix4x4 destination_basis =
+            bgs::transform3d::layer_parent_world_matrix(
+                *title, destination_probe, playhead);
+        bool invertible = false;
+        const QMatrix4x4 destination_inverse =
+            destination_basis.inverted(&invertible);
+        if (!invertible) {
+            BGL_LOG_WARNING("Coordinates", QStringLiteral(
+                "Bind reparent rejected layer=%1 reason=non-invertible-3d-destination "
+                "newGroup=%2 newTransformParent=%3 costUs=%4")
+                .arg(QString::fromStdString(layer.id))
+                .arg(QString::fromStdString(new_group_parent_id))
+                .arg(QString::fromStdString(new_transform_parent_id))
+                .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+            return false;
+        }
+        editor_store_parent_bind_matrix(
+            layer, destination_inverse * source_basis);
+    } else {
+        std::set<std::string> source_visiting;
+        const QTransform source_basis = editor_parent_basis_for_parenting(
+            title, layer, playhead, layer.parent_id, layer.transform_parent_id,
+            source_visiting, false);
+        std::set<std::string> destination_visiting;
+        const QTransform destination_basis =
+            editor_structural_parent_basis_for_parenting(
+                title, destination_probe, playhead, new_group_parent_id,
+                new_transform_parent_id, destination_visiting, false);
+        bool invertible = false;
+        const QTransform destination_inverse =
+            destination_basis.inverted(&invertible);
+        if (!invertible) {
+            BGL_LOG_WARNING("Coordinates", QStringLiteral(
+                "Bind reparent rejected layer=%1 reason=non-invertible-destination "
+                "newGroup=%2 newTransformParent=%3 costUs=%4")
+                .arg(QString::fromStdString(layer.id))
+                .arg(QString::fromStdString(new_group_parent_id))
+                .arg(QString::fromStdString(new_transform_parent_id))
+                .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+            return false;
+        }
+        editor_store_parent_bind_transform(
+            layer, source_basis * destination_inverse);
+    }
+
+    layer.parent_id = new_group_parent_id;
+    layer.transform_parent_id = new_transform_parent_id;
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Bind reparent applied layer=%1 name=\"%2\" mode=%3 "
+        "oldGroup=%4 newGroup=%5 oldTransformParent=%6 newTransformParent=%7 "
+        "bindEnabled=%8 keyframesBefore=%9 keyframesAfter=%10 costUs=%11")
+        .arg(QString::fromStdString(layer.id))
+        .arg(QString::fromStdString(layer.name))
+        .arg(source_uses_3d || destination_uses_3d
+                 ? QStringLiteral("3d") : QStringLiteral("2d"))
+        .arg(QString::fromStdString(old_group_parent_id))
+        .arg(QString::fromStdString(new_group_parent_id))
+        .arg(QString::fromStdString(old_transform_parent_id))
+        .arg(QString::fromStdString(new_transform_parent_id))
+        .arg(layer.parent_bind_enabled ? 1 : 0)
+        .arg(static_cast<qulonglong>(keyframes_before))
+        .arg(static_cast<qulonglong>(
+            editor_layer_transform_keyframe_count(layer)))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+    return true;
+}
+
+static std::vector<double> editor_reparent_sample_times(
+    const std::shared_ptr<Title> &title, const Layer &layer,
+    const std::string &new_group_parent_id,
+    const std::string &new_transform_parent_id, double playhead)
+{
+    const auto started = std::chrono::steady_clock::now();
+    const bool source_basis_animated =
+        editor_transform_chain_is_animated(title, layer.parent_id) ||
+        editor_transform_chain_is_animated(title, layer.transform_parent_id);
+    const bool destination_basis_animated =
+        editor_transform_chain_is_animated(title, new_group_parent_id) ||
+        editor_transform_chain_is_animated(title, new_transform_parent_id);
+    const bool animated = editor_layer_transform_is_animated(layer) ||
+        source_basis_animated || destination_basis_animated;
+    if (!animated) {
+        BGL_LOG_TRACE("Grouping", QStringLiteral(
+            "Reparent sampling layer=%1 mode=single-static sampleCount=1 costUs=%2")
+            .arg(QString::fromStdString(layer.id))
+            .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+        return {playhead};
+    }
+
+    const double start = std::max(0.0, layer.in_time);
+    const double end = std::max(start, layer.out_time);
+    const double duration = end - start;
+    std::vector<double> times{start, end,
+                              std::clamp(playhead, start, end)};
+    editor_append_layer_transform_key_times(layer, times);
+    editor_append_transform_chain_key_times(title, layer.parent_id, times);
+    editor_append_transform_chain_key_times(title, layer.transform_parent_id,
+                                            times);
+    editor_append_transform_chain_key_times(title, new_group_parent_id, times);
+    editor_append_transform_chain_key_times(title, new_transform_parent_id,
+                                            times);
+    const std::size_t authored_sample_candidates = times.size();
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end(),
+        [](double a, double b) { return std::abs(a - b) <= 1.0e-9; }),
+        times.end());
+    const std::size_t authored_unique_samples = times.size();
+    int adaptive_samples = 0;
+
+    /* A changing parent basis cannot be represented by merely offsetting the
+     * child's existing keys. Supplement the authored times, but cap the total
+     * number of evaluation samples rather than the number per second. A long
+     * title must never turn one eight-key animation into thousands of keys. */
+    if ((source_basis_animated || destination_basis_animated) &&
+        duration > 1.0e-9) {
+        constexpr double kSupplementalSamplesPerSecond = 4.0;
+        constexpr std::size_t kMaximumReparentSamples = 64;
+        const std::size_t available = authored_unique_samples <
+                kMaximumReparentSamples
+            ? kMaximumReparentSamples - authored_unique_samples
+            : 0;
+        adaptive_samples = static_cast<int>(std::min<std::size_t>(
+            available,
+            static_cast<std::size_t>(std::ceil(
+                duration * kSupplementalSamplesPerSecond))));
+        times.reserve(times.size() + static_cast<std::size_t>(adaptive_samples));
+        for (int sample = 1; sample <= adaptive_samples; ++sample) {
+            const double alpha = double(sample) /
+                                 double(adaptive_samples + 1);
+            times.push_back(start + duration * alpha);
+        }
+    }
+
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end(),
+        [](double a, double b) { return std::abs(a - b) <= 1.0e-9; }),
+        times.end());
+    BGL_LOG_DEBUG("Grouping", QStringLiteral(
+        "Reparent sampling layer=%1 name=\"%2\" duration=%3 "
+        "layerAnimated=%4 sourceBasisAnimated=%5 destinationBasisAnimated=%6 "
+        "authoredCandidates=%7 authoredUnique=%8 adaptiveSamples=%9 "
+        "sampleCap=%10 finalSamples=%11 transformKeyframes=%12 costUs=%13")
+        .arg(QString::fromStdString(layer.id),
+             QString::fromStdString(layer.name))
+        .arg(duration, 0, 'f', 3)
+        .arg(editor_layer_transform_is_animated(layer) ? 1 : 0)
+        .arg(source_basis_animated ? 1 : 0)
+        .arg(destination_basis_animated ? 1 : 0)
+        .arg(static_cast<qulonglong>(authored_sample_candidates))
+        .arg(static_cast<qulonglong>(authored_unique_samples))
+        .arg(adaptive_samples)
+        .arg(64)
+        .arg(static_cast<qulonglong>(times.size()))
+        .arg(static_cast<qulonglong>(
+            editor_layer_transform_keyframe_count(layer)))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+    return times;
+}
+
+EditorWorldTransformSnapshot editor_capture_world_transform_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead)
+{
+    EditorWorldTransformSnapshot snapshot;
+    snapshot.affine = editor_layer_world_transform_for_parenting(
+        title, layer, playhead);
+    snapshot.has_3d_matrix = title &&
+        bgs::transform3d::layer_supports_3d(layer);
+    snapshot.uses_3d = snapshot.has_3d_matrix &&
+        bgs::transform3d::layer_or_ancestor_uses_3d(*title, layer);
+    snapshot.world_3d.setToIdentity();
+    if (snapshot.has_3d_matrix)
+        snapshot.world_3d = bgs::transform3d::layer_world_matrix(
+            *title, layer, playhead);
+    return snapshot;
+}
+
+EditorWorldTransformTrackSnapshot editor_capture_world_transform_track_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer,
+    const std::string &new_group_parent_id,
+    const std::string &new_transform_parent_id, double playhead)
+{
+    const auto started = std::chrono::steady_clock::now();
+    EditorWorldTransformTrackSnapshot track;
+    track.title_times = editor_reparent_sample_times(
+        title, layer, new_group_parent_id, new_transform_parent_id, playhead);
+    track.multi_sampled = track.title_times.size() > 1;
+    track.world_samples.reserve(track.title_times.size());
+    for (double title_time : track.title_times)
+        track.world_samples.push_back(
+            editor_capture_world_transform_for_parenting(
+                title, layer, title_time));
+    BGL_LOG_DEBUG("Grouping", QStringLiteral(
+        "Captured reparent world track layer=%1 samples=%2 multiSampled=%3 "
+        "oldGroup=%4 newGroup=%5 oldTransformParent=%6 "
+        "newTransformParent=%7 costUs=%8")
+        .arg(QString::fromStdString(layer.id))
+        .arg(static_cast<qulonglong>(track.world_samples.size()))
+        .arg(track.multi_sampled ? 1 : 0)
+        .arg(QString::fromStdString(layer.parent_id),
+             QString::fromStdString(new_group_parent_id),
+             QString::fromStdString(layer.transform_parent_id),
+             QString::fromStdString(new_transform_parent_id))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+    return track;
+}
+
+static bool editor_decompose_local_3d(const QMatrix4x4 &local,
+                                      QVector3D &translation,
+                                      QVector3D &rotation,
+                                      QVector3D &scale)
+{
+    const QVector3D raw_x(local(0, 0), local(1, 0), local(2, 0));
+    const QVector3D raw_y(local(0, 1), local(1, 1), local(2, 1));
+    const QVector3D raw_z(local(0, 2), local(1, 2), local(2, 2));
+    const float scale_x = raw_x.length();
+    if (scale_x < 1.0e-8f)
+        return false;
+
+    /* Reparenting between rotated, non-uniformly scaled ancestors can produce
+     * a small shear term even though the layer model is TRS-only. Remove that
+     * shear with a stable Gram-Schmidt basis and retain the closest representable
+     * local transform rather than feeding a non-orthogonal matrix to Euler
+     * extraction. Exact TRS parent chains remain exact. */
+    QVector3D x = raw_x / scale_x;
+    QVector3D y_orthogonal = raw_y -
+        x * QVector3D::dotProduct(raw_y, x);
+    const float scale_y = y_orthogonal.length();
+    if (scale_y < 1.0e-8f)
+        return false;
+    QVector3D y = y_orthogonal / scale_y;
+    QVector3D z = QVector3D::crossProduct(x, y).normalized();
+    if (z.lengthSquared() < 1.0e-12f)
+        return false;
+    float scale_z = QVector3D::dotProduct(raw_z, z);
+    if (std::abs(scale_z) < 1.0e-8f)
+        return false;
+    /* scale_z intentionally keeps its sign. A mirrored parent chain is
+     * represented by a negative local Z scale while the rotation basis stays
+     * right-handed, matching the renderer's culling/winding semantics. */
+    scale = QVector3D(scale_x, scale_y, scale_z);
+
+    /* local_matrix() applies Rz * Ry * Rx. Extract the same convention
+     * explicitly; generic quaternion-to-Euler conversion can use different ordering
+     * conventions near gimbal lock across math libraries and Qt versions. */
+    const double r00 = x.x();
+    const double r10 = x.y();
+    const double r20 = x.z();
+    const double r21 = y.z();
+    const double r22 = z.z();
+    const double r01 = y.x();
+    const double r11 = y.y();
+    const double y_angle = std::asin(std::clamp(-r20, -1.0, 1.0));
+    const double cos_y = std::cos(y_angle);
+    double x_angle = 0.0;
+    double z_angle = 0.0;
+    if (std::abs(cos_y) > 1.0e-7) {
+        x_angle = std::atan2(r21, r22);
+        z_angle = std::atan2(r10, r00);
+    } else {
+        /* At gimbal lock choose X=0 and solve the remaining Z rotation. */
+        z_angle = std::atan2(-r01, r11);
+    }
+    constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
+    rotation = QVector3D(static_cast<float>(x_angle * kRadiansToDegrees),
+                         static_cast<float>(y_angle * kRadiansToDegrees),
+                         static_cast<float>(z_angle * kRadiansToDegrees));
+    translation = QVector3D(local(0, 3), local(1, 3), local(2, 3));
+    return std::isfinite(translation.x()) && std::isfinite(translation.y()) &&
+           std::isfinite(translation.z()) && std::isfinite(rotation.x()) &&
+           std::isfinite(rotation.y()) && std::isfinite(rotation.z());
+}
+
+void editor_set_local_transform_from_world(
+    const std::shared_ptr<Title> &title, Layer &layer,
+    const EditorWorldTransformSnapshot &snapshot,
+    const std::string &new_group_parent_id,
+    const std::string &new_transform_parent_id, double playhead)
+{
+    Layer parent_probe = layer;
+    parent_probe.parent_id = new_group_parent_id;
+    parent_probe.transform_parent_id = new_transform_parent_id;
+    const bool destination_uses_3d = title &&
+        bgs::transform3d::layer_or_ancestor_uses_3d(*title, parent_probe);
+    if (!title || !snapshot.has_3d_matrix ||
+        (!snapshot.uses_3d && !destination_uses_3d)) {
+        editor_set_local_transform_from_world(
+            title, layer, snapshot.affine, new_group_parent_id,
+            new_transform_parent_id, playhead);
+        return;
+    }
+
+    bool invertible = false;
+    const QMatrix4x4 parent_inverse =
+        bgs::transform3d::layer_parent_world_matrix(
+            *title, parent_probe, playhead).inverted(&invertible);
+    const QMatrix4x4 local = invertible
+        ? parent_inverse * snapshot.world_3d : snapshot.world_3d;
+
+    QVector3D matrix_translation, euler, scale;
+    if (!editor_decompose_local_3d(local, matrix_translation, euler, scale)) {
+        editor_set_local_transform_from_world(
+            title, layer, snapshot.affine, new_group_parent_id,
+            new_transform_parent_id, playhead);
+        return;
+    }
+
+    const double local_time = std::clamp(
+        playhead - layer.in_time, 0.0,
+        std::max(0.0, layer.out_time - layer.in_time));
+    const double anchor_z = layer.dimension_mode == LayerDimensionMode::ThreeD
+        ? layer.anchor_z.evaluate(local_time) : 0.0;
+    const QVector3D linear_z(local(0, 2), local(1, 2), local(2, 2));
+    const QVector3D position = matrix_translation +
+        linear_z * static_cast<float>(anchor_z);
+
+    const bool requires_local_3d = std::abs(position.z()) > 1.0e-5 ||
+        std::abs(euler.x()) > 1.0e-4 || std::abs(euler.y()) > 1.0e-4 ||
+        std::abs(scale.z() - 1.0f) > 1.0e-5;
+    if (requires_local_3d)
+        layer.dimension_mode = LayerDimensionMode::ThreeD;
+
+    layer.parent_id = new_group_parent_id;
+    layer.transform_parent_id = new_transform_parent_id;
+    if (layer.dimension_mode == LayerDimensionMode::ThreeD) {
+        promote_layer_position_to_3d_path(layer);
+        set_animated_value(layer.position_3d, local_time,
+                           {position.x(), position.y(), position.z()});
+        mirror_position_3d_to_legacy(layer, local_time);
+    } else {
+        Vec2Value next_position = layer.position.evaluate(local_time);
+        next_position.x = position.x();
+        next_position.y = position.y();
+        next_position.z = position.z();
+        set_animated_value(layer.position, local_time, next_position);
+        set_animated_value(layer.position_z, local_time, position.z());
+    }
+    Vec2Value next_scale = layer.scale.evaluate(local_time);
+    next_scale.x = scale.x();
+    next_scale.y = scale.y();
+    next_scale.z = scale.z();
+    set_animated_value(layer.scale, local_time, next_scale);
+    set_animated_value(layer.scale_z, local_time, scale.z());
+    set_animated_value(layer.rotation_x, local_time, euler.x());
+    set_animated_value(layer.rotation_y, local_time, euler.y());
+    set_animated_value(layer.rotation, local_time, euler.z());
+    /* The decomposed basis is stored in Rotation XYZ. Orientation stays
+     * available for subsequent authoring but is reset to avoid double-rotation. */
+    set_animated_value(layer.orientation_x, local_time, 0.0);
+    set_animated_value(layer.orientation_y, local_time, 0.0);
+    set_animated_value(layer.orientation_z, local_time, 0.0);
+}
+
 void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
                                            Layer &layer,
                                            const QTransform &world,
@@ -730,11 +1498,185 @@ void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
 
     layer.parent_id = new_group_parent_id;
     layer.transform_parent_id = new_transform_parent_id;
-    set_animated_x(layer.position, local_time, local.dx());
-    set_animated_y(layer.position, local_time, local.dy());
+    editor_set_local_position_xy_for_parenting(
+        layer, local_time, QPointF(local.dx(), local.dy()));
     set_animated_x(layer.scale, local_time, scale_x);
     set_animated_y(layer.scale, local_time, scale_y);
     set_animated_value(layer.rotation, local_time, rotation);
+}
+
+static bool editor_collapse_constant_track(AnimatedProperty &property)
+{
+    if (property.keyframes.empty() || editor_scalar_property_varies(property))
+        return false;
+    property.static_value = property.keyframes.front().value;
+    property.keyframes.clear();
+    return true;
+}
+
+static bool editor_collapse_constant_track(AnimatedVec2Property &property)
+{
+    if (property.keyframes.empty() || editor_vector_property_varies(property))
+        return false;
+    property.static_value = property.keyframes.front().value;
+    property.keyframes.clear();
+    return true;
+}
+
+static bool editor_collapse_constant_track(AnimatedVec3Property &property)
+{
+    if (property.keyframes.empty() || editor_vector3_property_varies(property))
+        return false;
+    property.static_value = property.keyframes.front().value;
+    property.keyframes.clear();
+    return true;
+}
+
+void editor_restore_world_transform_track_for_parenting(
+    const std::shared_ptr<Title> &title, Layer &layer,
+    const EditorWorldTransformTrackSnapshot &track,
+    const std::string &new_group_parent_id,
+    const std::string &new_transform_parent_id, double playhead)
+{
+    const auto started = std::chrono::steady_clock::now();
+    const std::size_t keyframes_before =
+        editor_layer_transform_keyframe_count(layer);
+    const std::string old_group_parent_id = layer.parent_id;
+    const std::string old_transform_parent_id = layer.transform_parent_id;
+    if (track.world_samples.empty()) {
+        BGL_LOG_WARNING("Grouping", QStringLiteral(
+            "Skipped reparent restore layer=%1 reason=empty-world-track")
+            .arg(QString::fromStdString(layer.id)));
+        return;
+    }
+    if (!track.multi_sampled || track.world_samples.size() == 1 ||
+        track.title_times.size() != track.world_samples.size()) {
+        editor_set_local_transform_from_world(
+            title, layer, track.world_samples.front(), new_group_parent_id,
+            new_transform_parent_id, playhead);
+        BGL_LOG_DEBUG("Grouping", QStringLiteral(
+            "Restored single-sample reparent layer=%1 oldGroup=%2 newGroup=%3 "
+            "oldTransformParent=%4 newTransformParent=%5 "
+            "keyframesBefore=%6 keyframesAfter=%7 costUs=%8")
+            .arg(QString::fromStdString(layer.id),
+                 QString::fromStdString(old_group_parent_id),
+                 QString::fromStdString(new_group_parent_id),
+                 QString::fromStdString(old_transform_parent_id),
+                 QString::fromStdString(new_transform_parent_id))
+            .arg(static_cast<qulonglong>(keyframes_before))
+            .arg(static_cast<qulonglong>(
+                editor_layer_transform_keyframe_count(layer)))
+            .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
+        return;
+    }
+
+    Layer destination_probe = layer;
+    destination_probe.parent_id = new_group_parent_id;
+    destination_probe.transform_parent_id = new_transform_parent_id;
+    const bool use_3d = title &&
+        (layer.dimension_mode == LayerDimensionMode::ThreeD ||
+         bgs::transform3d::layer_or_ancestor_uses_3d(
+             *title, destination_probe) ||
+         std::any_of(track.world_samples.begin(), track.world_samples.end(),
+             [](const EditorWorldTransformSnapshot &sample) {
+                 return sample.uses_3d;
+             }));
+
+    layer.parent_id = new_group_parent_id;
+    layer.transform_parent_id = new_transform_parent_id;
+    if (use_3d) {
+        layer.dimension_mode = LayerDimensionMode::ThreeD;
+        promote_layer_position_to_3d_path(layer);
+        layer.position_3d_path_enabled = true;
+        layer.position_3d.keyframes.clear();
+        layer.position.keyframes.clear();
+        layer.position_z.keyframes.clear();
+        layer.rotation_x.keyframes.clear();
+        layer.rotation_y.keyframes.clear();
+        layer.orientation_x.keyframes.clear();
+        layer.orientation_y.keyframes.clear();
+        layer.orientation_z.keyframes.clear();
+        layer.scale_z.keyframes.clear();
+    } else {
+        layer.position.keyframes.clear();
+    }
+    layer.scale.keyframes.clear();
+    layer.rotation.keyframes.clear();
+
+    /* Seed each active channel so set_animated_value() writes a complete
+     * linear frame sequence instead of collapsing the first sample to a static
+     * value. Per-frame baking is used whenever the authored transform or either
+     * the source/destination parent basis is animated. */
+    const double first_local_time = std::clamp(
+        track.title_times.front() - layer.in_time, 0.0,
+        std::max(0.0, layer.out_time - layer.in_time));
+    if (use_3d) {
+        add_or_replace_keyframe(layer.position_3d, first_local_time,
+                                layer.position_3d.static_value);
+        add_or_replace_keyframe(layer.position_z, first_local_time,
+                                layer.position_z.static_value);
+        add_or_replace_keyframe(layer.rotation_x, first_local_time,
+                                layer.rotation_x.static_value);
+        add_or_replace_keyframe(layer.rotation_y, first_local_time,
+                                layer.rotation_y.static_value);
+        add_or_replace_keyframe(layer.orientation_x, first_local_time,
+                                layer.orientation_x.static_value);
+        add_or_replace_keyframe(layer.orientation_y, first_local_time,
+                                layer.orientation_y.static_value);
+        add_or_replace_keyframe(layer.orientation_z, first_local_time,
+                                layer.orientation_z.static_value);
+        add_or_replace_keyframe(layer.scale_z, first_local_time,
+                                layer.scale_z.static_value);
+    } else {
+        add_or_replace_keyframe(layer.position, first_local_time,
+                                layer.position.static_value);
+    }
+    add_or_replace_keyframe(layer.scale, first_local_time,
+                            layer.scale.static_value);
+    add_or_replace_keyframe(layer.rotation, first_local_time,
+                            layer.rotation.static_value);
+
+    for (size_t index = 0; index < track.world_samples.size(); ++index) {
+        editor_set_local_transform_from_world(
+            title, layer, track.world_samples[index], new_group_parent_id,
+            new_transform_parent_id, track.title_times[index]);
+    }
+    std::size_t collapsed_tracks = 0;
+    if (use_3d) {
+        collapsed_tracks += editor_collapse_constant_track(layer.position_3d) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.scale) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.scale_z) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.rotation) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.rotation_x) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.rotation_y) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.orientation_x) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.orientation_y) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.orientation_z) ? 1 : 0;
+        layer.position_3d.recalculate_rove_times();
+        mirror_position_3d_track_to_legacy(layer);
+        collapsed_tracks += editor_collapse_constant_track(layer.position_z) ? 1 : 0;
+    } else {
+        collapsed_tracks += editor_collapse_constant_track(layer.position) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.scale) ? 1 : 0;
+        collapsed_tracks += editor_collapse_constant_track(layer.rotation) ? 1 : 0;
+    }
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Restored sampled reparent layer=%1 name=\"%2\" samples=%3 use3D=%4 "
+        "oldGroup=%5 newGroup=%6 oldTransformParent=%7 newTransformParent=%8 "
+        "keyframesBefore=%9 keyframesAfter=%10 collapsedTracks=%11 costUs=%12")
+        .arg(QString::fromStdString(layer.id),
+             QString::fromStdString(layer.name))
+        .arg(static_cast<qulonglong>(track.world_samples.size()))
+        .arg(use_3d ? 1 : 0)
+        .arg(QString::fromStdString(old_group_parent_id),
+             QString::fromStdString(new_group_parent_id),
+             QString::fromStdString(old_transform_parent_id),
+             QString::fromStdString(new_transform_parent_id))
+        .arg(static_cast<qulonglong>(keyframes_before))
+        .arg(static_cast<qulonglong>(
+            editor_layer_transform_keyframe_count(layer)))
+        .arg(static_cast<qulonglong>(collapsed_tracks))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(started))));
 }
 
 std::vector<std::shared_ptr<Layer>> editor_top_level_selected_layers(
@@ -1169,32 +2111,19 @@ TitleEditor::TitleEditor(QWidget *parent)
 
     gui_refresh_timer_ = new QTimer(this);
     gui_refresh_timer_->setTimerType(Qt::PreciseTimer);
+    gui_refresh_timer_->setInterval(16);
     connect(gui_refresh_timer_, &QTimer::timeout, this, [this]() {
-        // Never enqueue paints while Qt is reparenting/rebuilding the dock tree.
-        // Updating child widgets during QMainWindow layout transitions can race
-        // with Qt's internal dock layout items and lead to access violations.
-        if (dock_layout_transition_ || !isVisible() || isMinimized() || !isActiveWindow())
-            return;
-        /* The monitor-paced timer is editing-only. During playback, the
-         * project-rate play_timer_ is the sole source of canvas frame updates. */
-        if (playing_)
-            return;
-
-        // High-refresh presentation is reserved for interactive UI/canvas work
-        // and live clock/ticker refresh while transport is stopped. Playback
-        // frames continue to advance only from play_timer_ at project FPS.
+        // This timer is interaction-only. Never leave a precise monitor-rate
+        // timer running while the editor is idle.
         const bool pointer_drag = QApplication::mouseButtons() != Qt::NoButton;
-        const bool runtime_dynamic = !playing_ && title_has_dynamic_text_layer(title_);
-        if (!pointer_drag && active_text_edit_layer_id_.empty() && !runtime_dynamic)
+        if (!pointer_drag || dock_layout_transition_ || playing_ ||
+            !isVisible() || isMinimized() || !isActiveWindow()) {
+            gui_refresh_timer_->stop();
             return;
-
-        if (canvas_) {
-            if (runtime_dynamic)
-                canvas_->refresh_runtime_dynamic_content();
-            else
-                canvas_->update();
         }
-        if (timeline_ && pointer_drag && timeline_->underMouse())
+        if (canvas_ && canvas_->underMouse())
+            canvas_->update();
+        if (timeline_ && timeline_->underMouse())
             timeline_->update();
     });
 
@@ -1268,6 +2197,13 @@ TitleEditor::TitleEditor(QWidget *parent)
     clock_timer_->setInterval(100);
     connect(clock_timer_, &QTimer::timeout, this, [this]() {
         update_title_bar();
+        /* Clocks/tickers are runtime-dynamic, but they do not need monitor-rate
+         * invalidation while transport is stopped. Ten updates per second keep
+         * the editor responsive without permanently competing with interaction. */
+        if (!playing_ && !dock_layout_transition_ && canvas_ &&
+            isVisible() && !isMinimized() && isActiveWindow() &&
+            title_has_dynamic_text_layer(title_))
+            canvas_->refresh_runtime_dynamic_content();
     });
     clock_timer_->start();
 

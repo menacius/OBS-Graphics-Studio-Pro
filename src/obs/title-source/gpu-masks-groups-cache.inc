@@ -20,6 +20,13 @@
 
     gs_texrender_t *frame_a = nullptr;
     gs_texrender_t *frame_b = nullptr;
+    /* Shared color + Z24/S8 target for contiguous compatible 3D runs. Opaque
+     * planes establish depth first and transparent planes consume that depth
+     * in a deterministic far-to-near pass. It is kept
+     * separate from the ping/pong compositor because masks and destination
+     * blend modes intentionally remain texture-based. */
+    gs_texrender_t *depth_target = nullptr;
+    bool depth_target_unavailable = false;
     gs_texrender_t *presentation_targets[2] = {nullptr, nullptr};
     int active_presentation_target = -1;
     gs_texrender_t *layer_target = nullptr;
@@ -81,6 +88,7 @@
      * texture that is still sampled by the currently published frame. */
     std::unordered_map<std::string, MaskTextureCacheEntry> mask_texture_cache;
     uint64_t mask_texture_cache_tick = 0;
+    std::unordered_map<std::string, GroupRenderDiagnostics> group_render_diagnostics;
     std::unordered_map<std::string, TransitionMatteTexture> transition_matte_textures;
 
     /* Keep presentation/cache blits isolated from layer-copy uniforms.
@@ -865,6 +873,14 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
             target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
         return target != nullptr;
     };
+    /* Hardware depth is an optional acceleration/correctness path for
+     * compatible opaque 3D runs. If a graphics backend cannot allocate a
+     * Z24/S8 attachment, preserve the established 2D/compatibility compositor
+     * rather than making the entire source fail to render. */
+    if (!session->depth_target && !session->depth_target_unavailable) {
+        session->depth_target = gs_texrender_create(GS_BGRA, GS_Z24_S8);
+        session->depth_target_unavailable = session->depth_target == nullptr;
+    }
     if (!create_target(session->frame_a) || !create_target(session->frame_b) ||
         !create_target(session->presentation_targets[0]) ||
         !create_target(session->presentation_targets[1]) ||

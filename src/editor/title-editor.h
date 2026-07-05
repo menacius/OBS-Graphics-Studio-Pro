@@ -222,6 +222,8 @@ private:
     void add_color_to_library(int library_index, const QColor &color, const QString &name);
     void remove_color_from_current_library(int index);
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
+    void synchronize_layer_selection(const std::vector<std::string> &layer_ids,
+                                     bool clear_transition_target = true);
     void apply_effect_preset_to_layer(const QString &file_path, const std::string &layer_id);
     void apply_transition_preset_to_layer(const QString &file_path, const std::string &layer_id, int edge);
     void edit_layer_transition(const std::string &layer_id, int edge);
@@ -245,6 +247,8 @@ private:
     void schedule_cache_invalidation();
     void force_next_title_visual_update();
     void apply_playhead_change(double t, bool playback_frame);
+    void reset_playback_timer_cadence();
+    void schedule_next_playback_timer_interval();
     void update_display_refresh_pacing();
     void ensure_editor_audio_preview();
     void release_editor_audio_preview();
@@ -257,6 +261,8 @@ private:
     std::shared_ptr<Title> title_;
     std::string            editing_title_id_;
     std::string            sel_layer_id_;
+    std::vector<std::string> synchronized_layer_selection_;
+    bool                   synchronizing_layer_selection_ = false;
     std::string            active_text_edit_layer_id_;
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
@@ -279,6 +285,8 @@ private:
     QTimer                *inline_text_live_publish_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
     QElapsedTimer          cache_reprioritize_clock_;
+    double                 playback_timer_fractional_error_ms_ = 0.0;
+    double                 playback_timer_frame_duration_ms_ = 0.0;
     double                 display_refresh_hz_ = 60.0;
     bool                   dock_layout_transition_ = false;
 
@@ -343,6 +351,8 @@ private:
     QComboBox       *transform_toolbar_mode_ = nullptr;
     QToolButton     *transform_toolbar_keyframe_ = nullptr;
     QToolButton     *transform_toolbar_reset_ = nullptr;
+    QWidget         *anchor_toolbar_widget_ = nullptr;
+    QPushButton     *anchor_toolbar_grid_ = nullptr;
     QWidget         *boolean_toolbar_widget_ = nullptr;
     QToolButton     *boolean_union_button_ = nullptr;
     QToolButton     *boolean_subtract_button_ = nullptr;
@@ -403,5 +413,7 @@ private:
     obs_source_t     *editor_audio_preview_source_ = nullptr;
     bool              editor_audio_preview_seeking_ = false;
     std::vector<std::shared_ptr<Layer>> layer_clipboard_;
+    std::vector<TitleCamera> layer_clipboard_cameras_;
+    std::string layer_clipboard_source_title_id_;
     std::set<std::string> pending_text_layer_auto_names_;
 };

@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 
+#include "../core/serialization-passthrough.h"
 #include "animation.h"
 
 /* ══════════════════════════════════════════════════════════════════
@@ -56,7 +57,28 @@ enum class EffectBlendMode {
     Color = 5,
 };
 
+/* Stable execution-space contract used by both the compatibility compositor
+ * and the planar-3D depth compositor. This is deliberately derived from the
+ * effect type/flags rather than serialized as another user setting, so older
+ * projects keep identical results.
+ *
+ * LayerSpace    : evaluated on the padded transform-neutral layer raster, then
+ *                 projected into 2D/3D. Shadows, glow, blur and outline belong
+ *                 here and therefore rotate/scale with the plane.
+ * PostTransform : evaluated from projected samples. Motion Blur belongs here
+ *                 because camera/parent motion changes the sample positions.
+ * ScreenSpace   : reads or modifies the already composited background.
+ *                 Affect-layers-behind effects belong here.
+ */
+enum class LayerEffectSpace {
+    LayerSpace = 0,
+    PostTransform = 1,
+    ScreenSpace = 2,
+};
+
 struct LayerEffect {
+    OpaqueSerializationPassthrough serialization_passthrough_json;
+
     /* Stable extension identity. Empty means use the built-in ID mapped from type.
      * Unknown IDs and their parameter payload survive project round-trips. */
     std::string extension_id;
@@ -207,3 +229,23 @@ struct LayerEffect {
     AnimatedProperty secondary_color_g { "effect_secondary_color_g", 163.0 };
     AnimatedProperty secondary_color_b { "effect_secondary_color_b", 255.0 };
 };
+
+inline LayerEffectSpace layer_effect_execution_space(const LayerEffect &effect)
+{
+    if (effect.affect_layers_behind)
+        return LayerEffectSpace::ScreenSpace;
+    if (effect.type == LayerEffectType::MotionBlur)
+        return LayerEffectSpace::PostTransform;
+    return LayerEffectSpace::LayerSpace;
+}
+
+inline bool layer_effect_stack_has_space(const std::vector<LayerEffect> &effects,
+                                         LayerEffectSpace space)
+{
+    for (const LayerEffect &effect : effects) {
+        if (effect.enabled && layer_effect_execution_space(effect) == space)
+            return true;
+    }
+    return false;
+}
+

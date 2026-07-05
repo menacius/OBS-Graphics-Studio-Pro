@@ -12,6 +12,7 @@
 #include "external-data.h"
 #include "image-layer-utils.h"
 #include "live-text-cue-utils.h"
+#include "layer-transform-3d.h"
 #include "performance-counters.h"
 
 #include <QCryptographicHash>

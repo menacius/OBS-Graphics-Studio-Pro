@@ -34,6 +34,64 @@ constexpr int kLayerTrimHandleVisualWidth = 8;
 constexpr int kLayerTrimHitWidth = 12;
 constexpr int kTransitionDurationHitWidth = 9;
 
+Vector3Keyframe vector3_keyframe_from_legacy(const VectorKeyframe &source)
+{
+    Vector3Keyframe result;
+    result.time = source.time;
+    result.value = {source.value.x, source.value.y, source.value.z};
+    result.easing = source.easing;
+    result.cx1 = source.cx1;
+    result.cy1 = source.cy1;
+    result.cx2 = source.cx2;
+    result.cy2 = source.cy2;
+    result.temporal_mode = source.temporal_mode;
+    result.incoming_influence = source.incoming_influence;
+    result.outgoing_influence = source.outgoing_influence;
+    result.incoming_speed = source.incoming_speed;
+    result.outgoing_speed = source.outgoing_speed;
+    result.temporal_tangents_linked = source.temporal_tangents_linked;
+    result.temporal_velocity_explicit = source.temporal_velocity_explicit;
+    result.incoming_tangent = {source.incoming_tangent.x,
+                               source.incoming_tangent.y,
+                               source.incoming_tangent.z};
+    result.outgoing_tangent = {source.outgoing_tangent.x,
+                               source.outgoing_tangent.y,
+                               source.outgoing_tangent.z};
+    result.spatial_mode = source.spatial_mode;
+    result.spatial_tangents_linked = source.spatial_tangents_linked;
+    result.rove_across_time = source.rove_across_time;
+    return result;
+}
+
+VectorKeyframe legacy_keyframe_from_vector3(const Vector3Keyframe &source)
+{
+    VectorKeyframe result;
+    result.time = source.time;
+    result.value = {source.value.x, source.value.y, source.value.z};
+    result.easing = source.easing;
+    result.cx1 = source.cx1;
+    result.cy1 = source.cy1;
+    result.cx2 = source.cx2;
+    result.cy2 = source.cy2;
+    result.temporal_mode = source.temporal_mode;
+    result.incoming_influence = source.incoming_influence;
+    result.outgoing_influence = source.outgoing_influence;
+    result.incoming_speed = source.incoming_speed;
+    result.outgoing_speed = source.outgoing_speed;
+    result.temporal_tangents_linked = source.temporal_tangents_linked;
+    result.temporal_velocity_explicit = source.temporal_velocity_explicit;
+    result.incoming_tangent = {source.incoming_tangent.x,
+                               source.incoming_tangent.y,
+                               source.incoming_tangent.z};
+    result.outgoing_tangent = {source.outgoing_tangent.x,
+                               source.outgoing_tangent.y,
+                               source.outgoing_tangent.z};
+    result.spatial_mode = source.spatial_mode;
+    result.spatial_tangents_linked = source.spatial_tangents_linked;
+    result.rove_across_time = source.rove_across_time;
+    return result;
+}
+
 } // namespace
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
@@ -60,6 +118,8 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
         scroll_x_ = 0;
         fit_on_next_resize_ = true;
         selected_keyframes_.clear();
+        graph_target_owner_id_.clear();
+        graph_target_property_name_.clear();
         graph_fit_pending_ = true;
         transition_target_selected_ = false;
         selected_transition_layer_id_.clear();
@@ -68,6 +128,7 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
     }
     clamp_scroll();
     clamp_vertical_scroll();
+    notify_graph_channel_count();
     if (fit_on_next_resize_ && width() > 40) {
         fit_on_next_resize_ = false;
         fit_timeline();
@@ -84,32 +145,41 @@ void TimelineWidget::set_selected_layer(const std::string &lid)
 
 void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_ids)
 {
-    selected_layer_ids_.clear();
-    if (!title_) {
-        sel_layer_id_.clear();
-        transition_target_selected_ = false;
-        selected_transition_layer_id_.clear();
-        update();
-        return;
+    std::vector<std::string> normalized;
+    if (title_) {
+        std::set<std::string> seen;
+        normalized.reserve(layer_ids.size());
+        for (const auto &id : layer_ids) {
+            if (id.empty() || !seen.insert(id).second)
+                continue;
+            if (title_->find_layer(id))
+                normalized.push_back(id);
+        }
     }
 
-    std::set<std::string> seen;
-    for (const auto &id : layer_ids) {
-        if (id.empty() || !seen.insert(id).second) continue;
-        if (title_->find_layer(id))
-            selected_layer_ids_.push_back(id);
+    bool transition_changed = false;
+    if (transition_target_selected_ &&
+        std::find(normalized.begin(), normalized.end(),
+                  selected_transition_layer_id_) == normalized.end()) {
+        transition_target_selected_ = false;
+        selected_transition_layer_id_.clear();
+        transition_changed = true;
     }
-    sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+
+    const std::string next_primary = normalized.empty()
+        ? std::string() : normalized.back();
+    if (selected_layer_ids_ == normalized && sel_layer_id_ == next_primary &&
+        !transition_changed)
+        return;
+
+    selected_layer_ids_ = std::move(normalized);
+    sel_layer_id_ = next_primary;
     if (!sel_layer_id_.empty())
         selection_anchor_layer_id_ = sel_layer_id_;
     else
         selection_anchor_layer_id_.clear();
-    if (transition_target_selected_ &&
-        std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), selected_transition_layer_id_) == selected_layer_ids_.end()) {
-        transition_target_selected_ = false;
-        selected_transition_layer_id_.clear();
-    }
     graph_fit_pending_ = true;
+    notify_graph_channel_count();
     update();
 }
 
@@ -491,6 +561,13 @@ TimelinePropertyRef TimelineWidget::find_timeline_property(Layer &layer, const s
     return {};
 }
 
+TimelinePropertyRef TimelineWidget::find_timeline_property(
+    const std::string &owner_id, const std::string &prop_name) const
+{
+    return title_ ? timeline_property_for_owner(*title_, owner_id, prop_name)
+                  : TimelinePropertyRef{};
+}
+
 void TimelineWidget::clear_keyframe_selection()
 {
     if (selected_keyframes_.empty()) return;
@@ -506,9 +583,8 @@ void TimelineWidget::prune_keyframe_selection()
     }
 
     for (auto it = selected_keyframes_.begin(); it != selected_keyframes_.end();) {
-        auto layer = title_->find_layer(it->layer_id);
-        auto prop = layer ? find_timeline_property(*layer, it->prop_name) : TimelinePropertyRef{};
-        if (!layer || !prop || it->index < 0 || it->index >= (int)prop.keyframe_count())
+        auto prop = find_timeline_property(it->layer_id, it->prop_name);
+        if (!prop || it->index < 0 || it->index >= (int)prop.keyframe_count())
             it = selected_keyframes_.erase(it);
         else
             ++it;
@@ -526,6 +602,7 @@ void TimelineWidget::select_keyframe(const std::string &layer_id, const std::str
     transition_target_selected_ = false;
     selected_transition_layer_id_.clear();
     KeyframeRef ref{layer_id, prop_name, kf_idx};
+    set_graph_target(layer_id, prop_name);
     if (!additive)
         selected_keyframes_.clear();
     if (toggle && selected_keyframes_.find(ref) != selected_keyframes_.end())
@@ -556,17 +633,17 @@ void TimelineWidget::select_keyframes_in_rect(const QRect &rect, bool additive)
 
     for (int row = 0; row < (int)rows.size(); ++row) {
         const auto &entry = rows[row];
-        if (!entry.is_property || !entry.layer || !entry.prop) continue;
-        if (!layer_keyframe_sections_expanded(*entry.layer) || entry.layer->locked) continue;
+        if (!entry.is_property || !entry.prop) continue;
+        if (entry.locked) continue;
         int y = ruler_height() + row * row_height() - scroll_y_;
         int ky = y + row_height() / 2;
         if (ky < visible_timeline.top() || ky > visible_timeline.bottom()) continue;
         if (ky < bounded.top() || ky > bounded.bottom()) continue;
         for (int i = 0; i < (int)entry.prop.keyframe_count(); ++i) {
-            int kx = time_to_x(entry.layer->in_time + entry.prop.keyframe_time((size_t)i));
+            int kx = time_to_x(entry.in_time + entry.prop.keyframe_time((size_t)i));
             if (kx < visible_timeline.left() || kx > visible_timeline.right()) continue;
             if (bounded.contains(QPoint(kx, ky)))
-                selection.insert({entry.layer->id, entry.prop.name(), i});
+                selection.insert({entry.owner_id, entry.prop.name(), i});
         }
     }
     selected_keyframes_ = std::move(selection);
@@ -584,32 +661,47 @@ bool TimelineWidget::copy_selected_keyframes()
         std::string prop_name;
         Keyframe keyframe;
         VectorKeyframe vector_keyframe;
+        Vector3Keyframe vector3_keyframe;
         std::vector<Keyframe> scalar_group_keyframes;
         QJsonObject extension_keyframe;
+        DiscreteKeyframe discrete_keyframe;
         bool is_vector = false;
+        bool is_vector3 = false;
         bool is_scalar_group = false;
         bool is_extension = false;
+        bool is_discrete = false;
         double timeline_time = 0.0;
     };
     std::vector<PendingCopy> pending;
     double origin = std::numeric_limits<double>::max();
 
+    std::set<std::pair<const AnimatedVec3Property *, int>> seen_vector3_keys;
     for (const auto &ref : selected_keyframes_) {
-        auto layer = title_->find_layer(ref.layer_id);
-        auto prop = layer ? find_timeline_property(*layer, ref.prop_name) : TimelinePropertyRef{};
-        if (!layer || !prop || ref.index < 0 || ref.index >= (int)prop.keyframe_count()) continue;
-        const double timeline_time = layer->in_time + prop.keyframe_time((size_t)ref.index);
+        auto prop = find_timeline_property(ref.layer_id, ref.prop_name);
+        if (!prop || ref.index < 0 || ref.index >= (int)prop.keyframe_count()) continue;
+        /* X/Y/Z rows are views of one Vector3 keyframe sequence. A marquee
+         * selection may contain the same key through all three rows; copy it
+         * once so paste cannot insert three duplicate XYZ keys. */
+        if (prop.is_vector3() &&
+            !seen_vector3_keys.insert({prop.vector3, ref.index}).second)
+            continue;
+        const double timeline_time = timeline_owner_in_time(*title_, ref.layer_id) +
+                                     prop.keyframe_time((size_t)ref.index);
         origin = std::min(origin, timeline_time);
         PendingCopy copy;
         copy.layer_id = ref.layer_id;
         copy.prop_name = ref.prop_name;
         copy.is_vector = prop.is_vector();
+        copy.is_vector3 = prop.is_vector3();
         copy.is_scalar_group = prop.is_scalar_group();
         copy.is_extension = prop.is_extension();
+        copy.is_discrete = prop.is_discrete();
         copy.keyframe = prop.scalar_keyframe((size_t)ref.index);
         copy.vector_keyframe = prop.vector_keyframe((size_t)ref.index);
+        copy.vector3_keyframe = prop.vector3_keyframe((size_t)ref.index);
         copy.scalar_group_keyframes = prop.scalar_group_keyframes((size_t)ref.index);
         copy.extension_keyframe = prop.extension_keyframe((size_t)ref.index);
+        copy.discrete_keyframe = prop.discrete_keyframe((size_t)ref.index);
         copy.timeline_time = timeline_time;
         pending.push_back(copy);
     }
@@ -622,12 +714,24 @@ bool TimelineWidget::copy_selected_keyframes()
 
     keyframe_clipboard_.clear();
     keyframe_clipboard_.reserve(pending.size());
-    for (const auto &entry : pending)
-        keyframe_clipboard_.push_back({entry.layer_id, entry.prop_name, entry.keyframe,
-                                       entry.vector_keyframe, entry.scalar_group_keyframes,
-                                       entry.extension_keyframe, entry.is_vector,
-                                       entry.is_scalar_group, entry.is_extension,
-                                       entry.timeline_time - origin});
+    for (const auto &entry : pending) {
+        ClipboardKeyframe copy;
+        copy.layer_id = entry.layer_id;
+        copy.prop_name = entry.prop_name;
+        copy.keyframe = entry.keyframe;
+        copy.vector_keyframe = entry.vector_keyframe;
+        copy.vector3_keyframe = entry.vector3_keyframe;
+        copy.scalar_group_keyframes = entry.scalar_group_keyframes;
+        copy.extension_keyframe = entry.extension_keyframe;
+        copy.discrete_keyframe = entry.discrete_keyframe;
+        copy.is_vector = entry.is_vector;
+        copy.is_vector3 = entry.is_vector3;
+        copy.is_scalar_group = entry.is_scalar_group;
+        copy.is_extension = entry.is_extension;
+        copy.is_discrete = entry.is_discrete;
+        copy.offset = entry.timeline_time - origin;
+        keyframe_clipboard_.push_back(std::move(copy));
+    }
     return true;
 }
 
@@ -638,16 +742,39 @@ bool TimelineWidget::delete_selected_keyframes()
     if (selected_keyframes_.empty()) return false;
 
     std::map<std::pair<std::string, std::string>, std::vector<int>> grouped;
-    for (const auto &ref : selected_keyframes_)
-        grouped[{ref.layer_id, ref.prop_name}].push_back(ref.index);
+    std::map<AnimatedVec3Property *,
+             std::pair<TimelinePropertyRef, std::vector<int>>> vector3_grouped;
+    for (const auto &ref : selected_keyframes_) {
+        auto prop = find_timeline_property(ref.layer_id, ref.prop_name);
+        if (!prop) continue;
+        if (prop.is_vector3()) {
+            auto &entry = vector3_grouped[prop.vector3];
+            entry.first = prop;
+            entry.second.push_back(ref.index);
+        } else {
+            grouped[{ref.layer_id, ref.prop_name}].push_back(ref.index);
+        }
+    }
 
     bool changed = false;
     for (auto &[prop_ref, indices] : grouped) {
-        auto layer = title_->find_layer(prop_ref.first);
-        if (!layer || layer->locked) continue;
-        auto prop = find_timeline_property(*layer, prop_ref.second);
+        if (timeline_owner_locked(*title_, prop_ref.first)) continue;
+        auto prop = find_timeline_property(prop_ref.first, prop_ref.second);
         if (!prop) continue;
         std::sort(indices.begin(), indices.end(), std::greater<int>());
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+        for (int index : indices) {
+            if (index < 0 || index >= (int)prop.keyframe_count()) continue;
+            prop.erase_keyframe((size_t)index);
+            changed = true;
+        }
+    }
+    for (auto &[track, entry] : vector3_grouped) {
+        (void)track;
+        TimelinePropertyRef prop = entry.first;
+        auto &indices = entry.second;
+        std::sort(indices.begin(), indices.end(), std::greater<int>());
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
         for (int index : indices) {
             if (index < 0 || index >= (int)prop.keyframe_count()) continue;
             prop.erase_keyframe((size_t)index);
@@ -659,6 +786,7 @@ bool TimelineWidget::delete_selected_keyframes()
         const int removed_count = static_cast<int>(selected_keyframes_.size());
         selected_keyframes_.clear();
         update();
+        emit keyframe_structure_changed();
         BGL_LOG_DEBUG("Animation", QStringLiteral(
             "Deleted keyframes title=%1 count=%2")
             .arg(title_ ? QString::fromStdString(title_->id)
@@ -674,24 +802,201 @@ bool TimelineWidget::cut_selected_keyframes()
     return delete_selected_keyframes();
 }
 
-bool TimelineWidget::paste_keyframes_at(double timeline_time)
+bool TimelineWidget::clipboard_single_property(std::string *owner_id,
+                                               std::string *property_name) const
+{
+    if (keyframe_clipboard_.empty()) return false;
+    const std::string &owner = keyframe_clipboard_.front().layer_id;
+    const std::string &property = keyframe_clipboard_.front().prop_name;
+    for (const ClipboardKeyframe &entry : keyframe_clipboard_) {
+        if (entry.layer_id != owner || entry.prop_name != property)
+            return false;
+    }
+    if (owner_id) *owner_id = owner;
+    if (property_name) *property_name = property;
+    return true;
+}
+
+bool TimelineWidget::clipboard_property_compatible(
+    const ClipboardKeyframe &entry, const TimelinePropertyRef &target) const
+{
+    if (!target) return false;
+    if (entry.is_discrete) return target.is_discrete();
+    if (entry.is_extension) {
+        if (!target.is_extension()) return false;
+        const QJsonValue source_value = entry.extension_keyframe.value(
+            QStringLiteral("value"));
+        QJsonValue target_value = target.extension_fallback;
+        if (target_value.isUndefined()) {
+            const QJsonArray keys = bgs::effects::animation::track_keys(
+                *target.extension_effect, target.extension_path);
+            if (!keys.isEmpty())
+                target_value = keys.first().toObject().value(
+                    QStringLiteral("value"));
+        }
+        return target_value.isUndefined() || source_value.isUndefined() ||
+               source_value.type() == target_value.type();
+    }
+    if (entry.is_scalar_group)
+        return target.is_scalar_group() &&
+               target.scalar_group.size() == entry.scalar_group_keyframes.size();
+    if (entry.is_vector || entry.is_vector3)
+        return target.is_vector() || target.is_vector3();
+    return target.scalar != nullptr;
+}
+
+TimelinePropertyRef TimelineWidget::clipboard_target_property(
+    std::string *owner_id, std::string *property_name) const
+{
+    if (!title_ || keyframe_clipboard_.empty() ||
+        graph_target_owner_id_.empty() || graph_target_property_name_.empty())
+        return {};
+
+    std::string source_owner;
+    std::string source_property;
+    if (!clipboard_single_property(&source_owner, &source_property))
+        return {};
+
+    TimelinePropertyRef target = timeline_property_for_owner(
+        *title_, graph_target_owner_id_, graph_target_property_name_);
+    if (!target || !clipboard_property_compatible(keyframe_clipboard_.front(), target))
+        return {};
+
+    if (owner_id) *owner_id = graph_target_owner_id_;
+    if (property_name) *property_name = graph_target_property_name_;
+    return target;
+}
+
+int TimelineWidget::keyframe_index_near(const TimelinePropertyRef &prop,
+                                        double local_time,
+                                        double tolerance) const
+{
+    if (!prop) return -1;
+    int best = -1;
+    double best_distance = std::max(0.0, tolerance);
+    for (int index = 0; index < static_cast<int>(prop.keyframe_count()); ++index) {
+        const double distance = std::abs(prop.keyframe_time(
+            static_cast<size_t>(index)) - local_time);
+        if (distance <= best_distance) {
+            best = index;
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+void TimelineWidget::erase_keyframes_at(TimelinePropertyRef prop,
+                                        double local_time)
+{
+    if (!prop) return;
+    for (int index = static_cast<int>(prop.keyframe_count()) - 1;
+         index >= 0; --index) {
+        if (std::abs(prop.keyframe_time(static_cast<size_t>(index)) -
+                     local_time) <= 1e-6)
+            prop.erase_keyframe(static_cast<size_t>(index));
+    }
+}
+
+bool TimelineWidget::add_keyframe_at(const std::string &owner_id,
+                                     const std::string &property_name,
+                                     double timeline_time,
+                                     bool snap_to_frame)
+{
+    if (!title_ || timeline_owner_locked(*title_, owner_id)) return false;
+    TimelinePropertyRef prop = find_timeline_property(owner_id, property_name);
+    if (!prop) return false;
+
+    const double owner_in = timeline_owner_in_time(*title_, owner_id);
+    const double owner_out = timeline_owner_out_time(*title_, owner_id);
+    const double requested = snap_to_frame ? snap_time(timeline_time)
+                                           : timeline_time;
+    const double local_time = std::clamp(requested - owner_in, 0.0,
+        std::max(0.0, owner_out - owner_in));
+    /* All native/extension track writers use a 1/240-second identity
+     * epsilon. Respect the same boundary here so a double-click that is near
+     * an existing key selects it instead of letting toggle_at remove it. */
+    const double tolerance = std::max(1.0 / 240.0 + 1e-9,
+        snap_to_frame ? obs_frame_duration() * 0.25 : 0.0);
+    const int existing = keyframe_index_near(prop, local_time, tolerance);
+    if (existing >= 0) {
+        set_graph_target(owner_id, property_name);
+        selected_keyframes_.clear();
+        selected_keyframes_.insert({owner_id, property_name, existing});
+        update();
+        return false;
+    }
+
+    prop.toggle_at(local_time);
+    prop.sort_keyframes();
+    const int inserted = keyframe_index_near(prop, local_time,
+                                             std::max(1e-6, tolerance));
+    if (inserted < 0) return false;
+
+    set_graph_target(owner_id, property_name);
+    selected_keyframes_.clear();
+    selected_keyframes_.insert({owner_id, property_name, inserted});
+    update();
+    emit keyframe_added(owner_id, property_name, local_time);
+    emit keyframe_structure_changed();
+    emit keyframe_easing_changed();
+    BGL_LOG_DEBUG("Animation", QStringLiteral(
+        "Added keyframe title=%1 owner=%2 property=%3 timeline=%4 local=%5 snap=%6")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(QString::fromStdString(owner_id))
+        .arg(QString::fromStdString(property_name))
+        .arg(requested, 0, 'f', 6)
+        .arg(local_time, 0, 'f', 6)
+        .arg(snap_to_frame));
+    return true;
+}
+
+bool TimelineWidget::paste_keyframes_at(double timeline_time, bool snap_origin)
 {
     if (!title_ || keyframe_clipboard_.empty()) return false;
 
+    std::string redirected_owner;
+    std::string redirected_property;
+    const TimelinePropertyRef redirected_target = clipboard_target_property(
+        &redirected_owner, &redirected_property);
+    const bool redirect_single_track = static_cast<bool>(redirected_target);
+
     std::map<std::pair<std::string, std::string>, std::vector<double>> inserted_times;
     bool changed = false;
-    const double paste_origin = std::clamp(snap_time(timeline_time), 0.0, title_->duration);
+    int replaced_keyframes = 0;
+    const double paste_origin = std::clamp(
+        snap_origin ? snap_time(timeline_time) : timeline_time,
+        0.0, title_->duration);
 
-    for (const auto &entry : keyframe_clipboard_) {
-        auto layer = title_->find_layer(entry.layer_id);
-        if (!layer || layer->locked) continue;
-        auto prop = find_timeline_property(*layer, entry.prop_name);
-        if (!prop) continue;
+    for (const ClipboardKeyframe &entry : keyframe_clipboard_) {
+        const std::string &target_owner = redirect_single_track
+            ? redirected_owner : entry.layer_id;
+        const std::string &target_property = redirect_single_track
+            ? redirected_property : entry.prop_name;
+        if (timeline_owner_locked(*title_, target_owner)) continue;
 
+        TimelinePropertyRef prop = find_timeline_property(target_owner,
+                                                          target_property);
+        if (!prop || !clipboard_property_compatible(entry, prop)) continue;
+
+        const double owner_in = timeline_owner_in_time(*title_, target_owner);
+        const double owner_out = timeline_owner_out_time(*title_, target_owner);
         const double target_time = paste_origin + entry.offset;
-        const double local_time = std::clamp(snap_time(target_time - layer->in_time),
-                                             0.0, std::max(0.0, layer->out_time - layer->in_time));
-        if (entry.is_extension) {
+        const double target_local_time = target_time - owner_in;
+        const double local_time = std::clamp(
+            snap_origin ? snap_time(target_local_time) : target_local_time,
+            0.0, std::max(0.0, owner_out - owner_in));
+        const int previous = keyframe_index_near(prop, local_time, 1e-6);
+        if (previous >= 0) {
+            erase_keyframes_at(prop, local_time);
+            ++replaced_keyframes;
+        }
+
+        if (entry.is_discrete) {
+            DiscreteKeyframe pasted = entry.discrete_keyframe;
+            pasted.time = local_time;
+            prop.push_keyframe(pasted);
+        } else if (entry.is_extension) {
             QJsonObject pasted = entry.extension_keyframe;
             pasted.insert(QStringLiteral("time"), local_time);
             prop.push_keyframe(pasted);
@@ -700,25 +1005,52 @@ bool TimelineWidget::paste_keyframes_at(double timeline_time)
             for (Keyframe &keyframe : pasted)
                 keyframe.time = local_time;
             prop.push_keyframes(pasted);
+        } else if (entry.is_vector3) {
+            if (prop.is_vector3()) {
+                Vector3Keyframe pasted = entry.vector3_keyframe;
+                pasted.time = local_time;
+                prop.push_keyframe(pasted);
+            } else {
+                VectorKeyframe pasted = legacy_keyframe_from_vector3(
+                    entry.vector3_keyframe);
+                pasted.time = local_time;
+                prop.push_keyframe(pasted);
+            }
         } else if (entry.is_vector) {
-            VectorKeyframe pasted = entry.vector_keyframe;
-            pasted.time = local_time;
-            prop.push_keyframe(pasted);
+            if (prop.is_vector3()) {
+                Vector3Keyframe pasted = vector3_keyframe_from_legacy(
+                    entry.vector_keyframe);
+                pasted.time = local_time;
+                prop.push_keyframe(pasted);
+            } else {
+                VectorKeyframe pasted = entry.vector_keyframe;
+                pasted.time = local_time;
+                prop.push_keyframe(pasted);
+            }
         } else {
             Keyframe pasted = entry.keyframe;
             pasted.time = local_time;
+            if (prop.is_hold_only()) {
+                pasted.value = pasted.value >= 0.5 ? 1.0 : 0.0;
+                pasted.easing = EasingType::Hold;
+                pasted.temporal_mode = TemporalInterpolationMode::Hold;
+                pasted.temporal_velocity_explicit = true;
+                pasted.temporal_tangents_linked = true;
+            }
             prop.push_keyframe(pasted);
         }
-        inserted_times[{entry.layer_id, entry.prop_name}].push_back(local_time);
+        inserted_times[{target_owner, target_property}].push_back(local_time);
         changed = true;
     }
 
     if (!changed) return false;
 
+    if (redirect_single_track)
+        set_graph_target(redirected_owner, redirected_property);
     selected_keyframes_.clear();
     for (auto &[prop_ref, times] : inserted_times) {
-        auto layer = title_->find_layer(prop_ref.first);
-        auto prop = layer ? find_timeline_property(*layer, prop_ref.second) : TimelinePropertyRef{};
+        TimelinePropertyRef prop = find_timeline_property(prop_ref.first,
+                                                          prop_ref.second);
         if (!prop) continue;
         prop.sort_keyframes();
 
@@ -726,28 +1058,39 @@ bool TimelineWidget::paste_keyframes_at(double timeline_time)
         for (double inserted_time : times) {
             int best = -1;
             double best_distance = std::numeric_limits<double>::max();
-            for (int i = 0; i < (int)prop.keyframe_count(); ++i) {
-                if (used.count(i)) continue;
-                const double distance = std::abs(prop.keyframe_time(i) - inserted_time);
+            for (int index = 0; index < static_cast<int>(prop.keyframe_count());
+                 ++index) {
+                if (used.count(index)) continue;
+                const double distance = std::abs(prop.keyframe_time(
+                    static_cast<size_t>(index)) - inserted_time);
                 if (distance < best_distance) {
-                    best = i;
+                    best = index;
                     best_distance = distance;
                 }
             }
             if (best >= 0) {
                 used.insert(best);
-                selected_keyframes_.insert({prop_ref.first, prop_ref.second, best});
+                selected_keyframes_.insert({prop_ref.first, prop_ref.second,
+                                            best});
             }
         }
     }
 
     update();
+    emit keyframe_structure_changed();
     BGL_LOG_DEBUG("Animation", QStringLiteral(
-        "Pasted keyframes title=%1 count=%2 origin=%3")
+        "Pasted keyframes title=%1 count=%2 origin=%3 snapped=%4 redirected=%5 target=%6/%7 replaced=%8")
         .arg(title_ ? QString::fromStdString(title_->id)
                     : QStringLiteral("<none>"))
         .arg(static_cast<int>(keyframe_clipboard_.size()))
-        .arg(paste_origin, 0, 'f', 6));
+        .arg(paste_origin, 0, 'f', 6)
+        .arg(snap_origin)
+        .arg(redirect_single_track)
+        .arg(QString::fromStdString(redirect_single_track
+            ? redirected_owner : std::string()))
+        .arg(QString::fromStdString(redirect_single_track
+            ? redirected_property : std::string()))
+        .arg(replaced_keyframes));
     return true;
 }
 
@@ -764,11 +1107,14 @@ void TimelineWidget::begin_keyframe_drag(const std::string &layer_id, const std:
     if (!is_keyframe_selected(layer_id, prop_name, kf_idx))
         selected_keyframes_ = {{layer_id, prop_name, kf_idx}};
 
+    std::set<std::pair<const AnimatedVec3Property *, int>> seen_vector3_keys;
     for (const auto &ref : selected_keyframes_) {
-        auto layer = title_ ? title_->find_layer(ref.layer_id) : nullptr;
-        if (!layer || layer->locked) continue;
-        auto prop = find_timeline_property(*layer, ref.prop_name);
+        if (!title_ || timeline_owner_locked(*title_, ref.layer_id)) continue;
+        auto prop = find_timeline_property(ref.layer_id, ref.prop_name);
         if (!prop || ref.index < 0 || ref.index >= (int)prop.keyframe_count()) continue;
+        if (prop.is_vector3() &&
+            !seen_vector3_keys.insert({prop.vector3, ref.index}).second)
+            continue;
         dragged_keyframes_.push_back({ref, prop.keyframe_time(ref.index)});
     }
 }
@@ -939,9 +1285,35 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     int W = width(), H = height();
     const QRect dirty = ev ? ev->rect().intersected(rect()) : rect();
     if (dirty.isEmpty()) return;
+
+    QElapsedTimer paint_cost;
+    paint_cost.start();
+    const auto record_paint_cost = [this, &paint_cost, &dirty]() {
+        paint_profile_total_us_ += paint_cost.nsecsElapsed() / 1000;
+        ++paint_profile_samples_;
+        if (!paint_profile_window_.isValid())
+            paint_profile_window_.start();
+        if (paint_profile_window_.elapsed() < 1000)
+            return;
+        const double average_us = paint_profile_samples_ > 0
+            ? static_cast<double>(paint_profile_total_us_) /
+                  static_cast<double>(paint_profile_samples_)
+            : 0.0;
+        BGL_LOG_TRACE("Performance", QStringLiteral(
+            "Timeline paint samples=%1 averageUs=%2 graph=%3 dirty=%4x%5")
+            .arg(paint_profile_samples_)
+            .arg(average_us, 0, 'f', 1)
+            .arg(graph_editor_enabled_)
+            .arg(dirty.width()).arg(dirty.height()));
+        paint_profile_total_us_ = 0;
+        paint_profile_samples_ = 0;
+        paint_profile_window_.restart();
+    };
+
     p.setClipRect(dirty);
     if (graph_editor_enabled_) {
         paint_graph_editor(p, dirty);
+        record_paint_cost();
         return;
     }
 
@@ -1154,11 +1526,20 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                     (int)std::floor(visible_document_start / frame_step) - 1, 0, total_frames);
                 const int cache_last_frame = std::clamp(
                     (int)std::ceil(visible_document_end / frame_step) + 1, cache_first_frame, total_frames);
+                const QHash<int, FrameCacheState> cache_states =
+                    CacheManager::instance().displayStatesForRange(
+                        title_, cache_first_frame, cache_last_frame);
+                const QHash<int, bool> static_frames =
+                    CacheManager::instance().displayStaticFramesForRange(
+                        title_, cache_first_frame, cache_last_frame);
                 for (int frame = cache_first_frame; frame <= cache_last_frame; ++frame) {
-                    const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
+                    const FrameCacheState state = cache_states.value(
+                        frame, FrameCacheState::NotCached);
                     if (state == FrameCacheState::NotCached) continue;
-                    const bool static_frame = (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk) &&
-                        CacheManager::instance().displayFrameIsStatic(title_, frame);
+                    const bool static_frame =
+                        (state == FrameCacheState::CachedRam ||
+                         state == FrameCacheState::CachedDisk) &&
+                        static_frames.value(frame, false);
                     const QColor color = state_color(state, static_frame);
                     if (color.alpha() == 0) continue;
                     const int x = time_to_x(frame * frame_step);
@@ -1268,9 +1649,16 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             if (!body_dirty.intersects(QRect(0, y, W, rowh))) continue;
             bool sel = is_layer_selected(layer->id);
 
+            const bool graph_target_row = entry.is_property &&
+                entry.owner_id == graph_target_owner_id_ &&
+                entry.prop.name() == graph_target_property_name_ &&
+                (entry.is_property_channel
+                    ? graph_channel_component() == entry.property_channel
+                    : graph_channel_mode_ == GraphChannelMode::All);
             p.fillRect(0, y, W, rowh,
-                       entry.is_property ? property_bg :
-                       sel ? selected_row : window);
+                       entry.is_property
+                           ? (graph_target_row ? selected_row : property_bg)
+                           : sel ? selected_row : window);
             p.setPen(border);
             p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
 
@@ -1598,11 +1986,12 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         p.setBrush(Qt::NoBrush);
         p.drawRect(rect.adjusted(0, 0, -1, -1));
     }
+    record_paint_cost();
 }
 
 bool TimelineWidget::hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *hit_layer,
                                   TimelinePropertyRef *hit_prop, int *hit_kf_idx,
-                                  int *hit_row_idx) const
+                                  int *hit_row_idx, std::string *hit_owner_id) const
 {
     if (!title_ || pos.y() < ruler_height()) return false;
     auto rows = timeline_rows(title_);
@@ -1621,6 +2010,7 @@ bool TimelineWidget::hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *hit
                 if (hit_prop) *hit_prop = prop;
                 if (hit_kf_idx) *hit_kf_idx = i;
                 if (hit_row_idx) *hit_row_idx = row;
+                if (hit_owner_id) *hit_owner_id = entry.owner_id;
                 return true;
             }
         }
@@ -1692,12 +2082,47 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef hit_prop;
     int hit_idx = -1;
-    const bool has_hit = hit_keyframe(ev->pos(), &layer, &hit_prop, &hit_idx, nullptr);
+    int hit_row = -1;
+    std::string hit_owner_id;
+    const bool has_hit = hit_keyframe(ev->pos(), &layer, &hit_prop, &hit_idx,
+                                      &hit_row, &hit_owner_id);
     if (has_hit && layer && layer->locked) return;
+
+    /* A right-click on a layer strip reuses the exact Canvas layer menu and
+     * applies it to the Timeline's synchronized selection. Keyframes and
+     * transitions retain their more specific context menus. */
+    if (!has_hit && ev->pos().y() >= ruler_height()) {
+        const auto rows = timeline_rows(title_);
+        const int row_index =
+            (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
+        if (row_index >= 0 && row_index < static_cast<int>(rows.size())) {
+            const auto &row = rows[static_cast<size_t>(row_index)];
+            if (!row.is_property && !row.is_camera &&
+                !row.is_camera_switch && row.layer) {
+                /* The row itself is the target, not only the visible clip
+                 * rectangle. This also makes the menu available from the
+                 * layer-name/empty-time area while retaining multi-selection. */
+                select_layer_from_mouse(row.layer->id, Qt::NoModifier);
+                clear_keyframe_selection();
+                clear_transition_selection();
+                emit layer_context_menu_requested(ev->globalPos());
+                ev->accept();
+                return;
+            }
+        }
+    }
+
     if (!has_hit && keyframe_clipboard_.empty()) return;
 
-    if (has_hit && layer && hit_prop && !is_keyframe_selected(layer->id, hit_prop.name(), hit_idx))
-        select_keyframe(layer->id, hit_prop.name(), hit_idx, false, false);
+    if (has_hit && layer && hit_prop &&
+        !is_keyframe_selected(hit_owner_id, hit_prop.name(), hit_idx)) {
+        select_keyframe(hit_owner_id, hit_prop.name(), hit_idx, false, false);
+        const auto rows = timeline_rows(title_);
+        set_graph_channel_mode(
+            hit_row >= 0 && hit_row < (int)rows.size() &&
+                    rows[hit_row].is_property_channel
+                ? static_cast<int>(graph_mode_for_component(rows[hit_row].property_channel)) : 3);
+    }
     prune_keyframe_selection();
 
     QMenu menu(this);
@@ -1743,6 +2168,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
     if (has_hit && layer && hit_prop) {
         menu.addSeparator();
         QMenu *temporal_menu = menu.addMenu(bgl_tr("OBSTitles.TemporalInterpolation"));
+        temporal_menu->setEnabled(!hit_prop.is_hold_only());
         temporal_action_prop = hit_prop;
         for (const KeyframeRef &ref : selected_keyframes_) {
             if (ref.layer_id == layer->id && ref.prop_name == hit_prop.name() &&
@@ -2048,7 +2474,8 @@ std::shared_ptr<Layer> TimelineWidget::layer_strip_at_pos(const QPoint &pos) con
 
     const auto rows = timeline_rows(title_);
     const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
-    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property ||
+        rows[row].is_camera || rows[row].is_camera_switch)
         return nullptr;
 
     const auto layer = rows[row].layer;
@@ -2101,7 +2528,8 @@ bool TimelineWidget::transition_edge_target_at_pos(const QPoint &pos,
         return false;
     const auto rows = timeline_rows(title_);
     const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
-    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property ||
+        rows[row].is_camera || rows[row].is_camera_switch)
         return false;
     const auto layer = rows[row].layer;
     if (!layer)
@@ -2131,7 +2559,8 @@ bool TimelineWidget::transition_hit_at_pos(const QPoint &pos, TransitionHit *hit
         return false;
     const auto rows = timeline_rows(title_);
     const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
-    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property ||
+        rows[row].is_camera || rows[row].is_camera_switch)
         return false;
     const auto layer = rows[row].layer;
     if (!layer)
@@ -2403,7 +2832,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         const int row = (ev->pos().y() - ruler_height() + scroll_y_) /
                         row_height();
         if (row >= 0 && row < static_cast<int>(rows.size()) &&
-            !rows[row].is_property && rows[row].layer) {
+            !rows[row].is_property && !rows[row].is_camera &&
+            !rows[row].is_camera_switch && rows[row].layer) {
             const auto &layer = rows[row].layer;
             const int x0 = time_to_x(layer->in_time);
             const int x1 = time_to_x(layer->out_time);
@@ -2528,22 +2958,31 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     std::shared_ptr<Layer> hit_layer;
     TimelinePropertyRef hit_prop;
     int hit_idx = -1;
-    if (hit_keyframe(ev->pos(), &hit_layer, &hit_prop, &hit_idx, nullptr)) {
+    int hit_row = -1;
+    std::string hit_owner_id;
+    if (hit_keyframe(ev->pos(), &hit_layer, &hit_prop, &hit_idx, &hit_row, &hit_owner_id)) {
         clear_transition_selection();
         if (hit_layer && hit_layer->locked) {
             ev->accept();
             return;
         }
-        if (hit_layer) select_layer_from_mouse(hit_layer->id, ev->modifiers());
+        if (hit_layer && title_->find_layer(hit_owner_id))
+            select_layer_from_mouse(hit_owner_id, ev->modifiers());
         const bool shift = ev->modifiers() & Qt::ShiftModifier;
+        const auto rows = timeline_rows(title_);
+        const int graph_channel = hit_row >= 0 && hit_row < (int)rows.size() &&
+                rows[hit_row].is_property_channel
+            ? static_cast<int>(graph_mode_for_component(rows[hit_row].property_channel)) : 3;
         if (shift) {
-            select_keyframe(hit_layer->id, hit_prop.name(), hit_idx, true, true);
+            select_keyframe(hit_owner_id, hit_prop.name(), hit_idx, true, true);
+            set_graph_channel_mode(graph_channel);
             ev->accept();
             return;
         }
-        if (!is_keyframe_selected(hit_layer->id, hit_prop.name(), hit_idx))
-            select_keyframe(hit_layer->id, hit_prop.name(), hit_idx, false, false);
-        begin_keyframe_drag(hit_layer->id, hit_prop.name(), hit_idx,
+        if (!is_keyframe_selected(hit_owner_id, hit_prop.name(), hit_idx))
+            select_keyframe(hit_owner_id, hit_prop.name(), hit_idx, false, false);
+        set_graph_channel_mode(graph_channel);
+        begin_keyframe_drag(hit_owner_id, hit_prop.name(), hit_idx,
                             std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration));
         setCursor(Qt::ClosedHandCursor);
         ev->accept();
@@ -2552,7 +2991,22 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
+    if (row >= 0 && row < (int)rows.size() && rows[row].is_property &&
+        ev->button() == Qt::LeftButton) {
+        clear_transition_selection();
+        select_graph_property(rows[row].owner_id, rows[row].prop.name(),
+                              rows[row].is_property_channel
+                                  ? static_cast<int>(graph_mode_for_component(rows[row].property_channel)) : 3);
+        if (rows[row].layer && title_->find_layer(rows[row].owner_id))
+            select_layer_from_mouse(rows[row].owner_id, ev->modifiers());
+        ev->accept();
+        return;
+    }
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        if (rows[row].is_camera || rows[row].is_camera_switch) {
+            ev->accept();
+            return;
+        }
         auto layer = rows[row].layer;
         if (!layer) {
             ev->accept();
@@ -2667,13 +3121,14 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     if (drag_mode_ == DragMode::Keyframe) {
         double delta = t - drag_start_time_;
         for (const auto &dragged : dragged_keyframes_) {
-            auto layer = title_->find_layer(dragged.ref.layer_id);
-            if (!layer || layer->locked) continue;
-            auto prop = find_timeline_property(*layer, dragged.ref.prop_name);
+            if (timeline_owner_locked(*title_, dragged.ref.layer_id)) continue;
+            auto prop = find_timeline_property(dragged.ref.layer_id, dragged.ref.prop_name);
             if (!prop || dragged.ref.index < 0 || dragged.ref.index >= (int)prop.keyframe_count()) continue;
+            const double owner_in = timeline_owner_in_time(*title_, dragged.ref.layer_id);
+            const double owner_out = timeline_owner_out_time(*title_, dragged.ref.layer_id);
             prop.set_keyframe_time((size_t)dragged.ref.index,
                                    std::clamp(dragged.start_time + delta, 0.0,
-                                              std::max(0.0, layer->out_time - layer->in_time)));
+                                              std::max(0.0, owner_out - owner_in)));
         }
         update();
         return;
@@ -2817,6 +3272,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        if (rows[row].is_camera || rows[row].is_camera_switch) {
+            unsetCursor();
+            return;
+        }
         if (rows[row].layer) {
             const int x0 = time_to_x(rows[row].layer->in_time);
             const int x1 = time_to_x(rows[row].layer->out_time);
@@ -2900,8 +3359,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
     if (drag_mode_ == DragMode::Keyframe && title_) {
         std::map<KeyframeRef, double> selected_times;
         for (const auto &ref : selected_keyframes_) {
-            auto layer = title_->find_layer(ref.layer_id);
-            auto prop = layer ? find_timeline_property(*layer, ref.prop_name) : TimelinePropertyRef{};
+            auto prop = find_timeline_property(ref.layer_id, ref.prop_name);
             if (prop && ref.index >= 0 && ref.index < (int)prop.keyframe_count())
                 selected_times[ref] = prop.keyframe_time(ref.index);
         }
@@ -2911,19 +3369,15 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
             props_to_sort.insert({dragged.ref.layer_id, dragged.ref.prop_name});
 
         for (const auto &prop_ref : props_to_sort) {
-            if (auto layer = title_->find_layer(prop_ref.first)) {
-                if (layer->locked) continue;
-                if (auto prop = find_timeline_property(*layer, prop_ref.second)) {
-                    prop.sort_keyframes();
-                }
-            }
+            if (timeline_owner_locked(*title_, prop_ref.first)) continue;
+            if (auto prop = find_timeline_property(prop_ref.first, prop_ref.second))
+                prop.sort_keyframes();
         }
 
         std::set<KeyframeRef> remapped;
         std::map<std::pair<std::string, std::string>, std::set<int>> used_indices;
         for (const auto &[ref, selected_time] : selected_times) {
-            auto layer = title_->find_layer(ref.layer_id);
-            auto prop = layer ? find_timeline_property(*layer, ref.prop_name) : TimelinePropertyRef{};
+            auto prop = find_timeline_property(ref.layer_id, ref.prop_name);
             if (!prop) continue;
             int best = -1;
             double best_distance = std::numeric_limits<double>::max();
@@ -2969,12 +3423,78 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
 
 void TimelineWidget::mouseDoubleClickEvent(QMouseEvent *ev)
 {
-    TransitionHit hit;
-    if (ev && transition_hit_at_pos(ev->pos(), &hit) && hit.layer && !hit.layer->locked) {
-        emit transition_edit_requested(hit.layer->id, static_cast<int>(hit.edge));
+    if (!ev || !title_) {
+        QWidget::mouseDoubleClickEvent(ev);
+        return;
+    }
+
+    if (graph_editor_enabled_ && graph_rect().contains(ev->pos())) {
+        drag_mode_ = DragMode::None;
+        temporal_drag_snapshots_.clear();
+        graph_drag_hit_ = {};
+        const GraphHit graph_hit = graph_hit_test(ev->pos());
+        if (graph_hit.type != GraphHitType::None) {
+            select_keyframe(graph_hit.ref.layer_id, graph_hit.ref.prop_name,
+                            graph_hit.ref.index, false, false);
+            TimelinePropertyRef prop;
+            if (graph_ref_property(graph_hit.ref, &prop) && !prop.is_hold_only())
+                show_temporal_velocity_dialog(prop, {graph_hit.ref.index});
+            ev->accept();
+            return;
+        }
+
+        std::shared_ptr<Layer> owner;
+        TimelinePropertyRef prop = active_graph_property(&owner);
+        if (prop && owner) {
+            add_keyframe_at(owner->id, prop.name(),
+                            std::clamp(graph_x_to_time(ev->pos().x()),
+                                       0.0, title_->duration),
+                            false);
+            ev->accept();
+            return;
+        }
+    }
+
+    TransitionHit transition_hit;
+    if (transition_hit_at_pos(ev->pos(), &transition_hit) &&
+        transition_hit.layer && !transition_hit.layer->locked) {
+        emit transition_edit_requested(transition_hit.layer->id,
+                                       static_cast<int>(transition_hit.edge));
         ev->accept();
         return;
     }
+
+    std::shared_ptr<Layer> hit_layer;
+    TimelinePropertyRef hit_prop;
+    int hit_index = -1;
+    int hit_row = -1;
+    std::string hit_owner;
+    if (hit_keyframe(ev->pos(), &hit_layer, &hit_prop, &hit_index,
+                     &hit_row, &hit_owner)) {
+        select_keyframe(hit_owner, hit_prop.name(), hit_index, false, false);
+        if (!hit_prop.is_hold_only())
+            show_temporal_velocity_dialog(hit_prop, {hit_index});
+        ev->accept();
+        return;
+    }
+
+    const auto rows = timeline_rows(title_);
+    const int row = (ev->pos().y() - ruler_height() + scroll_y_) /
+                    row_height();
+    if (row >= 0 && row < static_cast<int>(rows.size()) &&
+        rows[static_cast<size_t>(row)].is_property) {
+        const TimelineRow &entry = rows[static_cast<size_t>(row)];
+        select_graph_property(entry.owner_id, entry.prop.name(),
+                              entry.is_property_channel
+                                  ? static_cast<int>(graph_mode_for_component(entry.property_channel)) : 3);
+        add_keyframe_at(entry.owner_id, entry.prop.name(),
+                        std::clamp(x_to_time(ev->pos().x()),
+                                   0.0, title_->duration),
+                        true);
+        ev->accept();
+        return;
+    }
+
     QWidget::mouseDoubleClickEvent(ev);
 }
 

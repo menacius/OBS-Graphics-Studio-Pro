@@ -105,8 +105,8 @@ int main(int argc, char **argv)
     ok &= require(timeline_h, "TemporalDragSnapshot", "multi-edit relative-value snapshots");
 
     ok &= require(graph, "paint_graph_editor", "Graph Editor renderer");
-    ok &= require(graph, "prop.graph_value(local_time)", "Value Graph samples final evaluator");
-    ok &= require(graph, "prop.graph_speed(local_time)", "Speed Graph samples final evaluator");
+    ok &= require(graph, "channel.graph_value(local_time)", "Value Graph samples final evaluator");
+    ok &= require(graph, "channel.graph_speed(local_time)", "Speed Graph samples final evaluator");
     ok &= require(graph, "graph_x_to_time", "sub-frame graph sampling");
     ok &= require(graph, "owner->in_time + time", "local-to-timeline coordinate mapping");
     ok &= require(graph, "DragMode::GraphIncomingHandle", "incoming speed/influence dragging");
@@ -167,7 +167,7 @@ int main(int argc, char **argv)
     ok &= require(cache_storage, "k.incoming_influence", "cache hash incoming influence");
     ok &= require(cache_storage, "k.outgoing_speed", "cache hash outgoing speed");
     ok &= require(cache_storage, "k.temporal_velocity_explicit", "cache hash temporal representation");
-    ok &= require(editor_transform, "layer.position.evaluate(lt)", "editor uses common position evaluation");
+    ok &= require(editor_transform, "editor_evaluated_local_position_xy", "editor uses canonical local position evaluation");
     ok &= require(obs_compositor, "layer.position.evaluate(local_time)", "OBS uses common position evaluation");
     ok &= require(prerender_worker, "render_title_gpu_cache_submit_readback",
                   "prerender delegates to common OBS renderer");

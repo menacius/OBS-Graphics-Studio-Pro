@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "development_version": 219,
+  "default_timeout_seconds": 90,
+  "required_areas": [
+    "editor_gui",
+    "timeline_graph",
+    "serialization_migration",
+    "rendering_2d_3d",
+    "cache_proxy_threading",
+    "audio_transport",
+    "persistence_cueing",
+    "external_data",
+    "shutdown_lifetime",
+    "platform_build"
+  ],
+  "areas": {
+    "editor_gui": {
+      "python": [
+        "tests/editor_stability_interaction_consistency_revision_213_contract_test.py",
+        "tests/editor_usability_frame_pacing_revision_212_3_contract_test.py",
+        "tests/title_dock_list_icon_scope_contract_test.py"
+      ],
+      "native": [
+        "editor_ui_revision_140_contract_test",
+        "canvas_refresh_pacing_contract_test",
+        "canvas_scaling_manipulation_contract_test"
+      ]
+    },
+    "timeline_graph": {
+      "python": [
+        "tests/timeline_graph_editor_completion_revision_215_contract_test.py",
+        "tests/timeline_layer_list_row_parity_revision_212_2_contract_test.py",
+        "tests/layer_list_vector3_graph_channels_revision_212_contract_test.py"
+      ],
+      "native": [
+        "temporal_graph_editor_contract_test",
+        "spatial_bezier_keyframes_contract_test",
+        "effect_keyframe_timeline_canvas_contract_test"
+      ]
+    },
+    "serialization_migration": {
+      "python": [
+        "tests/serialization_migration_revision_218_contract_test.py",
+        "tests/automated_test_suite_revision_219_contract_test.py"
+      ],
+      "native": [
+        "serialization_migration_roundtrip_test",
+        "unified_serialization_contract_test",
+        "serialization_passthrough_hot_path_test"
+      ]
+    },
+    "rendering_2d_3d": {
+      "python": [
+        "tests/three_d_pipeline_completion_revision_216_contract_test.py",
+        "tests/hardware_depth_pipeline_contract_test.py",
+        "tests/masks_blends_effects_3d_revision_206_contract_test.py",
+        "tests/anchor_stable_projected_content_contract_test.py",
+        "tests/gpu_text_glyph_overdraw_contract_test.py"
+      ],
+      "native": [
+        "layer_3d_transform_contract_test",
+        "gpu_mask_contract_test",
+        "gpu_prerender_phase14_contract_test"
+      ]
+    },
+    "cache_proxy_threading": {
+      "python": [
+        "tests/performance_cache_threading_revision_217_contract_test.py",
+        "tests/cache_prerender_realtime_performance_contract_test.py",
+        "tests/performance_cache_rendering_revision_210_contract_test.py"
+      ],
+      "native": [
+        "performance_cache_threading_contract_test",
+        "disk_cache_tiling_contract_test",
+        "ram_frame_cache_membership_contract_test"
+      ]
+    },
+    "audio_transport": {
+      "python": [
+        "tests/audio_layer_mixing_effects_contract_test.py",
+        "tests/audio_playback_obs_integration_contract_test.py",
+        "tests/audio_transport_waveform_regression_contract_test.py"
+      ],
+      "native": [
+        "audio_output_scheduler_test",
+        "audio_reverse_transport_test"
+      ]
+    },
+    "persistence_cueing": {
+      "python": [
+        "tests/manual_uncue_persistence_transition_contract.py",
+        "tests/manual_uncue_terminal_transition_contract_test.py",
+        "tests/scene_mask_uncue_initial_state_contract_test.py"
+      ],
+      "native": [
+        "cue_ending_visual_contract_test",
+        "uncue_playback_snapshot_contract_test",
+        "live_text_cue_utils_test"
+      ]
+    },
+    "external_data": {
+      "python": [],
+      "native": [
+        "external_data_core_contract_test",
+        "external_data_providers_contract_test",
+        "external_data_runtime_test",
+        "external_data_logging_test"
+      ]
+    },
+    "shutdown_lifetime": {
+      "python": [
+        "tests/cache_prerender_realtime_performance_contract_test.py"
+      ],
+      "native": [
+        "shutdown_performance_regression_contract_test",
+        "title_snapshot_test"
+      ]
+    },
+    "platform_build": {
+      "python": [
+        "tests/qt6_websockets_bootstrap_contract_test.py",
+        "tests/audio_thread_name_portability_contract_test.py",
+        "tests/stinger_qt_slots_compile_contract_test.py"
+      ],
+      "native": [
+        "development_audit_contract_test"
+      ]
+    }
+  },
+  "profiles": {
+    "source": {
+      "run_all_python_contracts": true,
+      "run_native": false
+    },
+    "smoke": {
+      "run_all_python_contracts": true,
+      "run_native": true,
+      "native_tests": [
+        "serialization_passthrough_hot_path_test",
+        "serialization_migration_roundtrip_test",
+        "animation_model_test",
+        "temporal_graph_editor_contract_test",
+        "audio_reverse_transport_test",
+        "cache_time_contract_test",
+        "title_snapshot_test"
+      ]
+    },
+    "full": {
+      "run_all_python_contracts": true,
+      "run_native": true,
+      "native_tests": "all"
+    },
+    "stress": {
+      "run_all_python_contracts": false,
+      "run_native": true,
+      "native_tests": [
+        "shutdown_performance_regression_contract_test",
+        "performance_cache_threading_contract_test",
+        "title_snapshot_test",
+        "gpu_ram_cache_tiling_contract_test"
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include <QPainter>
+#include <QStringList>
 
 
 namespace {
@@ -26,11 +27,12 @@ constexpr int kLayerModeWidth = 110;
 constexpr int kLayerParentWidth = 150;
 constexpr int kLayerMaskWidth = 130;
 constexpr int kLayerMatteControlWidth = 20;
+constexpr int kLayerDimensionWidth = 54;
 
 /* Fixed columns + minimum usable layer-name area + layout gaps.  Include
  * extra room for the vertical scrollbar so the splitter can never compress
  * the layer list until controls paint over one another. */
-constexpr int kLayerStackMinimumWidth = 836;
+constexpr int kLayerStackMinimumWidth = 894;
 
 class FxIndicatorButton final : public QToolButton {
 public:
@@ -107,6 +109,28 @@ static int keyframe_index_at_time(const TimelinePropertyRef &prop, double local_
         if (std::abs(prop.keyframe_time(static_cast<size_t>(index)) - local_time) <= tolerance)
             return index;
     return -1;
+}
+
+static int graph_mode_for_property_channel(int channel)
+{
+    return channel == 3 ? 4 : channel;
+}
+
+static QString property_channel_summary(const TimelinePropertyRef &prop,
+                                        double local_time,
+                                        const std::string &property_name)
+{
+    const int count = prop.graph_channel_count();
+    QStringList values;
+    values.reserve(count);
+    for (int channel = 0; channel < count && channel < 4; ++channel) {
+        double value = prop.graph_channel(channel).graph_value(local_time);
+        if (property_name == "scale") value *= 100.0;
+        values.push_back(QStringLiteral("%1 %2")
+            .arg(timeline_property_channel_label(prop, channel))
+            .arg(value, 0, 'f', 2));
+    }
+    return values.join(QStringLiteral("   "));
 }
 
 static bool valid_group_parent(const std::shared_ptr<Title> &title,
@@ -308,6 +332,7 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     add_header(bgl_tr("OBSTitles.MaskHeader"), kLayerMaskWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header_icon("matte-alpha.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
     add_header_icon("matte-normal.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
+    add_header(QStringLiteral("2D/3D"), kLayerDimensionWidth);
     vl->addWidget(columns);
 
     list_ = new QListWidget(this);
@@ -382,6 +407,9 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                         bgl_tr("OBSTitles.AdjustmentLayer"), this, &LayerStack::on_add_adjustment);
     add_menu->addAction(obs_icon("shape.svg"),
                         bgl_tr("OBSTitles.ColorSolid"), this, &LayerStack::on_add_color_solid);
+    add_menu->addSeparator();
+    add_menu->addAction(obs_icon("graphic.svg"),
+                        QStringLiteral("Camera"), this, &LayerStack::on_add_camera);
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -464,28 +492,53 @@ void LayerStack::update_property_rows()
     if (!title_ || !list_) return;
     for (int row = 0; row < list_->count(); ++row) {
         QListWidgetItem *item = list_->item(row);
-        if (!item || item->data(Qt::UserRole + 1).toString() != QStringLiteral("property"))
+        if (!item) continue;
+        const QString row_kind = item->data(Qt::UserRole + 1).toString();
+        if (row_kind != QStringLiteral("property") &&
+            row_kind != QStringLiteral("property_channel"))
             continue;
         const std::string layer_id = item->data(Qt::UserRole).toString().toStdString();
         const std::string property_name = item->data(Qt::UserRole + 3).toString().toStdString();
-        auto layer = title_->find_layer(layer_id);
-        if (!layer) continue;
-        TimelinePropertyRef prop = layer_timeline_property(*layer, property_name);
+        TimelinePropertyRef prop = timeline_property_for_owner(*title_, layer_id, property_name);
         if (!prop) continue;
-        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
-            std::max(0.0, layer->out_time - layer->in_time));
+        const double owner_in = timeline_owner_in_time(*title_, layer_id);
+        const double owner_out = timeline_owner_out_time(*title_, layer_id);
+        const double local_time = std::clamp(playhead_ - owner_in, 0.0,
+            std::max(0.0, owner_out - owner_in));
+        const bool owner_locked = timeline_owner_locked(*title_, layer_id);
         QWidget *row_widget = list_->itemWidget(item);
         if (!row_widget) continue;
-        if (auto *diamond = row_widget->findChild<QToolButton *>(QStringLiteral("keyframeDiamond"))) {
-            diamond->setText(keyframe_index_at_time(prop, local_time) >= 0
-                ? QStringLiteral("◆") : QStringLiteral("◇"));
-            diamond->setEnabled(!layer->locked);
+
+        if (row_kind == QStringLiteral("property")) {
+            if (auto *diamond = row_widget->findChild<QToolButton *>(QStringLiteral("keyframeDiamond"))) {
+                diamond->setText(keyframe_index_at_time(prop, local_time) >= 0
+                    ? QStringLiteral("◆") : QStringLiteral("◇"));
+                diamond->setEnabled(!owner_locked);
+            }
+            if (auto *summary = row_widget->findChild<QLabel *>(QStringLiteral("keyframeValueSummary"))) {
+                summary->setText(property_channel_summary(prop, local_time, property_name));
+                summary->setEnabled(!owner_locked);
+            }
         }
+
+        const int channel = row_kind == QStringLiteral("property_channel")
+            ? item->data(Qt::UserRole + 4).toInt() : -1;
         auto *value_x = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueX"));
         auto *value_y = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueY"));
-        if (!value_x) continue;
-        double x = 0.0, y = 0.0;
-        if (prop.vector) {
+        auto *value_z = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueZ"));
+        auto *value_w = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueW"));
+        if (!value_x && !value_y && !value_z && !value_w) continue;
+
+        double x = 0.0, y = 0.0, z = 0.0, w = 0.0;
+        if (prop.graph_channel_count() > 1) {
+            x = prop.graph_channel(0).graph_value(local_time);
+            y = prop.graph_channel(1).graph_value(local_time);
+            z = prop.graph_channel_count() > 2
+                ? prop.graph_channel(2).graph_value(local_time) : 0.0;
+            w = prop.graph_channel_count() > 3
+                ? prop.graph_channel(3).graph_value(local_time) : 0.0;
+            if (property_name == "scale") { x *= 100.0; y *= 100.0; z *= 100.0; w *= 100.0; }
+        } else if (prop.vector) {
             const Vec2Value evaluated = prop.vector->evaluate(local_time);
             x = evaluated.x;
             y = evaluated.y;
@@ -495,17 +548,26 @@ void LayerStack::update_property_rows()
             if (property_name == "opacity" || property_name == "char_scale_x" ||
                 property_name == "char_scale_y") x *= 100.0;
         }
-        value_x->setEnabled(!layer->locked);
-        if (!value_x->hasFocus()) {
-            QSignalBlocker blocker(value_x);
-            value_x->setValue(x);
-        }
-        if (value_y) {
-            value_y->setEnabled(!layer->locked);
-            if (!value_y->hasFocus()) {
-                QSignalBlocker blocker(value_y);
-                value_y->setValue(y);
+        auto update_spin = [owner_locked](QDoubleSpinBox *spin, double value) {
+            if (!spin) return;
+            spin->setEnabled(!owner_locked);
+            if (!spin->hasFocus()) {
+                QSignalBlocker blocker(spin);
+                spin->setValue(value);
             }
+        };
+        if (channel >= 0) {
+            double channel_value = prop.graph_value(local_time);
+            if (property_name == "scale") channel_value *= 100.0;
+            QDoubleSpinBox *spin = channel == 0 ? value_x
+                : channel == 1 ? value_y
+                : channel == 2 ? value_z : value_w;
+            update_spin(spin, channel_value);
+        } else {
+            update_spin(value_x, x);
+            update_spin(value_y, y);
+            update_spin(value_z, z);
+            update_spin(value_w, w);
         }
     }
 }
@@ -576,6 +638,213 @@ void LayerStack::populate()
     for (const auto &candidate : title_->layers) {
         if (candidate && candidate->mask_mode != MaskMode::None && !candidate->mask_source_id.empty())
             track_matte_source_ids.insert(candidate->mask_source_id);
+    }
+
+    // Title-owned camera tracks precede layer tracks.  Both panes consume
+    // this exact flattened row model, including expanded X/Y/Z children.
+    const auto shared_timeline_rows = timeline_rows(title_);
+    for (const auto &timeline_row : shared_timeline_rows) {
+        if (!timeline_row.is_camera && !timeline_row.is_camera_switch)
+            break;
+        const bool is_property = timeline_row.is_property;
+        const bool is_channel = timeline_row.is_property_channel;
+        const int channel_count = is_property && !is_channel
+            ? timeline_row.prop.graph_channel_count() : 0;
+        const bool channels_expanded = is_property && !is_channel &&
+            timeline_property_channels_expanded(*title_, timeline_row.owner_id,
+                                                 timeline_row.prop);
+
+        auto *item = new QListWidgetItem();
+        item->setData(Qt::UserRole, QString::fromStdString(timeline_row.owner_id));
+        item->setData(Qt::UserRole + 1,
+                      is_channel ? QStringLiteral("property_channel")
+                                 : is_property ? QStringLiteral("property")
+                                               : QStringLiteral("camera"));
+        if (is_property) {
+            item->setData(Qt::UserRole + 2, timeline_row.owner_label);
+            item->setData(Qt::UserRole + 3,
+                          QString::fromStdString(timeline_row.prop.name()));
+            item->setData(Qt::UserRole + 4,
+                          is_channel ? timeline_row.property_channel : 3);
+        }
+        Qt::ItemFlags item_flags = Qt::ItemIsEnabled;
+        if (is_property) item_flags |= Qt::ItemIsSelectable;
+        item->setFlags(item_flags);
+        item->setSizeHint(QSize(0, 28));
+        list_->addItem(item);
+
+        auto *row_widget = new QWidget(list_);
+        row_widget->setObjectName(is_channel
+            ? QStringLiteral("layerKeyframeChannelRow") : QString());
+        row_widget->setStyleSheet(QStringLiteral("background:transparent;color:%1;")
+                                      .arg(text.name(QColor::HexRgb)));
+        auto *layout = new QHBoxLayout(row_widget);
+        layout->setContentsMargins(
+            kLayerListMargin + (is_channel ? 94 : is_property ? 34 : 4),
+            0, kLayerListMargin, 0);
+        layout->setSpacing(kLayerListSpacing);
+
+        if (!is_property) {
+            const bool expanded = timeline_row.is_camera_switch
+                ? title_->camera_switches_expanded
+                : ([&]() {
+                    const TitleCamera *camera = timeline_camera_from_owner(
+                        *title_, timeline_row.owner_id);
+                    return camera && camera->timeline_expanded;
+                })();
+            auto *caret = new BglCaretButton(row_widget);
+            caret->setCaretState(expanded ? 2 : 0);
+            caret->setFixedSize(20, 20);
+            caret->setToolTip(expanded
+                ? QStringLiteral("Hide camera properties")
+                : QStringLiteral("Show camera properties"));
+            connect(caret, &QToolButton::clicked, this,
+                    [this, caret, owner = timeline_row.owner_id]() {
+                const bool next = caret->caretState() == 0;
+                caret->setCaretState(next ? 2 : 0);
+                emit camera_expand_changed(owner, next);
+            });
+            layout->addWidget(caret);
+            auto *camera_icon = new QLabel(timeline_row.is_camera_switch
+                ? QStringLiteral("⇄") : QStringLiteral("CAM"), row_widget);
+            camera_icon->setFixedWidth(34);
+            camera_icon->setAlignment(Qt::AlignCenter);
+            camera_icon->setStyleSheet(QStringLiteral("color:%1;font-weight:700;")
+                                           .arg(highlight.name(QColor::HexRgb)));
+            layout->addWidget(camera_icon);
+            auto *name = new QLabel(timeline_row.owner_label, row_widget);
+            name->setStyleSheet(QStringLiteral("font-weight:600;"));
+            layout->addWidget(name, 1);
+            list_->setItemWidget(item, row_widget);
+            continue;
+        }
+
+        const double local_time = std::clamp(
+            playhead_ - timeline_row.in_time, 0.0,
+            std::max(0.0, timeline_row.out_time - timeline_row.in_time));
+
+        if (is_channel) {
+            const int channel = std::clamp(timeline_row.property_channel, 0, 3);
+            const QString channel_name = timeline_property_channel_label(
+                timeline_row.prop.graph_all_channels(), channel);
+            auto *axis = new QToolButton(row_widget);
+            axis->setText(channel_name);
+            axis->setFixedSize(24, 20);
+            axis->setAutoRaise(true);
+            axis->setToolTip(QStringLiteral("Edit the %1 channel in the Graph Editor")
+                                 .arg(channel_name));
+            axis->setStyleSheet(button_style);
+            connect(axis, &QToolButton::clicked, this,
+                    [this, owner = timeline_row.owner_id,
+                     property = timeline_row.prop.name(), channel]() {
+                emit property_graph_target_requested(
+                    owner, property, graph_mode_for_property_channel(channel));
+            });
+            layout->addWidget(axis);
+            auto *channel_label = new QLabel(timeline_row.owner_label, row_widget);
+            layout->addWidget(channel_label, 1);
+            auto *value = new QDoubleSpinBox(row_widget);
+            value->setObjectName(QStringLiteral("keyframeValue%1")
+                                     .arg(channel_name));
+            value->setRange(-1000000.0, 1000000.0);
+            value->setDecimals(4);
+            value->setSingleStep(0.1);
+            value->setKeyboardTracking(false);
+            value->setFixedWidth(118);
+            value->setValue(timeline_row.prop.graph_value(local_time));
+            layout->addWidget(value);
+            connect(value, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, owner = timeline_row.owner_id,
+                           property = timeline_row.prop.name(), channel](double next) {
+                emit property_channel_value_changed(owner, property, channel, next);
+            });
+            list_->setItemWidget(item, row_widget);
+            continue;
+        }
+
+        if (channel_count > 1) {
+            auto *caret = new BglCaretButton(row_widget);
+            caret->setObjectName(QStringLiteral("propertyChannelCaret"));
+            caret->setCaretState(channels_expanded ? 2 : 0);
+            caret->setFixedSize(18, 20);
+            caret->setToolTip(channels_expanded
+                ? QStringLiteral("Hide property channels")
+                : QStringLiteral("Show property channels"));
+            connect(caret, &QToolButton::clicked, this,
+                    [this, owner = timeline_row.owner_id,
+                     property = timeline_row.prop.name(), channels_expanded]() {
+                emit property_channels_expanded_changed(
+                    owner, property, !channels_expanded);
+            });
+            layout->addWidget(caret);
+        } else {
+            layout->addSpacing(18);
+        }
+
+        auto *diamond = new QToolButton(row_widget);
+        diamond->setObjectName(QStringLiteral("keyframeDiamond"));
+        diamond->setText(keyframe_index_at_time(timeline_row.prop, local_time) >= 0
+                             ? QStringLiteral("◆") : QStringLiteral("◇"));
+        diamond->setFixedSize(22, 20);
+        diamond->setAutoRaise(true);
+        diamond->setStyleSheet(button_style);
+        layout->addWidget(diamond);
+        auto *label = new QLabel(timeline_row.owner_label, row_widget);
+        label->setMinimumWidth(150);
+        layout->addWidget(label, 1);
+        connect(diamond, &QToolButton::clicked, this,
+                [this, owner = timeline_row.owner_id,
+                 property = timeline_row.prop.name()]() {
+            emit property_keyframe_toggled(owner, property);
+        });
+
+        if (!timeline_row.prop.is_discrete()) {
+            if (channel_count > 1) {
+                auto *all_channel = new QToolButton(row_widget);
+                all_channel->setText(QStringLiteral("All"));
+                all_channel->setFixedSize(34, 20);
+                all_channel->setAutoRaise(true);
+                all_channel->setToolTip(
+                    QStringLiteral("Edit all channels in the Graph Editor"));
+                all_channel->setStyleSheet(button_style);
+                connect(all_channel, &QToolButton::clicked, this,
+                        [this, owner = timeline_row.owner_id,
+                         property = timeline_row.prop.name()]() {
+                    emit property_graph_target_requested(owner, property, 3);
+                });
+                layout->addWidget(all_channel);
+                auto *summary = new QLabel(
+                    property_channel_summary(timeline_row.prop, local_time,
+                                             timeline_row.prop.name()),
+                    row_widget);
+                summary->setObjectName(QStringLiteral("keyframeValueSummary"));
+                summary->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                summary->setStyleSheet(QStringLiteral("color:%1;font-size:10px;")
+                    .arg(disabled_text.name(QColor::HexRgb)));
+                layout->addWidget(summary);
+            } else {
+                auto *value = new QDoubleSpinBox(row_widget);
+                value->setObjectName(QStringLiteral("keyframeValueX"));
+                value->setRange(-1000000.0, 1000000.0);
+                value->setDecimals(4);
+                value->setSingleStep(0.1);
+                value->setKeyboardTracking(false);
+                value->setFixedWidth(118);
+                value->setValue(timeline_row.prop.graph_value(local_time));
+                if (timeline_row.prop.name() == "camera_projection") {
+                    value->setRange(0.0, 1.0);
+                    value->setDecimals(0);
+                    value->setSingleStep(1.0);
+                }
+                layout->addWidget(value);
+                connect(value, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                        this, [this, owner = timeline_row.owner_id,
+                               property = timeline_row.prop.name()](double next) {
+                    emit property_value_changed(owner, property, next, 0.0, 0.0);
+                });
+            }
+        }
+        list_->setItemWidget(item, row_widget);
     }
 
     const auto display_layers = visible_layer_hierarchy_rows(title_);
@@ -1029,82 +1298,89 @@ void LayerStack::populate()
                     if (!source_id.empty()) emit layer_mask_changed(id, source_id, selected_matte_mode());
                 });
 
+        const bool supports_3d = !layer_type_is_audio(l->type) &&
+                                 l->type != LayerType::Adjustment;
+        auto *dimension_toggle = new QToolButton(row_widget);
+        dimension_toggle->setObjectName(QStringLiteral("layerDimensionToggle"));
+        dimension_toggle->setCheckable(true);
+        dimension_toggle->setChecked(supports_3d &&
+            l->dimension_mode == LayerDimensionMode::ThreeD);
+        dimension_toggle->setEnabled(supports_3d && !l->locked);
+        dimension_toggle->setFixedSize(kLayerDimensionWidth, 20);
+        dimension_toggle->setAutoRaise(false);
+        dimension_toggle->setCursor(supports_3d ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        dimension_toggle->setToolTip(supports_3d
+            ? QStringLiteral("Toggle this layer between the legacy 2D transform and the XYZ 3D transform.")
+            : QStringLiteral("This layer type does not support 3D transforms."));
+        auto update_dimension_toggle = [dimension_toggle, supports_3d](bool is_3d) {
+            const bool effective_3d = supports_3d && is_3d;
+            dimension_toggle->setText(effective_3d ? QStringLiteral("3D") : QStringLiteral("2D"));
+            dimension_toggle->setAccessibleName(effective_3d
+                ? QStringLiteral("3D Layer") : QStringLiteral("2D Layer"));
+            dimension_toggle->setProperty("threeD", effective_3d);
+            dimension_toggle->style()->unpolish(dimension_toggle);
+            dimension_toggle->style()->polish(dimension_toggle);
+        };
+        dimension_toggle->setStyleSheet(QStringLiteral(
+            "QToolButton{color:%1;background:%2;border:1px solid %3;border-radius:3px;"
+            "font-size:10px;font-weight:700;padding:0;}"
+            "QToolButton:hover:enabled{border-color:%4;}"
+            "QToolButton[threeD=\"true\"]{color:%5;background:%4;border-color:%4;}"
+            "QToolButton:disabled{color:%6;background:transparent;border-color:%3;}")
+            .arg(field_text.name(QColor::HexRgb),
+                 base.name(QColor::HexRgb),
+                 border.name(QColor::HexRgb),
+                 highlight.name(QColor::HexRgb),
+                 pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
+                 disabled_text.name(QColor::HexRgb)));
+        update_dimension_toggle(dimension_toggle->isChecked());
+        connect(dimension_toggle, &QToolButton::toggled, this,
+                [this, id = l->id, item, update_dimension_toggle](bool is_3d) {
+                    list_->setCurrentItem(item);
+                    update_dimension_toggle(is_3d);
+                    emit layer_dimension_mode_changed(
+                        id, is_3d ? LayerDimensionMode::ThreeD : LayerDimensionMode::TwoD);
+                });
+        hl->addWidget(dimension_toggle);
+
         list_->setItemWidget(item, row_widget);
         if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||
             prev_id == item->data(Qt::UserRole).toString())
             list_->setCurrentItem(item);
 
-        /* Groups expose the same animated transform/opacity/effect rows as
-         * every other layer. Their hierarchy caret controls child visibility;
-         * it must not suppress the Group's own keyframe properties. */
+        /* Property rows are not rebuilt independently here.  They are read
+         * from the same flattened model as TimelineWidget, which guarantees
+         * identical row counts/order for aggregate and X/Y/Z rows. */
         if (!layer_keyframe_sections_expanded(*l)) continue;
 
-        std::set<std::string> seen;
-        for (auto prop : timeline_properties(*l)) {
-            if (!prop.is_animated()) continue;
-            QString label = property_label(prop.name());
-            std::string key = label.toStdString();
-            if (!seen.insert(key).second) continue;
-
-            auto *prop_item = new QListWidgetItem();
-            prop_item->setData(Qt::UserRole, QString::fromStdString(l->id));
-            prop_item->setData(Qt::UserRole + 1, "property");
-            prop_item->setData(Qt::UserRole + 2, label);
-            prop_item->setData(Qt::UserRole + 3, QString::fromStdString(prop.name()));
-            prop_item->setFlags((prop_item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
-                                ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled | Qt::ItemIsUserCheckable));
-            prop_item->setSizeHint(QSize(0, 28));
-            list_->addItem(prop_item);
-
-            QWidget *prop_widget = new QWidget(list_);
-            prop_widget->setObjectName(QStringLiteral("layerKeyframePropertyRow"));
-            prop_widget->setStyleSheet(QStringLiteral(
-                "QWidget#layerKeyframePropertyRow{background:transparent;color:%1;}")
-                .arg(text.name(QColor::HexRgb)));
-            auto *ph = new QHBoxLayout(prop_widget);
-            ph->setContentsMargins(64, 0, 4, 0);
-            ph->setSpacing(4);
-            QToolButton *diamond_indicator = new QToolButton(prop_widget);
-            diamond_indicator->setObjectName(QStringLiteral("keyframeDiamond"));
-            diamond_indicator->setProperty("layerId", QString::fromStdString(l->id));
-            diamond_indicator->setProperty("propertyName", QString::fromStdString(prop.name()));
-            const double property_local_time = std::clamp(
-                playhead_ - l->in_time, 0.0, std::max(0.0, l->out_time - l->in_time));
-            diamond_indicator->setText(keyframe_index_at_time(prop, property_local_time) >= 0
-                ? QStringLiteral("◆") : QStringLiteral("◇"));
-            diamond_indicator->setFixedSize(18, 20);
-            diamond_indicator->setEnabled(!l->locked);
-            diamond_indicator->setAutoRaise(true);
-            diamond_indicator->setCursor(Qt::PointingHandCursor);
-            diamond_indicator->setToolTip(bgl_tr("OBSTitles.ToggleKeyframe"));
-            diamond_indicator->setStyleSheet(QString("QToolButton{border:none;background:transparent;color:%1;}")
-                                                  .arg(layer_color(*l, row).name()));
-            connect(diamond_indicator, &QToolButton::clicked, this,
-                    [this, id = l->id, name = prop.name()]() { emit property_keyframe_toggled(id, name); });
-            ph->addWidget(diamond_indicator);
-            QLabel *prop_name = new QLabel(label, prop_widget);
-            prop_name->setStyleSheet(QStringLiteral("color:%1;").arg(text.name(QColor::HexRgb)));
-            ph->addWidget(prop_name, 1);
-
-            /* Extension and grouped colour channels keep their authoring
-             * surface in the owning effect/appearance panel.  The layer list
-             * still exposes their keyframe diamond and temporal menu, but does
-             * not show a misleading single numeric field for a multi-channel
-             * value. */
-            if (prop.is_extension() || prop.is_scalar_group()) {
-                list_->setItemWidget(prop_item, prop_widget);
+        for (const auto &timeline_row : shared_timeline_rows) {
+            if (!timeline_row.is_property || timeline_row.owner_id != l->id ||
+                timeline_row.layer.get() != l.get())
                 continue;
-            }
 
-            auto configure_spin = [&](QDoubleSpinBox *spin, const char *object_name) {
+            const TimelinePropertyRef prop = timeline_row.prop;
+            const QString label = timeline_row.owner_label;
+            const bool is_channel = timeline_row.is_property_channel;
+            const int channel = timeline_row.property_channel;
+            const int channel_count = is_channel ? 1 : prop.graph_channel_count();
+            const bool channels_expanded = !is_channel &&
+                timeline_property_channels_expanded(*title_, l->id, prop);
+            const double property_local_time = std::clamp(
+                playhead_ - timeline_row.in_time, 0.0,
+                std::max(0.0, timeline_row.out_time - timeline_row.in_time));
+
+            auto configure_spin = [&](QDoubleSpinBox *spin,
+                                      const char *object_name,
+                                      int width = 74) {
                 spin->setObjectName(QString::fromLatin1(object_name));
                 spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
                 spin->setKeyboardTracking(false);
                 spin->setAlignment(Qt::AlignRight);
                 spin->setDecimals(2);
                 spin->setRange(-100000.0, 100000.0);
-                spin->setFixedWidth(74);
+                spin->setFixedWidth(width);
                 spin->setMinimumHeight(22);
+                spin->setEnabled(!l->locked);
                 spin->setStyleSheet(QStringLiteral(
                     "QDoubleSpinBox{color:%1;background:%2;border:1px solid %3;"
                     "border-radius:3px;padding:2px 5px;selection-background-color:%4;selection-color:%5;}"
@@ -1120,45 +1396,171 @@ void LayerStack::populate()
                          disabled_text.name(QColor::HexRgb),
                          button.name(QColor::HexRgb)));
             };
-            const bool vector_prop = prop.vector != nullptr;
-            QDoubleSpinBox *value_x = new QDoubleSpinBox(prop_widget);
-            configure_spin(value_x, "keyframeValueX");
-            QDoubleSpinBox *value_y = nullptr;
-            double x = 0.0, y = 0.0;
-            if (vector_prop) {
-                const Vec2Value evaluated = prop.vector->evaluate(property_local_time);
-                x = evaluated.x;
-                y = evaluated.y;
-                if (prop.name() == "scale") { x *= 100.0; y *= 100.0; }
-                value_y = new QDoubleSpinBox(prop_widget);
-                configure_spin(value_y, "keyframeValueY");
-                value_x->setFixedWidth(58);
-                value_y->setFixedWidth(58);
-                value_x->setValue(x);
-                value_y->setValue(y);
-                ph->addWidget(value_x);
-                ph->addWidget(value_y);
+
+            auto *prop_item = new QListWidgetItem();
+            prop_item->setData(Qt::UserRole, QString::fromStdString(l->id));
+            prop_item->setData(Qt::UserRole + 1,
+                               is_channel ? QStringLiteral("property_channel")
+                                          : QStringLiteral("property"));
+            prop_item->setData(Qt::UserRole + 2, label);
+            prop_item->setData(Qt::UserRole + 3,
+                               QString::fromStdString(prop.name()));
+            prop_item->setData(Qt::UserRole + 4, is_channel ? channel : 3);
+            prop_item->setFlags((prop_item->flags() | Qt::ItemIsSelectable |
+                                 Qt::ItemIsEnabled) &
+                                ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled |
+                                  Qt::ItemIsUserCheckable));
+            prop_item->setSizeHint(QSize(0, 28));
+            list_->addItem(prop_item);
+
+            QWidget *prop_widget = new QWidget(list_);
+            prop_widget->setObjectName(is_channel
+                ? QStringLiteral("layerKeyframeChannelRow")
+                : QStringLiteral("layerKeyframePropertyRow"));
+            prop_widget->setStyleSheet(QStringLiteral(
+                "QWidget{background:transparent;color:%1;}")
+                .arg(text.name(QColor::HexRgb)));
+            auto *ph = new QHBoxLayout(prop_widget);
+            ph->setContentsMargins(is_channel ? 88 : 44, 0, 4, 0);
+            ph->setSpacing(4);
+
+            if (is_channel) {
+                static const char *spin_names[] = {
+                    "keyframeValueX", "keyframeValueY", "keyframeValueZ",
+                    "keyframeValueW"};
+                const int safe_channel = std::clamp(channel, 0, 3);
+                const QString channel_label = timeline_property_channel_label(
+                    timeline_row.prop.graph_all_channels(), safe_channel);
+                auto *axis = new QToolButton(prop_widget);
+                axis->setText(channel_label);
+                axis->setFixedSize(24, 20);
+                axis->setAutoRaise(true);
+                axis->setToolTip(
+                    QStringLiteral("Edit the %1 channel in the Graph Editor")
+                        .arg(channel_label));
+                axis->setStyleSheet(button_style);
+                connect(axis, &QToolButton::clicked, this,
+                        [this, id = l->id, name = prop.name(), safe_channel]() {
+                    emit property_graph_target_requested(
+                        id, name, graph_mode_for_property_channel(safe_channel));
+                });
+                ph->addWidget(axis);
+                auto *channel_name = new QLabel(label, prop_widget);
+                ph->addWidget(channel_name, 1);
+                auto *value = new QDoubleSpinBox(prop_widget);
+                configure_spin(value, spin_names[safe_channel], 118);
+                double initial = prop.graph_value(property_local_time);
+                if (prop.name() == "scale") initial *= 100.0;
+                value->setValue(initial);
+                ph->addWidget(value);
+                connect(value,
+                        QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                        this,
+                        [this, id = l->id, name = prop.name(), safe_channel]
+                        (double next) {
+                    emit property_channel_value_changed(
+                        id, name, safe_channel, next);
+                });
+                list_->setItemWidget(prop_item, prop_widget);
+                continue;
+            }
+
+            if (channel_count > 1) {
+                auto *caret = new BglCaretButton(prop_widget);
+                caret->setObjectName(QStringLiteral("propertyChannelCaret"));
+                caret->setCaretState(channels_expanded ? 2 : 0);
+                caret->setFixedSize(18, 20);
+                caret->setToolTip(channels_expanded
+                    ? QStringLiteral("Hide property channels")
+                    : QStringLiteral("Show property channels"));
+                connect(caret, &QToolButton::clicked, this,
+                        [this, owner = l->id, name = prop.name(),
+                         channels_expanded]() {
+                    emit property_channels_expanded_changed(
+                        owner, name, !channels_expanded);
+                });
+                ph->addWidget(caret);
             } else {
-                x = prop.graph_value(property_local_time);
-                if (prop.name() == "opacity" || prop.name() == "char_scale_x" || prop.name() == "char_scale_y") x *= 100.0;
-                value_x->setValue(x);
-                ph->addWidget(value_x);
+                ph->addSpacing(18);
             }
-            value_x->setProperty("layerId", QString::fromStdString(l->id));
-            value_x->setProperty("propertyName", QString::fromStdString(prop.name()));
-            if (value_y) {
-                value_y->setProperty("layerId", QString::fromStdString(l->id));
-                value_y->setProperty("propertyName", QString::fromStdString(prop.name()));
+
+            QToolButton *diamond_indicator = new QToolButton(prop_widget);
+            diamond_indicator->setObjectName(QStringLiteral("keyframeDiamond"));
+            diamond_indicator->setProperty("layerId", QString::fromStdString(l->id));
+            diamond_indicator->setProperty("propertyName", QString::fromStdString(prop.name()));
+            diamond_indicator->setText(keyframe_index_at_time(prop, property_local_time) >= 0
+                ? QStringLiteral("◆") : QStringLiteral("◇"));
+            diamond_indicator->setFixedSize(18, 20);
+            diamond_indicator->setEnabled(!l->locked);
+            diamond_indicator->setAutoRaise(true);
+            diamond_indicator->setCursor(Qt::PointingHandCursor);
+            diamond_indicator->setToolTip(bgl_tr("OBSTitles.ToggleKeyframe"));
+            diamond_indicator->setStyleSheet(QString(
+                "QToolButton{border:none;background:transparent;color:%1;}")
+                .arg(layer_color(*l, row).name()));
+            connect(diamond_indicator, &QToolButton::clicked, this,
+                    [this, id = l->id, name = prop.name()]() {
+                emit property_keyframe_toggled(id, name);
+            });
+            ph->addWidget(diamond_indicator);
+            QLabel *prop_name = new QLabel(label, prop_widget);
+            prop_name->setStyleSheet(QStringLiteral("color:%1;")
+                                         .arg(text.name(QColor::HexRgb)));
+            ph->addWidget(prop_name, 1);
+
+            /* Extension and discrete tracks keep their authoring surface in
+             * the owning panel. They remain selectable as graph targets. */
+            if (prop.is_extension() || prop.is_discrete()) {
+                list_->setItemWidget(prop_item, prop_widget);
+                continue;
             }
-            auto emit_value = [this, id = l->id, name = prop.name(), value_x, value_y]() {
-                emit property_value_changed(id, name, value_x->value(), value_y ? value_y->value() : 0.0);
-            };
-            connect(value_x, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [emit_value](double) { emit_value(); });
-            if (value_y)
-                connect(value_y, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [emit_value](double) { emit_value(); });
+
+            if (channel_count > 1) {
+                auto *all_channel = new QToolButton(prop_widget);
+                all_channel->setText(QStringLiteral("All"));
+                all_channel->setFixedSize(34, 20);
+                all_channel->setAutoRaise(true);
+                all_channel->setToolTip(
+                    QStringLiteral("Edit all channels in the Graph Editor"));
+                all_channel->setStyleSheet(button_style);
+                connect(all_channel, &QToolButton::clicked, this,
+                        [this, id = l->id, name = prop.name()]() {
+                    emit property_graph_target_requested(id, name, 3);
+                });
+                ph->addWidget(all_channel);
+                auto *summary = new QLabel(
+                    property_channel_summary(prop, property_local_time,
+                                             prop.name()),
+                    prop_widget);
+                summary->setObjectName(QStringLiteral("keyframeValueSummary"));
+                summary->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                summary->setStyleSheet(QStringLiteral("color:%1;font-size:10px;")
+                    .arg(disabled_text.name(QColor::HexRgb)));
+                ph->addWidget(summary);
+                list_->setItemWidget(prop_item, prop_widget);
+                continue;
+            }
+
+            double value = prop.graph_value(property_local_time);
+            if (prop.name() == "opacity" || prop.name() == "char_scale_x" ||
+                prop.name() == "char_scale_y") value *= 100.0;
+            auto *value_x = new QDoubleSpinBox(prop_widget);
+            configure_spin(value_x, "keyframeValueX");
+            value_x->setValue(value);
+            ph->addWidget(value_x);
+            connect(value_x,
+                    QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this,
+                    [this, id = l->id, name = prop.name()](double next) {
+                emit property_value_changed(id, name, next, 0.0, 0.0);
+            });
             list_->setItemWidget(prop_item, prop_widget);
         }
+
     }
+    /* Hard invariant: the layer-list section and TimelineWidget are two
+     * renderers of the same flattened row model. */
+    Q_ASSERT(list_->count() == static_cast<int>(shared_timeline_rows.size()));
     list_->blockSignals(false);
     update_property_rows();
     on_selection_changed();
@@ -1172,6 +1574,26 @@ void LayerStack::set_selected_layer(const std::string &layer_id)
 
 void LayerStack::set_selected_layers(const std::vector<std::string> &layer_ids)
 {
+    std::set<QString> desired_ids;
+    for (const auto &id : layer_ids)
+        if (!id.empty())
+            desired_ids.insert(QString::fromStdString(id));
+
+    const QString desired_primary = layer_ids.empty()
+        ? QString() : QString::fromStdString(layer_ids.back());
+    std::set<QString> current_ids;
+    for (auto *item : list_->selectedItems()) {
+        if (item->data(Qt::UserRole + 1).toString() == QStringLiteral("layer"))
+            current_ids.insert(item->data(Qt::UserRole).toString());
+    }
+    QListWidgetItem *current_item = list_->currentItem();
+    const bool current_is_layer = current_item &&
+        current_item->data(Qt::UserRole + 1).toString() == QStringLiteral("layer");
+    const QString current_primary = current_is_layer
+        ? current_item->data(Qt::UserRole).toString() : QString();
+    if (current_ids == desired_ids && current_primary == desired_primary)
+        return;
+
     QSignalBlocker blocker(list_);
     list_->clearSelection();
     if (layer_ids.empty()) {
@@ -1179,22 +1601,20 @@ void LayerStack::set_selected_layers(const std::vector<std::string> &layer_ids)
         return;
     }
 
-    std::set<QString> ids;
-    for (const auto &id : layer_ids)
-        ids.insert(QString::fromStdString(id));
-
     QListWidgetItem *current = nullptr;
-    QString primary = QString::fromStdString(layer_ids.back());
     for (int i = 0; i < list_->count(); ++i) {
         auto *item = list_->item(i);
-        if (item->data(Qt::UserRole + 1).toString() != "layer") continue;
-        QString id = item->data(Qt::UserRole).toString();
-        if (ids.find(id) != ids.end()) {
+        if (item->data(Qt::UserRole + 1).toString() != QStringLiteral("layer"))
+            continue;
+        const QString id = item->data(Qt::UserRole).toString();
+        if (desired_ids.find(id) != desired_ids.end()) {
             item->setSelected(true);
-            if (id == primary) current = item;
+            if (id == desired_primary)
+                current = item;
         }
     }
-    if (current) list_->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+    if (current)
+        list_->setCurrentItem(current, QItemSelectionModel::NoUpdate);
 }
 
 std::string LayerStack::selected_id() const
@@ -1218,6 +1638,20 @@ std::vector<std::string> LayerStack::selected_ids() const
 
 void LayerStack::on_selection_changed()
 {
+    if (QListWidgetItem *current = list_ ? list_->currentItem() : nullptr) {
+        const QString kind = current->data(Qt::UserRole + 1).toString();
+        if (kind == QStringLiteral("property") ||
+            kind == QStringLiteral("property_channel")) {
+            int graph_mode = current->data(Qt::UserRole + 4).isValid()
+                ? current->data(Qt::UserRole + 4).toInt() : 3;
+            if (kind == QStringLiteral("property_channel"))
+                graph_mode = graph_mode_for_property_channel(graph_mode);
+            emit property_graph_target_requested(
+                current->data(Qt::UserRole).toString().toStdString(),
+                current->data(Qt::UserRole + 3).toString().toStdString(),
+                graph_mode);
+        }
+    }
     std::string id = selected_id();
     const bool has_layer = !id.empty() && title_ && title_->find_layer(id);
     bool has_deletable_layer = false;
@@ -1273,6 +1707,7 @@ void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
 void LayerStack::on_add_audio() { emit add_layer_requested(LayerType::Audio); }
 void LayerStack::on_add_adjustment() { emit add_layer_requested(LayerType::Adjustment); }
 void LayerStack::on_add_color_solid() { emit add_layer_requested(LayerType::ColorSolid); }
+void LayerStack::on_add_camera() { emit add_camera_requested(); }
 
 void LayerStack::on_move_up()
 {
@@ -1339,12 +1774,13 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
     if (item->data(Qt::UserRole + 1).toString() == QStringLiteral("property")) {
         const std::string layer_id = item->data(Qt::UserRole).toString().toStdString();
         const std::string property_name = item->data(Qt::UserRole + 3).toString().toStdString();
-        auto layer = title_->find_layer(layer_id);
-        if (!layer || layer->locked) return;
-        TimelinePropertyRef prop = layer_timeline_property(*layer, property_name);
+        if (timeline_owner_locked(*title_, layer_id)) return;
+        TimelinePropertyRef prop = timeline_property_for_owner(*title_, layer_id, property_name);
         if (!prop) return;
-        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
-            std::max(0.0, layer->out_time - layer->in_time));
+        const double owner_in = timeline_owner_in_time(*title_, layer_id);
+        const double owner_out = timeline_owner_out_time(*title_, layer_id);
+        const double local_time = std::clamp(playhead_ - owner_in, 0.0,
+            std::max(0.0, owner_out - owner_in));
         const int key_index = keyframe_index_at_time(prop, local_time);
 
         QMenu menu(this);
@@ -1353,7 +1789,7 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
             ? bgl_tr("OBSTitles.DeleteKeyframe") : bgl_tr("OBSTitles.AddKeyframe"));
         QMenu *temporal = menu.addMenu(bgl_tr("OBSTitles.TemporalInterpolation"));
         style_menu(temporal);
-        temporal->setEnabled(key_index >= 0);
+        temporal->setEnabled(key_index >= 0 && !prop.is_hold_only());
         std::map<QAction *, TemporalInterpolationMode> modes;
         auto temporal_label = [](TemporalInterpolationMode mode) {
             switch (mode) {

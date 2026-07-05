@@ -63,6 +63,14 @@ static void prune_gpu_mask_texture_cache(TitleGpuRenderSession *session)
 static gs_texture_t *render_gpu_group_graph_texture(
     TitleGpuRenderSession *session, const Title &title, const Layer &group,
     double title_time, std::unordered_set<std::string> &visiting);
+static std::string gpu_hardware_depth_camera_id(const Title &title,
+                                                const Layer &layer,
+                                                double title_time);
+static gs_texture_t *render_gpu_hardware_depth_run(
+    TitleGpuRenderSession *session, const Title &title,
+    const std::vector<const Layer *> &layers, double title_time,
+    gs_texture_t *background,
+    const std::string &compositor_group_id = std::string());
 static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
                                       gs_texture_t *background,
                                       gs_texture_t *foreground,
@@ -433,33 +441,177 @@ static double gpu_layer_local_opacity(const Layer &layer, double title_time)
                       0.0, 1.0);
 }
 
+static std::size_t gpu_layer_transform_keyframe_count(const Layer &layer)
+{
+    return layer.position.keyframes.size() +
+        layer.position_3d.keyframes.size() +
+        layer.position_z.keyframes.size() + layer.scale.keyframes.size() +
+        layer.scale_z.keyframes.size() + layer.rotation.keyframes.size() +
+        layer.rotation_x.keyframes.size() + layer.rotation_y.keyframes.size() +
+        layer.orientation_x.keyframes.size() +
+        layer.orientation_y.keyframes.size() +
+        layer.orientation_z.keyframes.size() +
+        layer.origin_prop.keyframes.size() + layer.anchor_z.keyframes.size();
+}
+
+static void gpu_note_group_silhouette_pass(
+    TitleGpuRenderSession *session, const std::string &group_id)
+{
+    if (!session || group_id.empty())
+        return;
+    auto &diagnostics = session->group_render_diagnostics[group_id];
+    if (!diagnostics.initialized) {
+        diagnostics.window_started = std::chrono::steady_clock::now();
+        diagnostics.initialized = true;
+    }
+    ++diagnostics.silhouette_passes;
+}
+
+static void gpu_record_group_render_diagnostics(
+    TitleGpuRenderSession *session, const Layer &group,
+    uint64_t elapsed_us, std::size_t child_count,
+    uint64_t target_creations, const Layer *largest_keyframed_child)
+{
+    if (!session)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    auto &diagnostics = session->group_render_diagnostics[group.id];
+    if (!diagnostics.initialized) {
+        diagnostics.window_started = now;
+        diagnostics.initialized = true;
+    }
+    ++diagnostics.calls;
+    diagnostics.total_us += elapsed_us;
+    diagnostics.max_us = std::max(diagnostics.max_us, elapsed_us);
+    diagnostics.child_samples += static_cast<uint64_t>(child_count);
+    diagnostics.target_creations += target_creations;
+    if (elapsed_us >= 8000)
+        ++diagnostics.slow_frames;
+    if (largest_keyframed_child) {
+        const std::size_t child_keyframes =
+            gpu_layer_transform_keyframe_count(*largest_keyframed_child);
+        if (child_keyframes > diagnostics.max_child_transform_keyframes) {
+            diagnostics.max_child_transform_keyframes = child_keyframes;
+            diagnostics.max_child_id = largest_keyframed_child->id;
+            diagnostics.max_child_name = largest_keyframed_child->name;
+        }
+    }
+
+    const auto window_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - diagnostics.window_started).count();
+    if (window_ms < 1000 || diagnostics.calls == 0)
+        return;
+
+    const double average_ms =
+        static_cast<double>(diagnostics.total_us) /
+        static_cast<double>(diagnostics.calls) / 1000.0;
+    const double average_children =
+        static_cast<double>(diagnostics.child_samples) /
+        static_cast<double>(diagnostics.calls);
+    const std::size_t transform_keyframes =
+        group.position.keyframes.size() + group.position_3d.keyframes.size() +
+        group.position_z.keyframes.size() + group.scale.keyframes.size() +
+        group.scale_z.keyframes.size() + group.rotation.keyframes.size() +
+        group.rotation_x.keyframes.size() + group.rotation_y.keyframes.size() +
+        group.orientation_x.keyframes.size() +
+        group.orientation_y.keyframes.size() +
+        group.orientation_z.keyframes.size();
+    BGL_LOG_DEBUG("Grouping", QStringLiteral(
+        "GPU group render group=%1 name=\"%2\" calls=%3 avgMs=%4 maxMs=%5 "
+        "avgChildren=%6 targetCreates=%7 silhouettePasses=%8 surface=%9x%10 "
+        "effects=%11 mask=%12 transformKeyframes=%13 cacheEntries=%14 "
+        "slowFrames=%15 maxChildTransformKeys=%16 maxChild=%17 maxChildName=\"%18\"")
+        .arg(QString::fromStdString(group.id),
+             QString::fromStdString(group.name))
+        .arg(static_cast<qulonglong>(diagnostics.calls))
+        .arg(average_ms, 0, 'f', 3)
+        .arg(static_cast<double>(diagnostics.max_us) / 1000.0, 0, 'f', 3)
+        .arg(average_children, 0, 'f', 2)
+        .arg(static_cast<qulonglong>(diagnostics.target_creations))
+        .arg(static_cast<qulonglong>(diagnostics.silhouette_passes))
+        .arg(session->width)
+        .arg(session->height)
+        .arg(static_cast<qulonglong>(group.effects.size()))
+        .arg(group.mask_mode != MaskMode::None &&
+             !group.mask_source_id.empty() ? 1 : 0)
+        .arg(static_cast<qulonglong>(transform_keyframes))
+        .arg(static_cast<qulonglong>(session->mask_texture_cache.size()))
+        .arg(static_cast<qulonglong>(diagnostics.slow_frames))
+        .arg(static_cast<qulonglong>(diagnostics.max_child_transform_keyframes))
+        .arg(QString::fromStdString(diagnostics.max_child_id))
+        .arg(QString::fromStdString(diagnostics.max_child_name)));
+
+    diagnostics.calls = 0;
+    diagnostics.total_us = 0;
+    diagnostics.max_us = 0;
+    diagnostics.child_samples = 0;
+    diagnostics.target_creations = 0;
+    diagnostics.silhouette_passes = 0;
+    diagnostics.slow_frames = 0;
+    diagnostics.max_child_transform_keyframes = 0;
+    diagnostics.max_child_id.clear();
+    diagnostics.max_child_name.clear();
+    diagnostics.window_started = now;
+}
+
 static gs_texture_t *render_gpu_group_graph_texture(
     TitleGpuRenderSession *session, const Title &title, const Layer &group,
     double title_time, std::unordered_set<std::string> &visiting)
 {
     if (!session || !layer_type_is_container(group.type))
         return nullptr;
+    const auto render_started = std::chrono::steady_clock::now();
+    uint64_t target_creations = 0;
+    std::size_t diagnostic_child_count = 0;
     const std::string visit_id = std::string("group|") + group.id;
     if (!visiting.insert(visit_id).second) {
         session->last_error = "GPU group graph contains a cyclic dependency.";
+        BGL_LOG_WARNING("Grouping", QStringLiteral(
+            "Rejected cyclic GPU group graph group=%1 name=\"%2\"")
+            .arg(QString::fromStdString(group.id),
+                 QString::fromStdString(group.name)));
         return nullptr;
     }
 
-    gs_texrender_t *ping = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    gs_texrender_t *pong = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    gs_texrender_t *published = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    if (!ping || !pong || !published) {
-        if (ping) gs_texrender_destroy(ping);
-        if (pong) gs_texrender_destroy(pong);
-        if (published) gs_texrender_destroy(published);
+    const std::string result_cache_slot =
+        std::string("group-result|") + group.id;
+    auto &result_cache = session->mask_texture_cache[result_cache_slot];
+    if (result_cache.width != session->width ||
+        result_cache.height != session->height) {
+        destroy_gpu_mask_cache_entry(result_cache);
+        result_cache.width = session->width;
+        result_cache.height = session->height;
+    }
+    for (gs_texrender_t *&target : result_cache.targets) {
+        if (!target) {
+            target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+            if (target)
+                ++target_creations;
+        }
+    }
+    if (!result_cache.targets[0] || !result_cache.targets[1]) {
+        BGL_LOG_WARNING("Grouping", QStringLiteral(
+            "Unable to allocate persistent GPU group targets group=%1 surface=%2x%3")
+            .arg(QString::fromStdString(group.id))
+            .arg(session->width)
+            .arg(session->height));
         visiting.erase(visit_id);
         return nullptr;
     }
 
+    const int ping_index = result_cache.active_target == 0 ? 1 : 0;
+    const int pong_index = ping_index == 0 ? 1 : 0;
+    gs_texrender_t *ping = result_cache.targets[ping_index];
+    gs_texrender_t *pong = result_cache.targets[pong_index];
+
     struct vec4 clear; vec4_zero(&clear);
     if (!begin_gpu_target(ping, session->width, session->height, clear)) {
-        gs_texrender_destroy(ping); gs_texrender_destroy(pong);
-        gs_texrender_destroy(published); visiting.erase(visit_id);
+        BGL_LOG_WARNING("Grouping", QStringLiteral(
+            "Unable to begin GPU group target group=%1 surface=%2x%3")
+            .arg(QString::fromStdString(group.id))
+            .arg(session->width)
+            .arg(session->height));
+        visiting.erase(visit_id);
         return nullptr;
     }
     gs_texrender_end(ping);
@@ -518,14 +670,123 @@ static gs_texture_t *render_gpu_group_graph_texture(
         return true;
     };
 
-    for (const auto &child_ptr : title.layers) {
-        if (!child_ptr || child_ptr->parent_id != group.id)
+    const std::vector<const Layer *> ordered_children =
+        bgs::transform3d::ordered_group_children(title, group.id, title_time);
+    diagnostic_child_count = ordered_children.size();
+    const Layer *largest_keyframed_child = nullptr;
+    std::size_t largest_child_transform_keyframes = 0;
+    for (const Layer *child : ordered_children) {
+        if (!child)
             continue;
+        const std::size_t keyframes = gpu_layer_transform_keyframe_count(*child);
+        if (keyframes > largest_child_transform_keyframes) {
+            largest_child_transform_keyframes = keyframes;
+            largest_keyframed_child = child;
+        }
+    }
+
+    /* Hardware depth is valid inside a group because child world matrices
+     * already include the complete nested group chain. Keep runs local to the
+     * current compositor boundary: group masks/effects still flatten the
+     * completed result exactly once, while simple sibling planes can occlude
+     * each other per pixel before that flattening step. */
+    struct GroupHardwareDepthRun {
+        std::vector<const Layer *> layers;
+        std::size_t writer_count = 0;
+        std::size_t transparent_count = 0;
+    };
+    std::unordered_map<const Layer *, GroupHardwareDepthRun>
+        group_hardware_depth_runs;
+    std::size_t depth_cursor = 0;
+    while (depth_cursor < ordered_children.size()) {
+        const Layer *layer = ordered_children[depth_cursor];
+        const bool visible_candidate = layer &&
+            gpu_layer_visible_in_group_compositor(
+                title, *layer, title_time, group.id) &&
+            layer_should_render_as_visible_content(title, *layer) &&
+            bgs::transform3d::layer_passes_backface_culling(
+                title, *layer, title_time) &&
+            bgs::transform3d::hardware_depth_candidate(
+                title, *layer, title_time);
+        const auto raster = layer
+            ? session->layers.find(gpu_session_layer_id(*layer))
+            : session->layers.end();
+        if (!visible_candidate || raster == session->layers.end() ||
+            !raster->second.texture) {
+            ++depth_cursor;
+            continue;
+        }
+
+        GroupHardwareDepthRun run;
+        const std::string camera_id = gpu_hardware_depth_camera_id(
+            title, *layer, title_time);
+        std::size_t run_cursor = depth_cursor;
+        while (run_cursor < ordered_children.size()) {
+            const Layer *candidate = ordered_children[run_cursor];
+            if (!candidate) {
+                ++run_cursor;
+                continue;
+            }
+            const bool candidate_visible =
+                gpu_layer_visible_in_group_compositor(
+                    title, *candidate, title_time, group.id) &&
+                layer_should_render_as_visible_content(title, *candidate) &&
+                bgs::transform3d::layer_passes_backface_culling(
+                    title, *candidate, title_time);
+            if (!candidate_visible) {
+                ++run_cursor;
+                continue;
+            }
+            if (!bgs::transform3d::hardware_depth_candidate(
+                    title, *candidate, title_time) ||
+                gpu_hardware_depth_camera_id(title, *candidate, title_time) != camera_id)
+                break;
+            const auto candidate_raster = session->layers.find(
+                gpu_session_layer_id(*candidate));
+            if (candidate_raster == session->layers.end() ||
+                !candidate_raster->second.texture)
+                break;
+            run.layers.push_back(candidate);
+            if (bgs::transform3d::hardware_depth_writer(
+                    title, *candidate, title_time))
+                ++run.writer_count;
+            if (bgs::transform3d::hardware_depth_transparent_candidate(
+                    title, *candidate, title_time))
+                ++run.transparent_count;
+            ++run_cursor;
+        }
+        if (run.layers.size() >= 2 &&
+            (run.writer_count >= 1 || run.transparent_count >= 2))
+            group_hardware_depth_runs.emplace(run.layers.front(),
+                                               std::move(run));
+        depth_cursor = std::max(depth_cursor + 1, run_cursor);
+    }
+
+    std::unordered_set<const Layer *> rendered_group_depth_layers;
+    for (const Layer *child_ptr : ordered_children) {
+        if (!child_ptr ||
+            rendered_group_depth_layers.find(child_ptr) !=
+                rendered_group_depth_layers.end())
+            continue;
+        const auto depth_run = group_hardware_depth_runs.find(child_ptr);
+        if (depth_run != group_hardware_depth_runs.end()) {
+            if (gs_texture_t *depth_frame = render_gpu_hardware_depth_run(
+                    session, title, depth_run->second.layers, title_time,
+                    frame, group.id)) {
+                frame = depth_frame;
+                rendered_group_depth_layers.insert(
+                    depth_run->second.layers.begin(),
+                    depth_run->second.layers.end());
+                continue;
+            }
+        }
         const Layer &child = *child_ptr;
         const double child_time = gpu_layer_render_time(title, child, title_time);
         if (!gpu_layer_visible_in_group_compositor(title, child, title_time,
                                                 group.id) ||
-            !layer_should_render_as_visible_content(title, child))
+            !layer_should_render_as_visible_content(title, child) ||
+            !bgs::transform3d::layer_passes_backface_culling(
+                title, child, title_time))
             continue;
         if (!composite_clipping_base(child))
             continue;
@@ -743,24 +1004,43 @@ static gs_texture_t *render_gpu_group_graph_texture(
         frame = apply_group_target_mask(frame);
 
     gs_texture_t *result = nullptr;
-    if (copy_full_canvas_gpu_texture(session, frame, published))
-        result = gs_texrender_get_texture(published);
+    int result_index = -1;
+    const gs_texture_t *texture_zero =
+        gs_texrender_get_texture(result_cache.targets[0]);
+    const gs_texture_t *texture_one =
+        gs_texrender_get_texture(result_cache.targets[1]);
+    if (frame == texture_zero)
+        result_index = 0;
+    else if (frame == texture_one)
+        result_index = 1;
 
-    /* Keep the published texture alive in the existing per-session matte cache.
-     * This also avoids returning a texture owned by a temporary ping-pong target. */
-    auto &cache = session->mask_texture_cache[std::string("group-result|") + group.id];
-    destroy_gpu_mask_cache_entry(cache);
-    cache.targets[0] = published;
-    cache.active_target = 0;
-    cache.width = session->width;
-    cache.height = session->height;
-    cache.key = std::to_string(title_time);
-    cache.last_used = ++session->mask_texture_cache_tick;
-    result = gs_texrender_get_texture(published);
+    /* Most groups finish directly in one of their persistent ping/pong
+     * surfaces. Only masks/effects that return a shared external target need a
+     * final publication copy. This removes per-frame texrender allocation and
+     * the unconditional third full-canvas copy from animated groups. */
+    if (result_index < 0 && frame) {
+        const int publish_index = result_cache.active_target == 0 ? 1 : 0;
+        if (copy_full_canvas_gpu_texture(
+                session, frame, result_cache.targets[publish_index]))
+            result_index = publish_index;
+    }
+    if (result_index >= 0) {
+        result_cache.active_target = result_index;
+        result_cache.width = session->width;
+        result_cache.height = session->height;
+        result_cache.key = std::to_string(title_time);
+        result_cache.last_used = ++session->mask_texture_cache_tick;
+        result = gs_texrender_get_texture(
+            result_cache.targets[result_cache.active_target]);
+    }
 
-    gs_texrender_destroy(ping);
-    gs_texrender_destroy(pong);
     visiting.erase(visit_id);
+    const uint64_t elapsed_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - render_started).count());
+    gpu_record_group_render_diagnostics(
+        session, group, elapsed_us, diagnostic_child_count,
+        target_creations, largest_keyframed_child);
     return result;
 }
 
@@ -1180,6 +1460,354 @@ public:
     }
 };
 
+/* Resolve the exact render camera used by a layer. Hardware depth is only
+ * meaningful inside a single view/projection, so camera changes split runs
+ * even when the layers are otherwise adjacent depth candidates. */
+static std::string gpu_hardware_depth_camera_id(const Title &title,
+                                                const Layer &layer,
+                                                double title_time)
+{
+    if (!title.render_camera_override_id.empty())
+        return title.render_camera_override_id;
+    const std::string assigned = bgs::transform3d::resolved_layer_camera_id(
+        title, layer, title_time);
+    return assigned.empty()
+        ? bgs::transform3d::resolved_active_camera_id(title, title_time)
+        : assigned;
+}
+
+static gs_texture_t *render_gpu_hardware_depth_run(
+    TitleGpuRenderSession *session, const Title &title,
+    const std::vector<const Layer *> &layers, double title_time,
+    gs_texture_t *background, const std::string &compositor_group_id)
+{
+    if (!session || !session->depth_target || !background || layers.empty() ||
+        !session->blit_effect)
+        return nullptr;
+
+    auto authored_index = [&](const Layer *needle) {
+        for (std::size_t index = 0; index < title.layers.size(); ++index) {
+            if (title.layers[index].get() == needle)
+                return index;
+        }
+        return title.layers.size();
+    };
+
+    /* Opaque planes establish the persistent Z surface first. Transparent
+     * planes then render far-to-near against that surface. Stable sorting keeps
+     * authored layer order as the deterministic tie-break for coplanar planes. */
+    std::vector<const Layer *> opaque_layers;
+    std::vector<const Layer *> transparent_layers;
+    opaque_layers.reserve(layers.size());
+    transparent_layers.reserve(layers.size());
+    for (const Layer *layer : layers) {
+        if (!layer)
+            continue;
+        if (bgs::transform3d::hardware_depth_transparent_candidate(
+                title, *layer, title_time))
+            transparent_layers.push_back(layer);
+        else
+            opaque_layers.push_back(layer);
+    }
+    std::stable_sort(opaque_layers.begin(), opaque_layers.end(),
+                     [&](const Layer *left, const Layer *right) {
+        return authored_index(left) < authored_index(right);
+    });
+    std::stable_sort(transparent_layers.begin(), transparent_layers.end(),
+                     [&](const Layer *left, const Layer *right) {
+        const double left_depth = bgs::transform3d::evaluate(
+            title, *left, title_time).camera_depth;
+        const double right_depth = bgs::transform3d::evaluate(
+            title, *right, title_time).camera_depth;
+        if (std::abs(left_depth - right_depth) > 0.000001)
+            return left_depth > right_depth;
+        return authored_index(left) < authored_index(right);
+    });
+
+    auto snapshot_texture = [&](gs_texture_t *texture) -> gs_texrender_t * {
+        if (!texture)
+            return nullptr;
+        gs_texrender_t *snapshot = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        if (!snapshot ||
+            !copy_full_canvas_gpu_texture(session, texture, snapshot)) {
+            if (snapshot)
+                gs_texrender_destroy(snapshot);
+            return nullptr;
+        }
+        return snapshot;
+    };
+
+    auto draw_background = [&](gs_texture_t *texture) -> bool {
+        gs_eparam_t *image = gs_effect_get_param_by_name(session->blit_effect,
+                                                         "image");
+        if (!image || !texture)
+            return false;
+        gs_effect_set_texture(image, texture);
+        gs_enable_color(true, true, true, true);
+        gs_enable_depth_test(false);
+        gs_enable_blending(false);
+        gs_matrix_push();
+        gs_matrix_identity();
+        while (gs_effect_loop(session->blit_effect, "Draw"))
+            gs_draw_sprite(texture, 0, session->width, session->height);
+        gs_matrix_pop();
+        return true;
+    };
+
+    struct PreparedDepthSurface {
+        gs_texture_t *texture = nullptr;
+        gs_texture_t *projected_mask = nullptr;
+        MaskMode projected_mask_mode = MaskMode::None;
+        QRectF projected_bounds;
+        double opacity = 0.0;
+        bool visible = true;
+    };
+    struct ScopedOwnedDepthTextures {
+        std::vector<gs_texture_t *> textures;
+        ~ScopedOwnedDepthTextures()
+        {
+            for (gs_texture_t *texture : textures) {
+                if (texture)
+                    gs_texture_destroy(texture);
+            }
+        }
+    } owned_depth_textures;
+    std::unordered_map<const Layer *, PreparedDepthSurface> prepared_surfaces;
+    std::unordered_set<std::string> depth_mask_visiting;
+
+    /* Resolve all effect and matte graph textures before depth_target begins.
+     * OBS texrenders cannot be nested portably, and both the effect stack and
+     * matte graph use their own offscreen targets. */
+    for (const Layer *layer : layers) {
+        if (!layer)
+            continue;
+        auto found = session->layers.find(gpu_session_layer_id(*layer));
+        if (found == session->layers.end() || !found->second.texture)
+            return nullptr;
+        auto &entry = found->second;
+        PreparedDepthSurface prepared;
+        prepared.texture = entry.texture;
+        const double resolved_time = gpu_layer_render_time(
+            title, *layer, title_time);
+        prepared.opacity = std::clamp(
+            gpu_layer_local_opacity(*layer, resolved_time), 0.0, 1.0);
+
+        /* The raster already includes the conservative padding required by
+         * layer-space shadow/glow/blur/outline passes. Project that complete
+         * local surface before drawing so perspective rotation cannot clip it
+         * back to the original 2D layer box. Homogeneous frustum clipping also
+         * provides a stable off-camera rejection without producing enormous
+         * screen coordinates near the camera plane. Free-transform grids are
+         * conservatively retained because their warped perimeter is not a
+         * simple rectangle. */
+        const double local_time = std::max(0.0, resolved_time - layer->in_time);
+        const double box_sx = std::max(0.0001, eval_box_width(*layer, local_time)) /
+            std::max(0.0001, entry.base_box_width);
+        const double box_sy = std::max(0.0001, eval_box_height(*layer, local_time)) /
+            std::max(0.0001, entry.base_box_height);
+        const QRectF padded_local_surface(
+            entry.origin.x() * box_sx, entry.origin.y() * box_sy,
+            entry.logical_width * box_sx, entry.logical_height * box_sy);
+        if (!layer_has_free_transform_quad(*layer, local_time) &&
+            !bgs::transform3d::projected_local_bounds(
+                title, *layer, title_time, padded_local_surface,
+                prepared.projected_bounds, nullptr,
+                gpu_hardware_depth_camera_id(title, *layer, title_time))) {
+            prepared.visible = false;
+        }
+
+        if (prepared.visible && !layer->effects.empty()) {
+            gs_texture_t *effected = apply_gpu_layer_effect_stack(
+                session, *layer, resolved_time, entry.texture, entry.width,
+                entry.height, &entry);
+            if (!effected)
+                return nullptr;
+            const gs_texture_t *cached_effect = entry.effect_cache
+                ? gs_texrender_get_texture(entry.effect_cache) : nullptr;
+            if (effected != entry.texture && effected != cached_effect) {
+                gs_texture_t *snapshot = gs_texture_create(
+                    entry.width, entry.height, GS_BGRA, 1, nullptr, 0);
+                if (!snapshot)
+                    return nullptr;
+                gs_copy_texture(snapshot, effected);
+                owned_depth_textures.textures.push_back(snapshot);
+                effected = snapshot;
+            }
+            prepared.texture = effected;
+        }
+
+        if (layer->mask_mode != MaskMode::None &&
+            !layer->mask_source_id.empty()) {
+            const Layer *mask_layer = find_layer_by_id(
+                title, layer->mask_source_id);
+            if (mask_layer && gpu_layer_chain_active_as_matte(
+                                  title, *mask_layer, title_time)) {
+                const GpuMaskGraphPurpose purpose =
+                    mask_mode_is_clipping(layer->mask_mode)
+                    ? GpuMaskGraphPurpose::ClippingShape
+                    : GpuMaskGraphPurpose::MatteArtwork;
+                prepared.projected_mask = render_gpu_mask_graph_texture(
+                    session, title, *mask_layer, title_time,
+                    gpu_session_layer_id(*mask_layer), compositor_group_id,
+                    depth_mask_visiting, purpose);
+                if (!prepared.projected_mask)
+                    return nullptr;
+                prepared.projected_mask_mode = layer->mask_mode;
+            } else if (!mask_mode_is_inverted(layer->mask_mode)) {
+                prepared.visible = false;
+            }
+        }
+        prepared_surfaces.emplace(layer, prepared);
+    }
+
+    auto draw_depth_layer = [&](const Layer &layer, bool write_color,
+                                bool *drew_layer = nullptr) -> bool {
+        if (drew_layer)
+            *drew_layer = false;
+        auto found = session->layers.find(gpu_session_layer_id(layer));
+        auto prepared_it = prepared_surfaces.find(&layer);
+        if (found == session->layers.end() ||
+            prepared_it == prepared_surfaces.end())
+            return false;
+        auto &entry = found->second;
+        const PreparedDepthSurface &prepared = prepared_it->second;
+        if (!prepared.visible || prepared.opacity <= 0.000001)
+            return true;
+
+        /* libobs does not expose a portable depth-write mask. A read-only draw
+         * therefore writes Z temporarily; its color is retained and persistent
+         * writer depth is rebuilt immediately afterwards. */
+        gs_enable_depth_test(true);
+        gs_depth_function(layer.depth_test ? GS_LEQUAL : GS_ALWAYS);
+        gs_enable_color(write_color, write_color, write_color, write_color);
+        gs_enable_blending(write_color);
+        if (write_color)
+            gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+        const bool drawn = draw_gpu_layer_texture(
+            session, &entry, title, layer, prepared.texture,
+            entry.origin, entry.width, entry.height,
+            entry.logical_width, entry.logical_height,
+            entry.image_clip_rect, entry.base_box_width,
+            entry.base_box_height, title_time,
+            static_cast<float>(prepared.opacity), true,
+            prepared.projected_mask, prepared.projected_mask_mode);
+        if (drew_layer)
+            *drew_layer = drawn;
+        return drawn;
+    };
+
+    bool target_active = false;
+    auto end_target = [&]() {
+        if (!target_active)
+            return;
+        gs_enable_color(true, true, true, true);
+        gs_enable_depth_test(false);
+        gs_depth_function(GS_LEQUAL);
+        gs_set_cull_mode(GS_NEITHER);
+        gs_enable_blending(true);
+        gs_texrender_end(session->depth_target);
+        target_active = false;
+    };
+
+    auto begin_target = [&](gs_texture_t *pass_background) -> bool {
+        gs_texrender_reset(session->depth_target);
+        if (!gs_texrender_begin(session->depth_target, session->width,
+                                session->height))
+            return false;
+        target_active = true;
+
+        struct vec4 clear;
+        vec4_zero(&clear);
+        gs_ortho(0.0f, static_cast<float>(session->width),
+                 0.0f, static_cast<float>(session->height), -100.0f, 100.0f);
+        gs_clear(GS_CLEAR_COLOR | GS_CLEAR_DEPTH | GS_CLEAR_STENCIL,
+                 &clear, 1.0f, 0);
+        gs_set_cull_mode(GS_NEITHER);
+        if (!draw_background(pass_background)) {
+            end_target();
+            return false;
+        }
+        return true;
+    };
+
+    /* Consecutive camera runs can use depth_target's previous color as input.
+     * Snapshot before resetting so the render target never samples itself. */
+    gs_texrender_t *background_snapshot = nullptr;
+    if (background == gs_texrender_get_texture(session->depth_target)) {
+        background_snapshot = snapshot_texture(background);
+        if (!background_snapshot)
+            return nullptr;
+        background = gs_texrender_get_texture(background_snapshot);
+    }
+
+    bool success = begin_target(background);
+    if (background_snapshot)
+        gs_texrender_destroy(background_snapshot);
+    if (!success)
+        return nullptr;
+
+    std::vector<const Layer *> persistent_writers;
+    persistent_writers.reserve(layers.size());
+
+    auto draw_layer_with_depth_semantics = [&](const Layer *layer) -> bool {
+        if (!layer)
+            return true;
+        const bool writer = bgs::transform3d::hardware_depth_writer(
+            title, *layer, title_time);
+        const bool read_only = bgs::transform3d::hardware_depth_read_only(
+            title, *layer, title_time);
+        if (!writer && !read_only)
+            return true;
+        bool drew_layer = false;
+        if (!draw_depth_layer(*layer, true, &drew_layer))
+            return false;
+        if (!drew_layer)
+            return true;
+        if (writer) {
+            persistent_writers.push_back(layer);
+            return true;
+        }
+
+        /* Preserve the just-composited color but remove the unavoidable
+         * temporary Z write. Rebuild only persistent writers, including any
+         * explicitly depth-writing transparent planes already rendered. */
+        end_target();
+        gs_texture_t *current = gs_texrender_get_texture(session->depth_target);
+        gs_texrender_t *color_snapshot = snapshot_texture(current);
+        if (!color_snapshot)
+            return false;
+        bool rebuilt = begin_target(gs_texrender_get_texture(color_snapshot));
+        if (rebuilt) {
+            for (const Layer *persistent : persistent_writers) {
+                if (!persistent || !draw_depth_layer(*persistent, false)) {
+                    rebuilt = false;
+                    break;
+                }
+            }
+        }
+        gs_texrender_destroy(color_snapshot);
+        return rebuilt;
+    };
+
+    for (const Layer *layer : opaque_layers) {
+        if (!draw_layer_with_depth_semantics(layer)) {
+            success = false;
+            break;
+        }
+    }
+    if (success) {
+        for (const Layer *layer : transparent_layers) {
+            if (!draw_layer_with_depth_semantics(layer)) {
+                success = false;
+                break;
+            }
+        }
+    }
+
+    end_target();
+    return success ? gs_texrender_get_texture(session->depth_target) : nullptr;
+}
+
 static gs_texture_t *render_gpu_session_locked(
     TitleGpuRenderSession *session, gs_texture_t *external_background = nullptr,
     bool isolate_editor_background_from_effects = false)
@@ -1447,7 +2075,110 @@ static gs_texture_t *render_gpu_session_locked(
         return true;
     };
 
-    for (std::size_t index = first; index < last; ++index) {
+    const std::vector<std::size_t> ordered_root_indices =
+        bgs::transform3d::ordered_root_layer_indices(
+            session->title, first, last, session->time);
+
+    struct HardwareDepthRun {
+        std::vector<std::size_t> indices;
+        std::vector<const Layer *> layers;
+        std::size_t writer_count = 0;
+        std::size_t read_only_count = 0;
+        std::size_t transparent_count = 0;
+    };
+    std::unordered_map<std::size_t, HardwareDepthRun> hardware_depth_runs;
+    std::size_t depth_cursor = 0;
+    while (depth_cursor < ordered_root_indices.size()) {
+        const std::size_t index = ordered_root_indices[depth_cursor];
+        const auto &layer_ptr = session->title.layers[index];
+        const Layer *layer = layer_ptr.get();
+        const bool visible_candidate = layer &&
+            gpu_layer_chain_visible(session->title, *layer, session->time) &&
+            layer_should_render_as_visible_content(session->title, *layer) &&
+            bgs::transform3d::layer_passes_backface_culling(
+                session->title, *layer, session->time) &&
+            bgs::transform3d::hardware_depth_candidate(
+                session->title, *layer, session->time) &&
+            session->layers.find(gpu_session_layer_id(*layer)) !=
+                session->layers.end();
+        if (!visible_candidate) {
+            ++depth_cursor;
+            continue;
+        }
+
+        HardwareDepthRun run;
+        const std::string camera_id = gpu_hardware_depth_camera_id(
+            session->title, *layer, session->time);
+        std::size_t run_cursor = depth_cursor;
+        while (run_cursor < ordered_root_indices.size()) {
+            const std::size_t candidate_index =
+                ordered_root_indices[run_cursor];
+            const auto &candidate_ptr =
+                session->title.layers[candidate_index];
+            const Layer *candidate = candidate_ptr.get();
+            if (!candidate) {
+                ++run_cursor;
+                continue;
+            }
+            const bool candidate_visible = gpu_layer_chain_visible(
+                    session->title, *candidate, session->time) &&
+                layer_should_render_as_visible_content(
+                    session->title, *candidate) &&
+                bgs::transform3d::layer_passes_backface_culling(
+                    session->title, *candidate, session->time);
+            if (!candidate_visible) {
+                ++run_cursor;
+                continue;
+            }
+            if (!bgs::transform3d::hardware_depth_candidate(
+                    session->title, *candidate, session->time) ||
+                gpu_hardware_depth_camera_id(session->title, *candidate,
+                                             session->time) !=
+                    camera_id)
+                break;
+            const auto raster = session->layers.find(
+                gpu_session_layer_id(*candidate));
+            if (raster == session->layers.end() || !raster->second.texture)
+                break;
+            run.indices.push_back(candidate_index);
+            run.layers.push_back(candidate);
+            if (bgs::transform3d::hardware_depth_writer(
+                    session->title, *candidate, session->time))
+                ++run.writer_count;
+            else if (bgs::transform3d::hardware_depth_read_only(
+                         session->title, *candidate, session->time))
+                ++run.read_only_count;
+            if (bgs::transform3d::hardware_depth_transparent_candidate(
+                    session->title, *candidate, session->time))
+                ++run.transparent_count;
+            ++run_cursor;
+        }
+        /* One persistent writer can occlude any later plane. A transparent-
+         * only run is also useful when at least two planes need deterministic
+         * far-to-near compositing, even if neither persists depth. */
+        if (run.layers.size() >= 2 &&
+            (run.writer_count >= 1 || run.transparent_count >= 2))
+            hardware_depth_runs.emplace(run.indices.front(), std::move(run));
+        depth_cursor = std::max(depth_cursor + 1, run_cursor);
+    }
+
+    std::unordered_set<std::size_t> rendered_hardware_depth_layers;
+    for (std::size_t index : ordered_root_indices) {
+        if (rendered_hardware_depth_layers.find(index) !=
+            rendered_hardware_depth_layers.end())
+            continue;
+        const auto depth_run = hardware_depth_runs.find(index);
+        if (depth_run != hardware_depth_runs.end()) {
+            if (gs_texture_t *depth_frame = render_gpu_hardware_depth_run(
+                    session, session->title, depth_run->second.layers,
+                    session->time, frame)) {
+                frame = depth_frame;
+                rendered_hardware_depth_layers.insert(
+                    depth_run->second.indices.begin(),
+                    depth_run->second.indices.end());
+                continue;
+            }
+        }
         const auto &layer_ptr = session->title.layers[index];
         if (!layer_ptr)
             continue;
@@ -1455,7 +2186,9 @@ static gs_texture_t *render_gpu_session_locked(
         const double layer_time = gpu_layer_render_time(
             session->title, layer, session->time);
         if (!gpu_layer_chain_visible(session->title, layer, session->time) ||
-            !layer_should_render_as_visible_content(session->title, layer))
+            !layer_should_render_as_visible_content(session->title, layer) ||
+            !bgs::transform3d::layer_passes_backface_culling(
+                session->title, layer, session->time))
             continue;
         /* Children are composited through their group surface so the group can
          * behave exactly like a normal layer for effects, masks and blending. */
@@ -1467,20 +2200,32 @@ static gs_texture_t *render_gpu_session_locked(
         if (!composite_clipping_base(layer))
             continue;
         if (layer_type_is_container(layer.type)) {
-            /* Preserve a pre-group-effects copy for bounded adjustment
-             * coverage.  The normal group render below may contain blur, glow
-             * or shadows and therefore must not define the hard silhouette. */
+            /* Preserve a pre-group-effects copy only when an enabled effect
+             * actually affects layers behind. The previous unconditional path
+             * rendered every visible group twice per frame, even for an empty
+             * effect stack, which turned animated groups into a permanent
+             * full-canvas performance penalty. */
             gs_texrender_t *group_silhouette_target = nullptr;
             gs_texture_t *group_silhouette = nullptr;
-            Layer silhouette_group = layer;
-            silhouette_group.effects.clear();
-            {
+            const double group_local_time =
+                std::max(0.0, layer_time - layer.in_time);
+            const bool has_group_backdrop_effect = std::any_of(
+                layer.effects.begin(), layer.effects.end(),
+                [&](const LayerEffect &effect) {
+                    return effect.affect_layers_behind &&
+                           eval_effect_enabled(effect, group_local_time);
+                });
+            if (has_group_backdrop_effect) {
+                gpu_note_group_silhouette_pass(session, layer.id);
+                Layer silhouette_group = layer;
+                silhouette_group.effects.clear();
                 std::unordered_set<std::string> silhouette_visiting;
                 gs_texture_t *raw_group = render_gpu_group_graph_texture(
                     session, session->title, silhouette_group, session->time,
                     silhouette_visiting);
                 if (raw_group) {
-                    group_silhouette_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+                    group_silhouette_target = gs_texrender_create(
+                        GS_BGRA, GS_ZS_NONE);
                     if (group_silhouette_target &&
                         copy_full_canvas_gpu_texture(session, raw_group,
                                                      group_silhouette_target))
@@ -1497,6 +2242,6 @@ static gs_texture_t *render_gpu_session_locked(
                     gs_texrender_destroy(group_silhouette_target);
                 continue;
             }
-            if (!group_silhouette)
+            if (has_group_backdrop_effect && !group_silhouette)
                 group_silhouette = foreground;
 

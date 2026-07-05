@@ -270,6 +270,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
             update();
     });
     last_render_clock_.start();
+    diagnostics_window_timer_.start();
 
     QSettings adaptive_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     adaptive_settings.beginGroup(QStringLiteral("titleEditor"));
@@ -658,6 +659,8 @@ bool CanvasPreview::present_gpu_display_if_due()
     obs_leave_graphics();
 
     if (presented) {
+        if (project_rate_present)
+            record_live_playback_present();
         playback_present_pending_ = false;
         editing_present_pending_ = false;
         force_present_pending_ = false;
@@ -878,6 +881,18 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
     motion_path_hover_keyframe_index_ = -1;
     spatial_tangent_drag_ = SpatialTangentDragState{};
     spatial_vertex_drag_ = SpatialVertexDragState{};
+    gizmo_drag_ = GizmoDragState{};
+    editor_projection_title_.reset();
+    editor_projection_dirty_ = true;
+    editor_camera_transform_only_pending_ = false;
+    interactive_transform_pending_ = false;
+    interactive_settle_pending_ = false;
+    full_gpu_model_refresh_pending_ = true;
+    if (!preserve_view) {
+        editor_3d_view_ = Editor3DView::ActiveCamera;
+        reset_editor_3d_navigation();
+        emit editor_3d_view_changed(static_cast<int>(editor_3d_view_));
+    }
     BGL_LOG_INFO("Canvas", QStringLiteral(
         "Set canvas title=%1 preserveView=%2")
         .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
@@ -906,14 +921,15 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
      * constituting a user edit. A queued refresh below runs after that editor
      * initialization cycle and guarantees that the first normal presentation tick
      * receives the final text model even when caching is disabled. */
-    const std::shared_ptr<Title> primed_title = title_;
+    const std::shared_ptr<Title> primed_source_title = title_;
+    const std::shared_ptr<Title> primed_title = projection_title();
     if (primed_title && gpu_render_session_) {
         ++gpu_model_revision_;
         title_gpu_render_session_update(gpu_render_session_, *primed_title,
                                         playhead_, gpu_model_revision_);
     }
-    QTimer::singleShot(0, this, [this, primed_title]() {
-        if (shutting_down_ || !primed_title || title_ != primed_title)
+    QTimer::singleShot(0, this, [this, primed_source_title]() {
+        if (shutting_down_ || !primed_source_title || title_ != primed_source_title)
             return;
         gpu_model_dirty_ = true;
         dirty_ = true;
@@ -931,7 +947,20 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
 
 CanvasPreview::ViewState CanvasPreview::view_state() const
 {
-    return ViewState{zoom_percent_, fit_zoom_active_, fit_zoom_up_to_100_, pan_offset_};
+    ViewState state;
+    state.zoom_percent = zoom_percent_;
+    state.fit_zoom_active = fit_zoom_active_;
+    state.fit_zoom_up_to_100 = fit_zoom_up_to_100_;
+    state.pan_offset = pan_offset_;
+    state.editor_3d_view = editor_3d_view_;
+    state.editor_3d_target = editor_3d_target_;
+    state.editor_3d_distance = editor_3d_distance_;
+    state.editor_3d_yaw = editor_3d_yaw_;
+    state.editor_3d_pitch = editor_3d_pitch_;
+    state.editor_3d_ortho_zoom = editor_3d_ortho_zoom_;
+    state.editor_3d_depth_debug_visible = editor_3d_depth_debug_visible_;
+    state.editor_3d_normals_visible = editor_3d_normals_visible_;
+    return state;
 }
 
 void CanvasPreview::restore_view_state(const ViewState &state)
@@ -940,9 +969,20 @@ void CanvasPreview::restore_view_state(const ViewState &state)
     fit_zoom_active_ = state.fit_zoom_active;
     fit_zoom_up_to_100_ = state.fit_zoom_up_to_100;
     pan_offset_ = state.pan_offset;
+    editor_3d_view_ = state.editor_3d_view;
+    editor_3d_target_ = state.editor_3d_target;
+    editor_3d_distance_ = std::clamp(state.editor_3d_distance, 1.0, 10000000.0);
+    editor_3d_yaw_ = state.editor_3d_yaw;
+    editor_3d_pitch_ = std::clamp(state.editor_3d_pitch, -89.9, 89.9);
+    editor_3d_ortho_zoom_ = std::clamp(state.editor_3d_ortho_zoom, 0.001, 1000.0);
+    editor_3d_depth_debug_visible_ = state.editor_3d_depth_debug_visible;
+    editor_3d_normals_visible_ = state.editor_3d_normals_visible;
+    editor_projection_dirty_ = true;
+    editor_camera_transform_only_pending_ = true;
     invalidate_canvas_overlay_caches();
     dirty_ = true;
     emit zoom_percent_changed(zoom_percent_);
+    emit editor_3d_view_changed(static_cast<int>(editor_3d_view_));
     position_text_editor();
     update();
 }
@@ -1001,6 +1041,7 @@ void CanvasPreview::set_playback_active(bool active)
     if (transport_playback_active_ == active)
         return;
     transport_playback_active_ = active;
+    reset_live_playback_fps_measurement();
     if (active) {
         playback_frame_pending_ = false;
         playback_present_pending_ = false;
@@ -1014,6 +1055,56 @@ void CanvasPreview::set_playback_active(bool active)
         force_present_pending_ = true;
         update();
     }
+}
+
+void CanvasPreview::reset_live_playback_fps_measurement()
+{
+    live_fps_frame_count_ = 0;
+    measured_live_fps_ = 0.0;
+    render_cost_accumulator_ns_ = 0;
+    render_cost_sample_count_ = 0;
+    average_render_cost_ms_ = 0.0;
+    if (diagnostics_window_timer_.isValid())
+        diagnostics_window_timer_.restart();
+    else
+        diagnostics_window_timer_.start();
+}
+
+void CanvasPreview::record_live_playback_present()
+{
+    ++live_fps_frame_count_;
+}
+
+CanvasPreview::DiagnosticsSample CanvasPreview::take_diagnostics_sample()
+{
+    DiagnosticsSample sample;
+    if (!diagnostics_window_timer_.isValid()) {
+        diagnostics_window_timer_.start();
+        return sample;
+    }
+
+    sample.elapsed_ms = std::max<qint64>(1, diagnostics_window_timer_.restart());
+    sample.rendered_frames = render_cost_sample_count_;
+    sample.presented_frames = live_fps_frame_count_;
+    sample.average_render_ms = render_cost_sample_count_ > 0
+        ? double(render_cost_accumulator_ns_) /
+              (1000000.0 * double(render_cost_sample_count_))
+        : 0.0;
+    sample.playback_fps = transport_playback_active_
+        ? 1000.0 * double(live_fps_frame_count_) / double(sample.elapsed_ms)
+        : 0.0;
+
+    average_render_cost_ms_ = sample.average_render_ms;
+    measured_live_fps_ = sample.playback_fps;
+    render_cost_accumulator_ns_ = 0;
+    render_cost_sample_count_ = 0;
+    live_fps_frame_count_ = 0;
+    return sample;
+}
+
+double CanvasPreview::live_playback_fps() const
+{
+    return measured_live_fps_;
 }
 
 void CanvasPreview::refresh_runtime_dynamic_content()
@@ -1047,26 +1138,8 @@ void CanvasPreview::refresh_runtime_dynamic_content()
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
-    std::string visible_id = lid;
-    if (!visible_id.empty()) {
-        const auto layer = title_ ? title_->find_layer(visible_id) : nullptr;
-        if (!layer || !layer_is_editor_visible(*layer))
-            visible_id.clear();
-    }
-    const bool changed = sel_layer_id_ != visible_id;
-    sel_layer_id_ = visible_id;
-    selected_layer_ids_.clear();
-    if (!visible_id.empty()) selected_layer_ids_.push_back(visible_id);
-    if (changed) {
-        clear_path_point_selection();
-        clear_corner_selection();
-        selected_position_keyframe_index_ = -1;
-        motion_path_hover_type_ = MotionPathHoverType::None;
-        motion_path_hover_keyframe_index_ = -1;
-    }
-    invalidate_canvas_overlay_caches();
-    position_text_editor();
-    update();
+    set_selected_layers(lid.empty() ? std::vector<std::string>()
+                                    : std::vector<std::string>{lid});
 }
 
 void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
@@ -1078,19 +1151,21 @@ void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
         if (layer && layer_is_editor_visible(*layer))
             visible_ids.push_back(id);
     }
-    const std::string next = visible_ids.empty() ? std::string() : visible_ids.back();
-    const bool changed = sel_layer_id_ != next || selected_layer_ids_ != visible_ids;
+    const std::string next = visible_ids.empty() ? std::string()
+                                                 : visible_ids.back();
+    if (sel_layer_id_ == next && selected_layer_ids_ == visible_ids)
+        return;
+
     selected_layer_ids_ = std::move(visible_ids);
     sel_layer_id_ = next;
-    if (changed) {
-        clear_path_point_selection();
-        clear_corner_selection();
-        selected_position_keyframe_index_ = -1;
-        motion_path_hover_type_ = MotionPathHoverType::None;
-        motion_path_hover_keyframe_index_ = -1;
-    }
+    clear_path_point_selection();
+    clear_corner_selection();
+    selected_position_keyframe_index_ = -1;
+    motion_path_hover_type_ = MotionPathHoverType::None;
+    motion_path_hover_keyframe_index_ = -1;
     invalidate_canvas_overlay_caches();
     position_text_editor();
+    emit gizmo_space_changed(static_cast<int>(gizmo_space()));
     update();
 }
 
@@ -1234,6 +1309,22 @@ bool CanvasPreview::prepare_cached_playback_frame(double time)
 void CanvasPreview::refresh_preview()
 {
     invalidate_motion_path_sample_cache();
+    editor_projection_dirty_ = true;
+    const bool resize_drag = drag_mode_ == DragMode::ResizeNW ||
+        drag_mode_ == DragMode::ResizeN || drag_mode_ == DragMode::ResizeNE ||
+        drag_mode_ == DragMode::ResizeE || drag_mode_ == DragMode::ResizeSE ||
+        drag_mode_ == DragMode::ResizeS || drag_mode_ == DragMode::ResizeSW ||
+        drag_mode_ == DragMode::ResizeW;
+    const bool lightweight_transform_gesture = gizmo_drag_.active ||
+        (drag_changed_ && (drag_mode_ == DragMode::Move ||
+                           drag_mode_ == DragMode::Rotate || resize_drag));
+    /* External model mutations (especially keyframe insertion/removal) and
+     * post-release publication cancel transform-only classification. Active
+     * move/rotate/resize gestures keep the lightweight path until release. */
+    if (!lightweight_transform_gesture) {
+        interactive_transform_pending_ = false;
+        full_gpu_model_refresh_pending_ = true;
+    }
     gpu_model_dirty_ = true;
     prefetched_cache_frame_ = QImage();
     prefetched_cache_time_ = -1.0;
@@ -1260,11 +1351,13 @@ void CanvasPreview::clear_rendered_frame()
     frame_image_canvas_offset_ = QPoint();
     frame_image_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
     frame_image_preview_scale_ = 1.0;
-    if (title_ && gpu_render_session_) {
+    const std::shared_ptr<Title> render_title = projection_title();
+    if (render_title && gpu_render_session_) {
         ++gpu_model_revision_;
-        title_gpu_render_session_update(gpu_render_session_, *title_, playhead_,
+        title_gpu_render_session_update(gpu_render_session_, *render_title, playhead_,
                                         gpu_model_revision_);
         gpu_model_dirty_ = false;
+        full_gpu_model_refresh_pending_ = false;
     }
     invalidate_canvas_overlay_caches();
     dirty_ = false;

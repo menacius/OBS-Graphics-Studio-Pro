@@ -440,7 +440,7 @@ QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
     if (layer_type_is_container(layer.type) && title_) {
         bool invertible = false;
         const QTransform group_world =
-            editor_layer_world_transform(title_, layer, playhead_, 0);
+            editor_layer_world_transform(projection_title(), layer, playhead_, 0);
         const QTransform canvas_to_group = group_world.inverted(&invertible);
         QRectF group_bounds;
         bool have_bounds = false;
@@ -463,7 +463,7 @@ QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
                 const QRectF child_rect(-origin_x * width, -origin_y * height,
                                         width, height);
                 const QTransform child_world =
-                    editor_layer_world_transform(title_, *candidate, playhead_, 0);
+                    editor_layer_world_transform(projection_title(), *candidate, playhead_, 0);
                 QPolygonF polygon;
                 polygon << canvas_to_group.map(child_world.map(child_rect.topLeft()))
                         << canvas_to_group.map(child_world.map(child_rect.topRight()))
@@ -578,7 +578,8 @@ static QTransform editor_layer_local_transform(const std::shared_ptr<Title> &tit
     QTransform local;
     const double resolved_time = editor_asset_resolved_time(title, layer, playhead);
     const double lt = std::max(0.0, resolved_time - layer.in_time);
-    local.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
+    const LayerVector3Value position = evaluated_layer_position_3d(layer, lt);
+    local.translate(position.x, position.y);
     local.rotate(layer.rotation.evaluate(lt));
     local.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
     return local;
@@ -661,6 +662,17 @@ static QTransform editor_parent_world_transform_impl(
                       : group_world * transform_world;
 }
 
+static QTransform editor_layer_parent_bind_transform(const Layer &layer)
+{
+    if (!layer.parent_bind_enabled)
+        return QTransform();
+    const auto &m = layer.parent_bind_matrix;
+    return QTransform(
+        m[0], m[4], 0.0,
+        m[1], m[5], 0.0,
+        m[3], m[7], 1.0);
+}
+
 static QTransform editor_layer_world_transform_impl(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
     std::set<std::string> &visiting)
@@ -671,7 +683,8 @@ static QTransform editor_layer_world_transform_impl(
         editor_parent_world_transform_impl(title, layer, playhead, visiting);
     /* Preserve the original Group hierarchy order: local artwork transform is
      * applied before the Group/transform-parent basis. */
-    const QTransform world = editor_layer_local_transform(title, layer, playhead) * parent_basis;
+    const QTransform world = editor_layer_local_transform(title, layer, playhead) *
+                             editor_layer_parent_bind_transform(layer) * parent_basis;
     if (!layer.id.empty()) visiting.erase(layer.id);
     return world;
 }
@@ -680,28 +693,82 @@ static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &tit
                                                const Layer &layer, double playhead, int /*depth*/)
 {
     std::set<std::string> visiting;
-    return editor_layer_world_transform_impl(title, layer, playhead, visiting);
+    const QTransform legacy = editor_layer_world_transform_impl(
+        title, layer, playhead, visiting);
+    return title ? bgs::transform3d::projected_or_legacy(
+                       *title, layer, playhead, legacy)
+                 : legacy;
 }
 
 static QTransform editor_parent_world_transform(const std::shared_ptr<Title> &title,
                                                 const Layer &layer, double playhead)
 {
     std::set<std::string> visiting;
-    return editor_parent_world_transform_impl(title, layer, playhead, visiting);
+    return editor_layer_parent_bind_transform(layer) *
+           editor_parent_world_transform_impl(title, layer, playhead, visiting);
+}
+
+static QPointF editor_parent_local_point_to_canvas(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const QPointF &parent_local_point)
+{
+    return editor_parent_world_transform(title, layer, playhead)
+        .map(parent_local_point);
+}
+
+static QPointF editor_canvas_point_to_parent_local(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const QPointF &canvas_point)
+{
+    const QTransform parent_world =
+        editor_parent_world_transform(title, layer, playhead);
+    bool invertible = false;
+    const QTransform canvas_to_parent = parent_world.inverted(&invertible);
+    return invertible ? canvas_to_parent.map(canvas_point) : canvas_point;
 }
 
 static QPointF editor_canvas_delta_to_parent_local(
     const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
     const QPointF &canvas_delta)
 {
-    const QTransform parent_world =
-        editor_parent_world_transform(title, layer, playhead);
-    bool invertible = false;
-    const QTransform canvas_to_parent = parent_world.inverted(&invertible);
-    if (!invertible)
-        return canvas_delta;
-    return canvas_to_parent.map(canvas_delta) -
-           canvas_to_parent.map(QPointF(0.0, 0.0));
+    return editor_canvas_point_to_parent_local(
+               title, layer, playhead, canvas_delta) -
+           editor_canvas_point_to_parent_local(
+               title, layer, playhead, QPointF(0.0, 0.0));
+}
+
+static QPointF editor_evaluated_local_position_xy(const Layer &layer,
+                                                   double local_time)
+{
+    const LayerVector3Value value = evaluated_layer_position_3d(
+        layer, local_time);
+    return QPointF(value.x, value.y);
+}
+
+static void editor_set_local_position_xy(Layer &layer, double local_time,
+                                         const QPointF &value)
+{
+    if (layer.dimension_mode == LayerDimensionMode::ThreeD ||
+        layer.position_3d_path_enabled) {
+        promote_layer_position_to_3d_path(layer);
+        set_animated_component(layer.position_3d, local_time, 0, value.x());
+        set_animated_component(layer.position_3d, local_time, 1, value.y());
+        mirror_position_3d_to_legacy(layer, local_time);
+        return;
+    }
+    set_animated_x(layer.position, local_time, value.x());
+    set_animated_y(layer.position, local_time, value.y());
+}
+
+static double editor_canvas_rotation_delta_to_local(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    double canvas_delta_degrees)
+{
+    /* A mirrored parent reverses the visual direction of a local Z rotation.
+     * Ordinary rotation and non-uniform scale retain the same signed delta. */
+    const double determinant =
+        editor_parent_world_transform(title, layer, playhead).determinant();
+    return determinant < 0.0 ? -canvas_delta_degrees : canvas_delta_degrees;
 }
 
 static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
@@ -763,12 +830,12 @@ static const Layer *editor_canvas_selection_target(
 
 QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
 {
-    return editor_layer_world_transform(title_, layer, playhead_).inverted().map(canvas_pt);
+    return editor_layer_world_transform(projection_title(), layer, playhead_).inverted().map(canvas_pt);
 }
 
 QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
 {
-    return editor_layer_world_transform(title_, layer, playhead_).map(layer_pt);
+    return editor_layer_world_transform(projection_title(), layer, playhead_).map(layer_pt);
 }
 
 static Vec2Value editor_quad_value(const Layer &layer, const AnimatedVec2Property &prop,
@@ -804,24 +871,45 @@ static void editor_set_quad_value(Layer &layer, AnimatedVec2Property &prop,
     }
 }
 
-QPointF CanvasPreview::transformed_layer_point(const Layer &layer, const QPointF &layer_pt) const
+static QPointF editor_warped_layer_local_point(
+    const Layer &layer, const QRectF &rect, const QPointF &layer_point,
+    double playhead)
 {
-    const QRectF r = layer_local_rect(layer);
-    if (!r.isValid() || r.width() == 0.0 || r.height() == 0.0)
-        return layer_to_canvas(layer, layer_pt);
-    const double u = (layer_pt.x() - r.left()) / r.width();
-    const double v = (layer_pt.y() - r.top()) / r.height();
-    const Vec2Value qtl = editor_quad_value(layer, layer.transform_quad_tl, layer.transform_quad_tl_x, layer.transform_quad_tl_y, playhead_);
-    const Vec2Value qtr = editor_quad_value(layer, layer.transform_quad_tr, layer.transform_quad_tr_x, layer.transform_quad_tr_y, playhead_);
-    const Vec2Value qbr = editor_quad_value(layer, layer.transform_quad_br, layer.transform_quad_br_x, layer.transform_quad_br_y, playhead_);
-    const Vec2Value qbl = editor_quad_value(layer, layer.transform_quad_bl, layer.transform_quad_bl_x, layer.transform_quad_bl_y, playhead_);
-    const QPointF tl = r.topLeft() + QPointF(qtl.x * r.width(), qtl.y * r.height());
-    const QPointF tr = r.topRight() + QPointF(qtr.x * r.width(), qtr.y * r.height());
-    const QPointF br = r.bottomRight() + QPointF(qbr.x * r.width(), qbr.y * r.height());
-    const QPointF bl = r.bottomLeft() + QPointF(qbl.x * r.width(), qbl.y * r.height());
+    if (!rect.isValid() || rect.width() == 0.0 || rect.height() == 0.0)
+        return layer_point;
+    const double u = (layer_point.x() - rect.left()) / rect.width();
+    const double v = (layer_point.y() - rect.top()) / rect.height();
+    const Vec2Value qtl = editor_quad_value(
+        layer, layer.transform_quad_tl, layer.transform_quad_tl_x,
+        layer.transform_quad_tl_y, playhead);
+    const Vec2Value qtr = editor_quad_value(
+        layer, layer.transform_quad_tr, layer.transform_quad_tr_x,
+        layer.transform_quad_tr_y, playhead);
+    const Vec2Value qbr = editor_quad_value(
+        layer, layer.transform_quad_br, layer.transform_quad_br_x,
+        layer.transform_quad_br_y, playhead);
+    const Vec2Value qbl = editor_quad_value(
+        layer, layer.transform_quad_bl, layer.transform_quad_bl_x,
+        layer.transform_quad_bl_y, playhead);
+    const QPointF tl = rect.topLeft() +
+        QPointF(qtl.x * rect.width(), qtl.y * rect.height());
+    const QPointF tr = rect.topRight() +
+        QPointF(qtr.x * rect.width(), qtr.y * rect.height());
+    const QPointF br = rect.bottomRight() +
+        QPointF(qbr.x * rect.width(), qbr.y * rect.height());
+    const QPointF bl = rect.bottomLeft() +
+        QPointF(qbl.x * rect.width(), qbl.y * rect.height());
     const QPointF top = tl * (1.0 - u) + tr * u;
     const QPointF bottom = bl * (1.0 - u) + br * u;
-    return layer_to_canvas(layer, top * (1.0 - v) + bottom * v);
+    return top * (1.0 - v) + bottom * v;
+}
+
+QPointF CanvasPreview::transformed_layer_point(const Layer &layer,
+                                                const QPointF &layer_pt) const
+{
+    const QRectF rect = layer_local_rect(layer);
+    return layer_to_canvas(layer, editor_warped_layer_local_point(
+        layer, rect, layer_pt, playhead_));
 }
 
 

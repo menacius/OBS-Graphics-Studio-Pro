@@ -39,6 +39,18 @@ enum class Counter : std::size_t {
     BezierEvaluations,
     MotionPathCacheHits,
     MotionPathCacheMisses,
+    CacheStateFrameLookups,
+    CacheStateIndexRebuilds,
+    TimelineCacheFramesInspected,
+    CacheRenderJobs,
+    CacheRenderNanoseconds,
+    GpuReadbackJobs,
+    GpuReadbackNanoseconds,
+    UiNotificationFlushes,
+    UiNotificationsCoalesced,
+    RenderQueuePeak,
+    GizmoGeometryCacheHits,
+    GizmoGeometryCacheMisses,
     BackgroundJobsActive,
     Count
 };
@@ -88,6 +100,18 @@ inline const char *counter_name(Counter counter)
     case Counter::BezierEvaluations: return "bezier_evaluations";
     case Counter::MotionPathCacheHits: return "motion_path_cache_hits";
     case Counter::MotionPathCacheMisses: return "motion_path_cache_misses";
+    case Counter::CacheStateFrameLookups: return "cache_state_frame_lookups";
+    case Counter::CacheStateIndexRebuilds: return "cache_state_index_rebuilds";
+    case Counter::TimelineCacheFramesInspected: return "timeline_cache_frames_inspected";
+    case Counter::CacheRenderJobs: return "cache_render_jobs";
+    case Counter::CacheRenderNanoseconds: return "cache_render_nanoseconds";
+    case Counter::GpuReadbackJobs: return "gpu_readback_jobs";
+    case Counter::GpuReadbackNanoseconds: return "gpu_readback_nanoseconds";
+    case Counter::UiNotificationFlushes: return "ui_notification_flushes";
+    case Counter::UiNotificationsCoalesced: return "ui_notifications_coalesced";
+    case Counter::RenderQueuePeak: return "render_queue_peak";
+    case Counter::GizmoGeometryCacheHits: return "gizmo_geometry_cache_hits";
+    case Counter::GizmoGeometryCacheMisses: return "gizmo_geometry_cache_misses";
     case Counter::BackgroundJobsActive: return "background_jobs_active";
     case Counter::Count: break;
     }
@@ -102,6 +126,23 @@ inline void add(Counter counter, std::uint64_t amount = 1)
 #else
     (void)counter;
     (void)amount;
+#endif
+}
+
+
+inline void set_max(Counter counter, std::uint64_t candidate)
+{
+#ifndef NDEBUG
+    auto &slot = storage()[static_cast<std::size_t>(counter)];
+    std::uint64_t current = slot.load(std::memory_order_relaxed);
+    while (current < candidate &&
+           !slot.compare_exchange_weak(current, candidate,
+                                       std::memory_order_relaxed,
+                                       std::memory_order_relaxed)) {
+    }
+#else
+    (void)counter;
+    (void)candidate;
 #endif
 }
 

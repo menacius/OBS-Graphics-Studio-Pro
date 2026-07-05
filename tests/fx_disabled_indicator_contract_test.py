@@ -18,11 +18,11 @@ required = [
 for token in required:
     assert token in layer_stack, f'missing FX disabled-indicator contract: {token}'
 
-assert 'project(broadcast-graphics-live VERSION 0.8.9)' in cmake
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "189")' in cmake
-assert '#define PLUGIN_VERSION "0.8.9-alpha"' in build_info
-assert '#define BGL_DEVELOPMENT_VERSION "189"' in build_info
-assert 'v0.8.9-alpha` · `Development Version 189' in readme
+assert 'project(broadcast-graphics-live VERSION 0.8.10)' in cmake
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
+assert '#define PLUGIN_VERSION "0.8.10-alpha"' in build_info
+assert '#define BGL_DEVELOPMENT_VERSION "219"' in build_info
+assert 'v0.8.10-alpha` · `Development Version 219' in readme
 assert 'diagonal strike-through' in effects_doc
 
 print('Disabled FX stack indicator contract: OK')

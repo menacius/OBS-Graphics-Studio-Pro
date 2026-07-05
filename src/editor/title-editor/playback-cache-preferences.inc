@@ -73,7 +73,8 @@
 
 void TitleEditor::update_corner_toolbar()
 {
-    if ((!boolean_toolbar_widget_ && !corner_toolbar_widget_ && !point_toolbar_widget_) || !canvas_)
+    if ((!anchor_toolbar_widget_ && !boolean_toolbar_widget_ &&
+         !corner_toolbar_widget_ && !point_toolbar_widget_) || !canvas_)
         return;
     QScopedValueRollback<bool> guard(updating_corner_toolbar_, true);
 
@@ -90,14 +91,32 @@ void TitleEditor::update_corner_toolbar()
             }
         }
     }
+    bool anchor_available = false;
+    int anchor_index = 4;
+    const auto anchor_selection = selected_layer_ids_for_operation();
+    if (title_ && anchor_selection.size() == 1) {
+        if (const auto anchor_layer = title_->find_layer(anchor_selection.front());
+            anchor_layer && !anchor_layer->locked &&
+            !layer_type_is_audio(anchor_layer->type)) {
+            anchor_available = true;
+            anchor_index = anchor_index_from_layer(*anchor_layer);
+        }
+    }
     const bool point_available = canvas_->point_controls_available();
     const bool corner_available = canvas_->corner_controls_available();
-    const bool context_available = transform_available || boolean_available || point_available || corner_available;
+    const bool context_available = transform_available || anchor_available ||
+        boolean_available || point_available || corner_available;
 
     if (transform_toolbar_widget_) transform_toolbar_widget_->setVisible(transform_available);
     if (transform_available) {
         if (transform_toolbar_mode_) transform_toolbar_mode_->setCurrentIndex(canvas_->free_transform_mode());
         if (transform_toolbar_keyframe_) transform_toolbar_keyframe_->setChecked(canvas_->free_transform_keyframed());
+    }
+    if (anchor_toolbar_widget_)
+        anchor_toolbar_widget_->setVisible(anchor_available);
+    if (anchor_toolbar_grid_ && anchor_available) {
+        anchor_toolbar_grid_->setProperty("active_index", anchor_index);
+        anchor_toolbar_grid_->update();
     }
     if (boolean_toolbar_widget_)
         boolean_toolbar_widget_->setVisible(boolean_available);
@@ -407,10 +426,9 @@ void TitleEditor::new_title_contents()
     if (title_->graphic_type == TitleGraphicType::Stinger &&
         title_->stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation)
         ensure_stinger_transition_input_layers(*title_);
-    sel_layer_id_.clear();
     layers_->refresh();
-    canvas_->set_selected_layers({});
-    update_layer_panels(nullptr, playhead_);
+    timeline_->set_title(title_);
+    synchronize_layer_selection({});
     on_title_modified();
 }
 
@@ -1023,7 +1041,7 @@ void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
             result_layer->mask_mode = MaskMode::None;
             result_layer->position = AnimatedVec2Property{
                 "position", {bounds.center().x(), bounds.center().y()}, {}};
-            result_layer->scale = AnimatedVec2Property{"scale", {1.0, 1.0}, {}};
+            result_layer->scale = AnimatedVec2Property{"scale", {1.0, 1.0, 1.0}, {}};
             result_layer->rotation = AnimatedProperty{"rotation", 0.0, {}};
             result_layer->size = AnimatedVec2Property{
                 "size", {bounds.width(), bounds.height()}, {}};

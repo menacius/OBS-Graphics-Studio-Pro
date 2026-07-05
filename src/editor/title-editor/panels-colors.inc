@@ -58,7 +58,6 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
     connect(dock, &QDockWidget::topLevelChanged, this, [this]() { save_editor_layout(); });
     connect(dock, &QDockWidget::dockLocationChanged, this, [this]() { save_editor_layout(); });
     connect(dock, &QDockWidget::visibilityChanged, this, [this]() { save_editor_layout(); });
-    dock->installEventFilter(this);
     return dock;
 }
 
@@ -763,9 +762,7 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
         title_->remove_layer(layer_id);
         layers_->refresh();
         timeline_->set_title(title_);
-        sel_layer_id_.clear();
-        if (canvas_) canvas_->set_selected_layers({});
-        update_layer_panels(nullptr, playhead_);
+        synchronize_layer_selection({});
         force_next_title_visual_update();
         on_title_modified();
         return;

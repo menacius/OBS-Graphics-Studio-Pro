@@ -305,10 +305,12 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
         double lt = std::clamp(playhead_ - clone->in_time, 0.0,
                                std::max(0.0, clone->out_time - clone->in_time));
         const QRectF clone_local_bounds = layer_local_rect(*clone);
+        const QPointF clone_local_position =
+            editor_evaluated_local_position_xy(*clone, lt);
         drag_layer_states_.push_back({clone->id,
                                       {},
-                                      clone->position.evaluate(lt).x,
-                                      clone->position.evaluate(lt).y,
+                                      clone_local_position.x(),
+                                      clone_local_position.y(),
                                       static_cast<float>(clone_local_bounds.width()),
                                       static_cast<float>(clone_local_bounds.height()),
                                       clone_local_bounds.left(),
@@ -371,8 +373,11 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
             continue;
         double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                std::max(0.0, layer->out_time - layer->in_time));
-        set_animated_x(layer->position, lt, layer->position.evaluate(lt).x + dx);
-        set_animated_y(layer->position, lt, layer->position.evaluate(lt).y + dy);
+        const QPointF current_local =
+            editor_evaluated_local_position_xy(*layer, lt);
+        const QPointF local_delta = editor_canvas_delta_to_parent_local(
+            title_, *layer, playhead_, QPointF(dx, dy));
+        editor_set_local_position_xy(*layer, lt, current_local + local_delta);
         changed = true;
     }
 
@@ -837,16 +842,26 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                    std::max(0.0, layer->out_time - layer->in_time));
             if (layers.size() > 1) {
-                QPointF next_pos = rotate_point_around(QPointF(state.x, state.y), drag_rotation_pivot_canvas_, rotation_delta);
-                set_animated_x(layer->position, lt, next_pos.x());
-                set_animated_y(layer->position, lt, next_pos.y());
+                const QPointF start_canvas_position =
+                    editor_parent_local_point_to_canvas(
+                        title_, *layer, playhead_, QPointF(state.x, state.y));
+                const QPointF next_canvas_position = rotate_point_around(
+                    start_canvas_position, drag_rotation_pivot_canvas_,
+                    rotation_delta);
+                const QPointF next_local_position =
+                    editor_canvas_point_to_parent_local(
+                        title_, *layer, playhead_, next_canvas_position);
+                editor_set_local_position_xy(*layer, lt, next_local_position);
             }
-            set_animated_value(layer->rotation, lt, state.rotation + rotation_delta);
+            const double local_rotation_delta =
+                editor_canvas_rotation_delta_to_local(
+                    title_, *layer, playhead_, rotation_delta);
+            set_animated_value(layer->rotation, lt,
+                               state.rotation + local_rotation_delta);
         }
         dirty_ = true;
         drag_changed_ = true;
-        invalidate_canvas_overlay_caches();
-        update();
+        refresh_preview();
         return;
     }
 
@@ -864,8 +879,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                                        std::max(0.0, layer->out_time - layer->in_time));
                 const QPointF local_delta = editor_canvas_delta_to_parent_local(
                     title_, *layer, playhead_, delta);
-                set_animated_x(layer->position, lt, state.x + local_delta.x());
-                set_animated_y(layer->position, lt, state.y + local_delta.y());
+                editor_set_local_position_xy(
+                    *layer, lt, QPointF(state.x, state.y) + local_delta);
             }
         } else {
             QRectF start = drag_start_selection_bounds_;
@@ -914,10 +929,20 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 if (!layer || layer->locked || has_selected_parent(*layer)) continue;
                 double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                        std::max(0.0, layer->out_time - layer->in_time));
-                double rx = (state.x - start.left()) / start.width();
-                double ry = (state.y - start.top()) / start.height();
-                set_animated_x(layer->position, lt, next.left() + rx * next.width());
-                set_animated_y(layer->position, lt, next.top() + ry * next.height());
+                const QPointF start_canvas_position =
+                    editor_parent_local_point_to_canvas(
+                        title_, *layer, playhead_, QPointF(state.x, state.y));
+                const double rx =
+                    (start_canvas_position.x() - start.left()) / start.width();
+                const double ry =
+                    (start_canvas_position.y() - start.top()) / start.height();
+                const QPointF next_canvas_position(
+                    next.left() + rx * next.width(),
+                    next.top() + ry * next.height());
+                const QPointF next_local_position =
+                    editor_canvas_point_to_parent_local(
+                        title_, *layer, playhead_, next_canvas_position);
+                editor_set_local_position_xy(*layer, lt, next_local_position);
                 const bool scale_text_object = layer_type_is_container(layer->type) ||
                     (drag_text_object_scaling_ && is_canvas_text_layer(*layer));
                 if (scale_text_object) {
@@ -944,8 +969,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
         dirty_ = true;
         drag_changed_ = true;
-        invalidate_canvas_overlay_caches();
-        update();
+        refresh_preview();
         return;
     }
 
@@ -964,18 +988,53 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         delta = snap_delta_for_bounds(drag_start_selection_bounds_, delta, true, true, allow_snap);
         const QPointF local_delta = editor_canvas_delta_to_parent_local(
             title_, *layer, playhead_, delta);
-        set_animated_x(layer->position, lt, drag_start_x_ + local_delta.x());
-        set_animated_y(layer->position, lt, drag_start_y_ + local_delta.y());
+        editor_set_local_position_xy(
+            *layer, lt, QPointF(drag_start_x_, drag_start_y_) + local_delta);
     } else if (drag_mode_ == DragMode::Origin) {
         clear_snap_feedback();
-        double w = std::max(1.0f, drag_start_w_);
-        double h = std::max(1.0f, drag_start_h_);
-        layer->origin_x = (float)std::clamp(drag_start_origin_x_ + delta.x() / w, 0.0, 1.0);
-        layer->origin_y = (float)std::clamp(drag_start_origin_y_ + delta.y() / h, 0.0, 1.0);
+        const double w = std::max(1.0f, drag_start_w_);
+        const double h = std::max(1.0f, drag_start_h_);
+        QPointF layer_local_delta;
+        bool have_layer_local_delta = false;
+        if (!drag_layer_states_.empty()) {
+            const LayerDragState &state = drag_layer_states_.front();
+            auto non_zero_scale = [](double value) {
+                if (std::abs(value) >= 0.0001) return value;
+                return value < 0.0 ? -0.0001 : 0.0001;
+            };
+            QTransform start_xf = editor_parent_world_transform(
+                title_, *layer, playhead_);
+            start_xf.translate(state.x, state.y);
+            start_xf.rotate(state.rotation);
+            start_xf.scale(non_zero_scale(state.scale_x),
+                           non_zero_scale(state.scale_y));
+            bool invertible = false;
+            const QTransform canvas_to_start_layer =
+                start_xf.inverted(&invertible);
+            if (invertible) {
+                layer_local_delta =
+                    canvas_to_start_layer.map(drag_start_canvas_ + delta) -
+                    canvas_to_start_layer.map(drag_start_canvas_);
+                have_layer_local_delta = true;
+            }
+        }
+        if (!have_layer_local_delta) {
+            layer_local_delta =
+                canvas_to_layer(*layer, drag_start_canvas_ + delta) -
+                canvas_to_layer(*layer, drag_start_canvas_);
+        }
+        layer->origin_x = static_cast<float>(std::clamp(
+            drag_start_origin_x_ + layer_local_delta.x() / w, 0.0, 1.0));
+        layer->origin_y = static_cast<float>(std::clamp(
+            drag_start_origin_y_ + layer_local_delta.y() / h, 0.0, 1.0));
         set_animated_x(layer->origin_prop, lt, layer->origin_x);
         set_animated_y(layer->origin_prop, lt, layer->origin_y);
-        set_animated_x(layer->position, lt, drag_start_x_ + delta.x());
-        set_animated_y(layer->position, lt, drag_start_y_ + delta.y());
+        const QPointF parent_local_delta =
+            editor_canvas_delta_to_parent_local(
+                title_, *layer, playhead_, delta);
+        editor_set_local_position_xy(
+            *layer, lt,
+            QPointF(drag_start_x_, drag_start_y_) + parent_local_delta);
     } else {
         bool resize_left = drag_mode_ == DragMode::ResizeNW || drag_mode_ == DragMode::ResizeSW || drag_mode_ == DragMode::ResizeW;
         bool resize_right = drag_mode_ == DragMode::ResizeNE || drag_mode_ == DragMode::ResizeSE || drag_mode_ == DragMode::ResizeE;
@@ -1127,8 +1186,10 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 const QPointF canvas_shift = desired_center_canvas - current_center_canvas;
                 const QPointF parent_local_shift = editor_canvas_delta_to_parent_local(
                     title_, *layer, playhead_, canvas_shift);
-                set_animated_x(layer->position, lt, start_state->x + parent_local_shift.x());
-                set_animated_y(layer->position, lt, start_state->y + parent_local_shift.y());
+                editor_set_local_position_xy(
+                    *layer, lt,
+                    QPointF(start_state->x, start_state->y) +
+                        parent_local_shift);
             }
         } else {
             layer->rect_width = static_cast<float>(new_w);
@@ -1166,8 +1227,10 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 const QPointF canvas_shift = desired_center_canvas - current_center_canvas;
                 const QPointF parent_local_shift = editor_canvas_delta_to_parent_local(
                     title_, *layer, playhead_, canvas_shift);
-                set_animated_x(layer->position, lt, start_state->x + parent_local_shift.x());
-                set_animated_y(layer->position, lt, start_state->y + parent_local_shift.y());
+                editor_set_local_position_xy(
+                    *layer, lt,
+                    QPointF(start_state->x, start_state->y) +
+                        parent_local_shift);
             }
         }
     }

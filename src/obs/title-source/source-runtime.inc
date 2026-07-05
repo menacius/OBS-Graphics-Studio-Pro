@@ -724,8 +724,17 @@ static bool layer_has_animation(const Layer &layer)
     return has_transition_animation ||
            layer_has_effect_animation(layer) ||
            layer.position.is_animated() ||
+           layer.position_z.is_animated() ||
            layer.scale.is_animated() ||
+           layer.scale_z.is_animated() ||
            layer.rotation.is_animated() ||
+           layer.rotation_x.is_animated() ||
+           layer.rotation_y.is_animated() ||
+           layer.anchor_z.is_animated() ||
+           layer.orientation_x.is_animated() ||
+           layer.orientation_y.is_animated() ||
+           layer.orientation_z.is_animated() ||
+           layer.camera_assignment.is_animated() ||
            layer.opacity.is_animated() ||
            layer.size.is_animated() ||
            layer.origin_prop.is_animated() ||
@@ -863,6 +872,8 @@ static bool title_has_independent_asset_layer(const std::shared_ptr<Title> &titl
 static bool title_has_animation(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
+    if (bgs::transform3d::title_camera_has_animation(*title))
+        return true;
     const double duration = std::max(0.0, title->duration);
     return std::any_of(title->layers.begin(), title->layers.end(),
                        [duration](const std::shared_ptr<Layer> &layer) {

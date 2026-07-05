@@ -50,6 +50,13 @@ static bool keyframe_at_time(const AnimatedVec2Property &prop, double time)
         if (std::abs(kf.time - time) <= kEpsilon) return true;
     return false;
 }
+static bool keyframe_at_time(const AnimatedVec3Property &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    for (const auto &kf : prop.keyframes)
+        if (std::abs(kf.time - time) <= kEpsilon) return true;
+    return false;
+}
 static void remove_keyframe_at(AnimatedProperty &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -66,6 +73,15 @@ static void remove_keyframe_at(AnimatedVec2Property &prop, double time)
                        [&](const VectorKeyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
         prop.keyframes.end());
 }
+static void remove_keyframe_at(AnimatedVec3Property &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.keyframes.erase(
+        std::remove_if(prop.keyframes.begin(), prop.keyframes.end(),
+                       [&](const Vector3Keyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
+        prop.keyframes.end());
+    prop.recalculate_rove_times();
+}
 static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
 {
     if (keyframe_at_time(prop, time))
@@ -74,6 +90,13 @@ static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
         add_or_replace_keyframe(prop, time, value);
 }
 static void toggle_keyframe(AnimatedVec2Property &prop, double time, Vec2Value value)
+{
+    if (keyframe_at_time(prop, time))
+        remove_keyframe_at(prop, time);
+    else
+        add_or_replace_keyframe(prop, time, value);
+}
+static void toggle_keyframe(AnimatedVec3Property &prop, double time, Vec3Value value)
 {
     if (keyframe_at_time(prop, time))
         remove_keyframe_at(prop, time);
@@ -383,6 +406,24 @@ struct TimelinePropertyRef {
     QJsonValue extension_fallback;
     EasingType extension_default_easing = EasingType::Linear;
     std::vector<AnimatedProperty *> scalar_group;
+    AnimatedDiscreteProperty *discrete = nullptr;
+    /* Development Version 208: a single authored XYZ spatial track can be
+     * exposed as three independent Graph Editor channels without duplicating
+     * keyframes or losing the shared 3D Bezier metadata. Appended fields keep
+     * all pre-208 aggregate initializers source-compatible. */
+    AnimatedVec3Property *vector3 = nullptr;
+    int vector3_component = -1;
+    bool *vector3_enabled = nullptr;
+    /* Development Version 212.1: the legacy-named AnimatedVec2Property now
+     * stores XYZ as well.  Keep its graph-channel selection separate from the
+     * dedicated spatial Vector3 track so old aggregate initializers remain
+     * source-compatible and 2D rendering continues to ignore Z. */
+    int vector_component = -1;
+
+    void activate_vector3()
+    {
+        if (vector3_enabled) *vector3_enabled = true;
+    }
 
     AnimatedProperty *group_representative() const
     {
@@ -390,15 +431,44 @@ struct TimelinePropertyRef {
             if (property && property->is_animated()) return property;
         return scalar_group.empty() ? nullptr : scalar_group.front();
     }
+    std::vector<double> scalar_group_keyframe_times() const
+    {
+        std::vector<double> times;
+        for (const AnimatedProperty *property : scalar_group) {
+            if (!property) continue;
+            for (const Keyframe &keyframe : property->keyframes)
+                times.push_back(keyframe.time);
+        }
+        std::sort(times.begin(), times.end());
+        times.erase(std::unique(times.begin(), times.end(), [](double a, double b) {
+            return std::abs(a - b) < 0.0001;
+        }), times.end());
+        return times;
+    }
+    std::pair<AnimatedProperty *, size_t> scalar_group_keyframe_location(
+        size_t aggregate_index) const
+    {
+        const std::vector<double> times = scalar_group_keyframe_times();
+        if (aggregate_index >= times.size()) return {nullptr, 0};
+        const double time = times[aggregate_index];
+        for (AnimatedProperty *property : scalar_group) {
+            if (!property) continue;
+            for (size_t index = 0; index < property->keyframes.size(); ++index)
+                if (std::abs(property->keyframes[index].time - time) < 0.0001)
+                    return {property, index};
+        }
+        return {nullptr, 0};
+    }
     explicit operator bool() const {
-        return scalar || vector || extension_effect || !scalar_group.empty();
+        return scalar || vector || vector3 || extension_effect || !scalar_group.empty() || discrete;
     }
     bool is_extension() const { return extension_effect != nullptr; }
     std::string name() const {
         if (!extension_name.empty()) return extension_name;
-        return vector ? vector->name : scalar ? scalar->name : std::string();
+        return discrete ? discrete->name : vector3 ? vector3->name : vector ? vector->name : scalar ? scalar->name : std::string();
     }
     bool is_animated() const {
+        if (discrete) return discrete->is_animated();
         if (is_extension())
             return !bgs::effects::animation::track_keys(*extension_effect, extension_path).isEmpty();
         if (!scalar_group.empty())
@@ -406,34 +476,44 @@ struct TimelinePropertyRef {
                 [](const AnimatedProperty *property) {
                     return property && property->is_animated();
                 });
-        return vector ? vector->is_animated() : scalar && scalar->is_animated();
+        return vector3 ? vector3->is_animated() : vector ? vector->is_animated() : scalar && scalar->is_animated();
     }
     size_t keyframe_count() const {
+        if (discrete) return discrete->keyframes.size();
         if (is_extension())
             return static_cast<size_t>(bgs::effects::animation::track_keys(*extension_effect, extension_path).size());
-        if (AnimatedProperty *property = group_representative())
-            return property->keyframes.size();
-        return vector ? vector->keyframes.size() : scalar ? scalar->keyframes.size() : 0;
+        if (!scalar_group.empty())
+            return scalar_group_keyframe_times().size();
+        return vector3 ? vector3->keyframes.size() : vector ? vector->keyframes.size() : scalar ? scalar->keyframes.size() : 0;
     }
     double keyframe_time(size_t index) const {
+        if (discrete) return discrete->keyframes[index].time;
         if (is_extension())
             return bgs::effects::animation::track_keys(*extension_effect, extension_path)
                 .at(static_cast<qsizetype>(index)).toObject()
                 .value(QStringLiteral("time")).toDouble();
-        if (AnimatedProperty *property = group_representative())
-            return property->keyframes[index].time;
-        return vector ? vector->keyframes[index].time : scalar->keyframes[index].time;
+        if (!scalar_group.empty()) {
+            const std::vector<double> times = scalar_group_keyframe_times();
+            return index < times.size() ? times[index] : 0.0;
+        }
+        return vector3 ? vector3->keyframes[index].time : vector ? vector->keyframes[index].time : scalar->keyframes[index].time;
     }
     EasingType keyframe_easing(size_t index) const {
+        if (discrete) return EasingType::Hold;
         if (is_extension())
             return bgs::effects::animation::easing_from_key(
                 bgs::effects::animation::track_keys(*extension_effect, extension_path)
                     .at(static_cast<qsizetype>(index)).toObject());
-        if (AnimatedProperty *property = group_representative())
-            return property->keyframes[index].easing;
-        return vector ? vector->keyframes[index].easing : scalar->keyframes[index].easing;
+        if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            return location.first
+                ? location.first->keyframes[location.second].easing
+                : EasingType::Linear;
+        }
+        return vector3 ? vector3->keyframes[index].easing : vector ? vector->keyframes[index].easing : scalar->keyframes[index].easing;
     }
     TemporalInterpolationMode keyframe_temporal_mode(size_t index) const {
+        if (is_hold_only()) return TemporalInterpolationMode::Hold;
         if (is_extension()) {
             const QJsonObject key = bgs::effects::animation::track_keys(
                 *extension_effect, extension_path).at((qsizetype)index).toObject();
@@ -444,8 +524,17 @@ struct TimelinePropertyRef {
                  : easing == EasingType::Linear ? TemporalInterpolationMode::Linear
                  : TemporalInterpolationMode::ManualBezier;
         }
-        if (AnimatedProperty *property = group_representative()) {
-            const Keyframe &key = property->keyframes[index];
+        if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            if (!location.first) return TemporalInterpolationMode::Linear;
+            const Keyframe &key = location.first->keyframes[location.second];
+            if (key.temporal_velocity_explicit) return key.temporal_mode;
+            return key.easing == EasingType::Hold ? TemporalInterpolationMode::Hold
+                 : key.easing == EasingType::Linear ? TemporalInterpolationMode::Linear
+                 : TemporalInterpolationMode::ManualBezier;
+        }
+        if (vector3) {
+            const Vector3Keyframe &key = vector3->keyframes[index];
             if (key.temporal_velocity_explicit) return key.temporal_mode;
             return key.easing == EasingType::Hold ? TemporalInterpolationMode::Hold
                  : key.easing == EasingType::Linear ? TemporalInterpolationMode::Linear
@@ -468,16 +557,23 @@ struct TimelinePropertyRef {
         return TemporalInterpolationMode::Linear;
     }
     bool keyframe_temporal_tangents_linked(size_t index) const {
+        if (discrete) return true;
         if (is_extension())
             return bgs::effects::animation::track_keys(*extension_effect, extension_path)
                 .at((qsizetype)index).toObject()
                 .value(QStringLiteral("temporal_tangents_linked")).toBool(true);
-        if (AnimatedProperty *property = group_representative())
-            return property->keyframes[index].temporal_tangents_linked;
+        if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            return location.first
+                ? location.first->keyframes[location.second].temporal_tangents_linked
+                : true;
+        }
+        if (vector3) return vector3->keyframes[index].temporal_tangents_linked;
         if (vector) return vector->keyframes[index].temporal_tangents_linked;
         return scalar ? scalar->keyframes[index].temporal_tangents_linked : true;
     }
     double graph_value(double time) const {
+        if (discrete) return 0.0;
         if (is_extension()) {
             const QJsonValue value = bgs::effects::animation::evaluate_track(
                 *extension_effect, extension_path, time, extension_fallback);
@@ -485,20 +581,38 @@ struct TimelinePropertyRef {
         }
         if (AnimatedProperty *property = group_representative())
             return property->evaluate(time);
-        if (vector) return vector->path_value(time);
+        if (vector3) return vector3_component >= 0
+            ? vector3->component_value(time, vector3_component)
+            : vector3->path_value(time);
+        if (vector) {
+            if (vector_component < 0) return vector->path_value(time);
+            const Vec2Value value = vector->evaluate(time);
+            return vector_component == 0 ? value.x
+                 : vector_component == 1 ? value.y : value.z;
+        }
         return scalar ? scalar->evaluate(time) : 0.0;
     }
     double graph_speed(double time) const {
+        if (discrete) return 0.0;
         if (is_extension()) {
             const double h = 1e-5;
             return (graph_value(time + h) - graph_value(time - h)) / (2.0 * h);
         }
         if (AnimatedProperty *property = group_representative())
             return property->velocity(time);
-        if (vector) return vector->speed(time);
+        if (vector3) return vector3_component >= 0
+            ? vector3->component_velocity(time, vector3_component)
+            : vector3->speed(time);
+        if (vector) {
+            if (vector_component < 0) return vector->speed(time);
+            const Vec2Value value = vector->velocity(time);
+            return vector_component == 0 ? value.x
+                 : vector_component == 1 ? value.y : value.z;
+        }
         return scalar ? scalar->velocity(time) : 0.0;
     }
     double keyframe_temporal_influence(size_t index, bool incoming) const {
+        if (discrete) return 0.0;
         if (is_extension()) {
             const QJsonObject key = bgs::effects::animation::track_keys(
                 *extension_effect, extension_path).at((qsizetype)index).toObject();
@@ -506,14 +620,26 @@ struct TimelinePropertyRef {
                                       : QStringLiteral("temporal_out_influence"))
                 .toDouble(33.3333333333);
         }
-        if (AnimatedProperty *property = group_representative()) {
-            const Keyframe &key = property->keyframes[index];
+        if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            if (!location.first) return 33.3333333333;
+            AnimatedProperty *property = location.first;
+            const size_t property_index = location.second;
+            const Keyframe &key = property->keyframes[property_index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_influence : key.outgoing_influence;
+            if (incoming && property_index > 0)
+                return property->temporal_segment(property_index - 1).incoming_influence * 100.0;
+            if (!incoming && property_index + 1 < property->keyframes.size())
+                return property->temporal_segment(property_index).outgoing_influence * 100.0;
+        } else if (vector3) {
+            const Vector3Keyframe &key = vector3->keyframes[index];
             if (key.temporal_velocity_explicit)
                 return incoming ? key.incoming_influence : key.outgoing_influence;
             if (incoming && index > 0)
-                return property->temporal_segment(index - 1).incoming_influence * 100.0;
-            if (!incoming && index + 1 < property->keyframes.size())
-                return property->temporal_segment(index).outgoing_influence * 100.0;
+                return vector3->temporal_segment(index - 1).incoming_influence * 100.0;
+            if (!incoming && index + 1 < vector3->keyframes.size())
+                return vector3->temporal_segment(index).outgoing_influence * 100.0;
         } else if (vector) {
             const VectorKeyframe &key = vector->keyframes[index];
             if (key.temporal_velocity_explicit)
@@ -530,14 +656,22 @@ struct TimelinePropertyRef {
         return 33.3333333333;
     }
     double keyframe_temporal_speed(size_t index, bool incoming) const {
+        if (discrete) return 0.0;
         if (is_extension()) {
             const QJsonObject key = bgs::effects::animation::track_keys(
                 *extension_effect, extension_path).at((qsizetype)index).toObject();
             if (bgs::effects::animation::temporal_velocity_explicit(key))
                 return key.value(incoming ? QStringLiteral("temporal_in_speed")
                                           : QStringLiteral("temporal_out_speed")).toDouble();
-        } else if (AnimatedProperty *property = group_representative()) {
-            const Keyframe &key = property->keyframes[index];
+        } else if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            if (location.first) {
+                const Keyframe &key = location.first->keyframes[location.second];
+                if (key.temporal_velocity_explicit)
+                    return incoming ? key.incoming_speed : key.outgoing_speed;
+            }
+        } else if (vector3) {
+            const Vector3Keyframe &key = vector3->keyframes[index];
             if (key.temporal_velocity_explicit)
                 return incoming ? key.incoming_speed : key.outgoing_speed;
         } else if (vector) {
@@ -553,11 +687,14 @@ struct TimelinePropertyRef {
         return graph_speed(time + (incoming ? -1e-6 : 1e-6));
     }
     bool graph_value_editable() const {
+        if (discrete) return false;
         if (is_extension()) {
             const QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             return !keys.isEmpty() && keys.first().toObject().value(QStringLiteral("value")).isDouble();
         }
-        return vector == nullptr && (scalar != nullptr || !scalar_group.empty());
+        return vector3 ? vector3_component >= 0
+             : vector ? vector_component >= 0
+             : (scalar != nullptr || !scalar_group.empty());
     }
     void set_keyframe_graph_value(size_t index, double value)
     {
@@ -569,10 +706,10 @@ struct TimelinePropertyRef {
             keys.replace((qsizetype)index, key);
             bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
         } else if (!scalar_group.empty()) {
-            AnimatedProperty *representative = group_representative();
-            if (!representative || index >= representative->keyframes.size()) return;
-            const double time = representative->keyframes[index].time;
-            const double delta = value - representative->keyframes[index].value;
+            const auto location = scalar_group_keyframe_location(index);
+            if (!location.first) return;
+            const double time = location.first->keyframes[location.second].time;
+            const double delta = value - location.first->keyframes[location.second].value;
             for (AnimatedProperty *property : scalar_group) {
                 if (!property) continue;
                 for (Keyframe &key : property->keyframes)
@@ -581,31 +718,58 @@ struct TimelinePropertyRef {
                         break;
                     }
             }
+        } else if (vector3 && vector3_component >= 0 && index < vector3->keyframes.size()) {
+            activate_vector3();
+            Vec3Value &v = vector3->keyframes[index].value;
+            if (vector3_component == 0) v.x = value;
+            else if (vector3_component == 1) v.y = value;
+            else v.z = value;
+        } else if (vector && vector_component >= 0 && index < vector->keyframes.size()) {
+            Vec2Value &v = vector->keyframes[index].value;
+            if (vector_component == 0) v.x = value;
+            else if (vector_component == 1) v.y = value;
+            else v.z = value;
         } else if (scalar && index < scalar->keyframes.size()) {
-            scalar->keyframes[index].value = value;
+            scalar->keyframes[index].value = scalar->name == "camera_projection"
+                ? (value >= 0.5 ? 1.0 : 0.0) : value;
+            if (scalar->name == "camera_projection") {
+                scalar->keyframes[index].easing = EasingType::Hold;
+                scalar->keyframes[index].temporal_mode = TemporalInterpolationMode::Hold;
+                scalar->keyframes[index].temporal_velocity_explicit = true;
+            }
         }
     }
     bool supports_spatial_interpolation() const {
-        return vector && vector->name == "position";
+        if (discrete) return false;
+        return (vector && vector->name == "position") ||
+               (vector3 && (vector3->name == "position_3d" ||
+                            vector3->name == "camera_position_3d" ||
+                            vector3->name == "camera_target_3d"));
     }
     SpatialInterpolationMode keyframe_spatial_mode(size_t index) const {
-        return supports_spatial_interpolation() && index < vector->keyframes.size()
-            ? vector->keyframes[index].spatial_mode
-            : SpatialInterpolationMode::Linear;
+        if (!supports_spatial_interpolation()) return SpatialInterpolationMode::Linear;
+        if (vector3 && index < vector3->keyframes.size()) return vector3->keyframes[index].spatial_mode;
+        return vector && index < vector->keyframes.size()
+            ? vector->keyframes[index].spatial_mode : SpatialInterpolationMode::Linear;
     }
     bool keyframe_spatial_tangents_linked(size_t index) const {
-        return supports_spatial_interpolation() && index < vector->keyframes.size()
-            ? vector->keyframes[index].spatial_tangents_linked
-            : true;
+        if (!supports_spatial_interpolation()) return true;
+        if (vector3 && index < vector3->keyframes.size()) return vector3->keyframes[index].spatial_tangents_linked;
+        return vector && index < vector->keyframes.size()
+            ? vector->keyframes[index].spatial_tangents_linked : true;
     }
     bool keyframe_roves_across_time(size_t index) const {
-        return supports_spatial_interpolation() && index < vector->keyframes.size()
-            ? vector->keyframes[index].rove_across_time
-            : false;
+        if (!supports_spatial_interpolation()) return false;
+        if (vector3 && index < vector3->keyframes.size()) return vector3->keyframes[index].rove_across_time;
+        return vector && index < vector->keyframes.size()
+            ? vector->keyframes[index].rove_across_time : false;
     }
     Keyframe scalar_keyframe(size_t index) const {
-        if (AnimatedProperty *property = group_representative())
-            return property->keyframes[index];
+        if (!scalar_group.empty()) {
+            const auto location = scalar_group_keyframe_location(index);
+            return location.first
+                ? location.first->keyframes[location.second] : Keyframe{};
+        }
         return scalar ? scalar->keyframes[index] : Keyframe{};
     }
     std::vector<Keyframe> scalar_group_keyframes(size_t index) const
@@ -636,6 +800,7 @@ struct TimelinePropertyRef {
         return result;
     }
     VectorKeyframe vector_keyframe(size_t index) const { return vector ? vector->keyframes[index] : VectorKeyframe{}; }
+    Vector3Keyframe vector3_keyframe(size_t index) const { return vector3 ? vector3->keyframes[index] : Vector3Keyframe{}; }
     QJsonObject extension_keyframe(size_t index) const {
         return is_extension()
             ? bgs::effects::animation::track_keys(*extension_effect, extension_path)
@@ -643,7 +808,98 @@ struct TimelinePropertyRef {
             : QJsonObject{};
     }
     bool is_vector() const { return vector != nullptr; }
+    bool is_vector3() const { return vector3 != nullptr; }
+    bool is_discrete() const { return discrete != nullptr; }
+    bool is_hold_only() const {
+        return discrete || (scalar && scalar->name == "camera_projection");
+    }
+    bool graph_eligible() const { return !discrete; }
+    DiscreteKeyframe discrete_keyframe(size_t index) const { return discrete ? discrete->keyframes[index] : DiscreteKeyframe{}; }
     bool is_scalar_group() const { return !scalar_group.empty(); }
+    int graph_channel_count() const
+    {
+        if (vector3 || vector) return 3;
+        if (scalar_group.size() > 1)
+            return static_cast<int>(std::min<size_t>(4, scalar_group.size()));
+        return 1;
+    }
+    TimelinePropertyRef graph_channel(int component) const
+    {
+        TimelinePropertyRef result = *this;
+        const int count = graph_channel_count();
+        if (count <= 1) return result;
+        component = std::clamp(component, 0, count - 1);
+        if (result.vector3) {
+            result.vector3_component = component;
+        } else if (result.vector) {
+            result.vector_component = component;
+        } else if (!result.scalar_group.empty()) {
+            AnimatedProperty *selected = result.scalar_group[static_cast<size_t>(component)];
+            result.scalar_group.clear();
+            if (selected) result.scalar_group.push_back(selected);
+        }
+        return result;
+    }
+    TimelinePropertyRef graph_all_channels() const
+    {
+        TimelinePropertyRef result = *this;
+        if (result.vector3) result.vector3_component = -1;
+        if (result.vector) result.vector_component = -1;
+        return result;
+    }
+    double keyframe_graph_channel_value(size_t index, int component) const
+    {
+        if (index >= keyframe_count()) return 0.0;
+        const double time = keyframe_time(index);
+        return graph_channel(component).graph_value(time);
+    }
+    void set_keyframe_graph_channel_value(size_t index, int component, double value)
+    {
+        if (index >= keyframe_count()) return;
+        if (vector3) {
+            activate_vector3();
+            if (index >= vector3->keyframes.size()) return;
+            Vec3Value &next = vector3->keyframes[index].value;
+            if (component == 0) next.x = value;
+            else if (component == 1) next.y = value;
+            else next.z = value;
+            return;
+        }
+        if (vector) {
+            if (index >= vector->keyframes.size()) return;
+            Vec2Value &next = vector->keyframes[index].value;
+            if (component == 0) next.x = value;
+            else if (component == 1) next.y = value;
+            else next.z = value;
+            return;
+        }
+        if (!scalar_group.empty()) {
+            component = std::clamp(component, 0,
+                static_cast<int>(scalar_group.size()) - 1);
+            AnimatedProperty *property = scalar_group[static_cast<size_t>(component)];
+            if (!property) return;
+            set_animated_value(*property, keyframe_time(index), value);
+            return;
+        }
+        set_keyframe_graph_value(index, value);
+    }
+    void offset_keyframe_graph_value(size_t index, double delta)
+    {
+        if (std::abs(delta) < 1e-15) return;
+        const int channels = graph_channel_count();
+        if (channels > 1) {
+            for (int component = 0; component < channels; ++component)
+                set_keyframe_graph_channel_value(
+                    index, component,
+                    keyframe_graph_channel_value(index, component) + delta);
+            return;
+        }
+        set_keyframe_graph_value(index, graph_value(keyframe_time(index)) + delta);
+    }
+    void push_keyframe(const DiscreteKeyframe &keyframe)
+    {
+        if (discrete) discrete->keyframes.push_back(keyframe);
+    }
     void push_keyframe(const Keyframe &keyframe)
     {
         if (scalar) scalar->keyframes.push_back(keyframe);
@@ -651,6 +907,13 @@ struct TimelinePropertyRef {
     void push_keyframe(const VectorKeyframe &keyframe)
     {
         if (vector) vector->keyframes.push_back(keyframe);
+    }
+    void push_keyframe(const Vector3Keyframe &keyframe)
+    {
+        if (vector3) {
+            activate_vector3();
+            vector3->keyframes.push_back(keyframe);
+        }
     }
     void push_keyframes(const std::vector<Keyframe> &keyframes)
     {
@@ -668,7 +931,9 @@ struct TimelinePropertyRef {
     }
     void set_keyframe_time(size_t index, double time)
     {
-        if (is_extension()) {
+        if (discrete) {
+            discrete->keyframes[index].time = time;
+        } else if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             QJsonObject key = keys.at(static_cast<qsizetype>(index)).toObject();
             key.insert(QStringLiteral("time"), time);
@@ -688,6 +953,11 @@ struct TimelinePropertyRef {
                     }
                 }
             }
+        } else if (vector3) {
+            activate_vector3();
+            vector3->keyframes[index].rove_across_time = false;
+            vector3->keyframes[index].time = time;
+            vector3->recalculate_rove_times();
         } else if (vector) {
             vector->keyframes[index].rove_across_time = false;
             vector->keyframes[index].time = time;
@@ -698,7 +968,9 @@ struct TimelinePropertyRef {
     }
     void erase_keyframe(size_t index)
     {
-        if (is_extension()) {
+        if (discrete) {
+            discrete->keyframes.erase(discrete->keyframes.begin() + (ptrdiff_t)index);
+        } else if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             keys.removeAt(static_cast<qsizetype>(index));
             bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
@@ -713,6 +985,10 @@ struct TimelinePropertyRef {
                         }),
                     property->keyframes.end());
             }
+        } else if (vector3) {
+            activate_vector3();
+            vector3->keyframes.erase(vector3->keyframes.begin() + (ptrdiff_t)index);
+            vector3->recalculate_rove_times();
         } else if (vector) {
             vector->keyframes.erase(vector->keyframes.begin() + (ptrdiff_t)index);
             vector->recalculate_rove_times();
@@ -722,17 +998,23 @@ struct TimelinePropertyRef {
     }
     void clear_keyframes()
     {
-        if (is_extension())
+        if (discrete) discrete->keyframes.clear();
+        else if (is_extension())
             bgs::effects::animation::write_track_keys(*extension_effect, extension_path, QJsonArray{});
         else if (!scalar_group.empty()) {
             for (AnimatedProperty *property : scalar_group)
                 if (property) property->keyframes.clear();
-        } else if (vector) vector->keyframes.clear();
+        } else if (vector3) {
+            activate_vector3();
+            vector3->keyframes.clear();
+        }
+        else if (vector) vector->keyframes.clear();
         else if (scalar) scalar->keyframes.clear();
     }
     void sort_keyframes()
     {
-        if (is_extension()) {
+        if (discrete) discrete->sort_keyframes();
+        else if (is_extension()) {
             bgs::effects::animation::write_track_keys(
                 *extension_effect, extension_path,
                 bgs::effects::animation::track_keys(*extension_effect, extension_path));
@@ -742,6 +1024,10 @@ struct TimelinePropertyRef {
                 std::sort(property->keyframes.begin(), property->keyframes.end(),
                           [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
             }
+        } else if (vector3) {
+            std::sort(vector3->keyframes.begin(), vector3->keyframes.end(),
+                      [](const Vector3Keyframe &a, const Vector3Keyframe &b) { return a.time < b.time; });
+            vector3->recalculate_rove_times();
         } else if (vector) {
             std::sort(vector->keyframes.begin(), vector->keyframes.end(),
                       [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
@@ -755,23 +1041,27 @@ struct TimelinePropertyRef {
     {
         if (!supports_spatial_interpolation())
             return;
-        vector->set_spatial_mode(index, mode);
+        if (vector3) { activate_vector3(); vector3->set_spatial_mode(index, mode); }
+        else vector->set_spatial_mode(index, mode);
     }
     void set_spatial_tangents_linked(size_t index, bool linked)
     {
         if (!supports_spatial_interpolation())
             return;
-        vector->set_spatial_tangents_linked(index, linked);
+        if (vector3) { activate_vector3(); vector3->set_spatial_tangents_linked(index, linked); }
+        else vector->set_spatial_tangents_linked(index, linked);
     }
     void set_keyframe_rove_across_time(size_t index, bool enabled)
     {
         if (!supports_spatial_interpolation())
             return;
-        vector->set_rove_across_time(index, enabled);
+        if (vector3) { activate_vector3(); vector3->set_rove_across_time(index, enabled); }
+        else vector->set_rove_across_time(index, enabled);
     }
 
     void apply_temporal_mode(size_t index, TemporalInterpolationMode mode)
     {
+        if (is_hold_only()) return;
         if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             if (index >= (size_t)keys.size()) return;
@@ -819,12 +1109,14 @@ struct TimelinePropertyRef {
                         property->set_temporal_mode(i, mode); break;
                     }
             }
-        } else if (vector) vector->set_temporal_mode(index, mode);
+        } else if (vector3) { activate_vector3(); vector3->set_temporal_mode(index, mode); }
+        else if (vector) vector->set_temporal_mode(index, mode);
         else if (scalar) scalar->set_temporal_mode(index, mode);
     }
     void set_temporal_handle(size_t index, bool incoming, double influence,
                              double speed, bool break_pair)
     {
+        if (is_hold_only()) return;
         if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             if (index >= (size_t)keys.size()) return;
@@ -857,11 +1149,13 @@ struct TimelinePropertyRef {
                         property->set_temporal_handle(i, incoming, influence, speed, break_pair); break;
                     }
             }
-        } else if (vector) vector->set_temporal_handle(index, incoming, influence, speed, break_pair);
+        } else if (vector3) { activate_vector3(); vector3->set_temporal_handle(index, incoming, influence, speed, break_pair); }
+        else if (vector) vector->set_temporal_handle(index, incoming, influence, speed, break_pair);
         else if (scalar) scalar->set_temporal_handle(index, incoming, influence, speed, break_pair);
     }
     void apply_easy_ease(size_t index, bool ease_in, bool ease_out)
     {
+        if (is_hold_only()) return;
         if (is_extension()) {
             apply_temporal_mode(index, TemporalInterpolationMode::ManualBezier);
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
@@ -886,12 +1180,14 @@ struct TimelinePropertyRef {
                         property->apply_easy_ease(i, ease_in, ease_out); break;
                     }
             }
-        } else if (vector) vector->apply_easy_ease(index, ease_in, ease_out);
+        } else if (vector3) { activate_vector3(); vector3->apply_easy_ease(index, ease_in, ease_out); }
+        else if (vector) vector->apply_easy_ease(index, ease_in, ease_out);
         else if (scalar) scalar->apply_easy_ease(index, ease_in, ease_out);
     }
 
     void apply_easing(size_t index, EasingType easing)
     {
+        if (is_hold_only()) return;
         if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             QJsonObject key = keys.at(static_cast<qsizetype>(index)).toObject();
@@ -912,12 +1208,19 @@ struct TimelinePropertyRef {
                     }
                 }
             }
-        } else if (vector) apply_easing_preset(vector->keyframes[index], easing);
+        } else if (vector3) { activate_vector3(); apply_easing_preset(vector3->keyframes[index], easing); }
+        else if (vector) apply_easing_preset(vector->keyframes[index], easing);
         else if (scalar) apply_easing_preset(scalar->keyframes[index], easing);
     }
     void toggle_at(double time)
     {
-        if (is_extension()) {
+        if (discrete) {
+            const std::string value = discrete->evaluate(time);
+            bool found = false;
+            for (const auto &key : discrete->keyframes)
+                if (std::abs(key.time - time) <= 1.0 / 240.0) { found = true; break; }
+            if (found) discrete->remove(time); else discrete->set(time, value);
+        } else if (is_extension()) {
             const QJsonValue fallback = extension_fallback.isUndefined()
                 ? bgs::effects::animation::state_path_value(*extension_effect, extension_path)
                 : extension_fallback;
@@ -947,13 +1250,54 @@ struct TimelinePropertyRef {
                     toggle_keyframe(*property, time, property->evaluate(time));
                 }
             }
+        } else if (vector3) {
+            activate_vector3();
+            toggle_keyframe(*vector3, time, vector3->evaluate(time));
         } else if (vector) {
             toggle_keyframe(*vector, time, vector->evaluate(time));
         } else if (scalar) {
-            toggle_keyframe(*scalar, time, scalar->evaluate(time));
+            if (scalar->name == "camera_projection") {
+                if (keyframe_at_time(*scalar, time)) {
+                    remove_keyframe_at(*scalar, time);
+                } else {
+                    Keyframe key;
+                    key.time = time;
+                    key.value = scalar->evaluate(time) >= 0.5 ? 1.0 : 0.0;
+                    key.easing = EasingType::Hold;
+                    key.temporal_mode = TemporalInterpolationMode::Hold;
+                    key.temporal_velocity_explicit = true;
+                    scalar->keyframes.push_back(key);
+                    std::sort(scalar->keyframes.begin(), scalar->keyframes.end(),
+                              [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
+                }
+            } else {
+                toggle_keyframe(*scalar, time, scalar->evaluate(time));
+            }
         }
     }
 };
+
+static TimelinePropertyRef vector3_timeline_channel(AnimatedVec3Property &property,
+                                                    int component,
+                                                    const char *channel_name,
+                                                    bool *enabled = nullptr)
+{
+    TimelinePropertyRef ref;
+    ref.extension_name = channel_name;
+    ref.vector3 = &property;
+    ref.vector3_component = component;
+    ref.vector3_enabled = enabled;
+    return ref;
+}
+
+static TimelinePropertyRef scalar_group_timeline_property(
+    const char *group_name, std::initializer_list<AnimatedProperty *> properties)
+{
+    TimelinePropertyRef ref;
+    ref.extension_name = group_name;
+    ref.scalar_group.assign(properties.begin(), properties.end());
+    return ref;
+}
 
 static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
 {
@@ -963,10 +1307,29 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             {&layer.audio_pan_prop, nullptr}
         };
     }
-    std::vector<TimelinePropertyRef> props {
-        {nullptr, &layer.position},
-        {nullptr, &layer.scale},
-        {&layer.rotation, nullptr}, {&layer.opacity, nullptr},
+
+    std::vector<TimelinePropertyRef> props;
+    if (layer.dimension_mode == LayerDimensionMode::ThreeD) {
+        promote_layer_position_to_3d_path(layer, false);
+        /* One authoritative timeline row per transform property.  The shared
+         * XYZ key sequence remains available to the Graph Editor; component
+         * zero is the initial graph channel selected by the aggregate row. */
+        props.push_back(vector3_timeline_channel(
+            layer.position_3d, 0, "position", &layer.position_3d_path_enabled));
+        props.push_back({nullptr, &layer.scale});
+        props.push_back(scalar_group_timeline_property(
+            "rotation", {&layer.rotation_x, &layer.rotation_y, &layer.rotation}));
+        props.push_back(scalar_group_timeline_property(
+            "orientation", {&layer.orientation_x, &layer.orientation_y,
+                              &layer.orientation_z}));
+    } else {
+        props.push_back({nullptr, &layer.position});
+        props.push_back({nullptr, &layer.scale});
+        props.push_back({&layer.rotation, nullptr});
+    }
+
+    const std::vector<TimelinePropertyRef> common_props {
+        {&layer.opacity, nullptr},
         {nullptr, &layer.size},
         {nullptr, &layer.origin_prop},
         {&layer.paragraph_indent_left_prop, nullptr}, {&layer.paragraph_indent_right_prop, nullptr},
@@ -975,11 +1338,14 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
         {&layer.font_size_prop, nullptr}, {&layer.char_scale_x_prop, nullptr}, {&layer.char_scale_y_prop, nullptr},
         {&layer.char_tracking_prop, nullptr}, {&layer.baseline_shift_prop, nullptr},
         {&layer.paragraph_space_before_prop, nullptr}, {&layer.paragraph_space_after_prop, nullptr},
-        {&layer.text_color_a, nullptr}, {&layer.text_color_r, nullptr},
-        {&layer.text_color_g, nullptr}, {&layer.text_color_b, nullptr},
-        {&layer.fill_color_a, nullptr}, {&layer.fill_color_r, nullptr},
-        {&layer.fill_color_g, nullptr}, {&layer.fill_color_b, nullptr}
+        scalar_group_timeline_property("text_color", {&layer.text_color_a,
+            &layer.text_color_r, &layer.text_color_g, &layer.text_color_b}),
+        scalar_group_timeline_property("fill_color", {&layer.fill_color_a,
+            &layer.fill_color_r, &layer.fill_color_g, &layer.fill_color_b}),
+        {nullptr, nullptr, nullptr, QString(), std::string(), QJsonValue(),
+         EasingType::Linear, {}, &layer.camera_assignment}
     };
+    props.insert(props.end(), common_props.begin(), common_props.end());
 
     auto add_effect_props = [&](LayerEffect &effect, size_t effect_index) {
         QString effect_title = effect_type_name(effect.type);
@@ -1309,8 +1675,140 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
     return props;
 }
 
+
+static std::string camera_timeline_owner_id(const std::string &camera_id)
+{
+    return std::string("camera:") + camera_id;
+}
+
+static constexpr const char *kTitleCameraSwitchOwner = "title:camera-switch";
+
+static TitleCamera *timeline_camera_from_owner(Title &title, const std::string &owner_id)
+{
+    static const std::string prefix = "camera:";
+    if (owner_id.rfind(prefix, 0) != 0) return nullptr;
+    const std::string camera_id = owner_id.substr(prefix.size());
+    for (auto &camera : title.cameras)
+        if (camera.id == camera_id) return &camera;
+    return nullptr;
+}
+
+static const TitleCamera *timeline_camera_from_owner(const Title &title, const std::string &owner_id)
+{
+    static const std::string prefix = "camera:";
+    if (owner_id.rfind(prefix, 0) != 0) return nullptr;
+    const std::string camera_id = owner_id.substr(prefix.size());
+    for (const auto &camera : title.cameras)
+        if (camera.id == camera_id) return &camera;
+    return nullptr;
+}
+
+static std::vector<TimelinePropertyRef> timeline_camera_properties(TitleCamera &camera)
+{
+    promote_camera_spatial_tracks(camera, false);
+    return {
+        vector3_timeline_channel(camera.position_3d, 0, "camera_position",
+                                 &camera.position_3d_path_enabled),
+        vector3_timeline_channel(camera.target_3d, 0, "camera_target",
+                                 &camera.target_3d_path_enabled),
+        scalar_group_timeline_property(
+            "camera_orientation", {&camera.orientation_x, &camera.orientation_y,
+                                    &camera.orientation_z}),
+        scalar_group_timeline_property(
+            "camera_rotation", {&camera.rotation_x, &camera.rotation_y,
+                                 &camera.rotation_z}),
+        {&camera.focal_length, nullptr}, {&camera.field_of_view, nullptr},
+        {&camera.zoom, nullptr}, {&camera.near_clip, nullptr},
+        {&camera.far_clip, nullptr}, {&camera.projection_mode, nullptr}
+    };
+}
+
+static TimelinePropertyRef timeline_property_for_owner(Title &title,
+                                                        const std::string &owner_id,
+                                                        const std::string &property_name)
+{
+    if (owner_id == kTitleCameraSwitchOwner) {
+        TimelinePropertyRef result;
+        result.discrete = &title.active_camera;
+        return result.name() == property_name ? result : TimelinePropertyRef{};
+    }
+    if (TitleCamera *camera = timeline_camera_from_owner(title, owner_id)) {
+        for (auto property : timeline_camera_properties(*camera))
+            if (property.name() == property_name) return property;
+        return {};
+    }
+    if (auto layer = title.find_layer(owner_id)) {
+        for (auto property : timeline_properties(*layer))
+            if (property.name() == property_name) return property;
+    }
+    return {};
+}
+
+static double timeline_owner_in_time(const Title &title, const std::string &owner_id)
+{
+    if (owner_id == kTitleCameraSwitchOwner || timeline_camera_from_owner(title, owner_id)) return 0.0;
+    if (auto layer = title.find_layer(owner_id)) return layer->in_time;
+    return 0.0;
+}
+
+static double timeline_owner_out_time(const Title &title, const std::string &owner_id)
+{
+    if (owner_id == kTitleCameraSwitchOwner || timeline_camera_from_owner(title, owner_id)) return title.duration;
+    if (auto layer = title.find_layer(owner_id)) return layer->out_time;
+    return title.duration;
+}
+
+static bool timeline_owner_locked(const Title &title, const std::string &owner_id)
+{
+    if (auto layer = title.find_layer(owner_id)) return layer->locked;
+    return false;
+}
+
+static std::shared_ptr<Layer> timeline_owner_proxy(const Title &title,
+                                                   const std::string &owner_id,
+                                                   const QString &label)
+{
+    if (auto layer = title.find_layer(owner_id)) return layer;
+    auto proxy = std::make_shared<Layer>();
+    proxy->id = owner_id;
+    proxy->name = label.toStdString();
+    proxy->in_time = 0.0;
+    proxy->out_time = title.duration;
+    proxy->locked = false;
+    proxy->visible = true;
+    return proxy;
+}
+
 static QString property_label(const std::string &name)
 {
+    if (name == "active_camera") return QStringLiteral("Active Camera");
+    if (name == "camera_assignment") return QStringLiteral("Camera Assignment");
+    if (name == "position_x") return QStringLiteral("Position X");
+    if (name == "position_y") return QStringLiteral("Position Y");
+    if (name == "orientation") return QStringLiteral("Orientation");
+    if (name == "camera_position") return QStringLiteral("Position");
+    if (name == "camera_target") return QStringLiteral("Point of Interest");
+    if (name == "camera_orientation") return QStringLiteral("Orientation");
+    if (name == "camera_rotation") return QStringLiteral("Rotation");
+    if (name == "position_z") return QStringLiteral("Position Z");
+    if (name == "camera_position_x") return QStringLiteral("Camera Position X");
+    if (name == "camera_position_y") return QStringLiteral("Camera Position Y");
+    if (name == "camera_position_z") return QStringLiteral("Camera Position Z");
+    if (name == "camera_target_x") return QStringLiteral("Point of Interest X");
+    if (name == "camera_target_y") return QStringLiteral("Point of Interest Y");
+    if (name == "camera_target_z") return QStringLiteral("Point of Interest Z");
+    if (name == "camera_orientation_x") return QStringLiteral("Camera Orientation X");
+    if (name == "camera_orientation_y") return QStringLiteral("Camera Orientation Y");
+    if (name == "camera_orientation_z") return QStringLiteral("Camera Orientation Z");
+    if (name == "camera_rotation_x") return QStringLiteral("Camera Rotation X");
+    if (name == "camera_rotation_y") return QStringLiteral("Camera Rotation Y");
+    if (name == "camera_rotation_z") return QStringLiteral("Camera Rotation Z");
+    if (name == "camera_focal_length") return QStringLiteral("Focal Length");
+    if (name == "camera_field_of_view") return QStringLiteral("Field of View");
+    if (name == "camera_zoom") return QStringLiteral("Camera Zoom");
+    if (name == "camera_near_clip") return QStringLiteral("Near Clipping Plane");
+    if (name == "camera_far_clip") return QStringLiteral("Far Clipping Plane");
+    if (name == "camera_projection") return QStringLiteral("Projection Mode");
     QString qname = QString::fromStdString(name);
     QString encoded_effect_slug;
     QString encoded_effect_suffix;
@@ -1386,9 +1884,9 @@ static QString property_label(const std::string &name)
     if (name == "baseline_shift") return bgl_tr("OBSTitles.Baseline");
     if (name == "paragraph_space_before") return bgl_tr("OBSTitles.ParagraphSpaceBefore");
     if (name == "paragraph_space_after") return bgl_tr("OBSTitles.ParagraphSpaceAfter");
-    if (name == "text_color_a" || name == "text_color_r" ||
+    if (name == "text_color" || name == "text_color_a" || name == "text_color_r" ||
         name == "text_color_g" || name == "text_color_b") return bgl_tr("OBSTitles.TextColor");
-    if (name == "fill_color_a" || name == "fill_color_r" ||
+    if (name == "fill_color" || name == "fill_color_a" || name == "fill_color_r" ||
         name == "fill_color_g" || name == "fill_color_b") return bgl_tr("OBSTitles.FillColor");
     if (name == "shadow_color_a" || name == "shadow_color_r" ||
         name == "shadow_color_g" || name == "shadow_color_b") return bgl_tr("OBSTitles.ShadowColor");
@@ -1416,6 +1914,14 @@ static QString property_label(const std::string &name)
     if (name == "shadow_angle") return bgl_tr("OBSTitles.ShadowAngle");
     if (name == "shadow_blur") return bgl_tr("OBSTitles.ShadowBlur");
     if (name == "shadow_spread") return bgl_tr("OBSTitles.ShadowSpread");
+    if (name == "position_z") return QStringLiteral("Position Z");
+    if (name == "rotation_x") return QStringLiteral("Rotation X");
+    if (name == "rotation_y") return QStringLiteral("Rotation Y");
+    if (name == "scale_z") return QStringLiteral("Scale Z");
+    if (name == "anchor_z") return QStringLiteral("Anchor Z");
+    if (name == "orientation_x") return QStringLiteral("Orientation X");
+    if (name == "orientation_y") return QStringLiteral("Orientation Y");
+    if (name == "orientation_z") return QStringLiteral("Orientation Z");
     if (name == "rotation") return bgl_tr("OBSTitles.Rotation");
     if (name == "opacity") return bgl_tr("OBSTitles.Opacity");
     if (!encoded_effect_slug.isEmpty()) {
@@ -1449,7 +1955,8 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
     if (prop.name == "origin_x")
         return QString("%1,%2").arg(layer.origin_prop.static_value.x, 0, 'f', 2)
                                 .arg(layer.origin_prop.static_value.y, 0, 'f', 2);
-    if (prop.name == "char_scale_x" || prop.name == "char_scale_y") value *= 100.0;
+    if (prop.name == "char_scale_x" || prop.name == "char_scale_y" ||
+        prop.name == "scale_z") value *= 100.0;
     if (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") value *= 100.0;
     if (prop.name == "shadow_enabled" || prop.name == "background_enabled") return value >= 0.5 ? bgl_tr("OBSTitles.On") : bgl_tr("OBSTitles.Off");
     return QString::number(value, 'f', (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") ? 1 : 2);
@@ -1457,6 +1964,19 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
 
 static QString property_value_text(const TimelinePropertyRef &prop, const Layer &layer)
 {
+    if (prop.vector3) {
+        const Vec3Value value = prop.vector3->static_value;
+        if (prop.name() == "position" || prop.name() == "position_3d") {
+            return QString("%1,%2,%3")
+                .arg(value.x, 0, 'f', 1)
+                .arg(value.y, 0, 'f', 1)
+                .arg(value.z, 0, 'f', 1);
+        }
+        return QString("%1,%2,%3")
+            .arg(value.x, 0, 'f', 2)
+            .arg(value.y, 0, 'f', 2)
+            .arg(value.z, 0, 'f', 2);
+    }
     if (!prop.vector)
         return prop.scalar ? property_value_text(*prop.scalar, layer) : QString();
 
@@ -1596,22 +2116,143 @@ struct TimelineRow {
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef prop;
     bool is_property = false;
+    std::string owner_id;
+    QString owner_label;
+    double in_time = 0.0;
+    double out_time = 0.0;
+    bool locked = false;
+    bool is_camera = false;
+    bool is_camera_switch = false;
+    /* Multi-channel properties remain one authored track, but expanded X/Y/Z
+     * views are real rows in the shared flattened model.  Both the layer list
+     * and timeline consume these exact rows. */
+    bool is_property_channel = false;
+    int property_channel = -1;
 };
+
+static QString timeline_property_channel_label(
+    const TimelinePropertyRef &property, int component)
+{
+    component = std::max(0, component);
+    const QString property_name = QString::fromStdString(property.name()).toLower();
+    const bool color_group = property.is_scalar_group() &&
+        (property_name.contains(QStringLiteral("color")) ||
+         property_name.contains(QStringLiteral("colour")));
+    if (color_group) {
+        static const char *argb_names[] = {"A", "R", "G", "B"};
+        return QString::fromLatin1(argb_names[std::clamp(component, 0, 3)]);
+    }
+    static const char *axis_names[] = {"X", "Y", "Z", "W"};
+    return QString::fromLatin1(axis_names[std::clamp(component, 0, 3)]);
+}
+
+static std::string timeline_property_channel_disclosure_key(
+    const std::string &owner_id, const std::string &property_name)
+{
+    return owner_id + std::string("\x1f") + property_name;
+}
+
+static bool timeline_property_channels_expanded(
+    const Title &title, const std::string &owner_id,
+    const TimelinePropertyRef &property)
+{
+    return property && property.graph_channel_count() > 1 &&
+        title.expanded_property_channels.count(
+            timeline_property_channel_disclosure_key(owner_id,
+                                                      property.name())) != 0;
+}
+
+static void append_timeline_property_rows(
+    std::vector<TimelineRow> &rows, const Title &title,
+    const std::shared_ptr<Layer> &owner, const TimelinePropertyRef &property,
+    const std::string &owner_id, const QString &label, double in_time,
+    double out_time, bool locked, bool is_camera, bool is_camera_switch)
+{
+    rows.push_back({owner, property, true, owner_id, label, in_time, out_time,
+                    locked, is_camera, is_camera_switch, false, -1});
+    if (!timeline_property_channels_expanded(title, owner_id, property))
+        return;
+
+    const int channels = std::min(4, property.graph_channel_count());
+    for (int channel = 0; channel < channels; ++channel) {
+        rows.push_back({owner, property.graph_channel(channel), true, owner_id,
+                        QStringLiteral("%1 %2")
+                            .arg(label, timeline_property_channel_label(property,
+                                                                        channel)),
+                        in_time, out_time, locked, is_camera, is_camera_switch,
+                        true, channel});
+    }
+}
 
 static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &title)
 {
     std::vector<TimelineRow> rows;
     if (!title) return rows;
+
+    // AE-style disclosure: owner rows are always visible, while the actual
+    // keyframe channels appear only after their disclosure caret is opened.
+    const bool has_custom_camera = title_has_custom_camera(*title);
+    const bool default_camera_animated =
+        title_default_camera_has_authored_keyframes(*title);
+    const bool show_camera_switches = has_custom_camera ||
+                                      default_camera_animated ||
+                                      title->active_camera.is_animated();
+
+    /* The implicit canvas/default camera is UI-noise until it is authored.
+     * Camera rows become visible as soon as a custom camera exists or the
+     * default camera receives its first keyframe. */
+    if (show_camera_switches) {
+        TimelinePropertyRef camera_switch;
+        camera_switch.discrete = &title->active_camera;
+        const QString switch_label = QStringLiteral("Camera Switches");
+        auto switch_proxy = timeline_owner_proxy(*title, kTitleCameraSwitchOwner,
+                                                 switch_label);
+        rows.push_back({switch_proxy, {}, false, kTitleCameraSwitchOwner,
+                        switch_label, 0.0, title->duration,
+                        false, false, true});
+        if (title->camera_switches_expanded) {
+            append_timeline_property_rows(
+                rows, *title, switch_proxy, camera_switch,
+                kTitleCameraSwitchOwner, property_label(camera_switch.name()),
+                0.0, title->duration, false, false, true);
+        }
+    }
+
+    for (auto &camera : title->cameras) {
+        const bool default_camera = camera.id == "default";
+        if (default_camera && !title_camera_has_authored_keyframes(camera))
+            continue;
+        const std::string owner_id = camera_timeline_owner_id(camera.id);
+        const QString camera_label = QStringLiteral("Camera: %1")
+            .arg(QString::fromStdString(camera.name));
+        auto camera_proxy = timeline_owner_proxy(*title, owner_id, camera_label);
+        rows.push_back({camera_proxy, {}, false, owner_id,
+                        camera_label, 0.0, title->duration, false, true, false});
+        if (!camera.timeline_expanded)
+            continue;
+        for (auto property : timeline_camera_properties(camera)) {
+            append_timeline_property_rows(
+                rows, *title, camera_proxy, property, owner_id,
+                property_label(property.name()), 0.0, title->duration,
+                false, true, false);
+        }
+    }
+
     for (const auto &hierarchy_row : visible_layer_hierarchy_rows(title)) {
         auto layer = hierarchy_row.layer;
         if (!layer) continue;
-        rows.push_back({layer, TimelinePropertyRef{}, false});
+        rows.push_back({layer, TimelinePropertyRef{}, false, layer->id,
+                        QString::fromStdString(layer->name), layer->in_time,
+                        layer->out_time, layer->locked, false, false});
         const bool show_properties = layer_keyframe_sections_expanded(*layer);
         if (!show_properties)
             continue;
         std::set<std::string> seen;
         for (auto prop : timeline_properties(*layer)) {
-            if (!prop.is_animated()) continue;
+            const bool authorable_camera_assignment =
+                prop.name() == "camera_assignment" &&
+                layer->dimension_mode == LayerDimensionMode::ThreeD;
+            if (!prop.is_animated() && !authorable_camera_assignment) continue;
             QString label = property_label(prop.name());
             QString identity = label;
             const QString encoded = QString::fromStdString(prop.name());
@@ -1621,7 +2262,10 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
                     identity.prepend(QStringLiteral("effect-%1:").arg(parts.at(2)));
             }
             if (seen.insert(identity.toStdString()).second)
-                rows.push_back({layer, prop, true});
+                append_timeline_property_rows(
+                    rows, *title, layer, prop, layer->id, label,
+                    layer->in_time, layer->out_time, layer->locked,
+                    false, false);
         }
     }
     return rows;

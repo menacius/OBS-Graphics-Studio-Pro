@@ -29,6 +29,7 @@
 #include "extensions/effect-extension-catalog.h"
 #include "effects/effect-animation-utils.h"
 #include "title-gpu-text-renderer.h"
+#include "layer-transform-3d.h"
 #include "title-preferences.h"
 #include "title-logger.h"
 #include "ticker-runtime.h"

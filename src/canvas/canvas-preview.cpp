@@ -1,4 +1,5 @@
 #include "title-editor-internal.h"
+#include "layer-transform-3d.h"
 #include "effect-preset-catalog.h"
 #include "title-localization.h"
 #include "cache-manager.h"
@@ -30,10 +31,12 @@
 #include <QPaintEngine>
 #include <QPainterPath>
 #include <QLinearGradient>
+#include <QtMath>
 
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <utility>
 #include <cmath>
 #include <chrono>
 
@@ -66,6 +69,7 @@ static void editor_set_quad_value(Layer &layer, AnimatedVec2Property &prop,
 /* Ordered implementation modules. Keep this list in source order. */
 #include "canvas-preview/preview-cache-view.inc"
 #include "canvas-preview/geometry-selection.inc"
+#include "canvas-preview/editor-3d-tools.inc"
 #include "canvas-preview/spatial-bezier-keyframes.inc"
 #include "canvas-preview/transform-snap.inc"
 #include "canvas-preview/path-gradient-tools.inc"

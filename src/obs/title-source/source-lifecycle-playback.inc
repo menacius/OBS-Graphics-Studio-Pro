@@ -433,6 +433,7 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     };
     destroy_target(session->frame_a);
     destroy_target(session->frame_b);
+    destroy_target(session->depth_target);
     destroy_target(session->presentation_targets[0]);
     destroy_target(session->presentation_targets[1]);
     destroy_target(session->layer_target);
@@ -552,12 +553,34 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                 }
             }
             if (updated_transform_snapshot) {
+                session->title.active_camera_id = title.active_camera_id;
+                session->title.active_camera = title.active_camera;
+                session->title.cameras = title.cameras;
+                session->title.render_camera_override_id =
+                    title.render_camera_override_id;
                 for (std::size_t i = 0; i < title.layers.size(); ++i) {
                     const Layer &source_layer = *title.layers[i];
                     Layer &snapshot_layer = *session->title.layers[i];
+                    snapshot_layer.dimension_mode = source_layer.dimension_mode;
+                    snapshot_layer.transform_axis_space = source_layer.transform_axis_space;
                     snapshot_layer.position = source_layer.position;
+                    snapshot_layer.position_z = source_layer.position_z;
                     snapshot_layer.scale = source_layer.scale;
+                    snapshot_layer.scale_z = source_layer.scale_z;
                     snapshot_layer.rotation = source_layer.rotation;
+                    snapshot_layer.rotation_x = source_layer.rotation_x;
+                    snapshot_layer.rotation_y = source_layer.rotation_y;
+                    snapshot_layer.anchor_z = source_layer.anchor_z;
+                    snapshot_layer.orientation_x = source_layer.orientation_x;
+                    snapshot_layer.orientation_y = source_layer.orientation_y;
+                    snapshot_layer.orientation_z = source_layer.orientation_z;
+                    snapshot_layer.camera_id = source_layer.camera_id;
+                    snapshot_layer.camera_assignment = source_layer.camera_assignment;
+                    snapshot_layer.depth_mode = source_layer.depth_mode;
+                    snapshot_layer.depth_test = source_layer.depth_test;
+                    snapshot_layer.write_to_depth = source_layer.write_to_depth;
+                    snapshot_layer.double_sided = source_layer.double_sided;
+                    snapshot_layer.backface_culling = source_layer.backface_culling;
                     snapshot_layer.parent_id = source_layer.parent_id;
                     snapshot_layer.transform_parent_id = source_layer.transform_parent_id;
                     /* During direct resize, present the old raster through a

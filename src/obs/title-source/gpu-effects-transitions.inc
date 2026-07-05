@@ -733,15 +733,15 @@ static void apply_layer_world_transform_gs(const Title &title, const Layer &laye
     vec4_set(&affine.x,
              static_cast<float>(transform.m11()),
              static_cast<float>(transform.m12()),
-             0.0f, 0.0f);
+             0.0f, static_cast<float>(transform.m13()));
     vec4_set(&affine.y,
              static_cast<float>(transform.m21()),
              static_cast<float>(transform.m22()),
-             0.0f, 0.0f);
+             0.0f, static_cast<float>(transform.m23()));
     vec4_set(&affine.t,
              static_cast<float>(transform.dx()),
              static_cast<float>(transform.dy()),
-             0.0f, 1.0f);
+             0.0f, static_cast<float>(transform.m33()));
     gs_matrix_mul(&affine);
 }
 
@@ -807,10 +807,20 @@ uniform int imageClipEnabled;
 uniform float4 imageClipRect;
 uniform float4 imageCornerRadii;
 uniform float2 imageLogicalSize;
+uniform texture2d postProjectionMask;
+uniform int postProjectionMaskEnabled;
+uniform int postProjectionMaskMode;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
-VertDataOut VSDefault(VertDataIn v) { VertDataOut o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 clipPos : TEXCOORD1; };
+VertDataOut VSDefault(VertDataIn v)
+{
+    VertDataOut o;
+    o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+    o.clipPos = o.pos;
+    o.uv = v.uv;
+    return o;
+}
 float hash21(float2 p)
 {
     p = frac(p * float2(123.34, 456.21));
@@ -908,16 +918,45 @@ float rounded_box_alpha(float2 p, float4 rect, float4 radii)
     if (radius <= 0.0001) return 1.0;
     return 1.0 - smoothstep(max(0.0, radius - 1.0), radius + 1.0, length(local - center));
 }
-float4 PSLayer(VertDataOut v) : TARGET
+float projected_mask_alpha(VertDataOut v)
+{
+    if (postProjectionMaskEnabled == 0 || abs(v.clipPos.w) <= 0.000001)
+        return 1.0;
+    float2 ndc = v.clipPos.xy / v.clipPos.w;
+    float2 screenUv = float2(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    float4 m = postProjectionMask.Sample(textureSampler, clamp(screenUv, 0.0, 1.0));
+    float value = m.a;
+    if (postProjectionMaskMode == 3 || postProjectionMaskMode == 4) {
+        float3 straight = m.a > 0.000001 ? m.rgb / m.a : float3(0.0, 0.0, 0.0);
+        value = dot(straight, float3(0.2126, 0.7152, 0.0722)) * m.a;
+    }
+    if (postProjectionMaskMode == 2 || postProjectionMaskMode == 4 ||
+        postProjectionMaskMode == 6)
+        value = 1.0 - value;
+    return clamp(value, 0.0, 1.0);
+}
+float4 layer_color(VertDataOut v)
 {
     float clipAlpha = 1.0;
     if (imageClipEnabled != 0) {
         float2 logicalPoint = v.uv * imageLogicalSize;
         clipAlpha = rounded_box_alpha(logicalPoint, imageClipRect, imageCornerRadii);
     }
-    return image.Sample(textureSampler, v.uv) * (weight * transition_alpha(v.uv) * clipAlpha);
+    return image.Sample(textureSampler, v.uv) *
+        (weight * transition_alpha(v.uv) * clipAlpha * projected_mask_alpha(v));
+}
+float4 PSLayer(VertDataOut v) : TARGET
+{
+    return layer_color(v);
+}
+float4 PSDepthLayer(VertDataOut v) : TARGET
+{
+    float4 color = layer_color(v);
+    clip(color.a - 0.0039215686);
+    return color;
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSLayer(v); } }
+technique DepthDraw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDepthLayer(v); } }
 )";
 
 
@@ -1362,6 +1401,21 @@ struct TitleGpuRenderSession {
         uint32_t width = 0;
         uint32_t height = 0;
         uint64_t last_used = 0;
+    };
+
+    struct GroupRenderDiagnostics {
+        std::chrono::steady_clock::time_point window_started {};
+        uint64_t calls = 0;
+        uint64_t total_us = 0;
+        uint64_t max_us = 0;
+        uint64_t child_samples = 0;
+        uint64_t target_creations = 0;
+        uint64_t silhouette_passes = 0;
+        uint64_t slow_frames = 0;
+        std::size_t max_child_transform_keyframes = 0;
+        std::string max_child_id;
+        std::string max_child_name;
+        bool initialized = false;
     };
 
     struct TransitionMatteTexture {

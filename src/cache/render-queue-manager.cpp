@@ -85,6 +85,7 @@ bool RenderQueueManager::enqueue(const Job &job)
     const QString key = job.key.toString();
     bool changed = false;
     bool inserted = false;
+    int queue_size = 0;
     {
         QMutexLocker lock(&mutex_);
         if (!accepting_jobs_)
@@ -108,8 +109,11 @@ bool RenderQueueManager::enqueue(const Job &job)
         }
         if (changed)
             order_dirty_ = true;
+        queue_size = jobs_.size();
     }
 
+    bgl::perf::set_max(bgl::perf::Counter::RenderQueuePeak,
+                       static_cast<std::uint64_t>(std::max(0, queue_size)));
     if (inserted)
         bgl::perf::add(bgl::perf::Counter::ProxyJobsQueued);
     if (changed)
@@ -124,6 +128,7 @@ int RenderQueueManager::enqueueMany(const QVector<Job> &jobs)
 
     int inserted = 0;
     bool changed = false;
+    int queue_size = 0;
     {
         QMutexLocker lock(&mutex_);
         if (!accepting_jobs_)
@@ -156,8 +161,11 @@ int RenderQueueManager::enqueueMany(const QVector<Job> &jobs)
         }
         if (changed)
             order_dirty_ = true;
+        queue_size = jobs_.size();
     }
 
+    bgl::perf::set_max(bgl::perf::Counter::RenderQueuePeak,
+                       static_cast<std::uint64_t>(std::max(0, queue_size)));
     if (inserted > 0)
         bgl::perf::add(bgl::perf::Counter::ProxyJobsQueued,
                        static_cast<std::uint64_t>(inserted));

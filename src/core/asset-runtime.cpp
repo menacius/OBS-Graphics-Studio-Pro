@@ -290,8 +290,17 @@ bool layer_has_timeline_animation(const Layer &layer)
 
     return nested_asset_animation || transition_animation || effect_animation ||
            layer.position.is_animated() ||
+           layer.position_z.is_animated() ||
+           (layer.position_3d_path_enabled && layer.position_3d.is_animated()) ||
            layer.scale.is_animated() ||
+           layer.scale_z.is_animated() ||
            layer.rotation.is_animated() ||
+           layer.rotation_x.is_animated() ||
+           layer.rotation_y.is_animated() ||
+           layer.anchor_z.is_animated() ||
+           layer.orientation_x.is_animated() ||
+           layer.orientation_y.is_animated() ||
+           layer.orientation_z.is_animated() ||
            layer.opacity.is_animated() ||
            layer.transform_quad_tl.is_animated() ||
            layer.transform_quad_tr.is_animated() ||
@@ -325,6 +334,31 @@ bool layer_has_timeline_animation(const Layer &layer)
 
 bool title_has_timeline_animation(const Title &title)
 {
+    const auto camera_is_animated = [](const TitleCamera &camera) {
+        return (camera.position_3d_path_enabled && camera.position_3d.is_animated()) ||
+               (camera.target_3d_path_enabled && camera.target_3d.is_animated()) ||
+               camera.position_x.is_animated() ||
+               camera.position_y.is_animated() ||
+               camera.position_z.is_animated() ||
+               camera.target_x.is_animated() ||
+               camera.target_y.is_animated() ||
+               camera.target_z.is_animated() ||
+               camera.orientation_x.is_animated() ||
+               camera.orientation_y.is_animated() ||
+               camera.orientation_z.is_animated() ||
+               camera.rotation_x.is_animated() ||
+               camera.rotation_y.is_animated() ||
+               camera.rotation_z.is_animated() ||
+               camera.focal_length.is_animated() ||
+               camera.field_of_view.is_animated() ||
+               camera.zoom.is_animated() ||
+               camera.near_clip.is_animated() ||
+               camera.far_clip.is_animated() ||
+               camera.projection_mode.is_animated();
+    };
+    if (title.active_camera.is_animated() ||
+        std::any_of(title.cameras.begin(), title.cameras.end(), camera_is_animated))
+        return true;
     const double duration = std::max(0.0, title.duration);
     return std::any_of(title.layers.begin(), title.layers.end(),
         [duration](const std::shared_ptr<Layer> &layer) {
@@ -332,7 +366,8 @@ bool title_has_timeline_animation(const Title &title)
                 return false;
             const bool timed_visibility = layer->in_time > kEpsilon ||
                 layer->out_time < duration - kEpsilon;
-            return timed_visibility || layer_has_timeline_animation(*layer);
+            return timed_visibility || layer->camera_assignment.is_animated() ||
+                   layer_has_timeline_animation(*layer);
         });
 }
 

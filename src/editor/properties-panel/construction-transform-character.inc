@@ -3,7 +3,7 @@
     auto *image_form = new QFormLayout(image_form_widget);
     style_form(image_form);
     edit_image_path_ = new QLineEdit(image_form_widget);
-    edit_image_path_->setFixedHeight(22);
+    edit_image_path_->setFixedHeight(20);
     edit_image_path_->setStyleSheet(control_style);
     btn_image_external_binding_ = new QToolButton(image_form_widget);
     btn_image_external_binding_->setText(QStringLiteral("⛓"));
@@ -24,7 +24,7 @@
     spn_layer_w_->setToolTip(bgl_tr("OBSTitles.ImageWidthTooltip"));
     spn_layer_h_->setToolTip(bgl_tr("OBSTitles.ImageHeightTooltip"));
     cmb_image_scale_filter_ = new QComboBox(image_form_widget);
-    cmb_image_scale_filter_->setFixedHeight(22);
+    cmb_image_scale_filter_->setFixedHeight(20);
     cmb_image_scale_filter_->setStyleSheet(control_style);
     cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterDisable"), (int)ImageScaleFilter::Disable);
     cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterBilinear"), (int)ImageScaleFilter::Bilinear);
@@ -32,7 +32,7 @@
     cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterLanczos"), (int)ImageScaleFilter::Lanczos);
     cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterArea"), (int)ImageScaleFilter::Area);
     cmb_image_box_mode_ = new QComboBox(image_form_widget);
-    cmb_image_box_mode_->setFixedHeight(22);
+    cmb_image_box_mode_->setFixedHeight(20);
     cmb_image_box_mode_->setStyleSheet(control_style);
     cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFitImageToBox"), (int)ImageBoxMode::FitImageToBox);
     cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFillHorizontal"), (int)ImageBoxMode::FillHorizontal);
@@ -60,17 +60,17 @@
     image_box_size_box_ = new QWidget(inner);
     image_box_size_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *image_box_size_layout = new QVBoxLayout(image_box_size_box_);
-    image_box_size_layout->setContentsMargins(10, 8, 10, 10);
+    image_box_size_layout->setContentsMargins(7, 5, 7, 6);
     image_box_size_layout->setSpacing(8);
     auto *image_box_size_grid = new QGridLayout();
     image_box_size_grid->setContentsMargins(0, 0, 0, 0);
-    image_box_size_grid->setHorizontalSpacing(8);
-    image_box_size_grid->setVerticalSpacing(8);
+    image_box_size_grid->setHorizontalSpacing(5);
+    image_box_size_grid->setVerticalSpacing(4);
     image_box_size_grid->setColumnMinimumWidth(0, 24);
     image_box_size_grid->setColumnMinimumWidth(1, 82);
-    image_box_size_grid->setColumnMinimumWidth(2, 86);
-    image_box_size_grid->setColumnMinimumWidth(3, 22);
-    image_box_size_grid->setColumnMinimumWidth(4, 86);
+    image_box_size_grid->setColumnMinimumWidth(2, 90);
+    image_box_size_grid->setColumnMinimumWidth(3, 90);
+    image_box_size_grid->setColumnMinimumWidth(4, 20);
     image_box_size_grid->setColumnStretch(5, 1);
     auto make_image_box_size_field = [&](const QString &label, QDoubleSpinBox *spin) {
         auto *field = new QWidget(image_box_size_box_);
@@ -93,24 +93,24 @@
                                                  });
         field_label->setFixedWidth(16);
         field_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:12px;").arg(control_text_name));
+        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(control_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin, 1);
-        field->setFixedSize(104, 24);
+        field->setFixedSize(90, 20);
         return field;
     };
     chk_image_box_size_lock_ = new TransformLockCheckBox(image_box_size_box_);
     chk_image_box_size_lock_->setText(QString());
     chk_image_box_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_image_box_size_lock_->setFixedSize(24, 24);
+    chk_image_box_size_lock_->setFixedSize(20, 20);
     chk_image_box_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *image_box_size_label = new QLabel(bgl_tr("OBSTitles.Size"), image_box_size_box_);
-    image_box_size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
+    image_box_size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(panel_text_name));
     image_box_size_grid->addWidget(btn_kf_image_box_size_, 0, 0, Qt::AlignCenter);
     image_box_size_grid->addWidget(image_box_size_label, 0, 1);
     image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 2);
-    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 3, Qt::AlignCenter);
-    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 4);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 3);
+    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 4, Qt::AlignCenter);
     image_box_size_layout->addLayout(image_box_size_grid);
     BglCollapsiblePanel *image_panel = bgl_panel_for_content(image_box_);
     const int image_box_size_index = image_panel ? vl->indexOf(image_panel) + 1 : -1;
@@ -343,15 +343,52 @@
         });
     };
 
-    install_vec_delete_all(btn_kf_pos_x_, &Layer::position);
+    auto install_vec3_delete_all = [this, can_edit, emit_change, menu_style](
+            QPushButton *button, AnimatedVec2Property Layer::*xy_member,
+            AnimatedProperty Layer::*z_member) {
+        if (!button) return;
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(button, &QPushButton::customContextMenuRequested,
+                this, [this, button, xy_member, z_member, can_edit,
+                       emit_change, menu_style](const QPoint &pos) {
+                    if (!layer_) return;
+                    auto &xy = layer_.get()->*xy_member;
+                    auto &z = layer_.get()->*z_member;
+                    QMenu menu(button);
+                    menu.setStyleSheet(menu_style);
+                    QAction *delete_all = menu.addAction(bgl_tr("OBSTitles.DeleteAllKeyframes"));
+                    delete_all->setEnabled(can_edit() &&
+                        (!xy.keyframes.empty() || !z.keyframes.empty()));
+                    if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit()) return;
+                    if (xy.keyframes.empty() && z.keyframes.empty()) return;
+                    xy.keyframes.clear();
+                    z.keyframes.clear();
+                    load_values();
+                    emit_change();
+                });
+    };
+
+    install_vec3_delete_all(btn_kf_pos_x_, &Layer::position, &Layer::position_z);
     install_vec_delete_all(btn_kf_pos_y_, &Layer::position);
-    install_vec_delete_all(btn_kf_scale_x_, &Layer::scale);
+    install_vec3_delete_all(btn_kf_scale_x_, &Layer::scale, &Layer::scale_z);
     install_vec_delete_all(btn_kf_scale_y_, &Layer::scale);
     install_vec_delete_all(btn_kf_transform_size_, &Layer::size);
-    install_prop_delete_all(btn_kf_rotation_, &Layer::rotation);
+    install_group_delete_all(btn_kf_rotation_, {&Layer::rotation_x,
+                                                &Layer::rotation_y,
+                                                &Layer::rotation});
     install_prop_delete_all(btn_kf_opacity_, &Layer::opacity);
-    install_vec_delete_all(btn_kf_origin_x_, &Layer::origin_prop);
+    install_vec3_delete_all(btn_kf_origin_x_, &Layer::origin_prop, &Layer::anchor_z);
     install_vec_delete_all(btn_kf_origin_y_, &Layer::origin_prop);
+    install_prop_delete_all(btn_kf_position_z_, &Layer::position_z);
+    install_prop_delete_all(btn_kf_rotation_x_, &Layer::rotation_x);
+    install_prop_delete_all(btn_kf_rotation_y_, &Layer::rotation_y);
+    install_vec3_delete_all(btn_kf_scale_z_, &Layer::scale, &Layer::scale_z);
+    install_vec3_delete_all(btn_kf_anchor_z_, &Layer::origin_prop, &Layer::anchor_z);
+    install_group_delete_all(btn_kf_orientation_x_, {&Layer::orientation_x,
+                                                        &Layer::orientation_y,
+                                                        &Layer::orientation_z});
+    install_prop_delete_all(btn_kf_orientation_y_, &Layer::orientation_y);
+    install_prop_delete_all(btn_kf_orientation_z_, &Layer::orientation_z);
     install_prop_delete_all(btn_kf_paragraph_indent_left_, &Layer::paragraph_indent_left_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
@@ -375,19 +412,33 @@
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) {
-                    const double t = local_time();
-                    set_animated_value(layer_->position, t, {v, layer_->position.evaluate(t).y});
-                    emit_change();
+                if (!can_edit()) return;
+                const double t = local_time();
+                if (layer_->dimension_mode == LayerDimensionMode::ThreeD ||
+                    layer_->position_3d_path_enabled) {
+                    promote_layer_position_to_3d_path(*layer_);
+                    set_animated_component(layer_->position_3d, t, 0, v);
+                    mirror_position_3d_to_legacy(*layer_, t);
+                } else {
+                    set_animated_value(layer_->position, t,
+                                       {v, layer_->position.evaluate(t).y});
                 }
+                emit_change();
             });
     connect(spn_py_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) {
-                    const double t = local_time();
-                    set_animated_value(layer_->position, t, {layer_->position.evaluate(t).x, v});
-                    emit_change();
+                if (!can_edit()) return;
+                const double t = local_time();
+                if (layer_->dimension_mode == LayerDimensionMode::ThreeD ||
+                    layer_->position_3d_path_enabled) {
+                    promote_layer_position_to_3d_path(*layer_);
+                    set_animated_component(layer_->position_3d, t, 1, v);
+                    mirror_position_3d_to_legacy(*layer_, t);
+                } else {
+                    set_animated_value(layer_->position, t,
+                                       {layer_->position.evaluate(t).x, v});
                 }
+                emit_change();
             });
     connect(spn_scale_x_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -428,13 +479,123 @@
                     const double scale = spn_scale_x_->value() / 100.0;
                     QSignalBlocker blocker(spn_scale_y_);
                     spn_scale_y_->setValue(spn_scale_x_->value());
-                    set_animated_value(layer_->scale, t, {scale, scale});
+                    Vec2Value next = layer_->scale.evaluate(t);
+                    next.x = scale;
+                    next.y = scale;
+                    set_animated_value(layer_->scale, t, next);
                 }
                 emit_change();
             });
     connect(spn_rot_,      QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
                 if (can_edit()) { set_animated_value(layer_->rotation, local_time(), v); emit_change(); }
+            });
+    connect(cmb_dimension_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int) {
+                if (!can_edit()) return;
+                const auto mode = static_cast<LayerDimensionMode>(
+                    cmb_dimension_mode_->currentData().toInt());
+                set_layer_dimension_mode_preserving_position_track(*layer_, mode);
+                update_transform_dimension_ui(true, layer_->dimension_mode);
+                emit_change();
+            });
+    connect(cmb_transform_axis_space_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int) {
+                if (!can_edit()) return;
+                layer_->transform_axis_space = static_cast<TransformAxisSpace>(
+                    cmb_transform_axis_space_->currentData().toInt());
+                emit_change();
+            });
+    connect(cmb_layer_camera_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, local_time, emit_change](int index) {
+                if (!can_edit() || index < 0) return;
+                const std::string camera_id =
+                    cmb_layer_camera_->itemData(index).toString().toStdString();
+                if (layer_->camera_assignment.is_animated()) {
+                    layer_->camera_assignment.set(local_time(), camera_id);
+                } else {
+                    layer_->camera_assignment.static_value = camera_id;
+                    layer_->camera_id = camera_id;
+                }
+                emit_change();
+            });
+    auto connect_3d_property = [this, can_edit, local_time, emit_change](
+            QDoubleSpinBox *spin, AnimatedProperty Layer::*member,
+            double divisor = 1.0) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, can_edit, local_time, emit_change, member, divisor](double value) {
+                    if (!can_edit()) return;
+                    set_animated_value(layer_.get()->*member, local_time(), value / divisor);
+                    emit_change();
+                });
+    };
+    connect(spn_pz_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double value) {
+                if (!can_edit()) return;
+                const double t = local_time();
+                promote_layer_position_to_3d_path(*layer_);
+                set_animated_component(layer_->position_3d, t, 2, value);
+                mirror_position_3d_to_legacy(*layer_, t);
+                emit_change();
+            });
+    connect_3d_property(spn_rot_x_, &Layer::rotation_x);
+    connect_3d_property(spn_rot_y_, &Layer::rotation_y);
+    connect(spn_scale_z_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double value) {
+                if (!can_edit()) return;
+                const double time = local_time();
+                Vec2Value next = layer_->scale.evaluate(time);
+                next.z = value / 100.0;
+                set_animated_value(layer_->scale, time, next);
+                set_animated_value(layer_->scale_z, time, next.z);
+                emit_change();
+            });
+    connect(spn_anchor_z_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double value) {
+                if (!can_edit()) return;
+                const double time = local_time();
+                Vec2Value next = layer_->origin_prop.evaluate(time);
+                next.z = value;
+                set_animated_value(layer_->origin_prop, time, next);
+                set_animated_value(layer_->anchor_z, time, next.z);
+                emit_change();
+            });
+    connect_3d_property(spn_orientation_x_, &Layer::orientation_x);
+    connect_3d_property(spn_orientation_y_, &Layer::orientation_y);
+    connect_3d_property(spn_orientation_z_, &Layer::orientation_z);
+    connect(chk_depth_test_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->depth_test = value;
+                emit_change();
+            });
+    connect(chk_write_depth_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->write_to_depth = value;
+                emit_change();
+            });
+    connect(chk_double_sided_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->double_sided = value;
+                if (value && chk_backface_culling_) {
+                    QSignalBlocker blocker(chk_backface_culling_);
+                    chk_backface_culling_->setChecked(false);
+                    layer_->backface_culling = false;
+                }
+                emit_change();
+            });
+    connect(chk_backface_culling_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->backface_culling = value;
+                if (value && chk_double_sided_) {
+                    QSignalBlocker blocker(chk_double_sided_);
+                    chk_double_sided_->setChecked(false);
+                    layer_->double_sided = false;
+                }
+                emit_change();
             });
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -445,7 +606,9 @@
                 if (can_edit()) {
                     const double t = local_time();
                     layer_->origin_x = (float)v;
-                    set_animated_value(layer_->origin_prop, t, {v, layer_->origin_prop.evaluate(t).y});
+                    Vec2Value next = layer_->origin_prop.evaluate(t);
+                    next.x = v;
+                    set_animated_value(layer_->origin_prop, t, next);
                     emit_change();
                 }
             });
@@ -454,7 +617,9 @@
                 if (can_edit()) {
                     const double t = local_time();
                     layer_->origin_y = (float)v;
-                    set_animated_value(layer_->origin_prop, t, {layer_->origin_prop.evaluate(t).x, v});
+                    Vec2Value next = layer_->origin_prop.evaluate(t);
+                    next.y = v;
+                    set_animated_value(layer_->origin_prop, t, next);
                     emit_change();
                 }
             });
@@ -472,9 +637,23 @@
                                                     layer_->scale.evaluate(t).y);
                 layer_->origin_x = (float)next.x();
                 layer_->origin_y = (float)next.y();
-                set_animated_value(layer_->origin_prop, t, {next.x(), next.y()});
-                const Vec2Value pos = layer_->position.evaluate(t);
-                set_animated_value(layer_->position, t, {pos.x + keep.x(), pos.y + keep.y()});
+                Vec2Value next_origin = layer_->origin_prop.evaluate(t);
+                next_origin.x = next.x();
+                next_origin.y = next.y();
+                set_animated_value(layer_->origin_prop, t, next_origin);
+                if (layer_->dimension_mode == LayerDimensionMode::ThreeD ||
+                    layer_->position_3d_path_enabled) {
+                    promote_layer_position_to_3d_path(*layer_);
+                    Vec3Value pos = layer_->position_3d.evaluate(t);
+                    pos.x += keep.x();
+                    pos.y += keep.y();
+                    set_animated_value(layer_->position_3d, t, pos);
+                    mirror_position_3d_to_legacy(*layer_, t);
+                } else {
+                    const Vec2Value pos = layer_->position.evaluate(t);
+                    set_animated_value(layer_->position, t,
+                                       {pos.x + keep.x(), pos.y + keep.y()});
+                }
                 load_values();
                 emit_change();
             });
@@ -482,13 +661,28 @@
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 const double t = local_time();
-                set_animated_value(layer_->position, t, {0.0, 0.0});
-                set_animated_value(layer_->scale, t, {1.0, 1.0});
+                if (layer_->dimension_mode == LayerDimensionMode::ThreeD ||
+                    layer_->position_3d_path_enabled) {
+                    promote_layer_position_to_3d_path(*layer_);
+                    set_animated_value(layer_->position_3d, t, {0.0, 0.0, 0.0});
+                    mirror_position_3d_to_legacy(*layer_, t);
+                } else {
+                    set_animated_value(layer_->position, t, {0.0, 0.0, 0.0});
+                    set_animated_value(layer_->position_z, t, 0.0);
+                }
+                set_animated_value(layer_->scale, t, {1.0, 1.0, 1.0});
+                set_animated_value(layer_->scale_z, t, 1.0);
                 set_animated_value(layer_->rotation, t, 0.0);
+                set_animated_value(layer_->rotation_x, t, 0.0);
+                set_animated_value(layer_->rotation_y, t, 0.0);
+                set_animated_value(layer_->anchor_z, t, 0.0);
+                set_animated_value(layer_->orientation_x, t, 0.0);
+                set_animated_value(layer_->orientation_y, t, 0.0);
+                set_animated_value(layer_->orientation_z, t, 0.0);
                 set_animated_value(layer_->opacity, t, 1.0);
                 layer_->origin_x = 0.5f;
                 layer_->origin_y = 0.5f;
-                set_animated_value(layer_->origin_prop, t, {0.5, 0.5});
+                set_animated_value(layer_->origin_prop, t, {0.5, 0.5, 0.0});
                 layer_->scale_lock = true;
                 load_values();
                 emit_change();

@@ -71,9 +71,20 @@ struct Keyframe {
     bool temporal_velocity_explicit = false;
 };
 
+/* Development Version 212: legacy XY vectors now use XYZ storage.
+ * The historic Vec2Value name remains as a source/serialization compatibility
+ * facade, while z defaults to zero so every pre-212 2D document evaluates exactly as
+ * before and continues through the legacy affine renderer. */
 struct Vec2Value {
     double x = 0.0;
     double y = 0.0;
+    double z = 0.0;
+};
+
+struct Vec3Value {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
 };
 
 /* Spatial interpolation is independent from temporal easing. Temporal easing
@@ -114,6 +125,58 @@ struct VectorKeyframe {
     bool rove_across_time = false;
 };
 
+struct Vector3Keyframe {
+    double time = 0.0;
+    Vec3Value value;
+
+    EasingType easing = EasingType::EaseInOut;
+    float cx1 = 0.333f, cy1 = 0.0f;
+    float cx2 = 0.667f, cy2 = 1.0f;
+
+    TemporalInterpolationMode temporal_mode = TemporalInterpolationMode::AutoBezier;
+    double incoming_influence = 33.3333333333;
+    double outgoing_influence = 33.3333333333;
+    double incoming_speed = 0.0;
+    double outgoing_speed = 0.0;
+    bool temporal_tangents_linked = true;
+    bool temporal_velocity_explicit = false;
+
+    Vec3Value incoming_tangent;
+    Vec3Value outgoing_tangent;
+    SpatialInterpolationMode spatial_mode = SpatialInterpolationMode::Linear;
+    bool spatial_tangents_linked = true;
+    bool rove_across_time = false;
+};
+
+struct DiscreteKeyframe {
+    double time = 0.0;
+    std::string value;
+};
+
+/* Hold-only string animation used for active-camera switching and per-layer
+ * camera assignment. The base value remains compatible with documents that
+ * predate camera switching; keys become effective at their exact timeline
+ * time and remain active until the next key. */
+struct AnimatedDiscreteProperty {
+    std::string name;
+    std::string static_value;
+    std::vector<DiscreteKeyframe> keyframes;
+
+    AnimatedDiscreteProperty() = default;
+    AnimatedDiscreteProperty(std::string property_name, std::string value,
+                             std::vector<DiscreteKeyframe> keys = {})
+        : name(std::move(property_name)), static_value(std::move(value)),
+          keyframes(std::move(keys))
+    {
+    }
+
+    bool is_animated() const { return !keyframes.empty(); }
+    std::string evaluate(double time) const;
+    void set(double time, const std::string &value);
+    void remove(double time, double epsilon = 1.0 / 240.0);
+    void sort_keyframes();
+};
+
 struct AnimatedProperty {
     std::string name;
     double      static_value = 0.0;
@@ -150,6 +213,9 @@ private:
     friend struct AnimatedVec2Property;
 };
 
+/* Legacy public name for the unified authored vector track.  Since
+ * Development Version 212 static values, keyframe values and spatial
+ * tangents are all XYZ; old JSON without z is promoted with z=0. */
 struct AnimatedVec2Property {
     std::string name;
     Vec2Value static_value;
@@ -200,6 +266,55 @@ struct AnimatedVec2Property {
 
 private:
     Vec2Value automatic_tangent(size_t keyframe_index, bool incoming) const;
+    double automatic_temporal_speed(size_t keyframe_index) const;
+    double spatial_segment_length(size_t segment_index) const;
+};
+
+using AnimatedVectorProperty = AnimatedVec2Property;
+
+struct AnimatedVec3Property {
+    std::string name;
+    Vec3Value static_value;
+    std::vector<Vector3Keyframe> keyframes;
+
+    AnimatedVec3Property() = default;
+    AnimatedVec3Property(std::string property_name, Vec3Value value,
+                         std::vector<Vector3Keyframe> keys = {})
+        : name(std::move(property_name)), static_value(value),
+          keyframes(std::move(keys))
+    {
+    }
+
+    bool is_animated() const { return !keyframes.empty(); }
+
+    Vec3Value evaluate(double t) const;
+    Vec3Value velocity(double t) const;
+    double speed(double t) const;
+    double path_value(double t) const;
+    double component_value(double t, int component) const;
+    double component_velocity(double t, int component) const;
+    TemporalBezierSegment temporal_segment(size_t segment_index) const;
+    void set_temporal_mode(size_t keyframe_index, TemporalInterpolationMode mode);
+    void set_temporal_handle(size_t keyframe_index, bool incoming,
+                             double influence_percent, double speed,
+                             bool preserve_opposite = false);
+    void apply_easy_ease(size_t keyframe_index, bool ease_in, bool ease_out);
+
+    Vec3Value resolved_incoming_tangent(size_t keyframe_index) const;
+    Vec3Value resolved_outgoing_tangent(size_t keyframe_index) const;
+    double spatial_progress_for_segment(size_t segment_index,
+                                        double temporal_progress) const;
+    Vec3Value evaluate_spatial_segment(size_t segment_index, double progress) const;
+    void set_spatial_mode(size_t keyframe_index, SpatialInterpolationMode mode);
+    void set_spatial_tangents_linked(size_t keyframe_index, bool linked);
+    void set_rove_across_time(size_t keyframe_index, bool enabled);
+    void recalculate_rove_times();
+    size_t split_spatial_segment(size_t segment_index,
+                                 double temporal_progress,
+                                 double spatial_progress);
+
+private:
+    Vec3Value automatic_tangent(size_t keyframe_index, bool incoming) const;
     double automatic_temporal_speed(size_t keyframe_index) const;
     double spatial_segment_length(size_t segment_index) const;
 };

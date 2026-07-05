@@ -13,6 +13,7 @@
 #include <QButtonGroup>
 #include <QMenu>
 #include <QVBoxLayout>
+#include <QGridLayout>
 #include <QFormLayout>
 #include <QTextEdit>
 #include <QLabel>
@@ -60,6 +61,7 @@ public:
     void set_active_text_edit_layer(const std::string &layer_id);
 
 public slots:
+    void apply_anchor_preset(int index);
     void open_foreground_color_selector();
     void open_background_color_selector();
     void swap_foreground_background_colors();
@@ -94,6 +96,7 @@ private:
     void load_values();
     void update_asset_playback_controls_visibility();
     void update_ticker_runtime_button();
+    void update_transform_dimension_ui(bool supports_3d, LayerDimensionMode mode);
 
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
@@ -389,10 +392,37 @@ private:
     QCheckBox       *chk_shape_scale_stroke_ = nullptr;
     QCheckBox       *chk_shape_scale_corners_ = nullptr;
     QComboBox       *cmb_anchor_ = nullptr;
+    QComboBox       *cmb_dimension_mode_ = nullptr;
+    QComboBox       *cmb_transform_axis_space_ = nullptr;
+    QComboBox       *cmb_layer_camera_ = nullptr;
+    QWidget         *three_d_controls_ = nullptr;
+    QDoubleSpinBox  *spn_pz_ = nullptr;
+    QDoubleSpinBox  *spn_rot_x_ = nullptr;
+    QDoubleSpinBox  *spn_rot_y_ = nullptr;
+    QDoubleSpinBox  *spn_scale_z_ = nullptr;
+    QDoubleSpinBox  *spn_anchor_z_ = nullptr;
+    QDoubleSpinBox  *spn_orientation_x_ = nullptr;
+    QDoubleSpinBox  *spn_orientation_y_ = nullptr;
+    QDoubleSpinBox  *spn_orientation_z_ = nullptr;
+    QCheckBox       *chk_depth_test_ = nullptr;
+    QCheckBox       *chk_write_depth_ = nullptr;
+    QCheckBox       *chk_double_sided_ = nullptr;
+    QCheckBox       *chk_backface_culling_ = nullptr;
     QWidget         *transform_box_ = nullptr;
+    QGridLayout      *transform_grid_ = nullptr;
     QWidget         *transform_scale_label_ = nullptr;
     QWidget         *transform_scale_field_x_ = nullptr;
     QWidget         *transform_scale_field_y_ = nullptr;
+    QLabel          *transform_scale_axis_label_x_ = nullptr;
+    QLabel          *transform_scale_axis_label_y_ = nullptr;
+    QWidget         *transform_position_field_z_ = nullptr;
+    QWidget         *transform_scale_field_z_ = nullptr;
+    QWidget         *transform_anchor_field_z_ = nullptr;
+    QWidget         *transform_rotation_field_x_ = nullptr;
+    QWidget         *transform_rotation_field_y_ = nullptr;
+    QWidget         *transform_rotation_field_z_ = nullptr;
+    QLabel          *transform_rotation_axis_label_ = nullptr;
+    QWidget         *transform_orientation_row_ = nullptr;
     QWidget         *transform_size_label_ = nullptr;
     QWidget         *transform_size_field_w_ = nullptr;
     QWidget         *transform_size_field_h_ = nullptr;
@@ -445,6 +475,14 @@ private:
     QPushButton     *btn_kf_opacity_ = nullptr;
     QPushButton     *btn_kf_origin_x_ = nullptr;
     QPushButton     *btn_kf_origin_y_ = nullptr;
+    QPushButton     *btn_kf_position_z_ = nullptr;
+    QPushButton     *btn_kf_rotation_x_ = nullptr;
+    QPushButton     *btn_kf_rotation_y_ = nullptr;
+    QPushButton     *btn_kf_scale_z_ = nullptr;
+    QPushButton     *btn_kf_anchor_z_ = nullptr;
+    QPushButton     *btn_kf_orientation_x_ = nullptr;
+    QPushButton     *btn_kf_orientation_y_ = nullptr;
+    QPushButton     *btn_kf_orientation_z_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_left_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_right_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_first_line_ = nullptr;

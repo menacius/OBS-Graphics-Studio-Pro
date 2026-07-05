@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.9)
+project(broadcast-graphics-live VERSION 0.8.10)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "189")
+set(OBS_BGS_DEVELOPMENT_VERSION "219")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -411,6 +411,7 @@ set(OBS_BGS_CORE_HEADERS
     src/core/external-data-provider.h
     src/core/external-json-path.h
     src/core/performance-counters.h
+    src/core/serialization-passthrough.h
 )
 
 set(OBS_BGS_LAYER_HEADERS
@@ -486,11 +487,13 @@ set(OBS_BGS_TEXT_HEADERS
 )
 
 set(OBS_BGS_RENDERING_SOURCES
+    src/rendering/layer-transform-3d.cpp
     src/rendering/title-effect-registry.cpp
     src/rendering/title-gpu-text-renderer.cpp
     src/rendering/title-gpu-text-sdf.cpp
 )
 set(OBS_BGS_RENDERING_HEADERS
+    src/rendering/layer-transform-3d.h
     src/rendering/title-effect-registry.h
     src/rendering/title-gpu-text-renderer.h
     src/rendering/title-gpu-text-sdf.h
@@ -890,6 +893,28 @@ if(OBS_BGS_BUILD_TESTS)
       src/timeline/animation.cpp)
   target_include_directories(animation_model_test PRIVATE src/timeline src/core)
   add_test(NAME animation_model_test COMMAND animation_model_test)
+
+  add_executable(spatial_motion_path_3d_test
+      tests/spatial_motion_path_3d_test.cpp
+      src/timeline/animation.cpp)
+  target_include_directories(spatial_motion_path_3d_test PRIVATE src src/timeline src/core)
+  add_test(NAME spatial_motion_path_3d_test COMMAND spatial_motion_path_3d_test)
+
+  add_executable(layer_3d_transform_contract_test
+      tests/layer_3d_transform_contract_test.cpp)
+  target_include_directories(layer_3d_transform_contract_test PRIVATE tests)
+  add_test(NAME layer_3d_transform_contract_test
+      COMMAND layer_3d_transform_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/layer-transform-3d.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/layer-transform-3d.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-runtime.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/live-cue-state.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/popup-state.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc)
 
   add_executable(text_animator_system_test
       tests/text_animator_system_test.cpp
@@ -1555,6 +1580,14 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/ui-construction.inc
       ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
 
+  add_executable(serialization_passthrough_hot_path_test
+      tests/serialization_passthrough_hot_path_test.cpp)
+  target_include_directories(serialization_passthrough_hot_path_test PRIVATE src/core)
+  add_test(NAME serialization_passthrough_hot_path_test
+      COMMAND serialization_passthrough_hot_path_test)
+  set_tests_properties(serialization_passthrough_hot_path_test PROPERTIES
+      LABELS "unit;serialization;performance;render-hot-path")
+
   add_executable(serialization_migration_roundtrip_test
       tests/serialization_migration_roundtrip_test.cpp)
   target_include_directories(serialization_migration_roundtrip_test PRIVATE
@@ -1569,6 +1602,10 @@ if(OBS_BGS_BUILD_TESTS)
     add_test(NAME python_contract_regression_suite
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_contract_tests.py)
+    add_test(NAME automated_test_manifest_validation
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_automated_test_suite.py --validate-only)
+    set_tests_properties(python_contract_regression_suite automated_test_manifest_validation PROPERTIES
+        LABELS "source;regression")
   endif()
 
   add_executable(external_json_path_test

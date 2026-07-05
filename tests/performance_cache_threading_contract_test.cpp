@@ -202,8 +202,8 @@ int main(int argc, char **argv)
                            "pattern cache cleanup on OBS shutdown");
     ok &= require_contains(plugin, "snapshot_text()",
                            "debug performance counters emitted on shutdown");
-    ok &= require_contains(schema, "kCurrentDevelopmentVersion = 189",
-                           "development version 189 migration ledger");
+    ok &= require_contains(schema, "kCurrentDevelopmentVersion = 219",
+                           "Development Version 217 migration ledger");
 
     if (ok)
         std::cout << "performance/cache/threading contract: PASS\n";

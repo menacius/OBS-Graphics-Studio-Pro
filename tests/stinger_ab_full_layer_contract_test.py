@@ -51,7 +51,7 @@ assert "layer.type == LayerType::TransitionInput" in gpu
 assert "layer.in_time = 0.0;" in core
 assert "layer.out_time = std::max(0.001, title.duration);" in core
 assert "layer.size.static_value = {canvas_width, canvas_height};" in core
-assert 'OBS_BGS_DEVELOPMENT_VERSION "189"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "189"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
 
 print("Full manual Stinger Scene A/B visual-layer contract passed")

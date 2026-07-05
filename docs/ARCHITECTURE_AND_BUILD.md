@@ -68,11 +68,22 @@ CMake stages locale files, all SVG icons, and effect/transition data into the OB
 
 ## Tests and audits
 
-- `tests/` contains C++ source-contract tests.
-- `tools/` contains Python audits for architecture, build/version consistency, rendering contracts, and specific regressions.
-- `cmake/ci/` documents CI-oriented configuration.
+`tests/test-suite-manifest.json` is the versioned coverage contract. `tools/run_automated_test_suite.py` validates that every required subsystem has executable coverage before it runs anything.
 
-When a canonical document path changes, update audits to read the new document instead of retaining a duplicate historical note.
+- **source:** all Python source contracts; no OBS, Qt or compiler required.
+- **smoke:** source plus a focused native CTest subset.
+- **full:** source plus the complete configured CTest project.
+- **stress:** native lifetime/performance tests for repeated open/close, shutdown, worker cancellation, cache release and snapshot-copy regressions.
+
+```bash
+python tools/run_automated_test_suite.py --validate-only
+python tools/run_automated_test_suite.py --profile source
+python tools/run_automated_test_suite.py --profile smoke --build-dir build
+python tools/run_automated_test_suite.py --profile full --build-dir build --jobs 8
+python tools/run_automated_test_suite.py --profile stress --build-dir build --json-report build/stress-report.json
+```
+
+`--fail-fast` stops after the first source failure and `--timeout` overrides the bounded per-test timeout. Native profiles require `OBS_BGS_BUILD_TESTS=ON`. When a canonical document path changes, update its contract test rather than retaining a duplicate historical note.
 
 ## Contribution rules
 
@@ -92,13 +103,29 @@ A changed value publishes a runtime-only revision, editor callback, and coalesce
 
 ## Serialization and migration
 
-The title store remains a top-level JSON array. Titles carry explicit schema and development metadata, and the migration ledger is contiguous from Development Version 144 onward, including deliberate no-op steps. Migration and current-schema validation are idempotent. Malformed titles or child entries recover independently; unknown future fields are retained by the JSON migration layer where possible; missing audio, proxy, provider, or extension resources fail softly instead of discarding the document. Existing non-empty layer IDs are preserved.
+The title store remains a top-level JSON array. Schema 6 and the development migration ledger are contiguous from Development Version 144 through 219, including deliberate no-op steps. Migrations and validation are idempotent. Malformed nested cameras, keyframes, effects, transitions, audio effects, bindings, proxy data and provider entries are isolated rather than rejecting the complete title.
 
-Persisted coverage includes external data and Live Text table bindings, rich-text formatting and patterns, audio layers and effects, Stinger settings and Scene A/B inputs, proxy metadata, spatial/temporal Bezier handles, groups, and dock state. Runtime provider values, audio decoder state, monitor state, worker queues, and cache residency are not serialized as authored document data.
+Unknown/newer fields survive real load-edit-save round trips at title, layer, camera, animated-property, keyframe, effect, transition, audio-effect, proxy and external-provider levels. Opaque future-schema payloads use immutable shared storage with copy-on-write replacement; render fingerprints explicitly disable passthrough parsing and merging so preservation does not add per-frame copies.
+
+Duplicate/missing layer IDs, dangling/self links and hierarchy cycles are repaired deterministically. Invalid parent-bind matrices are disabled without modifying transform keys. Authored files use atomic `QSaveFile` persistence. Runtime provider values, decoder state, worker queues, editor camera overrides and cache residency are never serialized as authored content.
 
 ## Regression coverage
 
-Automated contracts cover source structure, serialization round trips, cache/thread ownership, audio scheduling and reverse transport, external JSON paths, Stinger modes, timeline behavior, effects, shutdown, and package/version consistency. The Python contract runner executes every `tests/*.py` source contract deterministically.
+The automated profiles cover editor GUI ownership, Timeline/Graph Editor parity, serialization round trips, 2D/3D rendering, masks/effects, cache/proxy/threading, audio transport, cue persistence, external data, shutdown lifetime and platform builds. The Development Version 219 hot-path test copies snapshots containing multi-megabyte unknown-field payloads and verifies shared immutable storage.
 
-Manual release checks include: Undo/redo, Copy/paste, Group/ungroup, Save/reopen, External JSON, Audio layer pause/resume/seek, Stinger scene transition, cache/prerender, scene masks, Corrupt proxy cache recovery, Dock layout restoration, Windows and Linux parity, and OBS startup/shutdown.
+Manual host validation remains required for GPU output, OBS mixer timing, proxy playback and lifecycle behavior. Repeat the matrix with cache disabled, RAM cache enabled and RAM+disk enabled:
 
+| Area | Required result |
+| --- | --- |
+| Legacy 2D | Approved reference frames remain pixel-stable. |
+| 3D save/load | Every layer/camera channel, switch, assignment, projection and depth option survives reopen. |
+| Undo/copy/paste | IDs stay unique and authored relationships/appearance round-trip. |
+| Proxy/prerender | No stale frame wins; missing/corrupt cache falls back safely. |
+| Persistence/cues | Cue, uncue, transitions and Ignore Persistence match uncached playback. |
+| Audio | Forward/reverse/ping-pong/seek remain synchronized without duplicate mixer devices or tails. |
+| Lifecycle | Repeated open/close and shutdown during active jobs produce no crash, deadlock, leak or surviving worker. |
+| Platforms | Supported Windows and Linux builds compile, package and launch with the intended OBS/Qt ABI. |
+
+## Manual release checklist vocabulary
+
+The maintained host checklist explicitly covers Undo/redo, Copy/paste, Group/ungroup, Save/reopen, External JSON, Audio layer pause/resume/seek, Stinger scene transition, Corrupt proxy cache recovery, Dock layout restoration, Windows and Linux parity, and OBS startup/shutdown.

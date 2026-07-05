@@ -17,8 +17,8 @@ using json = nlohmann::json;
  * before schema versioning can still open newly-saved scene collections. The
  * schema/development identity therefore lives on every title object. Template
  * exports additionally expose the same values on their object root. */
-inline constexpr int kCurrentTitleSchemaVersion = 4;
-inline constexpr int kCurrentDevelopmentVersion = 189;
+inline constexpr int kCurrentTitleSchemaVersion = 6;
+inline constexpr int kCurrentDevelopmentVersion = 219;
 inline constexpr int kFirstAuditedDevelopmentVersion = 144;
 inline constexpr int kCurrentProxyManifestSchemaVersion = 2;
 inline constexpr int kCurrentDockSettingsSchemaVersion = 2;
@@ -86,6 +86,19 @@ inline int infer_development_version(const json &title)
 
     /* Inference is deliberately conservative. It is used only to skip
      * migrations that clearly predate the fields already present. */
+    if (title.contains("layers") && title["layers"].is_array()) {
+        for (const auto &layer : title["layers"])
+            if (layer.is_object() &&
+                (layer.contains("position_3d") ||
+                 safe_integer(layer, "position_3d_path_enabled", 0) != 0))
+                return 208;
+    }
+    if (title.contains("cameras") && title["cameras"].is_array()) {
+        for (const auto &camera : title["cameras"])
+            if (camera.is_object() &&
+                (camera.contains("position_3d") || camera.contains("target_3d")))
+                return 208;
+    }
     if (title.contains("stinger_switch_mode") || title_has_layer_type(title, 11))
         return 168;
     if (title.contains("stinger_transition_point") ||
@@ -284,6 +297,9 @@ inline void validate_recover_title_shape(json &title, MigrationReport &report)
         report.recoveries.emplace_back("title root was not an object");
     }
     recover_array_member(title, "layers", report);
+    recover_array_member(title, "cameras", report);
+    recover_array_member(title, "expanded_property_channels", report);
+    recover_object_member(title, "proxy_metadata", report);
     recover_array_member(title, "external_data_sources", report);
     recover_array_member(title, "live_text_rows", report);
     recover_array_member(title, "live_text_row_ids", report);
@@ -306,9 +322,190 @@ inline void validate_recover_title_shape(json &title, MigrationReport &report)
             report.recoveries.emplace_back(std::string("discarded malformed entries from ") + key);
     };
     remove_non_objects("layers");
+    remove_non_objects("cameras");
     remove_non_objects("external_data_sources");
     remove_non_objects("live_text_external_bindings");
     remove_non_objects("live_text_table_bindings");
+}
+
+
+inline void migrate_serialization_audit_218(json &title, MigrationReport &report)
+{
+    validate_recover_title_shape(title, report);
+
+    auto clean_object_array = [&](json &owner, const char *key,
+                                  const std::string &context) {
+        recover_array_member(owner, key, report);
+        if (!owner.contains(key) || !owner[key].is_array())
+            return;
+        auto &items = owner[key];
+        const auto old_size = items.size();
+        items.erase(std::remove_if(items.begin(), items.end(),
+                                   [](const json &item) { return !item.is_object(); }),
+                    items.end());
+        if (items.size() != old_size)
+            report.recoveries.emplace_back("discarded malformed entries from " + context);
+    };
+
+    if (title.contains("layers") && title["layers"].is_array()) {
+        for (auto &layer : title["layers"]) {
+            if (!layer.is_object())
+                continue;
+            clean_object_array(layer, "effects", "layer effects");
+            clean_object_array(layer, "transitions", "layer transitions");
+            clean_object_array(layer, "audio_effects", "audio effects");
+            clean_object_array(layer, "external_bindings", "external bindings");
+
+            const bool bind_enabled = layer.contains("parent_bind_enabled") &&
+                                      layer["parent_bind_enabled"].is_boolean() &&
+                                      layer["parent_bind_enabled"].get<bool>();
+            if (bind_enabled) {
+                bool valid = layer.contains("parent_bind_matrix") &&
+                             layer["parent_bind_matrix"].is_array() &&
+                             layer["parent_bind_matrix"].size() == 16;
+                if (valid) {
+                    for (const auto &value : layer["parent_bind_matrix"]) {
+                        if (!value.is_number() || !std::isfinite(value.get<double>())) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if (!valid) {
+                    layer["parent_bind_enabled"] = false;
+                    layer.erase("parent_bind_matrix");
+                    report.recoveries.emplace_back("disabled malformed parent bind matrix");
+                }
+            }
+        }
+    }
+
+    if (title.contains("external_data_sources") &&
+        title["external_data_sources"].is_array()) {
+        for (auto &source : title["external_data_sources"]) {
+            if (!source.is_object())
+                continue;
+            clean_object_array(source, "fields", "external data fields");
+            recover_object_member(source, "provider", report);
+        }
+    }
+
+}
+
+
+inline json animated_scalar_default(double value)
+{
+    return json{{"static_value", value}, {"keyframes", json::array()}};
+}
+
+inline json animated_discrete_default(const std::string &value)
+{
+    return json{{"static_value", value}, {"keyframes", json::array()}};
+}
+
+inline void recover_animated_property(json &object, const char *key,
+                                      double fallback, MigrationReport &report)
+{
+    if (!object.contains(key)) {
+        object[key] = animated_scalar_default(fallback);
+        return;
+    }
+    if (!object[key].is_object()) {
+        object[key] = animated_scalar_default(fallback);
+        report.recoveries.emplace_back(std::string("reset malformed animated camera property: ") + key);
+        return;
+    }
+    auto &property = object[key];
+    if (!property.contains("static_value") || !property["static_value"].is_number())
+        property["static_value"] = fallback;
+    recover_array_member(property, "keyframes", report);
+    if (!property.contains("keyframes"))
+        property["keyframes"] = json::array();
+}
+
+inline void recover_animated_discrete_property(json &object, const char *key,
+                                               const std::string &fallback,
+                                               MigrationReport &report)
+{
+    if (!object.contains(key)) {
+        object[key] = animated_discrete_default(fallback);
+        return;
+    }
+    if (!object[key].is_object()) {
+        object[key] = animated_discrete_default(fallback);
+        report.recoveries.emplace_back(std::string("reset malformed discrete camera property: ") + key);
+        return;
+    }
+    auto &property = object[key];
+    if (!property.contains("static_value") || !property["static_value"].is_string())
+        property["static_value"] = fallback;
+    recover_array_member(property, "keyframes", report);
+    if (!property.contains("keyframes"))
+        property["keyframes"] = json::array();
+}
+
+inline void migrate_camera_timeline_animation(json &title, MigrationReport &report)
+{
+    validate_recover_title_shape(title, report);
+    if (!title.contains("cameras") || !title["cameras"].is_array())
+        title["cameras"] = json::array();
+
+    std::string fallback_camera = "default";
+    if (!title["cameras"].empty() && title["cameras"].front().is_object()) {
+        const auto id = title["cameras"].front().find("id");
+        if (id != title["cameras"].front().end() && id->is_string() && !id->get<std::string>().empty())
+            fallback_camera = id->get<std::string>();
+    }
+    if (title.contains("active_camera_id") && title["active_camera_id"].is_string())
+        fallback_camera = title["active_camera_id"].get<std::string>();
+    else
+        title["active_camera_id"] = fallback_camera;
+    recover_animated_discrete_property(title, "active_camera", fallback_camera, report);
+
+    for (auto &camera : title["cameras"]) {
+        if (!camera.is_object())
+            continue;
+        recover_animated_property(camera, "orientation_x", 0.0, report);
+        recover_animated_property(camera, "orientation_y", 0.0, report);
+        recover_animated_property(camera, "orientation_z", 0.0, report);
+        const double projection = static_cast<double>(safe_integer(camera, "projection", 0));
+        recover_animated_property(camera, "projection_mode",
+                                  std::clamp(projection, 0.0, 1.0), report);
+    }
+
+    if (title.contains("layers") && title["layers"].is_array()) {
+        for (auto &layer : title["layers"]) {
+            if (!layer.is_object())
+                continue;
+            std::string camera_id;
+            const auto id = layer.find("camera_id");
+            if (id != layer.end() && id->is_string())
+                camera_id = id->get<std::string>();
+            recover_animated_discrete_property(layer, "camera_assignment", camera_id, report);
+        }
+    }
+}
+
+inline void migrate_full_3d_spatial_motion_paths(json &title,
+                                                   MigrationReport &report)
+{
+    validate_recover_title_shape(title, report);
+    if (title.contains("layers") && title["layers"].is_array()) {
+        for (auto &layer : title["layers"]) {
+            if (!layer.is_object()) continue;
+            if (!layer.contains("position_3d_path_enabled"))
+                layer["position_3d_path_enabled"] = false;
+        }
+    }
+    if (title.contains("cameras") && title["cameras"].is_array()) {
+        for (auto &camera : title["cameras"]) {
+            if (!camera.is_object()) continue;
+            if (!camera.contains("position_3d_path_enabled"))
+                camera["position_3d_path_enabled"] = false;
+            if (!camera.contains("target_3d_path_enabled"))
+                camera["target_3d_path_enabled"] = false;
+        }
+    }
 }
 
 inline void apply_development_migration(int target_version, json &title,
@@ -423,6 +620,104 @@ inline void apply_development_migration(int target_version, json &title,
     case 189:
         /* The disabled-FX visual indicator and documentation consolidation are
          * editor/UI-only. No persisted title fields changed. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 190:
+        /* Planar 3D is strictly opt-in. Missing fields intentionally resolve
+         * to 2D/default-camera values, preserving every older project without
+         * rewriting its authored transforms. */
+        validate_recover_title_shape(title, report);
+        if (!title.contains("cameras"))
+            title["cameras"] = json::array();
+        if (!title.contains("active_camera_id"))
+            title["active_camera_id"] = "default";
+        break;
+    case 191:
+    case 192:
+    case 193:
+    case 194:
+    case 195:
+    case 196:
+    case 197:
+    case 198:
+    case 199:
+    case 200:
+    case 201:
+    case 202:
+    case 203:
+    case 204:
+    case 205:
+    case 206:
+        /* Delivery/version synchronization, the MSVC-safe camera-control
+         * initializer fix, editor-only 3D navigation/gizmos, the GPU depth
+         * target, depth/culling semantics, AE-style Vector3 authoring UI,
+         * transparent 3D ordering, compact inspector refinements, full 3D
+         * reparenting/group-depth integration, and the anchor-action MSVC scope
+         * correction introduce no new persisted fields. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 207:
+        /* Cameras become first-class timeline owners. Populate the animated
+         * switching, assignment, orientation, and projection tracks from the
+         * static Development Version 206 compatibility fields. */
+        migrate_camera_timeline_animation(title, report);
+        break;
+    case 208:
+        /* Unified XYZ spatial tracks are opt-in compatibility mirrors. Legacy
+         * XY/Z curves remain authoritative until an object is promoted by the
+         * 208 authoring workflow. */
+        migrate_full_3d_spatial_motion_paths(title, report);
+        break;
+    case 209:
+        /* Camera-aware projected 3D motion blur is a runtime rendering change.
+         * No persisted title fields changed. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 210:
+        /* Performance, cache, scheduling, and keyframe-safe GPU model refresh
+         * changes are runtime/editor behavior only. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 211:
+        /* Compatibility/regression completion. Snapshot restoration, camera
+         * clipboard remapping and runtime cleanup did not add persisted fields. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 212:
+        /* Legacy vector2d JSON is promoted during model loading into unified
+         * XYZ storage. Missing z remains field-specific (0 for ordinary 2D
+         * vectors, 1 for Scale), so historical 2D rendering is unchanged. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 213:
+    case 214:
+    case 215:
+        /* Editor pacing, coordinate audit and Timeline/Graph Editor completion
+         * did not add persisted title fields. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 216:
+        /* Parent bind matrices are optional and identity by default. Existing
+         * files therefore require no authored transform rewrite. The loader
+         * validates the 16 finite values before enabling the matrix. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 217:
+        /* Performance, cache/threading diagnostics, channel-toggle styling,
+         * and gizmo hover feedback are runtime/editor-only changes. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 218:
+        /* Serialization/migration audit. Schema 6 formalizes lossless opaque
+         * field preservation and nested malformed-entry recovery. */
+        migrate_serialization_audit_218(title, report);
+        migrate_camera_timeline_animation(title, report);
+        migrate_full_3d_spatial_motion_paths(title, report);
+        break;
+    case 219:
+        /* Automated test-suite and render hot-path repair. Opaque future-schema
+         * payloads remain persisted, but are shared immutably and excluded from
+         * render fingerprints; no authored schema fields changed. */
         validate_recover_title_shape(title, report);
         break;
     default:

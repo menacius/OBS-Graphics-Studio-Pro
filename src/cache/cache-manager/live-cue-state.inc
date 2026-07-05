@@ -239,10 +239,13 @@ static bool effect_requires_full_gpu_cache_frame(LayerEffectType type)
 
 static bool title_requires_full_gpu_cache_frame(const Title &title)
 {
+    if (bgs::transform3d::title_camera_has_animation(title))
+        return true;
     for (const auto &layer : title.layers) {
         if (!layer)
             continue;
-        if (layer->type == LayerType::Adjustment ||
+        if (layer->dimension_mode == LayerDimensionMode::ThreeD ||
+            layer->type == LayerType::Adjustment ||
             layer->type == LayerType::ColorSolid ||
             !layer->parent_id.empty() ||
             !layer->transform_parent_id.empty() ||

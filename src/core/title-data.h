@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <memory>
@@ -23,6 +24,7 @@
 #include <condition_variable>
 #include <thread>
 #include <mutex>
+#include <set>
 #include "layer-model.h"
 
 enum class TitleGraphicType : int {
@@ -51,6 +53,150 @@ enum class StingerEditorBackground : int {
     FollowSwitchPoint = 3,
 };
 
+
+enum class CameraProjection : int {
+    Perspective = 0,
+    Orthographic = 1,
+};
+
+/* Camera properties are title-level so editor navigation can remain separate
+ * from the render camera. The default camera is derived from the canvas and
+ * reproduces the historical 2D projection exactly at Z=0. */
+struct TitleCamera {
+    /* Development Version 218: opaque source JSON retained across model round-trips. */
+    OpaqueSerializationPassthrough serialization_passthrough_json;
+    std::string id = "default";
+    std::string name = "Default Camera";
+    bool use_canvas_default = true;
+    AnimatedProperty position_x { "camera_position_x", 0.0 };
+    AnimatedProperty position_y { "camera_position_y", 0.0 };
+    AnimatedProperty position_z { "camera_position_z", -1000.0 };
+    AnimatedVec3Property position_3d { "camera_position_3d", {0.0, 0.0, -1000.0} };
+    bool position_3d_path_enabled = false;
+    AnimatedProperty target_x { "camera_target_x", 0.0 };
+    AnimatedProperty target_y { "camera_target_y", 0.0 };
+    AnimatedProperty target_z { "camera_target_z", 0.0 };
+    AnimatedVec3Property target_3d { "camera_target_3d", {0.0, 0.0, 0.0} };
+    bool target_3d_path_enabled = false;
+    AnimatedProperty orientation_x { "camera_orientation_x", 0.0 };
+    AnimatedProperty orientation_y { "camera_orientation_y", 0.0 };
+    AnimatedProperty orientation_z { "camera_orientation_z", 0.0 };
+    AnimatedProperty rotation_x { "camera_rotation_x", 0.0 };
+    AnimatedProperty rotation_y { "camera_rotation_y", 0.0 };
+    AnimatedProperty rotation_z { "camera_rotation_z", 0.0 };
+    AnimatedProperty focal_length { "camera_focal_length", 1000.0 };
+    AnimatedProperty field_of_view { "camera_field_of_view", 56.7380926 };
+    AnimatedProperty zoom { "camera_zoom", 1.0 };
+    AnimatedProperty near_clip { "camera_near_clip", 0.1 };
+    AnimatedProperty far_clip { "camera_far_clip", 100000.0 };
+    AnimatedProperty projection_mode { "camera_projection", 0.0 };
+    CameraProjection projection = CameraProjection::Perspective; /* static compatibility mirror */
+    /* AE-style timeline disclosure state. Camera channels stay hidden until
+     * the camera row is expanded, matching ordinary layer property rows. */
+    bool timeline_expanded = false;
+};
+
+inline Vec3Value evaluated_camera_position_3d(const TitleCamera &camera, double time)
+{
+    if (camera.position_3d_path_enabled)
+        return camera.position_3d.evaluate(time);
+    return {camera.position_x.evaluate(time), camera.position_y.evaluate(time),
+            camera.position_z.evaluate(time)};
+}
+
+inline Vec3Value evaluated_camera_target_3d(const TitleCamera &camera, double time)
+{
+    if (camera.target_3d_path_enabled)
+        return camera.target_3d.evaluate(time);
+    return {camera.target_x.evaluate(time), camera.target_y.evaluate(time),
+            camera.target_z.evaluate(time)};
+}
+
+inline void promote_camera_vector_track(AnimatedVec3Property &track, bool &enabled,
+                                        const AnimatedProperty &x,
+                                        const AnimatedProperty &y,
+                                        const AnimatedProperty &z,
+                                        bool activate = true)
+{
+    if (enabled) return;
+    track.static_value = {x.static_value, y.static_value, z.static_value};
+    std::vector<double> times;
+    times.reserve(x.keyframes.size() + y.keyframes.size() + z.keyframes.size());
+    for (const Keyframe &key : x.keyframes) times.push_back(key.time);
+    for (const Keyframe &key : y.keyframes) times.push_back(key.time);
+    for (const Keyframe &key : z.keyframes) times.push_back(key.time);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end(), [](double a, double b) {
+        return std::abs(a - b) <= 1.0e-9;
+    }), times.end());
+    track.keyframes.clear();
+    track.keyframes.reserve(times.size());
+    for (double time : times) {
+        Vector3Keyframe key;
+        key.time = time;
+        key.value = {x.evaluate(time), y.evaluate(time), z.evaluate(time)};
+        const Keyframe *source = nullptr;
+        auto find_at = [time](const AnimatedProperty &property) -> const Keyframe * {
+            for (const Keyframe &candidate : property.keyframes)
+                if (std::abs(candidate.time - time) <= 1.0e-9) return &candidate;
+            return nullptr;
+        };
+        source = find_at(x);
+        if (!source) source = find_at(y);
+        if (!source) source = find_at(z);
+        if (source) {
+            key.easing = source->easing;
+            key.cx1 = source->cx1; key.cy1 = source->cy1;
+            key.cx2 = source->cx2; key.cy2 = source->cy2;
+            key.temporal_mode = source->temporal_mode;
+            key.incoming_influence = source->incoming_influence;
+            key.outgoing_influence = source->outgoing_influence;
+            key.incoming_speed = source->incoming_speed;
+            key.outgoing_speed = source->outgoing_speed;
+            key.temporal_tangents_linked = source->temporal_tangents_linked;
+            key.temporal_velocity_explicit = source->temporal_velocity_explicit;
+        }
+        track.keyframes.push_back(key);
+    }
+    enabled = activate;
+    track.recalculate_rove_times();
+}
+
+inline void promote_camera_spatial_tracks(TitleCamera &camera, bool activate = true)
+{
+    promote_camera_vector_track(camera.position_3d, camera.position_3d_path_enabled,
+                                camera.position_x, camera.position_y, camera.position_z,
+                                activate);
+    promote_camera_vector_track(camera.target_3d, camera.target_3d_path_enabled,
+                                camera.target_x, camera.target_y, camera.target_z,
+                                activate);
+}
+
+inline void mirror_camera_vector_track_to_legacy(AnimatedVec3Property &track, double time,
+                                                  AnimatedProperty &x,
+                                                  AnimatedProperty &y,
+                                                  AnimatedProperty &z)
+{
+    const Vec3Value value = track.evaluate(time);
+    x.static_value = value.x;
+    y.static_value = value.y;
+    z.static_value = value.z;
+}
+
+inline bool title_camera_has_authored_keyframes(const TitleCamera &camera)
+{
+    return camera.position_x.is_animated() || camera.position_y.is_animated() ||
+           camera.position_z.is_animated() || camera.position_3d.is_animated() ||
+           camera.target_x.is_animated() || camera.target_y.is_animated() ||
+           camera.target_z.is_animated() || camera.target_3d.is_animated() ||
+           camera.orientation_x.is_animated() || camera.orientation_y.is_animated() ||
+           camera.orientation_z.is_animated() || camera.rotation_x.is_animated() ||
+           camera.rotation_y.is_animated() || camera.rotation_z.is_animated() ||
+           camera.focal_length.is_animated() || camera.field_of_view.is_animated() ||
+           camera.zoom.is_animated() || camera.near_clip.is_animated() ||
+           camera.far_clip.is_animated() || camera.projection_mode.is_animated();
+}
+
 struct TitleProxyMetadata {
     int schema_version = 0;
     std::string content_hash;
@@ -77,6 +223,8 @@ struct StingerValidationResult {
  *  Title
  * ══════════════════════════════════════════════════════════════════ */
 struct Title {
+    /* Unknown/newer fields are preserved verbatim through load → edit → save. */
+    OpaqueSerializationPassthrough serialization_passthrough_json;
     std::string id;
     std::string name        = "Untitled";
     std::string description;
@@ -94,6 +242,19 @@ struct Title {
     int         height      = 1080;
 
     TitleGraphicType graphic_type = TitleGraphicType::Title;
+    std::vector<TitleCamera> cameras { TitleCamera{} };
+    std::string active_camera_id = "default";
+    AnimatedDiscreteProperty active_camera { "active_camera", "default" };
+    /* The global switch track follows the same disclosure model as cameras. */
+    bool camera_switches_expanded = false;
+    /* Shared disclosure state for multi-channel timeline properties.  The
+     * layer list and TimelineWidget both flatten rows from this one set, so
+     * they can never disagree about whether X/Y/Z child rows are visible. */
+    std::set<std::string> expanded_property_channels;
+    /* Runtime-only render override used by non-destructive editor 3D views.
+     * It is deliberately excluded from serialization and cache identity so
+     * orbiting the editor camera can never alter OBS output or title content. */
+    std::string render_camera_override_id;
 
     /* Stinger document settings. The transition point is stored canonically
      * in seconds and is always edited/displayed as timecode. */
@@ -218,6 +379,23 @@ struct TitleTemplateExportMetadata {
     std::string collection;
     std::string screenshot_png_base64;
 };
+
+inline bool title_has_custom_camera(const Title &title)
+{
+    return std::any_of(title.cameras.begin(), title.cameras.end(),
+                       [](const TitleCamera &camera) {
+                           return camera.id != "default" || !camera.use_canvas_default;
+                       });
+}
+
+inline bool title_default_camera_has_authored_keyframes(const Title &title)
+{
+    const auto it = std::find_if(title.cameras.begin(), title.cameras.end(),
+                                 [](const TitleCamera &camera) {
+                                     return camera.id == "default";
+                                 });
+    return it != title.cameras.end() && title_camera_has_authored_keyframes(*it);
+}
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleDataStore  (singleton)

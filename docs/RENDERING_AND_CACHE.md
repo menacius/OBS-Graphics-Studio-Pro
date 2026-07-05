@@ -10,6 +10,14 @@ Ordinary layer effects run in layer space on a padded raster. Full-canvas passes
 
 During normal editing and scrubbing the editor can refresh up to the active monitor rate. During authored playback, frame advancement follows the project frame rate. Interactive quality can be reduced temporarily during high-frequency manipulation, then restored for the settled frame.
 
+### Interactive transforms and GPU model authority
+
+3D Move, Rotate, and Scale reuse resident layer rasters and update only the evaluated GPU transform snapshot while the gizmo is active. Duplicate pointer coordinates are discarded before they can create another model revision, and repeated input is coalesced into one pending presentation rather than an unbounded render queue. Active matrix drags are paced by the detected monitor interval; full raster/layout edits remain bounded by measured render cost.
+
+Transform-only state is strictly transient. Keyframe insertion/removal, interpolation changes, external property edits, and post-drag geometry publication require one authoritative GPU model snapshot before lightweight matrix updates can resume. Mouse release clears the transform-only flag before publishing `layer_geometry_changed()`. A separate settle-priority flag gives the exact final frame monitor-cadence scheduling without misclassifying it as transform-only. This prevents a stale render session after adding or editing keyframes.
+
+While an authoritative editor model refresh is pending, cached final-frame submission is bypassed so an old prerender cannot replace the edited state. This does not clear or mutate the independent OBS/RAM/disk cache; normal cache invalidation remains owned by the title-edit pipeline.
+
 
 ## Audio runtime
 
@@ -53,3 +61,23 @@ Real-time clocks and ordinary continuously advancing tickers are not cached. A t
 The editor and OBS source consume the same immutable text layout. The on-canvas `QTextEdit` remains a transparent IME/input bridge while visible glyphs, selection geometry, and caret overlays are owned by the shared layout/GPU path. Compatibility rasterization is limited to cases such as color-font glyphs, ticker output, or active per-character transitions that are not yet represented by the persistent atlas path.
 
 Text stroke composition follows **Behind -> Fill -> Front** ordering. Text-only stroke masks preserve the outer, mid, and inner regions so inner and outer alignment remain consistent in both editor and source rendering.
+
+## Planar 3D rendering pipeline
+
+The legacy 2D affine compositor remains the compatibility baseline. Compatible opaque 3D planes can enter a persistent hardware-depth run with per-pixel alpha-clipped depth writing. Transparent compatible planes are resolved in a deterministic far-to-near pass. Masks, mattes, custom blend modes, groups, scene inputs and unsupported effects retain established offscreen/full-frame paths.
+
+Ordinary artwork effects run on a padded layer-space raster before projection; Motion Blur is post-transform; effects that affect layers behind remain screen-space destination passes. Complete padded bounds are projected with homogeneous clipping so glow, shadow, outline and blur survive perspective rotation and near/canvas crossings without flickering or clipping.
+
+## Camera-aware 3D motion blur
+
+Every shutter sample evaluates the layer, all transform parents, assigned/active camera, projection and visibility at that title time. Covered motion includes XYZ paths, Rotation, Orientation, perspective scale from Z travel, parent motion, camera dolly/orbit and camera assignment. Projected travel is measured from corners, edge midpoints and center. Below the stationary threshold, the sharp result is rendered once, preventing transparent images from developing horizontal smears or duplicate alpha edges.
+
+## Timeline/cache paint audit
+
+Timeline/cache paint is a batched read path: frame states are indexed by title and fetched once for the visible range, while static-frame visual hashes are calculated through one contiguous window. Projected gizmo geometry is reused between hit testing and painting. Group rendering reuses persistent ping/pong targets and skips the additional silhouette pass unless an enabled effect actually reads layers behind.
+
+Debug counters cover queue peaks, render/readback duration, notification coalescing, cache indexing, visible Timeline inspection, group calls/slow frames, active background work and gizmo-cache efficiency. Normal rendering, playback and interaction have priority over background work.
+
+## Threading and lifetime contract
+
+Network access, media decode, waveform generation, cache compression, disk hydration/writes and proxy generation stay outside UI and render threads. Audio processing avoids blocking file/network operations. Jobs carry cancellation/generation state and must stop before a title, source or OBS graphics subsystem is destroyed. Repeated title open/close, audio deletion, proxy deletion and OBS shutdown must release workers, GPU resources and cached data without retained-growth trends.

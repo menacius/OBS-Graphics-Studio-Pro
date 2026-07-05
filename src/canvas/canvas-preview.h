@@ -31,6 +31,8 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QTransform>
+#include <QMatrix4x4>
+#include <QVector3D>
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
@@ -72,11 +74,25 @@ public:
     ~CanvasPreview() override;
     void prepare_for_shutdown();
 
+    enum class Editor3DView {
+        ActiveCamera = 0, Front, Back, Left, Right, Top, Bottom, CustomPerspective
+    };
+    enum class GizmoMode { Move = 0, Rotate = 1, Scale = 2 };
+    enum class GizmoAxis { None = 0, X, Y, Z, XY, XZ, YZ };
+
     struct ViewState {
         int zoom_percent = 100;
         bool fit_zoom_active = true;
         bool fit_zoom_up_to_100 = false;
         QPointF pan_offset;
+        Editor3DView editor_3d_view = Editor3DView::ActiveCamera;
+        QVector3D editor_3d_target;
+        double editor_3d_distance = 1500.0;
+        double editor_3d_yaw = -25.0;
+        double editor_3d_pitch = -18.0;
+        double editor_3d_ortho_zoom = 1.0;
+        bool editor_3d_depth_debug_visible = false;
+        bool editor_3d_normals_visible = false;
     };
 
     void set_title(std::shared_ptr<Title> t, bool preserve_view = false);
@@ -110,7 +126,15 @@ public:
     void refresh_preview();
     int last_render_cost_ms() const { return last_full_quality_render_cost_ms_; }
     double average_render_cost_ms() const { return average_render_cost_ms_; }
-    double live_playback_fps() const { return measured_live_fps_; }
+    struct DiagnosticsSample {
+        double average_render_ms = 0.0;
+        double playback_fps = 0.0;
+        qint64 elapsed_ms = 0;
+        int rendered_frames = 0;
+        int presented_frames = 0;
+    };
+    DiagnosticsSample take_diagnostics_sample();
+    double live_playback_fps() const;
     bool prepare_cached_playback_frame(double time);
     void clear_rendered_frame();
     QImage current_rendered_frame() const;
@@ -126,6 +150,18 @@ public:
     void set_adaptive_quality_mode(AdaptiveQualityMode mode);
     AdaptiveQualityMode adaptive_quality_mode() const { return adaptive_quality_mode_; }
     QString adaptive_quality_label() const;
+    void set_editor_3d_view(Editor3DView view);
+    Editor3DView editor_3d_view() const { return editor_3d_view_; }
+    void set_3d_gizmo_mode(GizmoMode mode);
+    GizmoMode gizmo_mode() const { return gizmo_mode_; }
+    void set_3d_gizmo_space(TransformAxisSpace space);
+    TransformAxisSpace gizmo_space() const;
+    void frame_3d_selection();
+    void frame_3d_all();
+    void set_3d_depth_debug_visible(bool visible);
+    bool depth_debug_visible() const { return editor_3d_depth_debug_visible_; }
+    void set_3d_normals_visible(bool visible);
+    bool normals_visible() const { return editor_3d_normals_visible_; }
     void set_selection_tool_active();
     void set_direct_selection_tool_active();
     void set_free_transform_tool_active(int mode);
@@ -145,6 +181,10 @@ public:
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     QPointF view_center_canvas_point() const;
     void set_extension_canvas_handles(const QJsonArray &handles);
+
+    /* Reuse the exact Canvas layer context menu for selections originating
+     * from the Timeline or another synchronized editor view. */
+    void show_selected_layers_context_menu(const QPoint &global_pos);
 
     bool corner_controls_available() const;
     double corner_control_radius(bool *mixed = nullptr) const;
@@ -202,6 +242,9 @@ signals:
     void layer_order_requested(int action);
     void set_layers_locked_requested(bool locked);
     void set_layers_visible_requested(bool visible);
+    void editor_3d_view_changed(int view);
+    void gizmo_mode_changed(int mode);
+    void gizmo_space_changed(int space);
 
 protected:
     bool event(QEvent *ev) override;
@@ -302,7 +345,10 @@ private:
         bool editing_text_layer = false;
         QPolygonF outline;
         QPointF handles[8];
+        bool handle_visible[8] = {false, false, false, false,
+                                  false, false, false, false};
         QPointF origin;
+        bool origin_visible = false;
     };
     struct SelectionOverlayGeometry {
         bool valid = false;
@@ -350,7 +396,7 @@ private:
     bool position_motion_path_visible(const Layer &layer) const;
     int active_position_keyframe_index(const Layer &layer) const;
     QPointF position_keyframe_canvas_point(const Layer &layer, int keyframe_index,
-                                           const Vec2Value &offset) const;
+                                           const Vec3Value &offset) const;
     QPointF position_segment_canvas_point(const Layer &layer, size_t segment_index,
                                           double temporal_progress) const;
     const std::vector<std::vector<QPointF>> &motion_path_canvas_samples(
@@ -382,9 +428,35 @@ private:
     bool show_position_motion_path_context_menu(QContextMenuEvent *ev);
     bool update_position_motion_path_hover(const QPointF &view_pt);
 
+    std::shared_ptr<Title> projection_title() const;
+    void invalidate_editor_projection(bool transform_only = true);
+    TitleCamera build_editor_view_camera() const;
+    QString editor_3d_view_name() const;
+    void reset_editor_3d_navigation();
+    bool begin_editor_3d_navigation(QMouseEvent *ev);
+    bool update_editor_3d_navigation(QMouseEvent *ev);
+    bool finish_editor_3d_navigation(QMouseEvent *ev);
+    void dolly_editor_3d_view(double delta);
+    void draw_editor_3d_view_overlay(QPainter &p);
+    void draw_3d_material_debug_overlay(QPainter &p);
+    bool collect_editor_3d_bounds(
+        const std::vector<std::shared_ptr<Layer>> &layers,
+        QVector3D &minimum, QVector3D &maximum) const;
+
+    struct GizmoGeometry;
+    GizmoGeometry build_3d_gizmo_geometry() const;
+    GizmoAxis hit_test_3d_gizmo(const QPointF &view_point) const;
+    void update_3d_gizmo_hover(const QPointF &view_point);
+    bool begin_3d_gizmo_drag(QMouseEvent *ev);
+    bool update_3d_gizmo_drag(QMouseEvent *ev);
+    bool finish_3d_gizmo_drag(QMouseEvent *ev);
+    void draw_3d_gizmo(QPainter &p);
+
     void render_to_frame();
     void render_dirty_frame_if_due();
     bool present_gpu_display_if_due();
+    void reset_live_playback_fps_measurement();
+    void record_live_playback_present();
     void begin_adaptive_interaction();
     void end_adaptive_interaction();
     double adaptive_preview_scale() const;
@@ -420,7 +492,12 @@ private:
     bool apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool layer_supports_corner_radius_handles(const Layer &layer) const;
-    QPointF corner_radius_handle_view_pos(const Layer &layer, const bgs::LiveCornerGeometry &corner) const;
+    bool corner_radius_handle_view_geometry(const Layer &layer,
+                                            const bgs::LiveCornerGeometry &corner,
+                                            QPointF &anchor_view,
+                                            QPointF &handle_view) const;
+    QPointF corner_radius_handle_view_pos(const Layer &layer,
+                                          const bgs::LiveCornerGeometry &corner) const;
     int hit_test_corner_radius_handle_index(const Layer &layer, const QPointF &view_pt) const;
     std::shared_ptr<Layer> hit_test_selected_corner_layer(const QPointF &view_pt, int &point_index) const;
     DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
@@ -511,9 +588,30 @@ private:
     const HoverOverlayGeometry &hover_overlay_geometry() const;
 
     std::shared_ptr<Title> title_;
+    mutable std::shared_ptr<Title> editor_projection_title_;
+    mutable bool editor_projection_dirty_ = true;
+    bool editor_camera_transform_only_pending_ = false;
+    Editor3DView editor_3d_view_ = Editor3DView::ActiveCamera;
+    GizmoMode gizmo_mode_ = GizmoMode::Move;
+    QVector3D editor_3d_target_;
+    double editor_3d_distance_ = 1500.0;
+    double editor_3d_yaw_ = -25.0;
+    double editor_3d_pitch_ = -18.0;
+    double editor_3d_ortho_zoom_ = 1.0;
+    bool editor_3d_depth_debug_visible_ = false;
+    bool editor_3d_normals_visible_ = false;
+    enum class Editor3DNavigationMode { None, Orbit, Pan, Dolly };
+    Editor3DNavigationMode editor_3d_navigation_mode_ = Editor3DNavigationMode::None;
+    QPointF editor_3d_navigation_start_view_;
+    QVector3D editor_3d_navigation_start_target_;
+    double editor_3d_navigation_start_distance_ = 1500.0;
+    double editor_3d_navigation_start_yaw_ = -25.0;
+    double editor_3d_navigation_start_pitch_ = -18.0;
+    double editor_3d_navigation_start_ortho_zoom_ = 1.0;
     bool shutting_down_ = false;
     std::string sel_layer_id_;
     std::vector<std::string> selected_layer_ids_;
+    std::vector<std::string> context_menu_selection_override_;
     double playhead_ = 0.0;
     int zoom_percent_ = 100;
     bool fit_zoom_active_ = true;
@@ -527,6 +625,9 @@ private:
     TitleGpuRenderSession *gpu_render_session_ = nullptr;
     uint64_t gpu_model_revision_ = 0;
     bool gpu_model_dirty_ = true;
+    /* A model edit (including keyframe insertion/removal) must receive one
+     * authoritative snapshot update before transform-only updates may resume. */
+    bool full_gpu_model_refresh_pending_ = true;
     std::atomic_bool gpu_recovery_queued_{false};
     QString gpu_underlay_key_;
     mutable bool gpu_overlay_dirty_ = true;
@@ -553,13 +654,19 @@ private:
     bool adaptive_rendering_enabled_ = false;
     AdaptiveQualityMode adaptive_quality_mode_ = AdaptiveQualityMode::Auto;
     bool adaptive_interaction_active_ = false;
+    /* Transient state for the currently active 3D pointer interaction. It is
+     * never allowed to survive a model/keyframe refresh boundary. */
+    bool interactive_transform_pending_ = false;
+    /* Gives the first exact post-release snapshot monitor-cadence priority,
+     * without incorrectly treating that snapshot as transform-only. */
+    bool interactive_settle_pending_ = false;
     bool force_live_full_quality_render_ = false;
     double frame_image_preview_scale_ = 1.0;
     int last_full_quality_render_cost_ms_ = 0;
-    qint64 render_cost_accumulator_ms_ = 0;
+    qint64 render_cost_accumulator_ns_ = 0;
     int render_cost_sample_count_ = 0;
     double average_render_cost_ms_ = 0.0;
-    QElapsedTimer live_fps_timer_;
+    QElapsedTimer diagnostics_window_timer_;
     int live_fps_frame_count_ = 0;
     double measured_live_fps_ = 0.0;
     QHash<QString, QImage> editor_quality_cache_;
@@ -612,6 +719,9 @@ private:
         bool incoming = false;
         bool linked = true;
         bool moved = false;
+        bool path_3d = false;
+        QVector3D plane_point;
+        QVector3D plane_normal;
     };
     SpatialTangentDragState spatial_tangent_drag_;
     struct SpatialVertexDragState {
@@ -619,8 +729,11 @@ private:
         std::string layer_id;
         int keyframe_index = -1;
         double keyframe_time = 0.0;
-        Vec2Value start_value;
+        Vec3Value start_value;
         bool moved = false;
+        bool path_3d = false;
+        QVector3D plane_point;
+        QVector3D plane_normal;
     };
     SpatialVertexDragState spatial_vertex_drag_;
     enum class MotionPathHoverType {
@@ -714,6 +827,50 @@ private:
     float drag_start_origin_x_ = 0.5f;
     float drag_start_origin_y_ = 0.5f;
     QRectF drag_start_selection_bounds_;
+    struct GizmoGeometry {
+        bool valid = false;
+        QVector3D origin_world;
+        QPointF origin_view;
+        QVector3D axes_world[3];
+        QPointF axis_end_view[3];
+        bool axis_visible[3] = {false, false, false};
+        QPolygonF plane_view[3]; /* XY, XZ, YZ */
+        std::vector<QPolygonF> rotation_rings;
+        double world_length = 120.0;
+    };
+    mutable GizmoGeometry gizmo_geometry_cache_;
+    mutable bool gizmo_geometry_cache_valid_ = false;
+
+    struct GizmoLayerStart {
+        std::string id;
+        Vec2Value position;
+        double position_z = 0.0;
+        Vec2Value scale;
+        double scale_z = 1.0;
+        double rotation_x = 0.0;
+        double rotation_y = 0.0;
+        double rotation_z = 0.0;
+        double orientation_x = 0.0;
+        double orientation_y = 0.0;
+        double orientation_z = 0.0;
+    };
+    struct GizmoDragState {
+        bool active = false;
+        bool changed = false;
+        GizmoAxis axis = GizmoAxis::None;
+        QPointF start_view;
+        QPointF last_view;
+        bool has_last_view = false;
+        QPointF origin_view;
+        QVector3D axes_world[3];
+        QPointF axis_screen[3];
+        double world_length = 120.0;
+        double start_angle = 0.0;
+        std::vector<GizmoLayerStart> layers;
+    };
+    GizmoDragState gizmo_drag_;
+    GizmoAxis gizmo_hover_axis_ = GizmoAxis::None;
+
     struct GradientDragState {
         bool active = false;
         bool radial = false;

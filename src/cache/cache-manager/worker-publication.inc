@@ -608,9 +608,12 @@ bool CacheManager::retryFailedJob(RenderQueueManager::Job job,
 
 bool CacheManager::renderJob(RenderQueueManager::Job job)
 {
-    bgl::perf::BackgroundJobScope performance_job_scope;
     if (!job.title || !jobIsCurrent(job))
         return false;
+    bgl::perf::BackgroundJobScope performance_job_scope;
+    bgl::perf::ScopedTimer performance_render_timer(
+        bgl::perf::Counter::CacheRenderNanoseconds);
+    bgl::perf::add(bgl::perf::Counter::CacheRenderJobs);
 
     QString live_state_key = job.cue_state_key;
     bool was_stale = false;
@@ -890,6 +893,9 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
     Q_UNUSED(force);
     if (!hasPendingGpuReadbacks())
         return false;
+    bgl::perf::ScopedTimer performance_readback_timer(
+        bgl::perf::Counter::GpuReadbackNanoseconds);
+    bgl::perf::add(bgl::perf::Counter::GpuReadbackJobs);
 
     WorkerPipeline::PendingReadback pending =
         std::move(worker_pipeline_->pending_readbacks.front());

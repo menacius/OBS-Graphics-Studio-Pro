@@ -13,7 +13,14 @@ void TimelineWidget::set_graph_editor_enabled(bool enabled)
     scroll_x_ += (int)std::round((new_offset - old_offset) * pixels_per_sec_);
     clamp_scroll();
     drag_mode_ = DragMode::None;
+    if (!enabled && graph_channel_mode_ != GraphChannelMode::All) {
+        temporal_drag_snapshots_.clear();
+        graph_drag_hit_ = {};
+        graph_channel_mode_ = GraphChannelMode::All;
+        emit graph_channel_mode_changed((int)graph_channel_mode_);
+    }
     graph_fit_pending_ = true;
+    notify_graph_channel_count();
     unsetCursor();
     update();
     emit graph_editor_enabled_changed(enabled);
@@ -30,6 +37,57 @@ void TimelineWidget::set_graph_view_mode(int mode)
     emit graph_view_mode_changed((int)graph_view_mode_);
 }
 
+int TimelineWidget::graph_channel_component() const
+{
+    if (graph_channel_mode_ == GraphChannelMode::All) return -1;
+    if (graph_channel_mode_ == GraphChannelMode::Fourth) return 3;
+    return static_cast<int>(graph_channel_mode_);
+}
+
+TimelineWidget::GraphChannelMode TimelineWidget::graph_mode_for_component(
+    int component) const
+{
+    if (component == 3) return GraphChannelMode::Fourth;
+    if (component >= 0 && component <= 2)
+        return static_cast<GraphChannelMode>(component);
+    return GraphChannelMode::All;
+}
+
+void TimelineWidget::set_graph_channel_mode(int mode)
+{
+    const int count = graph_channel_count();
+    GraphChannelMode next = GraphChannelMode::All;
+    const GraphChannelMode requested = mode == 4
+        ? GraphChannelMode::Fourth
+        : mode >= 0 && mode <= 2
+            ? static_cast<GraphChannelMode>(mode)
+            : GraphChannelMode::All;
+    const int component = requested == GraphChannelMode::Fourth
+        ? 3 : requested == GraphChannelMode::All
+            ? -1 : static_cast<int>(requested);
+    if (component >= 0 && component < count)
+        next = requested;
+    if (graph_channel_mode_ == next) return;
+    graph_channel_mode_ = next;
+    /* X/Y/Z/All are views of the same authored keyframe sequence. Switching
+     * channels must not discard the user's keyframe selection or break a
+     * multi-key edit merely because a different component is being inspected. */
+    temporal_drag_snapshots_.clear();
+    graph_drag_hit_ = {};
+    drag_mode_ = DragMode::None;
+    graph_fit_pending_ = true;
+    update();
+    emit graph_channel_mode_changed((int)graph_channel_mode_);
+}
+
+void TimelineWidget::select_graph_property(const std::string &owner_id,
+                                           const std::string &property_name,
+                                           int channel_mode)
+{
+    set_graph_target(owner_id, property_name);
+    set_graph_channel_mode(channel_mode);
+}
+
 QRect TimelineWidget::graph_rect() const
 {
     return QRect(0, ruler_height(), width(), std::max(0, height() - ruler_height()));
@@ -40,27 +98,65 @@ bool TimelineWidget::graph_ref_property(const KeyframeRef &ref,
                                         std::shared_ptr<Layer> *layer) const
 {
     if (!title_) return false;
-    auto found_layer = title_->find_layer(ref.layer_id);
-    if (!found_layer) return false;
     TimelinePropertyRef found = const_cast<TimelineWidget *>(this)
-        ->find_timeline_property(*found_layer, ref.prop_name);
-    if (!found || ref.index < 0 || ref.index >= (int)found.keyframe_count())
-        return false;
+        ->find_timeline_property(ref.layer_id, ref.prop_name);
+    if (!found || !found.graph_eligible()) return false;
+    const int count = found.graph_channel_count();
+    if (count > 1) {
+        if (graph_channel_mode_ == GraphChannelMode::All)
+            found = found.graph_all_channels();
+        else
+            found = found.graph_channel(std::clamp(graph_channel_component(), 0, count - 1));
+    }
+    if (ref.index < 0 || ref.index >= (int)found.keyframe_count()) return false;
     if (prop) *prop = found;
-    if (layer) *layer = found_layer;
+    if (layer) {
+        const QString label = timeline_camera_from_owner(*title_, ref.layer_id)
+            ? QString::fromStdString(timeline_camera_from_owner(*title_, ref.layer_id)->name)
+            : ref.layer_id == kTitleCameraSwitchOwner
+                ? QStringLiteral("Camera Switches") : QString();
+        *layer = timeline_owner_proxy(*title_, ref.layer_id, label);
+    }
     return true;
 }
 
-TimelinePropertyRef TimelineWidget::active_graph_property(
+void TimelineWidget::set_graph_target(const std::string &owner_id,
+                                      const std::string &property_name)
+{
+    if (graph_target_owner_id_ == owner_id &&
+        graph_target_property_name_ == property_name) {
+        notify_graph_channel_count();
+        return;
+    }
+    graph_target_owner_id_ = owner_id;
+    graph_target_property_name_ = property_name;
+    selected_keyframes_.clear();
+    graph_channel_mode_ = GraphChannelMode::All;
+    graph_fit_pending_ = true;
+    notify_graph_channel_count();
+    emit graph_channel_mode_changed((int)graph_channel_mode_);
+    update();
+}
+
+TimelinePropertyRef TimelineWidget::active_graph_base_property(
     std::shared_ptr<Layer> *layer) const
 {
     if (!title_) return {};
-    for (const KeyframeRef &ref : selected_keyframes_) {
-        TimelinePropertyRef prop;
-        std::shared_ptr<Layer> owner;
-        if (graph_ref_property(ref, &prop, &owner)) {
-            if (layer) *layer = owner;
-            return prop;
+    if (!graph_target_owner_id_.empty() &&
+        !graph_target_property_name_.empty()) {
+        TimelinePropertyRef target = timeline_property_for_owner(
+            *title_, graph_target_owner_id_, graph_target_property_name_);
+        if (target && target.graph_eligible()) {
+            if (layer) {
+                const TitleCamera *camera = timeline_camera_from_owner(
+                    *title_, graph_target_owner_id_);
+                const QString label = camera
+                    ? QString::fromStdString(camera->name)
+                    : graph_target_owner_id_ == kTitleCameraSwitchOwner
+                        ? QStringLiteral("Camera Switches") : QString();
+                *layer = timeline_owner_proxy(*title_, graph_target_owner_id_, label);
+            }
+            return target;
         }
     }
     auto choose_layer = [&](const std::string &id) -> TimelinePropertyRef {
@@ -83,6 +179,79 @@ TimelinePropertyRef TimelineWidget::active_graph_property(
         if (prop) return prop;
     }
     return {};
+}
+
+int TimelineWidget::graph_channel_count() const
+{
+    TimelinePropertyRef base = active_graph_base_property();
+    return base ? base.graph_channel_count() : 0;
+}
+
+QString TimelineWidget::graph_channel_label(int component) const
+{
+    TimelinePropertyRef base = active_graph_base_property();
+    if (!base) {
+        static const char *fallback[] = {"X", "Y", "Z", "W"};
+        return QString::fromLatin1(fallback[std::clamp(component, 0, 3)]);
+    }
+    return timeline_property_channel_label(base, component);
+}
+
+QColor TimelineWidget::graph_channel_color(int component) const
+{
+    const int safe_component = std::clamp(component, 0, 3);
+    const QString label = graph_channel_label(safe_component).trimmed().toUpper();
+    if (label == QStringLiteral("A")) return QColor(205, 205, 205);
+    if (label == QStringLiteral("R")) return QColor(224, 82, 89);
+    if (label == QStringLiteral("G")) return QColor(91, 190, 105);
+    if (label == QStringLiteral("B")) return QColor(75, 139, 230);
+    if (safe_component == 0) return QColor(224, 82, 89);
+    if (safe_component == 1) return QColor(91, 190, 105);
+    if (safe_component == 2) return QColor(75, 139, 230);
+    return QColor(190, 110, 225);
+}
+
+void TimelineWidget::notify_graph_channel_count()
+{
+    const int count = graph_channel_count();
+    if (count <= 1 && graph_channel_mode_ != GraphChannelMode::All) {
+        graph_channel_mode_ = GraphChannelMode::All;
+        emit graph_channel_mode_changed((int)graph_channel_mode_);
+    } else if (count > 1 && graph_channel_mode_ != GraphChannelMode::All &&
+               (graph_channel_component() < 0 ||
+                graph_channel_component() >= count)) {
+        graph_channel_mode_ = GraphChannelMode::All;
+        emit graph_channel_mode_changed((int)graph_channel_mode_);
+    }
+    emit graph_channel_count_changed(count);
+}
+
+TimelinePropertyRef TimelineWidget::active_graph_property(
+    std::shared_ptr<Layer> *layer) const
+{
+    TimelinePropertyRef base = active_graph_base_property(layer);
+    if (!base) return {};
+    const int count = base.graph_channel_count();
+    if (count <= 1) return base;
+    if (graph_channel_mode_ == GraphChannelMode::All)
+        return base.graph_all_channels();
+    return base.graph_channel(std::clamp(graph_channel_component(), 0, count - 1));
+}
+
+std::vector<TimelinePropertyRef> TimelineWidget::active_graph_channels(
+    std::shared_ptr<Layer> *layer) const
+{
+    TimelinePropertyRef base = active_graph_base_property(layer);
+    if (!base) return {};
+    const int count = base.graph_channel_count();
+    if (count <= 1) return {base};
+    if (graph_channel_mode_ != GraphChannelMode::All)
+        return {base.graph_channel(std::clamp(graph_channel_component(), 0, count - 1))};
+    std::vector<TimelinePropertyRef> channels;
+    channels.reserve(static_cast<size_t>(count));
+    for (int component = 0; component < count; ++component)
+        channels.push_back(base.graph_channel(component));
+    return channels;
 }
 
 double TimelineWidget::graph_value_to_y(double value) const
@@ -108,7 +277,8 @@ void TimelineWidget::update_graph_fit(bool selection_only)
 {
     std::shared_ptr<Layer> owner;
     TimelinePropertyRef prop = active_graph_property(&owner);
-    if (!prop || !title_ || !owner) {
+    const std::vector<TimelinePropertyRef> channels = active_graph_channels();
+    if (!prop || channels.empty() || !title_ || !owner) {
         graph_value_min_ = -1.0;
         graph_value_max_ = 1.0;
         graph_fit_pending_ = false;
@@ -121,9 +291,10 @@ void TimelineWidget::update_graph_fit(bool selection_only)
         minimum = std::min(minimum, value);
         maximum = std::max(maximum, value);
     };
-    const auto sample_value = [&](double local_time) {
-        return graph_view_mode_ == GraphViewMode::Speed
-            ? prop.graph_speed(local_time) : prop.graph_value(local_time);
+    auto include_channel_value = [&](const TimelinePropertyRef &channel,
+                                     double local_time) {
+        include(graph_view_mode_ == GraphViewMode::Speed
+            ? channel.graph_speed(local_time) : channel.graph_value(local_time));
     };
 
     std::vector<int> selected_indices;
@@ -135,22 +306,11 @@ void TimelineWidget::update_graph_fit(bool selection_only)
         for (int index : selected_indices) {
             if (index < 0 || index >= (int)prop.keyframe_count()) continue;
             const double local_time = prop.keyframe_time((size_t)index);
-            const double key_value = prop.graph_value(local_time);
+            for (const TimelinePropertyRef &channel : channels)
+                include_channel_value(channel, local_time);
             if (graph_view_mode_ == GraphViewMode::Speed) {
                 include(prop.keyframe_temporal_speed((size_t)index, true));
                 include(prop.keyframe_temporal_speed((size_t)index, false));
-            } else {
-                include(key_value);
-                if (index > 0) {
-                    const double seconds = (local_time - prop.keyframe_time((size_t)index - 1)) *
-                        prop.keyframe_temporal_influence((size_t)index, true) / 100.0;
-                    include(key_value - prop.keyframe_temporal_speed((size_t)index, true) * seconds);
-                }
-                if (index + 1 < (int)prop.keyframe_count()) {
-                    const double seconds = (prop.keyframe_time((size_t)index + 1) - local_time) *
-                        prop.keyframe_temporal_influence((size_t)index, false) / 100.0;
-                    include(key_value + prop.keyframe_temporal_speed((size_t)index, false) * seconds);
-                }
             }
         }
     } else {
@@ -158,26 +318,16 @@ void TimelineWidget::update_graph_fit(bool selection_only)
         const double local_duration = std::max(0.0, owner->out_time - owner->in_time);
         for (int i = 0; i <= samples; ++i) {
             const double local_time = local_duration * (double)i / (double)samples;
-            include(sample_value(local_time));
+            for (const TimelinePropertyRef &channel : channels)
+                include_channel_value(channel, local_time);
         }
         for (size_t i = 0; i < prop.keyframe_count(); ++i) {
             const double key_time = prop.keyframe_time(i);
-            const double key_value = prop.graph_value(key_time);
-            include(graph_view_mode_ == GraphViewMode::Speed
-                ? prop.keyframe_temporal_speed(i, true) : key_value);
-            include(graph_view_mode_ == GraphViewMode::Speed
-                ? prop.keyframe_temporal_speed(i, false) : key_value);
-            if (graph_view_mode_ == GraphViewMode::Value) {
-                if (i > 0) {
-                    const double seconds = (key_time - prop.keyframe_time(i - 1)) *
-                        prop.keyframe_temporal_influence(i, true) / 100.0;
-                    include(key_value - prop.keyframe_temporal_speed(i, true) * seconds);
-                }
-                if (i + 1 < prop.keyframe_count()) {
-                    const double seconds = (prop.keyframe_time(i + 1) - key_time) *
-                        prop.keyframe_temporal_influence(i, false) / 100.0;
-                    include(key_value + prop.keyframe_temporal_speed(i, false) * seconds);
-                }
+            for (const TimelinePropertyRef &channel : channels)
+                include_channel_value(channel, key_time);
+            if (graph_view_mode_ == GraphViewMode::Speed) {
+                include(prop.keyframe_temporal_speed(i, true));
+                include(prop.keyframe_temporal_speed(i, false));
             }
         }
     }
@@ -290,6 +440,7 @@ void TimelineWidget::paint_graph_editor(QPainter &p, const QRect &dirty)
     TimelinePropertyRef prop;
     std::shared_ptr<Layer> owner;
     prop = active_graph_property(&owner);
+    const std::vector<TimelinePropertyRef> channels = active_graph_channels();
 
     const QRect area = graph_rect();
     if (area.isEmpty()) return;
@@ -368,71 +519,90 @@ void TimelineWidget::paint_graph_editor(QPainter &p, const QRect &dirty)
         p.drawLine(x, area.top(), x, area.bottom());
     }
 
-    QPainterPath path;
-    bool started = false;
-    for (int x = area.left(); x <= area.right(); x += 2) {
-        const double global_time = std::clamp(graph_x_to_time(x), 0.0, title_->duration);
-        if (global_time < owner->in_time || global_time > owner->out_time) {
-            started = false;
-            continue;
-        }
-        const double local_time = global_time - owner->in_time;
-        const double value = graph_view_mode_ == GraphViewMode::Speed
-            ? prop.graph_speed(local_time) : prop.graph_value(local_time);
-        if (!std::isfinite(value)) { started = false; continue; }
-        const QPointF point(x, graph_value_to_y(value));
-        if (!started) { path.moveTo(point); started = true; }
-        else path.lineTo(point);
-    }
-    p.setPen(QPen(curve, 1.6));
-    p.setBrush(Qt::NoBrush);
-    p.drawPath(path);
+    auto channel_color = [&](int visible_component) {
+        const int total_channels = graph_channel_count();
+        if (total_channels <= 1) return curve;
+        const int authored_component = graph_channel_mode_ == GraphChannelMode::All
+            ? visible_component : std::clamp(graph_channel_component(), 0, total_channels - 1);
+        return graph_channel_color(authored_component);
+    };
 
+    for (int component = 0; component < (int)channels.size(); ++component) {
+        const TimelinePropertyRef &channel = channels[static_cast<size_t>(component)];
+        QPainterPath path;
+        bool started = false;
+        for (int x = area.left(); x <= area.right(); x += 2) {
+            const double global_time = std::clamp(graph_x_to_time(x), 0.0, title_->duration);
+            if (global_time < owner->in_time || global_time > owner->out_time) {
+                started = false;
+                continue;
+            }
+            const double local_time = global_time - owner->in_time;
+            const double value = graph_view_mode_ == GraphViewMode::Speed
+                ? channel.graph_speed(local_time) : channel.graph_value(local_time);
+            if (!std::isfinite(value)) { started = false; continue; }
+            const QPointF point(x, graph_value_to_y(value));
+            if (!started) { path.moveTo(point); started = true; }
+            else path.lineTo(point);
+        }
+        p.setPen(QPen(channel_color(component), 1.6));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
+    }
+
+    const int handle_component = channels.empty() ? 0 : std::clamp(
+        graph_drag_hit_.channel >= 0 ? graph_drag_hit_.channel : 0,
+        0, (int)channels.size() - 1);
     for (size_t index = 0; index < prop.keyframe_count(); ++index) {
         const double time = prop.keyframe_time(index);
         const double global_time = owner->in_time + time;
-        const double in_speed = prop.keyframe_temporal_speed(index, true);
-        const double out_speed = prop.keyframe_temporal_speed(index, false);
-        const double key_value = prop.graph_value(time);
         const KeyframeRef ref{owner ? owner->id : std::string(), prop.name(), (int)index};
         const bool selected = selected_keyframes_.count(ref) != 0;
-        p.setPen(QPen(selected ? highlight : curve.darker(140), 1.0));
-        p.setBrush(selected ? highlight : background);
-        QPointF value_vertex(time_to_x(global_time), graph_value_to_y(key_value));
-        QPointF incoming_vertex(time_to_x(global_time), graph_value_to_y(in_speed));
-        QPointF outgoing_vertex(time_to_x(global_time), graph_value_to_y(out_speed));
-        if (graph_view_mode_ == GraphViewMode::Value) {
-            p.drawEllipse(value_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
-        } else {
-            if (index > 0)
-                p.drawEllipse(incoming_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
-            if (index + 1 < prop.keyframe_count() &&
-                (index == 0 || std::abs(out_speed - in_speed) > 1e-9))
-                p.drawEllipse(outgoing_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
-        }
 
-        if (!selected) continue;
-        if (index > 0) {
-            const double influence = prop.keyframe_temporal_influence(index, true) / 100.0;
-            const double seconds = (time - prop.keyframe_time(index - 1)) * influence;
-            const double handle_value = graph_view_mode_ == GraphViewMode::Speed
-                ? in_speed : key_value - in_speed * seconds;
-            const QPointF hp(time_to_x(global_time - seconds), graph_value_to_y(handle_value));
-            const QPointF base = graph_view_mode_ == GraphViewMode::Speed
-                ? incoming_vertex : value_vertex;
-            p.setPen(QPen(handle, 1.0)); p.drawLine(base, hp);
-            p.setBrush(highlight); p.drawRect(QRectF(hp.x() - 3, hp.y() - 3, 6, 6));
-        }
-        if (index + 1 < prop.keyframe_count()) {
-            const double influence = prop.keyframe_temporal_influence(index, false) / 100.0;
-            const double seconds = (prop.keyframe_time(index + 1) - time) * influence;
-            const double handle_value = graph_view_mode_ == GraphViewMode::Speed
-                ? out_speed : key_value + out_speed * seconds;
-            const QPointF hp(time_to_x(global_time + seconds), graph_value_to_y(handle_value));
-            const QPointF base = graph_view_mode_ == GraphViewMode::Speed
-                ? outgoing_vertex : value_vertex;
-            p.setPen(QPen(handle, 1.0)); p.drawLine(base, hp);
-            p.setBrush(highlight); p.drawRect(QRectF(hp.x() - 3, hp.y() - 3, 6, 6));
+        for (int component = 0; component < (int)channels.size(); ++component) {
+            const TimelinePropertyRef &channel = channels[static_cast<size_t>(component)];
+            const double key_value = channel.graph_value(time);
+            const double in_speed = channel.graph_speed(time - 1e-6);
+            const double out_speed = channel.graph_speed(time + 1e-6);
+            const QColor component_color = channel_color(component);
+            p.setPen(QPen(selected ? highlight : component_color.darker(140), 1.0));
+            p.setBrush(selected ? highlight : background);
+            const QPointF value_vertex(time_to_x(global_time), graph_value_to_y(key_value));
+            const QPointF incoming_vertex(time_to_x(global_time), graph_value_to_y(in_speed));
+            const QPointF outgoing_vertex(time_to_x(global_time), graph_value_to_y(out_speed));
+            if (graph_view_mode_ == GraphViewMode::Value) {
+                p.drawEllipse(value_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
+            } else {
+                if (index > 0)
+                    p.drawEllipse(incoming_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
+                if (index + 1 < prop.keyframe_count() &&
+                    (index == 0 || std::abs(out_speed - in_speed) > 1e-9))
+                    p.drawEllipse(outgoing_vertex, selected ? 4.5 : 3.5, selected ? 4.5 : 3.5);
+            }
+
+            if (!selected || component != handle_component) continue;
+            if (index > 0) {
+                const double influence = prop.keyframe_temporal_influence(index, true) / 100.0;
+                const double seconds = (time - prop.keyframe_time(index - 1)) * influence;
+                const double handle_value = graph_view_mode_ == GraphViewMode::Speed
+                    ? in_speed : key_value - in_speed * seconds;
+                const QPointF hp(time_to_x(global_time - seconds), graph_value_to_y(handle_value));
+                const QPointF base = graph_view_mode_ == GraphViewMode::Speed
+                    ? incoming_vertex : value_vertex;
+                p.setPen(QPen(handle, 1.0)); p.drawLine(base, hp);
+                p.setBrush(highlight); p.drawRect(QRectF(hp.x() - 3, hp.y() - 3, 6, 6));
+            }
+            if (index + 1 < prop.keyframe_count()) {
+                const double influence = prop.keyframe_temporal_influence(index, false) / 100.0;
+                const double seconds = (prop.keyframe_time(index + 1) - time) * influence;
+                const double handle_value = graph_view_mode_ == GraphViewMode::Speed
+                    ? out_speed : key_value + out_speed * seconds;
+                const QPointF hp(time_to_x(global_time + seconds), graph_value_to_y(handle_value));
+                const QPointF base = graph_view_mode_ == GraphViewMode::Speed
+                    ? outgoing_vertex : value_vertex;
+                p.setPen(QPen(handle, 1.0)); p.drawLine(base, hp);
+                p.setBrush(highlight); p.drawRect(QRectF(hp.x() - 3, hp.y() - 3, 6, 6));
+            }
         }
     }
 
@@ -441,10 +611,14 @@ void TimelineWidget::paint_graph_editor(QPainter &p, const QRect &dirty)
     p.drawLine(playhead_x, area.top(), playhead_x, area.bottom());
     if (playhead_ >= owner->in_time && playhead_ <= owner->out_time) {
         const double local_playhead = playhead_ - owner->in_time;
-        const double current = graph_view_mode_ == GraphViewMode::Speed
-            ? prop.graph_speed(local_playhead) : prop.graph_value(local_playhead);
-        p.setBrush(TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::Current));
-        p.drawEllipse(QPointF(playhead_x, graph_value_to_y(current)), 3.5, 3.5);
+        for (int component = 0; component < (int)channels.size(); ++component) {
+            const TimelinePropertyRef &channel = channels[static_cast<size_t>(component)];
+            const double current = graph_view_mode_ == GraphViewMode::Speed
+                ? channel.graph_speed(local_playhead) : channel.graph_value(local_playhead);
+            p.setBrush(channel_color(component));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QPointF(playhead_x, graph_value_to_y(current)), 3.5, 3.5);
+        }
     }
 
     if (drag_mode_ == DragMode::GraphMarquee) {
@@ -457,10 +631,17 @@ void TimelineWidget::paint_graph_editor(QPainter &p, const QRect &dirty)
     p.setPen(text);
     const QString view = graph_view_mode_ == GraphViewMode::Speed
         ? bgl_tr("OBSTitles.SpeedGraph") : bgl_tr("OBSTitles.ValueGraph");
-    p.drawText(8, 0, width() - 16, 18, Qt::AlignVCenter | Qt::AlignLeft,
-               QStringLiteral("%1 · %2 · %3").arg(view,
-                   owner ? QString::fromStdString(owner->name) : QString(),
-                   property_label(prop.name())));
+    const int channel_count = graph_channel_count();
+    TimelinePropertyRef base_channel_property = active_graph_base_property();
+    const QString channel_name = channel_count <= 1 ? QString()
+        : graph_channel_mode_ == GraphChannelMode::All ? QStringLiteral("All")
+        : timeline_property_channel_label(base_channel_property,
+                                          graph_channel_component());
+    QString graph_title = QStringLiteral("%1 · %2 · %3").arg(view,
+        owner ? QString::fromStdString(owner->name) : QString(),
+        property_label(prop.name()));
+    if (!channel_name.isEmpty()) graph_title += QStringLiteral(" · %1").arg(channel_name);
+    p.drawText(8, 0, width() - 16, 18, Qt::AlignVCenter | Qt::AlignLeft, graph_title);
 }
 
 TimelineWidget::GraphHit TimelineWidget::graph_hit_test(const QPoint &pos) const
@@ -469,12 +650,17 @@ TimelineWidget::GraphHit TimelineWidget::graph_hit_test(const QPoint &pos) const
     if (!graph_editor_enabled_ || !graph_rect().contains(pos)) return result;
     std::shared_ptr<Layer> owner;
     TimelinePropertyRef prop = active_graph_property(&owner);
-    if (!prop || !owner) return result;
+    const std::vector<TimelinePropertyRef> channels = active_graph_channels();
+    if (!prop || !owner || channels.empty()) return result;
     const double radius2 = 64.0;
-    auto consider = [&](GraphHitType type, const KeyframeRef &ref, const QPointF &point) {
+    auto consider = [&](GraphHitType type, const KeyframeRef &ref,
+                        const QPointF &point, int channel) {
         const double dx = point.x() - pos.x(), dy = point.y() - pos.y();
         if (dx * dx + dy * dy <= radius2) {
-            result.type = type; result.ref = ref; result.point = point;
+            result.type = type;
+            result.ref = ref;
+            result.point = point;
+            result.channel = channel;
             return true;
         }
         return false;
@@ -482,35 +668,45 @@ TimelineWidget::GraphHit TimelineWidget::graph_hit_test(const QPoint &pos) const
     for (int index = (int)prop.keyframe_count() - 1; index >= 0; --index) {
         const double time = prop.keyframe_time((size_t)index);
         const double global_time = owner->in_time + time;
-        const double in_speed = prop.keyframe_temporal_speed((size_t)index, true);
-        const double out_speed = prop.keyframe_temporal_speed((size_t)index, false);
-        const double key_value = prop.graph_value(time);
         const KeyframeRef ref{owner->id, prop.name(), index};
-        if (selected_keyframes_.count(ref)) {
-            if (index > 0) {
-                const double seconds = (time - prop.keyframe_time((size_t)index - 1)) *
-                    prop.keyframe_temporal_influence((size_t)index, true) / 100.0;
-                const double value = graph_view_mode_ == GraphViewMode::Speed
-                    ? in_speed : key_value - in_speed * seconds;
-                if (consider(GraphHitType::IncomingHandle, ref,
-                             QPointF(time_to_x(global_time - seconds), graph_value_to_y(value)))) return result;
+        const bool selected = selected_keyframes_.count(ref) != 0;
+        for (int component = (int)channels.size() - 1; component >= 0; --component) {
+            const TimelinePropertyRef &channel = channels[static_cast<size_t>(component)];
+            const double key_value = channel.graph_value(time);
+            const double in_speed = channel.graph_speed(time - 1e-6);
+            const double out_speed = channel.graph_speed(time + 1e-6);
+            if (selected) {
+                if (index > 0) {
+                    const double seconds = (time - prop.keyframe_time((size_t)index - 1)) *
+                        prop.keyframe_temporal_influence((size_t)index, true) / 100.0;
+                    const double value = graph_view_mode_ == GraphViewMode::Speed
+                        ? in_speed : key_value - in_speed * seconds;
+                    if (consider(GraphHitType::IncomingHandle, ref,
+                            QPointF(time_to_x(global_time - seconds), graph_value_to_y(value)),
+                            component)) return result;
+                }
+                if (index + 1 < (int)prop.keyframe_count()) {
+                    const double seconds = (prop.keyframe_time((size_t)index + 1) - time) *
+                        prop.keyframe_temporal_influence((size_t)index, false) / 100.0;
+                    const double value = graph_view_mode_ == GraphViewMode::Speed
+                        ? out_speed : key_value + out_speed * seconds;
+                    if (consider(GraphHitType::OutgoingHandle, ref,
+                            QPointF(time_to_x(global_time + seconds), graph_value_to_y(value)),
+                            component)) return result;
+                }
             }
-            if (index + 1 < (int)prop.keyframe_count()) {
-                const double seconds = (prop.keyframe_time((size_t)index + 1) - time) *
-                    prop.keyframe_temporal_influence((size_t)index, false) / 100.0;
-                const double value = graph_view_mode_ == GraphViewMode::Speed
-                    ? out_speed : key_value + out_speed * seconds;
-                if (consider(GraphHitType::OutgoingHandle, ref,
-                             QPointF(time_to_x(global_time + seconds), graph_value_to_y(value)))) return result;
-            }
+            if (graph_view_mode_ == GraphViewMode::Speed) {
+                if (index > 0 && consider(GraphHitType::Keyframe, ref,
+                        QPointF(time_to_x(global_time), graph_value_to_y(in_speed)),
+                        component)) return result;
+                if (index + 1 < (int)prop.keyframe_count() &&
+                    consider(GraphHitType::Keyframe, ref,
+                        QPointF(time_to_x(global_time), graph_value_to_y(out_speed)),
+                        component)) return result;
+            } else if (consider(GraphHitType::Keyframe, ref,
+                    QPointF(time_to_x(global_time), graph_value_to_y(key_value)),
+                    component)) return result;
         }
-        if (graph_view_mode_ == GraphViewMode::Speed) {
-            if (index > 0 && consider(GraphHitType::Keyframe, ref,
-                    QPointF(time_to_x(global_time), graph_value_to_y(in_speed)))) return result;
-            if (index + 1 < (int)prop.keyframe_count() && consider(GraphHitType::Keyframe, ref,
-                    QPointF(time_to_x(global_time), graph_value_to_y(out_speed)))) return result;
-        } else if (consider(GraphHitType::Keyframe, ref,
-                    QPointF(time_to_x(global_time), graph_value_to_y(key_value)))) return result;
     }
     return result;
 }
@@ -586,12 +782,23 @@ bool TimelineWidget::graph_mouse_press(QMouseEvent *ev)
         if (!graph_ref_property(ref, &prop)) continue;
         TemporalDragSnapshot snapshot;
         snapshot.ref = ref;
+        TimelinePropertyRef display_prop = prop;
+        if (graph_channel_mode_ == GraphChannelMode::All &&
+            prop.graph_channel_count() > 1 && hit.channel >= 0)
+            display_prop = prop.graph_channel(hit.channel);
         snapshot.incoming_influence = prop.keyframe_temporal_influence((size_t)ref.index, true);
         snapshot.outgoing_influence = prop.keyframe_temporal_influence((size_t)ref.index, false);
-        snapshot.incoming_speed = prop.keyframe_temporal_speed((size_t)ref.index, true);
-        snapshot.outgoing_speed = prop.keyframe_temporal_speed((size_t)ref.index, false);
+        snapshot.incoming_speed = display_prop.graph_speed(
+            prop.keyframe_time((size_t)ref.index) - 1e-6);
+        snapshot.outgoing_speed = display_prop.graph_speed(
+            prop.keyframe_time((size_t)ref.index) + 1e-6);
         snapshot.time = prop.keyframe_time((size_t)ref.index);
-        snapshot.value = prop.graph_value(snapshot.time);
+        snapshot.value = display_prop.graph_value(snapshot.time);
+        snapshot.channel_count = graph_channel_mode_ == GraphChannelMode::All
+            ? prop.graph_channel_count() : 1;
+        for (int component = 0; component < snapshot.channel_count && component < 4; ++component)
+            snapshot.channel_values[static_cast<size_t>(component)] =
+                prop.graph_channel(component).graph_value(snapshot.time);
         snapshot.linked = prop.keyframe_temporal_tangents_linked((size_t)ref.index);
         temporal_drag_snapshots_.push_back(snapshot);
     }
@@ -637,7 +844,11 @@ bool TimelineWidget::graph_mouse_move(QMouseEvent *ev)
         update(); ev->accept(); return true;
     }
     if (drag_mode_ == DragMode::GraphKeyframe) {
-        double time_delta = x_to_time(ev->pos().x()) - x_to_time(graph_drag_start_.x());
+        /* Graph editing is sub-frame by default. Ctrl/Command explicitly
+         * requests project-frame snapping; the ordinary timeline remains
+         * frame-snapped at all times. */
+        double time_delta = graph_x_to_time(ev->pos().x()) -
+                            graph_x_to_time(graph_drag_start_.x());
         double value_delta = graph_y_to_value(ev->pos().y()) - graph_y_to_value(graph_drag_start_.y());
         const QPoint pixel_delta = ev->pos() - graph_drag_start_;
         if (ev->modifiers() & Qt::ShiftModifier) {
@@ -671,9 +882,21 @@ bool TimelineWidget::graph_mouse_move(QMouseEvent *ev)
             prop.set_keyframe_time((size_t)snapshot.ref.index,
                 std::clamp(snapshot.time + time_delta, 0.0,
                            std::max(0.0, layer->out_time - layer->in_time)));
-            if (graph_view_mode_ == GraphViewMode::Value && prop.graph_value_editable())
-                prop.set_keyframe_graph_value((size_t)snapshot.ref.index,
-                                              snapshot.value + value_delta);
+            if (graph_view_mode_ == GraphViewMode::Value) {
+                if (snapshot.channel_count > 1 &&
+                    graph_channel_mode_ == GraphChannelMode::All) {
+                    for (int component = 0;
+                         component < snapshot.channel_count && component < 4;
+                         ++component) {
+                        prop.set_keyframe_graph_channel_value(
+                            (size_t)snapshot.ref.index, component,
+                            snapshot.channel_values[static_cast<size_t>(component)] + value_delta);
+                    }
+                } else if (prop.graph_value_editable()) {
+                    prop.set_keyframe_graph_value((size_t)snapshot.ref.index,
+                                                  snapshot.value + value_delta);
+                }
+            }
         }
         graph_drag_changed_ = true;
         update(); ev->accept(); return true;
@@ -683,6 +906,10 @@ bool TimelineWidget::graph_mouse_move(QMouseEvent *ev)
         const bool incoming = drag_mode_ == DragMode::GraphIncomingHandle;
         TimelinePropertyRef primary;
         if (!graph_ref_property(graph_drag_hit_.ref, &primary)) return true;
+        TimelinePropertyRef display_primary = primary;
+        if (graph_channel_mode_ == GraphChannelMode::All &&
+            primary.graph_channel_count() > 1 && graph_drag_hit_.channel >= 0)
+            display_primary = primary.graph_channel(graph_drag_hit_.channel);
         const int index = graph_drag_hit_.ref.index;
         const double key_time = primary.keyframe_time((size_t)index);
         std::shared_ptr<Layer> primary_owner;
@@ -700,7 +927,7 @@ bool TimelineWidget::graph_mouse_move(QMouseEvent *ev)
         influence = std::clamp(influence, 0.0, 100.0);
         const double seconds = std::max(1e-10, interval * influence / 100.0);
         const double graph_value = graph_y_to_value(ev->pos().y());
-        const double key_value = primary.graph_value(key_time);
+        const double key_value = display_primary.graph_value(key_time);
         double speed = graph_view_mode_ == GraphViewMode::Speed
             ? graph_value
             : incoming ? (key_value - graph_value) / seconds
@@ -772,21 +999,27 @@ bool TimelineWidget::graph_mouse_release(QMouseEvent *ev)
         const QRect marquee(graph_drag_start_, graph_marquee_current_);
         std::shared_ptr<Layer> owner;
         TimelinePropertyRef prop = active_graph_property(&owner);
-        if (prop && owner) {
+        const std::vector<TimelinePropertyRef> channels = active_graph_channels();
+        if (prop && owner && !channels.empty()) {
             for (size_t index = 0; index < prop.keyframe_count(); ++index) {
                 const double time = prop.keyframe_time(index);
                 const int x = time_to_x(owner->in_time + time);
                 bool contained = false;
-                if (graph_view_mode_ == GraphViewMode::Speed) {
-                    if (index > 0)
+                for (const TimelinePropertyRef &channel : channels) {
+                    const double incoming = channel.graph_speed(time - 1e-6);
+                    const double outgoing = channel.graph_speed(time + 1e-6);
+                    if (graph_view_mode_ == GraphViewMode::Speed) {
+                        if (index > 0)
+                            contained = marquee.normalized().contains(QPoint(x, (int)std::round(
+                                graph_value_to_y(incoming))));
+                        if (!contained && index + 1 < prop.keyframe_count())
+                            contained = marquee.normalized().contains(QPoint(x, (int)std::round(
+                                graph_value_to_y(outgoing))));
+                    } else {
                         contained = marquee.normalized().contains(QPoint(x, (int)std::round(
-                            graph_value_to_y(prop.keyframe_temporal_speed(index, true)))));
-                    if (!contained && index + 1 < prop.keyframe_count())
-                        contained = marquee.normalized().contains(QPoint(x, (int)std::round(
-                            graph_value_to_y(prop.keyframe_temporal_speed(index, false)))));
-                } else {
-                    contained = marquee.normalized().contains(QPoint(x, (int)std::round(
-                        graph_value_to_y(prop.graph_value(time)))));
+                            graph_value_to_y(channel.graph_value(time)))));
+                    }
+                    if (contained) break;
                 }
                 if (contained)
                     selected_keyframes_.insert({owner->id, prop.name(), (int)index});
@@ -808,19 +1041,15 @@ bool TimelineWidget::graph_mouse_release(QMouseEvent *ev)
         for (const auto &snapshot : temporal_drag_snapshots_)
             touched.insert({snapshot.ref.layer_id, snapshot.ref.prop_name});
         for (const auto &entry : touched) {
-            if (auto layer = title_->find_layer(entry.first)) {
-                TimelinePropertyRef prop = find_timeline_property(*layer, entry.second);
-                if (prop) prop.sort_keyframes();
-            }
+            TimelinePropertyRef prop = find_timeline_property(entry.first, entry.second);
+            if (prop) prop.sort_keyframes();
         }
 
         std::set<KeyframeRef> remapped;
         std::map<std::pair<std::string, std::string>, std::set<int>> used_indices;
         for (const auto &[ref, selected_time] : selected_times) {
-            auto layer = title_->find_layer(ref.layer_id);
-            TimelinePropertyRef prop = layer
-                ? find_timeline_property(*layer, ref.prop_name)
-                : TimelinePropertyRef{};
+            TimelinePropertyRef prop = find_timeline_property(
+                ref.layer_id, ref.prop_name);
             if (!prop) continue;
             const auto property_key = std::make_pair(ref.layer_id, ref.prop_name);
             int best = -1;
@@ -858,10 +1087,9 @@ void TimelineWidget::show_property_velocity_dialog(const std::string &layer_id,
                                                    double local_time)
 {
     if (!title_) return;
-    auto layer = title_->find_layer(layer_id);
-    if (!layer || layer->locked) return;
-    TimelinePropertyRef prop = find_timeline_property(*layer, property_name);
-    if (!prop || prop.keyframe_count() == 0) return;
+    if (timeline_owner_locked(*title_, layer_id)) return;
+    TimelinePropertyRef prop = find_timeline_property(layer_id, property_name);
+    if (!prop || prop.is_hold_only() || prop.keyframe_count() == 0) return;
     const double tolerance = std::max(1e-6, obs_frame_duration() * 0.5 + 1e-6);
     int index = -1;
     double best_distance = std::numeric_limits<double>::infinity();
@@ -879,7 +1107,7 @@ void TimelineWidget::show_property_velocity_dialog(const std::string &layer_id,
 void TimelineWidget::show_temporal_velocity_dialog(TimelinePropertyRef prop,
                                                    const std::vector<int> &indices)
 {
-    if (!prop || indices.empty()) return;
+    if (!prop || prop.is_hold_only() || indices.empty()) return;
     const int first = indices.front();
     if (first < 0 || first >= (int)prop.keyframe_count()) return;
     QDialog dialog(this);
@@ -953,6 +1181,16 @@ void TimelineWidget::graph_context_menu(QContextMenuEvent *ev)
     std::shared_ptr<Layer> owner;
     TimelinePropertyRef prop = active_graph_property(&owner);
     QMenu menu(this);
+    QAction *copy_action = menu.addAction(bgl_tr("OBSTitles.Copy"));
+    QAction *cut_action = menu.addAction(bgl_tr("OBSTitles.Cut"));
+    QAction *paste_action = menu.addAction(bgl_tr("OBSTitles.Paste"));
+    QAction *delete_action = menu.addAction(bgl_tr("OBSTitles.Delete"));
+    const bool has_selection = !selected_keyframes_.empty();
+    copy_action->setEnabled(has_selection);
+    cut_action->setEnabled(has_selection);
+    paste_action->setEnabled(!keyframe_clipboard_.empty());
+    delete_action->setEnabled(has_selection);
+    menu.addSeparator();
     QAction *value_graph = menu.addAction(bgl_tr("OBSTitles.ValueGraph"));
     QAction *speed_graph = menu.addAction(bgl_tr("OBSTitles.SpeedGraph"));
     value_graph->setCheckable(true); speed_graph->setCheckable(true);
@@ -971,7 +1209,7 @@ void TimelineWidget::graph_context_menu(QContextMenuEvent *ev)
     }
     QAction *easy = nullptr, *easy_in = nullptr, *easy_out = nullptr, *velocity = nullptr;
     std::vector<std::pair<QAction *, TemporalInterpolationMode>> mode_actions;
-    if (prop && !indices.empty()) {
+    if (prop && !indices.empty() && !prop.is_hold_only()) {
         QMenu *interpolation = menu.addMenu(bgl_tr("OBSTitles.TemporalInterpolation"));
         for (TemporalInterpolationMode mode : {TemporalInterpolationMode::Linear,
                  TemporalInterpolationMode::Hold, TemporalInterpolationMode::AutoBezier,
@@ -992,6 +1230,21 @@ void TimelineWidget::graph_context_menu(QContextMenuEvent *ev)
     }
     QAction *chosen = menu.exec(ev->globalPos());
     if (!chosen) return;
+    if (chosen == copy_action) { copy_selected_keyframes(); return; }
+    if (chosen == cut_action) {
+        if (cut_selected_keyframes()) emit keyframe_easing_changed();
+        return;
+    }
+    if (chosen == paste_action) {
+        if (paste_keyframes_at(std::clamp(graph_x_to_time(ev->pos().x()),
+                                          0.0, title_->duration), false))
+            emit keyframe_easing_changed();
+        return;
+    }
+    if (chosen == delete_action) {
+        if (delete_selected_keyframes()) emit keyframe_easing_changed();
+        return;
+    }
     if (chosen == value_graph) { set_graph_view_mode((int)GraphViewMode::Value); return; }
     if (chosen == speed_graph) { set_graph_view_mode((int)GraphViewMode::Speed); return; }
     if (chosen == fit_all) { fit_graph_to_view(); return; }

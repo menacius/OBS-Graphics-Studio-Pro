@@ -824,11 +824,34 @@ static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opa
 {
     layer.parent_id.clear();
     layer.transform_parent_id.clear();
+    layer.dimension_mode = LayerDimensionMode::TwoD;
+    layer.transform_axis_space = TransformAxisSpace::Local;
+    layer.camera_id.clear();
+    layer.camera_assignment.static_value.clear();
+    layer.camera_assignment.keyframes.clear();
+    layer.position_z.static_value = 0.0;
+    layer.position_z.keyframes.clear();
+    layer.rotation_x.static_value = 0.0;
+    layer.rotation_x.keyframes.clear();
+    layer.rotation_y.static_value = 0.0;
+    layer.rotation_y.keyframes.clear();
+    layer.scale_z.static_value = 1.0;
+    layer.scale_z.keyframes.clear();
+    layer.anchor_z.static_value = 0.0;
+    layer.anchor_z.keyframes.clear();
+    layer.orientation_x.static_value = 0.0;
+    layer.orientation_x.keyframes.clear();
+    layer.orientation_y.static_value = 0.0;
+    layer.orientation_y.keyframes.clear();
+    layer.orientation_z.static_value = 0.0;
+    layer.orientation_z.keyframes.clear();
     layer.position.static_value.x = anchor_x;
     layer.position.static_value.y = anchor_y;
+    layer.position.static_value.z = 0.0;
     layer.position.keyframes.clear();
     layer.scale.static_value.x = 1.0;
     layer.scale.static_value.y = 1.0;
+    layer.scale.static_value.z = 1.0;
     layer.scale.keyframes.clear();
     layer.rotation.static_value = 0.0;
     layer.rotation.keyframes.clear();
@@ -1394,6 +1417,17 @@ static QTransform layer_parent_basis_qt(
                       : group_world * transform_world;
 }
 
+static QTransform layer_parent_bind_qt(const Layer &layer)
+{
+    if (!layer.parent_bind_enabled)
+        return QTransform();
+    const auto &m = layer.parent_bind_matrix;
+    return QTransform(
+        m[0], m[4], 0.0,
+        m[1], m[5], 0.0,
+        m[3], m[7], 1.0);
+}
+
 static QTransform layer_world_transform_qt_impl(
     const Title &title, const Layer &layer, double title_time,
     std::unordered_set<std::string> &visiting)
@@ -1404,7 +1438,8 @@ static QTransform layer_world_transform_qt_impl(
         layer_parent_basis_qt(title, layer, title_time, visiting);
     /* Match editor/canvas and the pre-existing Group transform order exactly:
      * local layer transform first, then Group/transform-parent basis. */
-    const QTransform world = layer_local_transform_qt(title, layer, title_time) * parent_basis;
+    const QTransform world = layer_local_transform_qt(title, layer, title_time) *
+                             layer_parent_bind_qt(layer) * parent_basis;
     if (!layer.id.empty()) visiting.erase(layer.id);
     return world;
 }
@@ -1413,22 +1448,38 @@ static QTransform layer_world_transform_qt(const Title &title, const Layer &laye
                                            double title_time, int /*depth*/)
 {
     std::unordered_set<std::string> visiting;
-    return layer_world_transform_qt_impl(title, layer, title_time, visiting);
+    const QTransform legacy = layer_world_transform_qt_impl(
+        title, layer, title_time, visiting);
+    return bgs::transform3d::projected_or_legacy(
+        title, layer, title_time, legacy);
 }
 
 static double layer_shutter_travel_pixels(const Title &title, const Layer &layer,
                                           double start_time, double end_time)
 {
-    const std::array<double, 3> times = {
-        start_time, (start_time + end_time) * 0.5, end_time};
-    std::array<std::array<QPointF, 5>, 3> world_points;
+    /* Development Version 209: measure motion after the complete 3D hierarchy
+     * and active/assigned camera projection have been evaluated. Five temporal
+     * probes catch curved spatial paths, perspective scale changes, rotations,
+     * parent/grandparent motion and camera dolly/orbit movement without adding
+     * any blur to a projected shape that is actually stationary on screen. */
+    const std::array<double, 5> times = {
+        start_time,
+        start_time + (end_time - start_time) * 0.25,
+        (start_time + end_time) * 0.5,
+        start_time + (end_time - start_time) * 0.75,
+        end_time};
+    std::array<std::array<QPointF, 9>, 5> world_points;
     for (std::size_t sample = 0; sample < times.size(); ++sample) {
         const double local_time = std::max(0.0, times[sample] - layer.in_time);
         const QRectF bounds = layer_local_effect_bounds(layer, local_time);
         const QTransform transform = layer_world_transform_qt(title, layer, times[sample]);
-        const std::array<QPointF, 5> local_points = {
+        const std::array<QPointF, 9> local_points = {
             bounds.topLeft(), bounds.topRight(), bounds.bottomRight(),
-            bounds.bottomLeft(), bounds.center()};
+            bounds.bottomLeft(), bounds.center(),
+            QPointF(bounds.center().x(), bounds.top()),
+            QPointF(bounds.right(), bounds.center().y()),
+            QPointF(bounds.center().x(), bounds.bottom()),
+            QPointF(bounds.left(), bounds.center().y())};
         for (std::size_t point = 0; point < local_points.size(); ++point)
             world_points[sample][point] = transform.map(local_points[point]);
     }

@@ -1,10 +1,36 @@
+    sample_time = time;
+    add_discrete(title.active_camera);
+    for (const TitleCamera &camera : title.cameras) {
+        add_anim(camera.position_x, 0.25); add_anim(camera.position_y, 0.25);
+        add_anim(camera.position_z, 0.25);
+        if (camera.position_3d_path_enabled)
+            add_vec3(camera.position_3d, 0.25);
+        add_anim(camera.target_x, 0.25);
+        add_anim(camera.target_y, 0.25); add_anim(camera.target_z, 0.25);
+        if (camera.target_3d_path_enabled)
+            add_vec3(camera.target_3d, 0.25);
+        add_anim(camera.orientation_x, 0.05); add_anim(camera.orientation_y, 0.05);
+        add_anim(camera.orientation_z, 0.05); add_anim(camera.rotation_x, 0.05);
+        add_anim(camera.rotation_y, 0.05); add_anim(camera.rotation_z, 0.05);
+        add_anim(camera.focal_length, 0.05); add_anim(camera.field_of_view, 0.01);
+        add_anim(camera.zoom, 0.0005); add_anim(camera.near_clip, 0.001);
+        add_anim(camera.far_clip, 0.25); add_anim(camera.projection_mode, 1.0);
+    }
+
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         sample_time = cache_layer_sample_time(title, *layer, time);
         add(layer->visible && sample_time >= layer->in_time && sample_time <= layer->out_time);
         add_vec(layer->position, 0.25);
+        if (layer->position_3d_path_enabled)
+            add_vec3(layer->position_3d, 0.25);
         add_vec(layer->scale, 0.0005);
         add_anim(layer->rotation, 0.05);
+        add_anim(layer->position_z, 0.25); add_anim(layer->scale_z, 0.0005);
+        add_anim(layer->rotation_x, 0.05); add_anim(layer->rotation_y, 0.05);
+        add_anim(layer->anchor_z, 0.25); add_anim(layer->orientation_x, 0.05);
+        add_anim(layer->orientation_y, 0.05); add_anim(layer->orientation_z, 0.05);
+        add_discrete(layer->camera_assignment);
         add(quant(layer->transform_quad_tl_x, 0.0005)); add(quant(layer->transform_quad_tl_y, 0.0005));
         add(quant(layer->transform_quad_tr_x, 0.0005)); add(quant(layer->transform_quad_tr_y, 0.0005));
         add(quant(layer->transform_quad_br_x, 0.0005)); add(quant(layer->transform_quad_br_y, 0.0005));
@@ -853,23 +879,87 @@ FrameCacheState CacheManager::displayStateForFrame(const std::shared_ptr<Title> 
     return state_tracker_.stateForFrame(title_id, display_frame);
 }
 
-bool CacheManager::displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const
+QHash<int, FrameCacheState> CacheManager::displayStatesForRange(
+    const std::shared_ptr<Title> &title, int first_frame, int last_frame) const
 {
+    QHash<int, FrameCacheState> result;
     if (!title)
-        return false;
-    if (!titleHasTimelineChanges(*title))
-        return true;
+        return result;
+    if (last_frame < first_frame)
+        std::swap(first_frame, last_frame);
 
-    const int last_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
-    const int f = std::clamp(frame, 0, last_frame);
-    const QString content_hash = contentHash(*title);
+    const QString title_id = QString::fromStdString(title->id);
+    const bool animated = titleHasTimelineChanges(*title);
+    const int final_frame = animated
+        ? cache_last_frame_for_title(*title, effectiveFrameRate()) : 0;
+    result.reserve(last_frame - first_frame + 1);
+    const int indexed_first = animated
+        ? std::clamp(first_frame, 0, final_frame) : 0;
+    const int indexed_last = animated
+        ? std::clamp(last_frame, indexed_first, final_frame) : 0;
+    const QHash<int, FrameCacheState> indexed = state_tracker_.statesForRange(
+        title_id, indexed_first, indexed_last);
+    for (int frame = first_frame; frame <= last_frame; ++frame) {
+        const int display_frame = animated
+            ? std::clamp(frame, 0, final_frame) : 0;
+        result.insert(frame, indexed.value(display_frame,
+                                           FrameCacheState::NotCached));
+    }
+    bgl::perf::add(bgl::perf::Counter::TimelineCacheFramesInspected,
+                   static_cast<std::uint64_t>(result.size()));
+    return result;
+}
+
+QHash<int, bool> CacheManager::displayStaticFramesForRange(
+    const std::shared_ptr<Title> &title, int first_frame, int last_frame) const
+{
+    QHash<int, bool> result;
+    if (!title)
+        return result;
+    if (last_frame < first_frame)
+        std::swap(first_frame, last_frame);
+    result.reserve(last_frame - first_frame + 1);
+
+    if (!titleHasTimelineChanges(*title)) {
+        for (int frame = first_frame; frame <= last_frame; ++frame)
+            result.insert(frame, true);
+        return result;
+    }
+
     const double fps = std::max(1.0, effectiveFrameRate());
-    const QString current = adaptiveVisualStateHash(*title, double(f) / fps, content_hash);
-    if (f > 0 && adaptiveVisualStateHash(*title, double(f - 1) / fps, content_hash) == current)
-        return true;
-    if (f < last_frame && adaptiveVisualStateHash(*title, double(f + 1) / fps, content_hash) == current)
-        return true;
-    return false;
+    const int final_frame = cache_last_frame_for_title(*title, fps);
+    const int clamped_first = std::clamp(first_frame, 0, final_frame);
+    const int clamped_last = std::clamp(last_frame, clamped_first, final_frame);
+    const int hash_first = std::max(0, clamped_first - 1);
+    const int hash_last = std::min(final_frame, clamped_last + 1);
+    const QString content_hash = contentHash(*title);
+
+    /* Timeline paint previously called contentHash() and evaluated the same
+     * neighbouring visual states up to three times for every visible frame.
+     * Build one contiguous hash window per paint so the cost is O(N), not
+     * O(N * full-title-hash), and keep the cache strip entirely read-only. */
+    QHash<int, QString> visual_hashes;
+    visual_hashes.reserve(hash_last - hash_first + 1);
+    for (int frame = hash_first; frame <= hash_last; ++frame) {
+        visual_hashes.insert(frame, adaptiveVisualStateHash(
+            *title, static_cast<double>(frame) / fps, content_hash));
+    }
+    for (int frame = first_frame; frame <= last_frame; ++frame) {
+        const int f = std::clamp(frame, 0, final_frame);
+        const QString current = visual_hashes.value(f);
+        const bool matches_previous = f > 0 &&
+            visual_hashes.value(f - 1) == current;
+        const bool matches_next = f < final_frame &&
+            visual_hashes.value(f + 1) == current;
+        result.insert(frame, matches_previous || matches_next);
+    }
+    return result;
+}
+
+bool CacheManager::displayFrameIsStatic(const std::shared_ptr<Title> &title,
+                                        int frame) const
+{
+    return displayStaticFramesForRange(title, frame, frame).value(frame, false);
 }
 
 QVector<CacheTileRegion> CacheManager::tilesForRect(const QRect &rect, const QSize &frame_size) const
@@ -957,6 +1047,18 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
     if (!layer.visible || layer.live_cue_hidden_if_empty)
         return QRect();
     if (layer.type == LayerType::Adjustment || layer.type == LayerType::ColorSolid)
+        return frame_rect;
+
+    // Perspective projection, 3D parenting and camera motion can move a planar
+    // layer anywhere on the output canvas. Keep dirty-region invalidation
+    // conservative for 3D titles; purely 2D titles retain the legacy bounds
+    // calculation and its tile-level performance characteristics.
+    const bool title_uses_3d = std::any_of(
+        title.layers.begin(), title.layers.end(),
+        [](const std::shared_ptr<Layer> &candidate) {
+            return candidate && candidate->dimension_mode == LayerDimensionMode::ThreeD;
+        });
+    if (title_uses_3d || bgs::transform3d::title_camera_has_animation(title))
         return frame_rect;
 
     /* Dirty tiles are shared by every invalidated frame in the layer range, so

@@ -16,9 +16,9 @@ assert "prctl(PR_SET_NAME" in source
 assert "#if defined(_WIN32)" in source
 assert "#elif defined(__APPLE__)" in source
 assert "#elif defined(__linux__)" in source
-assert 'OBS_BGS_DEVELOPMENT_VERSION "189"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "189"' in build
-assert "kCurrentDevelopmentVersion = 189" in schema
+assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "219"' in build
+assert "kCurrentDevelopmentVersion = 219" in schema
 assert "case 182:" in schema
 assert "case 186:" in schema
 print("portable audio worker thread naming contract passed")

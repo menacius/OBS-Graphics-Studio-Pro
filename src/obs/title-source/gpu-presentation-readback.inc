@@ -286,7 +286,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     const bool can_cache = cache_entry && input == cache_entry->texture &&
                            !cache_entry->key.empty();
     const std::string desired_cache_key = can_cache
-        ? cache_entry->key + "|gpu-effects-v8-lens-flare-dx11-keyword-fix-v9-effects-cleanup-4-color-gradient-v10-layer-space-stack|" +
+        ? cache_entry->key + "|gpu-effects-v8-lens-flare-dx11-keyword-fix-v9-effects-cleanup-4-color-gradient-v10-layer-space-stack-v11-parent-bind-matrix|" +
               effect_layer_cache_key(nullptr, session->title, layer, title_time,
                                      static_cast<int>(width), static_cast<int>(height),
                                      false, false)
@@ -882,6 +882,40 @@ static gs_vertbuffer_t *create_free_transform_grid(
     return gs_vertexbuffer_create(data, 0);
 }
 
+static struct matrix4 qmatrix4x4_to_gs(const QMatrix4x4 &source)
+{
+    struct matrix4 result;
+    vec4_set(&result.x, source(0, 0), source(1, 0),
+             source(2, 0), source(3, 0));
+    vec4_set(&result.y, source(0, 1), source(1, 1),
+             source(2, 1), source(3, 1));
+    vec4_set(&result.z, source(0, 2), source(1, 2),
+             source(2, 2), source(3, 2));
+    vec4_set(&result.t, source(0, 3), source(1, 3),
+             source(2, 3), source(3, 3));
+    return result;
+}
+
+static struct matrix4 gpu_qtransform_to_gs_matrix(
+    const QTransform &transform)
+{
+    struct matrix4 result;
+    matrix4_identity(&result);
+    vec4_set(&result.x,
+             static_cast<float>(transform.m11()),
+             static_cast<float>(transform.m12()),
+             0.0f, static_cast<float>(transform.m13()));
+    vec4_set(&result.y,
+             static_cast<float>(transform.m21()),
+             static_cast<float>(transform.m22()),
+             0.0f, static_cast<float>(transform.m23()));
+    vec4_set(&result.t,
+             static_cast<float>(transform.dx()),
+             static_cast<float>(transform.dy()),
+             0.0f, static_cast<float>(transform.m33()));
+    return result;
+}
+
 static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
                                    TitleGpuRenderSession::LayerRaster *raster_entry,
                                    const Title &title,
@@ -896,7 +930,10 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
                                    double base_box_width,
                                    double base_box_height,
                                    double title_time,
-                                   float weight)
+                                   float weight,
+                                   bool hardware_depth = false,
+                                   gs_texture_t *post_projection_mask = nullptr,
+                                   MaskMode post_projection_mask_mode = MaskMode::None)
 {
     const double resolved_time = gpu_layer_render_time(title, layer, title_time);
     if (!session || !texture || weight <= 0.0f)
@@ -914,10 +951,25 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     gs_eparam_t *clip_rect = gs_effect_get_param_by_name(session->copy_effect, "imageClipRect");
     gs_eparam_t *corner_radii = gs_effect_get_param_by_name(session->copy_effect, "imageCornerRadii");
     gs_eparam_t *logical_size = gs_effect_get_param_by_name(session->copy_effect, "imageLogicalSize");
-    if (!image || !weight_param || !clip_enabled || !clip_rect || !corner_radii || !logical_size)
+    gs_eparam_t *projected_mask = gs_effect_get_param_by_name(
+        session->copy_effect, "postProjectionMask");
+    gs_eparam_t *projected_mask_enabled = gs_effect_get_param_by_name(
+        session->copy_effect, "postProjectionMaskEnabled");
+    gs_eparam_t *projected_mask_mode_param = gs_effect_get_param_by_name(
+        session->copy_effect, "postProjectionMaskMode");
+    if (!image || !weight_param || !clip_enabled || !clip_rect ||
+        !corner_radii || !logical_size || !projected_mask ||
+        !projected_mask_enabled || !projected_mask_mode_param)
         return false;
     gs_effect_set_texture(image, texture);
     gs_effect_set_float(weight_param, weight);
+    const bool use_projected_mask = post_projection_mask &&
+        post_projection_mask_mode != MaskMode::None;
+    gs_effect_set_texture(projected_mask, use_projected_mask
+        ? post_projection_mask : texture);
+    gs_effect_set_int(projected_mask_enabled, use_projected_mask ? 1 : 0);
+    gs_effect_set_int(projected_mask_mode_param,
+                      static_cast<int>(post_projection_mask_mode));
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
         layer.transitions, layer.in_time, layer.out_time,
         gpu_layer_transition_time(title, layer, title_time));
@@ -945,30 +997,124 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     vec2_set(&logical_value, static_cast<float>(std::max(0.0001, logical_width)),
              static_cast<float>(std::max(0.0001, logical_height)));
     gs_effect_set_vec2(logical_size, &logical_value);
-    gs_matrix_push();
-    gs_matrix_identity();
-    const float frame_scale = session->editor_draft
-        ? std::clamp(session->preview_quality_scale, 0.25f, 1.0f) : 1.0f;
-    gs_matrix_scale3f(frame_scale, frame_scale, 1.0f);
-    apply_layer_world_transform_gs(title, layer, title_time, 0);
     const double local_time = std::max(0.0, resolved_time - layer.in_time);
-    const double current_box_width = std::max(0.0001, eval_box_width(layer, local_time));
-    const double current_box_height = std::max(0.0001, eval_box_height(layer, local_time));
+    const double current_box_width = std::max(
+        0.0001, eval_box_width(layer, local_time));
+    const double current_box_height = std::max(
+        0.0001, eval_box_height(layer, local_time));
     const double sx = current_box_width / std::max(0.0001, base_box_width);
     const double sy = current_box_height / std::max(0.0001, base_box_height);
     const double raster_sx = logical_width > 0.0
-        ? logical_width / std::max(1.0, static_cast<double>(texture_width)) : 1.0;
+        ? logical_width / std::max(1.0, static_cast<double>(texture_width))
+        : 1.0;
     const double raster_sy = logical_height > 0.0
-        ? logical_height / std::max(1.0, static_cast<double>(texture_height)) : 1.0;
-    /* The source texture can have a different pixel resolution from its
-     * logical image-box size (native bitmap pixels or bucketed SVG pixels).
-     * Fold that ratio into the local scale and express the translation back in
-     * texture units so the logical origin is not scaled twice. */
-    gs_matrix_scale3f(static_cast<float>(sx * raster_sx),
-                      static_cast<float>(sy * raster_sy), 1.0f);
-    gs_matrix_translate3f(
-        static_cast<float>(origin.x() / std::max(0.000001, raster_sx)),
-        static_cast<float>(origin.y() / std::max(0.000001, raster_sy)), 0.0f);
+        ? logical_height / std::max(1.0, static_cast<double>(texture_height))
+        : 1.0;
+
+    /* The bounding-box overlay already projects the real local rectangle.
+     * The fallback artwork path previously projected a unit square and then
+     * extrapolated that homography to texture coordinates. With an off-centre
+     * anchor those coordinates can be hundreds or thousands of units from the
+     * fitted square, so conversion to the float OBS matrix produced visible
+     * scale pulsation while moving. Fit the homography to the actual raster
+     * rectangle instead, making content and overlays use the same geometry. */
+    const bool projected_3d = !hardware_depth &&
+        bgs::transform3d::layer_supports_3d(layer) &&
+        bgs::transform3d::layer_or_ancestor_uses_3d(title, layer);
+    bool exact_projected_raster = false;
+    QTransform texture_to_canvas;
+    QPolygonF texture_quad;
+    if (projected_3d && texture_width > 0 && texture_height > 0) {
+        const double local_x0 = sx * origin.x();
+        const double local_y0 = sy * origin.y();
+        const double local_x1 = local_x0 + sx * logical_width;
+        const double local_y1 = local_y0 + sy * logical_height;
+        texture_quad << QPointF(0.0, 0.0)
+                     << QPointF(static_cast<double>(texture_width), 0.0)
+                     << QPointF(static_cast<double>(texture_width),
+                                static_cast<double>(texture_height))
+                     << QPointF(0.0, static_cast<double>(texture_height));
+        QPolygonF local_quad;
+        local_quad << QPointF(local_x0, local_y0)
+                   << QPointF(local_x1, local_y0)
+                   << QPointF(local_x1, local_y1)
+                   << QPointF(local_x0, local_y1);
+        exact_projected_raster =
+            bgs::transform3d::projected_local_quad_transform(
+                title, layer, title_time, texture_quad, local_quad,
+                texture_to_canvas);
+        const double frame_scale = session->editor_draft
+            ? std::clamp(static_cast<double>(session->preview_quality_scale),
+                         0.25, 1.0)
+            : 1.0;
+        if (exact_projected_raster && frame_scale != 1.0) {
+            QPolygonF scaled_canvas_quad;
+            scaled_canvas_quad.reserve(4);
+            for (const QPointF &source_point : texture_quad) {
+                const QPointF canvas_point =
+                    texture_to_canvas.map(source_point);
+                scaled_canvas_quad << QPointF(
+                    canvas_point.x() * frame_scale,
+                    canvas_point.y() * frame_scale);
+            }
+            exact_projected_raster = QTransform::quadToQuad(
+                texture_quad, scaled_canvas_quad, texture_to_canvas);
+        }
+    }
+
+    bool projection_pushed = false;
+    gs_matrix_push();
+    if (hardware_depth) {
+        bgs::transform3d::CameraRenderState camera_state;
+        const std::string render_camera_id =
+            bgs::transform3d::resolved_layer_camera_id(title, layer, title_time);
+        if (!bgs::transform3d::camera_render_state(
+                title, title_time, camera_state, render_camera_id)) {
+            gs_matrix_pop();
+            return false;
+        }
+        gs_projection_push();
+        projection_pushed = true;
+        if (camera_state.projection == CameraProjection::Orthographic) {
+            gs_ortho(-camera_state.ortho_half_width,
+                     camera_state.ortho_half_width,
+                     -camera_state.ortho_half_height,
+                     camera_state.ortho_half_height,
+                     camera_state.near_clip, camera_state.far_clip);
+        } else {
+            gs_perspective(camera_state.vertical_fov, camera_state.aspect,
+                           camera_state.near_clip, camera_state.far_clip);
+        }
+        const QMatrix4x4 model_view = camera_state.view *
+            bgs::transform3d::layer_world_matrix(title, layer, title_time);
+        const struct matrix4 model_view_gs = qmatrix4x4_to_gs(model_view);
+        gs_matrix_set(&model_view_gs);
+    } else if (exact_projected_raster) {
+        const struct matrix4 projected =
+            gpu_qtransform_to_gs_matrix(texture_to_canvas);
+        gs_matrix_set(&projected);
+    } else {
+        gs_matrix_identity();
+        const float frame_scale = session->editor_draft
+            ? std::clamp(session->preview_quality_scale, 0.25f, 1.0f) : 1.0f;
+        gs_matrix_scale3f(frame_scale, frame_scale, 1.0f);
+        apply_layer_world_transform_gs(title, layer, title_time, 0);
+    }
+
+    if (!exact_projected_raster) {
+        /* The source texture can have a different pixel resolution from its
+         * logical image-box size (native bitmap pixels or bucketed SVG pixels).
+         * Fold that ratio into the local scale and express the translation back
+         * in texture units so the logical origin is not scaled twice. */
+        gs_matrix_scale3f(static_cast<float>(sx * raster_sx),
+                          static_cast<float>(sy * raster_sy), 1.0f);
+        gs_matrix_translate3f(
+            static_cast<float>(origin.x() /
+                               std::max(0.000001, raster_sx)),
+            static_cast<float>(origin.y() /
+                               std::max(0.000001, raster_sy)),
+            0.0f);
+    }
     gs_vertbuffer_t *transform_grid = nullptr;
     if (layer_has_free_transform_quad(layer, local_time)) {
         const Vec2Value qtl = render_quad_value(layer.transform_quad_tl, layer.transform_quad_tl_x, layer.transform_quad_tl_y, local_time);
@@ -1007,7 +1153,8 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
                 eval_origin_x(layer, local_time), eval_origin_y(layer, local_time), local_time);
         }
     }
-    while (gs_effect_loop(session->copy_effect, "Draw")) {
+    while (gs_effect_loop(session->copy_effect,
+                          hardware_depth ? "DepthDraw" : "Draw")) {
         if (transform_grid) {
             gs_load_vertexbuffer(transform_grid);
             gs_draw(GS_TRIS, 0, 0);
@@ -1018,6 +1165,8 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     }
     if (transform_grid && !raster_entry) gs_vertexbuffer_destroy(transform_grid);
     gs_matrix_pop();
+    if (projection_pushed)
+        gs_projection_pop();
     return true;
 }
 
@@ -1141,9 +1290,19 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
          * counts turn one blurred layer into dozens of full-frame draws. Use a
          * perceptual density and a strict real-time budget; the current sharp
          * sample is preserved separately, so long moves remain readable. */
-        const int sample_cap = layer.type == LayerType::Image ? 12 : 10;
+        /* Development Version 209: projected 3D rotation and camera movement
+         * can move different parts of a layer by very different distances.
+         * Keep a real-time ceiling, but allow enough temporal density to avoid
+         * separated silhouettes on perspective rotation and camera dolly. */
+        const bool projected_motion =
+            bgs::transform3d::layer_or_ancestor_uses_3d(title, layer);
+        const int sample_cap = projected_motion
+            ? (layer.type == LayerType::Image ? 24 : 20)
+            : (layer.type == LayerType::Image ? 12 : 10);
         const int configured = std::clamp(motion.effect_samples, 2, sample_cap);
-        const double density = layer.type == LayerType::Image ? 0.32 : 0.25;
+        const double density = projected_motion
+            ? (layer.type == LayerType::Image ? 0.55 : 0.45)
+            : (layer.type == LayerType::Image ? 0.32 : 0.25);
         const int adaptive = static_cast<int>(std::ceil(travel * density)) + 1;
         const int samples = std::clamp(std::max(configured, adaptive), 2,
                                        sample_cap);

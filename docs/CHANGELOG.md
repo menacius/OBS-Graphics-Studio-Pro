@@ -1,6 +1,319 @@
-# v0.8.9-alpha — Development Version 189
+# v0.8.10-alpha — Development Version 219
+
+This release covers Development Versions 190–219 and introduces the complete planar 3D layer/camera workflow, animated camera and XYZ motion-path authoring, hardware depth and transparent compositing, keyframe-safe hierarchy changes, 3D masks/effects/motion blur, unified Vector3 Timeline/Graph Editor rows, performance/cache/threading audits, schema-6 migration recovery, and the automated source/smoke/full/stress test suite.
+
+# Development Version 219 — Automated Test Suite and Render Hot-Path Repair
+
+- Fixed the Development Version 218 editor render-time regression caused by copying full opaque JSON payloads with every Title/Layer render snapshot.
+- Replaced raw passthrough strings with immutable shared storage and kept replacement value-like through copy-on-write assignment.
+- Removed passthrough JSON parsing/deep merging from `layer_render_fingerprint()` and other render-fingerprint work.
+- Added a native hot-path regression test for multi-megabyte passthrough payloads and thousands of snapshot copies.
+- Added a versioned test-suite manifest covering GUI, Timeline/Graph Editor, serialization, rendering, cache/threading, audio, cue persistence, external data, shutdown lifetime, and platform build contracts.
+- Added deterministic `source`, `smoke`, `full`, and `stress` profiles with manifest validation, timeouts, fail-fast support, CTest integration, and JSON reporting.
+- Advanced the runtime and migration ledger to Development Version 219 without changing title schema 6.
+
+# Development Version 218 — Serialization and Migration Audit
+
+- Reuses the complete Canvas layer context menu from normal Timeline layer rows and applies it to the synchronized selected-layer set.
+- Preserves Timeline multi-selection on right-click and keeps keyframe, transition, property, camera, and camera-switch context menus specialized.
+- Raises the authored title schema to version 6 and extends the contiguous development migration ledger through 218.
+- Preserves unknown/newer JSON fields through actual model round-trips at title, layer, camera, animated-property, keyframe, effect, transition, audio-effect, proxy, and external-provider levels.
+- Isolates malformed nested cameras, effects, transitions, audio effects, bindings, sources, and fields instead of rejecting the complete title.
+- Disables malformed parent-bind matrices without baking or changing transform keyframes.
+- Repairs missing/duplicate layer IDs, dangling/self hierarchy links, mask references, and group/transform-parent cycles deterministically.
+- Adds bounded detailed migration/recovery logs while retaining atomic `QSaveFile` persistence and best-effort future-schema loading.
+
+# Development Version 217 — Performance, Cache and Threading Audit
+
+- Colors active Graph Editor X/Y/Z/W and A/R/G/B toggles with the same component colors used by their curves.
+- Highlights the exact 3D gizmo axis, plane, or rotation ring under the mouse before click.
+- Reuses projected gizmo geometry between hit-testing and paint and invalidates it with Canvas overlay state.
+- Replaces per-frame cache-state scans with an indexed title/frame aggregate.
+- Batches Timeline cache-state reads and static-frame visual hashing once per visible paint range.
+- Adds debug counters for queue peak, render/readback duration, UI coalescing, cache indexing, Timeline inspection, gizmo cache efficiency, and active background jobs.
+- Retains worker cancellation, dirty-region invalidation, asynchronous decode/render/write/readback, and shutdown resource-release contracts.
+- Adds no authored fields; title schema version 5 and Development Version 216 parent-bind data remain compatible.
+
+# Development Version 216 — 3D Pipeline Completion and Keyframe-Safe Parenting
+
+- Replaces all sampled reparent baking with one static 4×4 parent-bind matrix evaluated at the parenting playhead.
+- Keeps authored Position, Scale, Rotation, Orientation, temporal easing, spatial tangents, roving metadata, and keyframe count unchanged during Group, Ungroup, Add/Remove from Group, Transform Parent, and parent deletion operations.
+- Applies the same effective parent basis in the editor, Canvas hit-testing/manipulation, 2D compatibility compositor, projected 3D renderer, masks, mattes, group depth, motion blur, effects, and overlays.
+- Preserves the existing opaque/transparent hardware-depth ordering, destination-aware blend fallback, offscreen group boundaries, effect-space separation, projected bounds, near-plane clipping, and perspective/orthographic parity.
+- Adds validated Development Version 216 serialization for the optional finite parent-bind matrix. Older titles load with identity binding.
+- Includes parent binding in visual hashes and bumps disk/GPU renderer ABI identities so hierarchy changes cannot reuse stale cache frames.
+
+# Development Version 215 — Timeline and Graph Editor Completion
+
+- Graph keyframes move at sub-frame precision by default; Ctrl/Command explicitly snaps time and values.
+- X/Y/Z/W and A/R/G/B channel changes preserve the current keyframe selection.
+- Four-channel scalar groups now use the same expanded rows in Layer List, Timeline, and Graph Editor.
+- Double-click creates a keyframe on an empty property row and opens Keyframe Velocity on an existing temporal key.
+- Copy/cut/paste/delete are available from both Timeline and Graph Editor context menus.
+- A single-property clipboard can target the active compatible property, including Vector2/Vector3 conversion.
+- Pasting at an occupied time replaces the existing key rather than creating duplicate timestamps.
+- Camera switching, camera assignment, and projection switching retain discrete Hold semantics while sharing the common clipboard and undo paths.
+- No serialized fields were added; the authored serialization schema remains Development Version 212.
+
+# v0.8.9-alpha — Development Version 214
+
+## Development Version 214.3 — Keyframed Group Reparent Fix
+
+- Treats one-key and constant transform tracks as a static parent basis instead of triggering an unnecessary animated reparent bake.
+- Extends the lossless whole-track offset fast path to static 3D translation-only group and transform-parent changes.
+- Caps the true animated-basis fallback at 64 total samples, regardless of title duration, while retaining authored key times.
+- Collapses constant generated transform channels after fallback conversion so Position-only compensation cannot create hundreds of Scale, Rotation, Orientation, or Z keys.
+- Adds slow-group frame counts and the child with the largest transform-keyframe track to the one-second GPU grouping diagnostics.
+- Keeps the Development Version 214 runtime label and Development Version 212 serialization schema unchanged.
+
+- Reworked FPS diagnostics into one exact elapsed one-second sampling window for true average FPS and render cost.
+- Audited coordinate writes so canvas/world geometry is converted back into effective parent-local Position for manipulation, alignment, distribution, and hierarchy changes.
+- Added full-track 2D/3D Position conversion and world-preserving animated reparent/group operations.
+- Removed the unbounded per-project-frame reparent bake that could make the editor crawl after grouping an animated layer.
+## Development Version 214.2 — Animated Group Render Performance and Diagnostics
+
+- Skips the pre-effects silhouette render unless the Group has an enabled effect that actually affects layers behind.
+- Reuses two persistent per-group full-canvas GPU ping-pong targets instead of creating and destroying three texrender surfaces on every group render.
+- Publishes the existing ping/pong result directly when possible and performs a final copy only when a mask/effect returns an external shared target.
+- Adds one-second aggregate GPU group diagnostics with call count, average/maximum render time, child count, target creations, silhouette passes, and surface size.
+- Adds dedicated **Grouping** and **Coordinates** logging categories plus command-level timings for Group, Ungroup, Add to Group, and Remove from Group.
+- Keeps the Development Version 214 runtime label and Development Version 212 serialization schema unchanged.
+
+## Development Version 214.1 — Animated Group Reparent Performance Fix
+
+- Preserves animated Position tracks directly when moving layers into or out of static translation-only groups, retaining the original keyframes, temporal easing, spatial tangents, and roving metadata.
+- Replaces the previous project-frame-rate bake with authored key times plus bounded 12 Hz adaptive samples only when the source or destination parent basis is itself animated.
+- Caps generated adaptive samples at 512 while never discarding authored transform key times.
+- Applies the same no-bake fast path to Transform Parent assignment and normal ungrouping.
+- Keeps the Development Version 214 runtime label and Development Version 212 serialization schema unchanged.
+
+## Development Version 214 — Unified Editor Data Model and Coordinate Audit
+
+- Updates the footer once per second from one elapsed-time diagnostics window. FPS is the number of successfully presented playback frames divided by the actual window duration; average render time is computed from the frames rendered in that same window.
+- Removes the diagnostics callback's unconditional Timeline repaint, avoiding a periodic update unrelated to authored or playback state.
+- Establishes one coordinate contract: Transform panel values and keyframes are layer-local relative to the effective group/transform parent; Local, Parent, and World select gizmo-axis orientation only.
+- Audits grouping, ungrouping, add/remove group, transform-parent assignment, and parent deletion so reparenting preserves the full evaluated world-space animation instead of only the current frame.
+- Uses exact whole-track offsets for static translation-only basis changes. Only animated parent bases use bounded adaptive samples, while authored transform key times are always retained.
+- Adds no-op guards so choosing an already active parent cannot rebake or alter a track.
+- Routes post-mutation selection through the shared Canvas/Layer List/Timeline synchronization path and retains the existing shared flattened layer/property row model.
+- Clarifies the UI with **Local Position** and **Local Axes / Parent Axes / World Axes** labels and explanatory tooltips.
+- Keeps the authored Development Version 212 serialization schema unchanged; existing transform fields are reused and no migration is required.
+
+# v0.8.9-alpha — Development Version 213
+
+## Development Version 213 — Editor Stability and Interaction Consistency
+
+- Stops the precise monitor-rate GUI refresh timer whenever the editor is idle and starts it only during explicit pointer interaction.
+- Moves stopped-transport clock/ticker invalidation to a bounded 10 Hz timer instead of refreshing at the monitor rate.
+- Restricts the application-wide event filter to the Title Editor and its native canvas window, so unrelated OBS docks and controls cannot suspend editor presentation.
+- Routes Canvas, Layer List, and Timeline selection through one guarded synchronization path with no-op setters in every view.
+- Makes empty-canvas context menus target-specific so stale selected layers cannot receive unintended actions.
+- Resolves the **E** shortcut conflict by reserving it for the 3D Rotate gizmo while the canvas has focus and retaining Free Transform elsewhere.
+- Adds aggregated Timeline paint profiling plus editor layout and panel-refresh trace diagnostics.
+- Keeps the authored Development Version 212 serialization schema unchanged.
+
+## Development Version 212.3.1 — Editor Event-Filter Compile Fix
+
+- Declares the watched QWidget derived from the event-filter QObject before shortcut-scope routing uses it.
+- Reuses the validated widget pointer inside the shortcut block instead of performing a second cast.
+- Adds a regression guard ensuring the declaration remains before `watched_in_editor`.
+- Does not change serialization, editor behavior, or the Development Version 212 authored schema.
+
+
+## Development Version 212.3 — Editor Usability and Frame Pacing
+
+- Measures editor playback FPS from successful project-rate swapchain presentations instead of render preparation calls.
+- Separates render-cost statistics from playback FPS timing, preventing idle time and editing work from contaminating the live FPS value.
+- Uses a fractional floor/ceil timer cadence so 60, 59.94, and 29.97 fps transports do not run slowly because of permanent integer rounding.
+- Gives ordinary canvas Move, Rotate, and Resize gestures monitor-cadence priority, matching the established 3D gizmo and editor-camera paths.
+- Restricts the spatial-keyframe context menu to a direct keyframe-handle hit; right-clicking a motion-path segment now consistently opens the layer context menu.
+- Limits the 90 ms layout-settle suppression to the main window and actual dock structure events instead of every descendant control resize/layout request.
+- Places the 3D View, gizmo, framing, depth, and normals controls directly after Adaptive in the main canvas toolbar.
+- Adds sampling tolerance to the FPS warning color to prevent normal timing jitter from flashing the footer red.
+- Retains Development Version 212 serialization and the existing 2D/3D render compatibility boundaries.
+
+## Development Version 212.2 — Shared Layer-List and Timeline Vector3 Rows
+
+- Replaced the widget-local Vector3 disclosure set with title-owned shared disclosure state.
+- The layer list and TimelineWidget now consume one flattened `timeline_rows()` model.
+- Expanding Position, Scale, Rotation, Orientation, Anchor, camera Position, or Point of Interest inserts the same X/Y/Z rows into both panes.
+- Collapsing the property removes the same rows from both panes immediately.
+- Channel rows use the same 28 px height as timeline rows, preserving exact vertical alignment and shared scrolling.
+- Timeline keyframe hit-testing and row selection now target X, Y, Z, or All in the Graph Editor according to the clicked row.
+- Added a row-count invariant and regression contract preventing the layer list and timeline from diverging again.
+- The disclosure state is persisted without changing the authored animation schema or the legacy 2D rendering path.
+
+## Development Version 212.1 — Layer-List Vector3 Channels and Graph Targeting
+
+- Keeps one aggregate Position, Scale, Rotation, Orientation, Anchor, camera Position, and camera Point-of-Interest row while adding a disclosure caret only to properties with multiple channels.
+- Expands multi-channel rows into editable X, Y, and Z child rows in the layer list, including the previously missing 3D Rotation and Orientation channels.
+- Makes the aggregate row an **All** Graph Editor target and each child row a direct X/Y/Z target.
+- Adds exclusive X, Y, Z, and All channel toggles to the Graph Editor toolbar.
+- Draws all three vector curves together in All mode and applies relative vertical keyframe edits to every component; single-channel mode edits only the selected component.
+- Promotes the legacy-named `AnimatedVec2Property` compatibility facade to full X/Y/Z Graph Editor access without changing its serialized compatibility contract or the 2D affine renderer.
+- Initially kept the normal timeline as one row per property; Development Version 212.2 supersedes that UI limitation with synchronized expandable X/Y/Z rows while retaining one authored keyframe track.
+- Requires no schema migration: the authored Vector3 storage remains Development Version 212 and old 2D projects continue to load with their established Z defaults.
+
+
+## Development Version 212 — Unified Vector3, Camera Timeline Visibility, and Direct Keyframe Synchronization
+
+- Expands the legacy `Vec2Value` and `AnimatedVec2Property` storage contract to XYZ while preserving their public names as source/serialization compatibility facades.
+- Reads pre-212 XY-only JSON with field-specific Z defaults, merges legacy `position_z`, `scale_z`, and `anchor_z` key times into unified vector tracks, and continues to save the old scalar mirrors for backward compatibility.
+- Leaves the legacy 2D affine rendering path untouched; Z is ignored for 2D layers, so old 2D projects retain their historical output.
+- Includes Z in spatial interpolation, tangent math, velocity, cache identity, sampled animation signatures, serialization, copy/paste, and undo/redo payloads.
+- Replaces separate transform-axis timeline rows with one aggregate Position, Scale, Rotation, Anchor, or Orientation row; old unsynchronized axis keyframes are represented through a union of their key times.
+- Makes a clicked timeline property row or keyframe the active Graph Editor target without requiring a separate layer-list selection step.
+- Refreshes layer-list disclosure rows immediately after timeline paste/delete and refreshes the timeline immediately after layer-list keyframe changes, including removal of the final keyframe.
+- Hides the implicit default camera until it has authored keyframes, while custom cameras remain visible and expose their full property set when expanded.
+- Adds Camera to the Add Layer menu; a newly created custom camera receives a stable ID/name and becomes the active render camera at the current playhead.
+
+
+## Development Version 211 — Compatibility and Regression Completion
+
+- Preserves pixel-identical legacy 2D rendering by retaining the historical affine path whenever neither a layer nor its ancestors use 3D.
+- Replaces the editor's selective undo restore list with a complete deep authored-title snapshot, covering cameras, camera switches, all layer/camera 3D properties, Live Text Cue authoring, scene-mask state, audio layers, persistence settings, imports, and future title fields automatically.
+- Preserves runtime title identity, editor camera override, proxy metadata, cue/playlist playback state, and persistence-transition state while restoring authored undo/redo snapshots, then forces an authoritative GPU refresh and deferred cache invalidation.
+- Validates preserved Live Text Cue runtime rows against the restored authored table, clamps playlist indices, and normalizes persistent-column state so undoing cue-table edits cannot leave out-of-range runtime references.
+- Forces editor audio runtime publication and a discontinuity-aware transport sync after undo/redo, including when the playhead itself did not move.
+- Adds Duplicate Camera, Copy Camera, and Paste Camera actions that preserve complete animated camera properties and generate safe IDs/names.
+- Extends layer clipboard payloads with referenced camera definitions and remaps static and keyframed camera assignments during cross-title paste or when a same-title source camera was deleted after copying.
+- Keeps title import/export portable by stripping machine-specific proxy metadata, editor render-camera overrides, and active cue/playlist runtime state while retaining authored layer and camera IDs needed by masks, parenting, bindings, and camera assignments.
+- Adds a consolidated Version 211 compatibility contract and expands the title snapshot unit test to cover complete 3D/camera restoration plus runtime-state isolation.
+- Documents automated and manual regression gates for proxy/prerender, persistence, Live Text Cues, scene masks, synchronized audio, shutdown, leak detection, and repeated editor open/close cycles.
+
+
+## Development Version 210 — Performance, Cache, and Rendering Audit
+
+- Presents active 3D Move, Rotate, and Scale updates at monitor cadence while reusing resident layer rasters and updating only the evaluated GPU transform snapshot.
+- Rejects duplicate pointer coordinates before animation properties, model revisions, or render scheduling are touched.
+- Keeps a single coalesced render request, leaves full raster/layout work cost-aware, and preserves transport-driven timeline playback.
+- Treats keyframe insertion, deletion, interpolation changes, and post-drag geometry publication as authoritative model boundaries. A full GPU snapshot is guaranteed before transform-only updates can resume.
+- Gives the exact post-release frame realtime scheduling priority without carrying transform-only state through `layer_geometry_changed()` or `refresh_preview()`.
+- Bypasses stale final-frame cache submission while an authoritative editor model refresh is pending, without clearing or mutating the independent OBS/RAM/disk prerender cache.
+- Adds source contracts for realtime pacing, bounded scheduling, cache isolation, and the keyframe-after-transform regression.
+
+
+## Development Version 209 — Camera-Aware 3D Motion Blur
+
+- Evaluates every temporal sample through the full 3D parent hierarchy and the active or layer-assigned camera.
+- Covers XYZ translation, rotation/orientation, perspective scale changes, parent/grandparent animation and camera orbit, rotation and dolly movement.
+- Measures projected screen-space travel at five shutter times using corners, edge midpoints and centre points for stable adaptive sampling.
+- Raises the real-time temporal sample budget only for projected 3D motion while preserving the existing 2D budget.
+- Keeps static projected layers pixel-identical through the zero-travel early-out, preventing stationary smears and alpha halos.
+- Uses the same output path in the editor, OBS, prerender and cache.
 
 This release consolidates the work completed after `v0.8.8-alpha` Development Version 144: first-class audio layers and editor monitoring, native OBS Stinger transitions, Scene A/B animation, serialization and migration hardening, cache/prerender scheduling improvements, live cue transition persistence, and broad cross-platform regression coverage.
+
+
+## Development Version 208 — Full 3D Spatial Motion Paths
+
+- Added a unified `AnimatedVec3Property` and `Vector3Keyframe` model for genuine XYZ position paths, including complete temporal velocity metadata, incoming/outgoing 3D tangents, linked tangent state, spatial interpolation mode, and roving state.
+- Promoted 3D layer Position and camera Position/Point of Interest to shared Vector3 tracks while retaining the legacy XY/Z and scalar camera channels as compatibility mirrors for older documents and unpromoted content.
+- Added separate X, Y, and Z Value/Speed Graph Editor channels backed by one shared 3D keyframe sequence, so temporal and spatial interpolation are edited together without duplicating keyframes.
+- Added Linear, Auto Bezier, Continuous Bezier, and Manual Bezier spatial interpolation, true 3D handle dragging through the active camera, curve-preserving segment insertion, and distance-based roving keyframes.
+- Extended timeline copy/paste, move, delete, easing, and undo/redo operations to preserve the complete 3D keyframe payload.
+- Projected parent-space paths through each keyframe's evaluated parent hierarchy into world/camera space, and extended Frame Selected to include the complete selected motion path.
+- Added serialization, migration, cache hashing, animation classification, runtime tests, and source contracts for the new Vector3 tracks.
+- Preserved the anchor-stable projected-content path and all mask, depth, effect, and compositor behavior from Development Version 207.
+
+
+## Development Version 207 — Camera Timeline and Animation
+
+- Rebuilt the camera-animation delivery directly from the clean Development Version 206 source instead of layering fixes over the earlier 207 revisions.
+- Added a collapsed **Camera Switches** owner row and collapsed per-camera rows to the timeline. Camera channels appear only when their AE-style disclosure caret is opened.
+- Exposed Position XYZ, Point of Interest XYZ, Orientation XYZ, Rotation XYZ, focal length, field of view, zoom, near/far clipping, and Projection channels to the timeline and shared Value/Speed Graph Editor.
+- Added discrete Hold-keyframe tracks for active-camera switching and per-layer camera assignment, including selection, drag, copy/paste, deletion, and undo/redo through the established timeline command path.
+- Added serialization and migration for camera orientation, projection mode, camera switching, and layer camera assignment while retaining the legacy static mirrors used by existing projects.
+- Preserved the Development Version 206 render baseline for every unkeyed camera: static selection, static assignment, static projection, 3D text rasterization, projected bounds, preview scaling, and layer presentation are unchanged. New camera evaluators are used only for authored animation tracks.
+- Fixed long-standing 3D content pulsation with non-centred anchors. Fallback artwork now fits its projective transform from the real texture rectangle to the exact projected local raster corners, matching the already-stabilized bounding-box path instead of extrapolating a unit-square homography.
+- Extended animation detection and cache identity only for actual camera/switch/assignment keyframes; opening or navigating camera rows does not invalidate rendered content.
+- Kept full XYZ spatial motion paths and 3D spatial Bezier editing scoped to Development Version 208.
+
+
+## Development Version 206 — Masks, blend modes, and effects in 3D
+
+- Added a stable effect-space contract: ordinary artwork effects run in padded layer space before projection, Motion Blur runs from projected transform samples, and affect-layers-behind effects remain screen-space destination passes.
+- Allowed compatible 3D planes with layer-space effects and projected track mattes to enter the hardware depth pass.
+- Evaluated track matte alpha/luma/clipping coverage in screen space during the same projected depth draw, preventing masked-out pixels from writing invisible Z.
+- Projected complete padded effect-raster bounds through the camera with homogeneous frustum clipping, preserving shadow, glow, blur, and outline extents after perspective rotation and safely rejecting fully off-camera surfaces.
+- Kept non-Normal blend modes in the destination-aware full-frame ping-pong compositor while ordering compatible contiguous 3D fallback surfaces by camera depth.
+- Preserved groups as offscreen compositing boundaries: compatible children resolve internal depth before the flattened group receives its own mask, effects, opacity, and blend mode.
+- Preserved OBS scene-mask insertion at the real layer-stack position and kept scene-mask effects in the full-canvas post-projection path.
+- Replaced unbounded projected selection/hover coordinates with homogeneous frustum-clipped polygons and visibility-tested handles, eliminating flicker when a 3D bounding box crosses the canvas or near plane.
+- Retained the MSVC C2601 correction by keeping `PropertiesPanel::apply_anchor_preset()` at file scope outside the constructor include chain.
+- Added Development Version 206 source contracts for mask/depth coupling, effect-space classification, blend/group ordering, projected effect bounds, scene masks, and stable 3D overlays. No project schema change was required.
+
+
+## Development Version 205 — Compact 3D properties, stable overlays, and full group parenting
+
+- Made Layer Properties denser across Transform, Character, Paragraph, Shape, Image, and Text Animator sections, with smaller labels, numeric fields, spacing, and controls.
+- Placed scale/aspect lock controls consistently after the complete numeric value set, including XYZ Scale, shape Size, and image-box Size rows.
+- Moved the layer anchor preset control out of Layer Properties and into the context-sensitive dynamic editor toolbar while retaining the existing compensation, keyframe, and undo paths.
+- Converted the 3D Camera inspector to a persistent collapsible header and made its Position, Target, Rotation, focal-length, FOV, zoom, and clipping labels draggable for numeric editing.
+- Stabilized projected 3D selection and hover bounds with solid cosmetic outlines plus device-pixel-aligned overlay geometry, removing dash-phase/subpixel flicker without quantizing rendered artwork.
+- Added full XYZ world-transform snapshots for grouping, ungrouping, transform-parent changes, group removal, and deletion. Reparenting into or out of a 3D hierarchy now computes the new local TRS while preserving the visible world transform.
+- Defined 2D children under 3D parents as strict local XY planes that inherit the complete parent basis but ignore stale local Z/Rotation-X/Y channels until explicitly promoted to 3D.
+- Extended hardware depth and deterministic transparent ordering to compatible sibling planes inside nested groups before each group boundary is flattened for its own masks/effects.
+- Advanced development metadata and the contiguous no-schema-change migration ledger to Development Version 205.
+
+
+## Development Version 204 — AE-style 3D layer UI and transparent compositing
+
+- Added a final **2D/3D** toggle to every compatible layer-list row; audio and adjustment layers expose a disabled 2D state.
+- Reworked the Transform panel so enabling 3D expands Position, Scale and Anchor from XY to XYZ in place, presents Rotation as X/Y/Z, adds Orientation X/Y/Z, and keeps every Z field at the end of its owning row.
+- Unified each visible XYZ control behind one keyframe diamond and one context-menu action while preserving separate X/Y/Z graph channels and the existing serialized XY-plus-Z schema.
+- Added a migration-safe `LayerVector3Value` facade used by the shared editor/OBS 3D transform evaluator.
+- Added a dedicated transparent 3D pass after opaque depth rendering. Compatible planes are sorted far-to-near by camera depth, with authored layer order as the stable coplanar tie-break.
+- Transparent layers with **Write Depth** disabled retain color without contaminating later Z tests; explicitly depth-writing transparent layers participate in persistent depth according to their per-layer settings.
+- Kept masked, effected, grouped, custom-blend, motion-blurred and Transition Input layers on the established compatibility compositor.
+- Advanced development metadata and the contiguous no-schema-change migration ledger to Development Version 204.
+
+
+## Development Version 203 — Depth, culling, and material semantics
+
+- Made **Depth Test** and **Write Depth** independent for compatible simple opaque root-level 3D planes instead of requiring both controls to be enabled.
+- Added persistent depth writers with `LEQUAL` testing, plus `ALWAYS` writers for layers that intentionally write depth without testing existing Z.
+- Added authored-order read-only depth evaluation for **Depth Test enabled / Write Depth disabled** layers. Each such layer tests only against persistent depth already written at its position, then restores that depth without contaminating later layers.
+- Changed backface classification to use final screen-space projected winding and retained a world-space plane normal, keeping culling predictable under negative X/Y scale, parent mirroring, perspective, and orthographic projection.
+- Added editor-only **Depth** and **Normals** diagnostics showing projected camera depth, depth-state combinations, front/back classification, culled faces, and world-normal direction without changing final output or cache identity.
+- Added explanatory tooltips, Development Version 203 migration continuity, and dedicated source contracts for the new depth/culling behavior.
+
+
+## Development Version 202 — Hardware depth-buffer core
+
+- Added an optional persistent `GS_Z24_S8` render target for compatible opaque 3D runs containing at least two planes; unsupported backends and single-plane runs retain the established compositor.
+- Added real per-pixel depth testing with `GS_LEQUAL`, perspective/orthographic camera projection, and shared world matrices for editor/OBS parity.
+- Added an alpha-clipped depth shader so fully transparent raster pixels do not occlude geometry behind them.
+- Split depth runs whenever the effective render camera changes and retained the authored compatibility compositor around every non-compatible layer.
+- Kept masks, effects, motion blur, custom blend modes, groups, transparency, Transition Input layers, and depth-disabled layers on the established texture-compositing path.
+- Added runtime resource cleanup, Development Version 202 migration continuity, and a dedicated hardware-depth source contract.
+
+
+## Development Version 201 — Editor 3D views, navigation, and transform gizmos
+
+- Added an editor-only camera override that cannot be serialized, cached as title content, or propagated to OBS output.
+- Added Active Camera, Front, Back, Left, Right, Top, Bottom, and Custom Perspective views.
+- Added orbit, pan, dolly/zoom, Frame Selected, and Frame All navigation with persistent per-editor view state.
+- Added Move, Rotate, and Scale 3D gizmos with X/Y/Z axes, plane handles, Local/Parent/World orientation, snapping modifiers, multi-selection updates, and the existing editor undo/redo transaction path.
+- Added a dedicated 3D control bar and W/E/R, F, and Shift+F shortcuts.
+- Kept cached final frames disabled only while an editor camera override is active, without invalidating the title's final-output cache.
+
+
+## Development Version 200 — MSVC camera inspector compile repair
+
+- Fixed the camera-control enable/disable loop in `title-properties-panel.cpp` by explicitly normalizing every `QDoubleSpinBox*` to `QWidget*`; this avoids MSVC `std::initializer_list` deduction errors C3535/C2440.
+- Synchronized CMake, runtime build information, serialization development metadata, package examples, and version contracts to Development Version 200.
+- Added explicit no-schema-change migration steps for Development Versions 191–200 so migration reporting remains contiguous.
+
+
+## Development Version 190 — Planar 3D transform foundation and cameras
+
+- Added opt-in 3D mode for compatible visual layers while preserving the exact legacy 2D path for old projects.
+- Added Position Z, Rotation X/Y/Z, Scale Z, Anchor Z, Orientation XYZ, transform-space selection, per-layer camera assignment, depth controls, double-sided rendering, and backface culling.
+- Added a shared editor/OBS projective transform evaluator, full 3D parent inheritance, perspective and orthographic title cameras, a default canvas-matching camera, and camera editing controls.
+- Added conservative opaque-plane depth sorting for the flattened compositor while preserving authored ordering for 2D, transparent, masked, effected, blended, and depth-disabled layers; hardware Z-buffer compositing remains a follow-up.
+- Connected all 3D channels to timeline keyframes, temporal interpolation, animation detection, transform-only refresh, motion-blur travel, serialization, migration, content hashes, and cache invalidation.
+- Added a maintained 3D coordinate/effect-ordering guide with explicit development boundaries and a standalone layer-3D source contract.
 
 ## Development Version 189 — Disabled FX stack indicator and documentation consolidation
 

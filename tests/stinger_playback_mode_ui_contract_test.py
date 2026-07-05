@@ -48,6 +48,6 @@ for obsolete in (
 ):
     assert obsolete not in locale, obsolete
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "189"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "189"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
 print("Stinger playback-mode UI contract passed")

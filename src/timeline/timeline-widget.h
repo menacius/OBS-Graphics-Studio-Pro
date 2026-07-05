@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <array>
 
 class QEvent;
 class QMouseEvent;
@@ -69,6 +70,14 @@ public:
     bool graph_editor_enabled() const { return graph_editor_enabled_; }
     void set_graph_view_mode(int mode);
     int graph_view_mode() const { return (int)graph_view_mode_; }
+    void set_graph_channel_mode(int mode);
+    int graph_channel_mode() const { return (int)graph_channel_mode_; }
+    int graph_channel_count() const;
+    QString graph_channel_label(int component) const;
+    QColor graph_channel_color(int component) const;
+    void select_graph_property(const std::string &owner_id,
+                               const std::string &property_name,
+                               int channel_mode = 3);
     void fit_graph_to_view();
     void fit_graph_selection();
     void show_property_velocity_dialog(const std::string &layer_id,
@@ -97,12 +106,16 @@ signals:
     void keyframe_moved(const std::string &layer_id,
                         const std::string &prop_name, int kf_idx, double new_t);
     void keyframe_easing_changed();
+    void keyframe_structure_changed();
     void vertical_scroll_delta_requested(int delta);
     void zoom_percent_changed(int percent);
     void graph_editor_enabled_changed(bool enabled);
     void graph_view_mode_changed(int mode);
+    void graph_channel_mode_changed(int mode);
+    void graph_channel_count_changed(int count);
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
+    void layer_context_menu_requested(const QPoint &global_pos);
     void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
     void audio_effect_dropped(int effect_type, const std::string &layer_id);
     void transition_preset_dropped(const QString &file_path, const std::string &layer_id, int edge);
@@ -140,7 +153,8 @@ private:
     void   clamp_vertical_scroll();
     int    max_vertical_scroll() const;
     bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
-                        TimelinePropertyRef *prop, int *kf_idx, int *row_idx) const;
+                        TimelinePropertyRef *prop, int *kf_idx, int *row_idx,
+                        std::string *owner_id = nullptr) const;
     struct KeyframeRef {
         std::string layer_id;
         std::string prop_name;
@@ -156,11 +170,15 @@ private:
         std::string prop_name;
         Keyframe keyframe;
         VectorKeyframe vector_keyframe;
+        Vector3Keyframe vector3_keyframe;
         std::vector<Keyframe> scalar_group_keyframes;
         QJsonObject extension_keyframe;
+        DiscreteKeyframe discrete_keyframe;
         bool is_vector = false;
+        bool is_vector3 = false;
         bool is_scalar_group = false;
         bool is_extension = false;
+        bool is_discrete = false;
         double offset = 0.0;
     };
     struct DraggedLayerStrip {
@@ -176,11 +194,13 @@ private:
     };
     enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, AudioFadeIn, AudioFadeOut, LoopStart, LoopEnd, PauseMarker, StingerTransitionPoint, GraphKeyframe, GraphIncomingHandle, GraphOutgoingHandle, GraphMarquee, GraphPan };
     enum class GraphViewMode { Value = 0, Speed = 1 };
+    enum class GraphChannelMode { X = 0, Y = 1, Z = 2, All = 3, Fourth = 4 };
     enum class GraphHitType { None, Keyframe, IncomingHandle, OutgoingHandle };
     struct GraphHit {
         GraphHitType type = GraphHitType::None;
         KeyframeRef ref;
         QPointF point;
+        int channel = -1;
     };
     struct TemporalDragSnapshot {
         KeyframeRef ref;
@@ -190,6 +210,8 @@ private:
         double outgoing_speed = 0.0;
         double time = 0.0;
         double value = 0.0;
+        std::array<double, 4> channel_values {0.0, 0.0, 0.0, 0.0};
+        int channel_count = 1;
         bool linked = true;
     };
     struct TransitionHit {
@@ -207,10 +229,25 @@ private:
     bool   copy_selected_keyframes();
     bool   delete_selected_keyframes();
     bool   cut_selected_keyframes();
-    bool   paste_keyframes_at(double timeline_time);
+    bool   paste_keyframes_at(double timeline_time, bool snap_origin = true);
+    bool   add_keyframe_at(const std::string &owner_id,
+                           const std::string &property_name,
+                           double timeline_time, bool snap_to_frame);
+    bool   clipboard_single_property(std::string *owner_id,
+                                     std::string *property_name) const;
+    bool   clipboard_property_compatible(const ClipboardKeyframe &entry,
+                                         const TimelinePropertyRef &target) const;
+    TimelinePropertyRef clipboard_target_property(std::string *owner_id,
+                                                  std::string *property_name) const;
+    void   erase_keyframes_at(TimelinePropertyRef prop, double local_time);
+    int    keyframe_index_near(const TimelinePropertyRef &prop,
+                               double local_time,
+                               double tolerance = 1e-6) const;
     QRect  marquee_rect() const;
     void   begin_keyframe_drag(const std::string &layer_id, const std::string &prop_name, int kf_idx, double start_time);
     TimelinePropertyRef find_timeline_property(Layer &layer, const std::string &prop_name) const;
+    TimelinePropertyRef find_timeline_property(const std::string &owner_id,
+                                               const std::string &prop_name) const;
     bool   keep_playhead_visible();
     void   set_pixels_per_sec(double pixels_per_sec, double anchor_time, int anchor_x);
     bool   is_layer_selected(const std::string &layer_id) const;
@@ -235,7 +272,14 @@ private:
     bool layer_accepts_transition(const Layer &layer, const LayerTransition &transition) const;
 
     QRect graph_rect() const;
+    TimelinePropertyRef active_graph_base_property(std::shared_ptr<Layer> *layer = nullptr) const;
     TimelinePropertyRef active_graph_property(std::shared_ptr<Layer> *layer = nullptr) const;
+    std::vector<TimelinePropertyRef> active_graph_channels(std::shared_ptr<Layer> *layer = nullptr) const;
+    void notify_graph_channel_count();
+    int graph_channel_component() const;
+    GraphChannelMode graph_mode_for_component(int component) const;
+    void set_graph_target(const std::string &owner_id,
+                          const std::string &property_name);
     bool graph_ref_property(const KeyframeRef &ref, TimelinePropertyRef *prop,
                             std::shared_ptr<Layer> *layer = nullptr) const;
     double graph_value_to_y(double value) const;
@@ -288,9 +332,12 @@ private:
 
     bool graph_editor_enabled_ = false;
     GraphViewMode graph_view_mode_ = GraphViewMode::Value;
+    GraphChannelMode graph_channel_mode_ = GraphChannelMode::All;
     double graph_value_min_ = -1.0;
     double graph_value_max_ = 1.0;
     bool graph_fit_pending_ = true;
+    std::string graph_target_owner_id_;
+    std::string graph_target_property_name_;
     GraphHit graph_drag_hit_;
     std::vector<TemporalDragSnapshot> temporal_drag_snapshots_;
     QPoint graph_drag_start_;
@@ -299,4 +346,10 @@ private:
     double graph_drag_start_max_ = 1.0;
     int graph_drag_start_scroll_x_ = 0;
     bool graph_drag_changed_ = false;
+
+    /* Debug/trace profiling is aggregated to one record per second so it can
+     * remain enabled without turning every paint into a logging bottleneck. */
+    QElapsedTimer paint_profile_window_;
+    qint64 paint_profile_total_us_ = 0;
+    int paint_profile_samples_ = 0;
 };

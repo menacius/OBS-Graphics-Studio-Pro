@@ -220,13 +220,17 @@ public:
     void resetTransient(const QString &title_id = QString());
     void clear();
     QHash<int, FrameCacheState> titleStates(const QString &title_id) const;
+    QHash<int, FrameCacheState> statesForRange(
+        const QString &title_id, int first_frame, int last_frame) const;
 
 signals:
     void stateChanged(const QString &title_id, int first_frame, int last_frame);
 
 private:
+    void rebuildTitleIndexLocked(const QString &title_id);
     mutable QMutex mutex_;
     QHash<CacheFrameKey, FrameCacheState> states_;
+    QHash<QString, QHash<int, FrameCacheState>> frame_states_;
 };
 
 class RenderQueueManager : public QObject {
@@ -329,6 +333,10 @@ public:
     void restoreDiskStates(const std::shared_ptr<Title> &title);
     bool titleHasTimelineChanges(const Title &title) const;
     FrameCacheState displayStateForFrame(const std::shared_ptr<Title> &title, int frame) const;
+    QHash<int, FrameCacheState> displayStatesForRange(
+        const std::shared_ptr<Title> &title, int first_frame, int last_frame) const;
+    QHash<int, bool> displayStaticFramesForRange(
+        const std::shared_ptr<Title> &title, int first_frame, int last_frame) const;
     bool frameReadyForPlayback(const std::shared_ptr<Title> &title, double time) const;
     bool displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const;
 

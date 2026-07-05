@@ -173,15 +173,20 @@ void TitleEditor::update_footer_diagnostics()
         }
     }
     const int waveform_percent = total == 0 ? 100 : (ready * 100 / total);
-    const double render_ms = canvas_ ? canvas_->average_render_cost_ms() : 0.0;
-    const double live_fps = playing_ && canvas_ ? canvas_->live_playback_fps() : 0.0;
+    const CanvasPreview::DiagnosticsSample diagnostics = canvas_
+        ? canvas_->take_diagnostics_sample()
+        : CanvasPreview::DiagnosticsSample{};
+    const double render_ms = diagnostics.average_render_ms;
+    const double live_fps = playing_ ? diagnostics.playback_fps : 0.0;
     const double target_fps = std::max(1.0, obs_frame_rate());
     const double frame_budget_ms = 1000.0 / target_fps;
     const QString normal_color = status_diagnostics_label_->palette().color(QPalette::Text).name();
     QString render_color = normal_color;
     if (render_ms > frame_budget_ms) render_color = QStringLiteral("#e53935");
     else if (render_ms >= frame_budget_ms * 0.80) render_color = QStringLiteral("#f9a825");
-    const QString fps_color = (playing_ && live_fps + 0.05 < target_fps)
+    const double fps_measurement_tolerance = std::max(0.5, target_fps * 0.01);
+    const QString fps_color =
+        (playing_ && live_fps + fps_measurement_tolerance < target_fps)
         ? QStringLiteral("#e53935") : normal_color;
 
     QStringList parts;
@@ -192,5 +197,4 @@ void TitleEditor::update_footer_diagnostics()
     parts << QStringLiteral("FPS: <span style=\"color:%1\">%2</span>")
                  .arg(fps_color).arg(live_fps, 0, 'f', 1);
     status_diagnostics_label_->setText(parts.join(QStringLiteral("   |   ")));
-    if (timeline_) timeline_->update();
 }

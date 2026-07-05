@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 static bool near(double actual, double expected, double epsilon = 1e-9)
 {
@@ -317,6 +318,28 @@ int main()
     assert(near(temporal_position.evaluate(0.5).x, 50.0, 1e-7));
     assert(std::isfinite(temporal_position.speed(0.5)));
     assert(near(temporal_position.path_value(0.5), 50.0, 1e-5));
+
+    /* Camera switching and camera assignment are discrete Hold tracks. They
+     * preserve their static baseline before the first key, sort authoring
+     * operations deterministically, replace coincident keys, and remove using
+     * the same frame-sized tolerance used by the timeline. */
+    AnimatedDiscreteProperty camera_switch{"active_camera", "default"};
+    assert(camera_switch.evaluate(0.0) == "default");
+    camera_switch.set(2.0, "camera-c");
+    camera_switch.set(1.0, "camera-b");
+    assert(camera_switch.keyframes.size() == 2);
+    assert(camera_switch.keyframes[0].time == 1.0);
+    assert(camera_switch.evaluate(0.5) == "default");
+    assert(camera_switch.evaluate(1.5) == "camera-b");
+    assert(camera_switch.evaluate(2.0) == "camera-c");
+    camera_switch.set(1.0, "camera-b-updated");
+    assert(camera_switch.keyframes.size() == 2);
+    assert(camera_switch.evaluate(1.5) == "camera-b-updated");
+    camera_switch.remove(1.0);
+    assert(camera_switch.keyframes.size() == 1);
+    assert(camera_switch.evaluate(1.5) == "default");
+    assert(camera_switch.evaluate(std::numeric_limits<double>::quiet_NaN()) ==
+           "default");
 
     std::cout << "animation model temporal/spatial separation, legacy linear compatibility, "
                  "manual cubic paths, deterministic auto tangents, local-space transforms, "

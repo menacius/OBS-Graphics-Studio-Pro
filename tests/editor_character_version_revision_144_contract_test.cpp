@@ -64,28 +64,28 @@ int main(int argc, char **argv)
                   "cmb_font_style_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed)",
                   "expanding font style selector");
 
-    ok &= require(cmake, "project(broadcast-graphics-live VERSION 0.8.9)",
+    ok &= require(cmake, "project(broadcast-graphics-live VERSION 0.8.10)",
                   "CMake public version");
     ok &= require(cmake, "set(OBS_BGS_PRERELEASE \"alpha\")",
                   "alpha prerelease identity");
-    ok &= require(cmake, "set(OBS_BGS_DEVELOPMENT_VERSION \"189\")",
-                  "development version 189");
-    ok &= require(build_info, "#define PLUGIN_VERSION \"0.8.9-alpha\"",
+    ok &= require(cmake, "set(OBS_BGS_DEVELOPMENT_VERSION \"219\")",
+                  "development version 219");
+    ok &= require(build_info, "#define PLUGIN_VERSION \"0.8.10-alpha\"",
                   "core runtime version");
-    ok &= require(build_info, "#define BGL_DEVELOPMENT_VERSION \"189\"",
+    ok &= require(build_info, "#define BGL_DEVELOPMENT_VERSION \"219\"",
                   "core development version");
-    ok &= require(plugin_main, "#define PLUGIN_VERSION \"0.8.9-alpha\"",
+    ok &= require(plugin_main, "#define PLUGIN_VERSION \"0.8.10-alpha\"",
                   "OBS plugin runtime version");
-    ok &= require(vcpkg, "\"version-string\": \"0.8.9-alpha\"",
+    ok &= require(vcpkg, "\"version-string\": \"0.8.10-alpha\"",
                   "vcpkg version");
-    ok &= require(readme, "v0.8.9-alpha` · `Development Version 189",
+    ok &= require(readme, "v0.8.10-alpha` · `Development Version 219",
                   "README current build");
-    ok &= require(readme, "since `v0.8.8-alpha` Development Version 144",
+    ok &= require(readme, "since `v0.8.9-alpha` Development Version 189",
                   "README release-change baseline");
     ok &= require(readme,
-                  "Broadcast_Graphics_Live_v0.8.9-alpha_development-version-189.zip",
-                  "README package example");
-    ok &= require(docs_readme, "canonical documents for `v0.8.9-alpha`",
+                  "Broadcast_Graphics_Live_v0.8.10-alpha_development-version-219.zip",
+                  "README current package example");
+    ok &= require(docs_readme, "canonical documents for `v0.8.10-alpha`",
                   "canonical docs version");
     ok &= require(changelog,
                   "Development Version 144 — v0.8.8-alpha and Character panel cleanup",

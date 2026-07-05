@@ -53,14 +53,44 @@ void TitleEditor::next_keyframe()
 
 
 
+void TitleEditor::reset_playback_timer_cadence()
+{
+    playback_timer_fractional_error_ms_ = 0.0;
+    playback_timer_frame_duration_ms_ = 0.0;
+    schedule_next_playback_timer_interval();
+}
+
+void TitleEditor::schedule_next_playback_timer_interval()
+{
+    if (!play_timer_)
+        return;
+    const double exact_ms = std::max(
+        1.0, editor_playback_ui_frame_duration() * 1000.0);
+    if (std::abs(playback_timer_frame_duration_ms_ - exact_ms) > 1e-6) {
+        playback_timer_frame_duration_ms_ = exact_ms;
+        playback_timer_fractional_error_ms_ = 0.0;
+    }
+
+    const int base_ms = std::max(1, static_cast<int>(std::floor(exact_ms)));
+    playback_timer_fractional_error_ms_ += exact_ms - std::floor(exact_ms);
+    int interval_ms = base_ms;
+    if (playback_timer_fractional_error_ms_ >= 1.0 - 1e-9) {
+        ++interval_ms;
+        playback_timer_fractional_error_ms_ -= 1.0;
+    }
+    play_timer_->setInterval(interval_ms);
+}
+
 void TitleEditor::tick()
 {
     if (shutting_down_)
         return;
     if (!title_ || !playing_) return;
-    const int project_interval_ms = editor_playback_ui_timer_interval_ms();
-    if (play_timer_ && play_timer_->interval() != project_interval_ms)
-        play_timer_->setInterval(project_interval_ms);
+    /* Alternate floor/ceil millisecond intervals so fractional project rates
+     * such as 59.94/60 and 29.97 do not become a permanently slower rounded
+     * transport. Scheduling at the beginning of the tick also includes the
+     * current processing time in the next deadline instead of adding it. */
+    schedule_next_playback_timer_interval();
     const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
     double dt = obs_frame_duration();
     if (!cache_settings.play_every_frame || obs_frame_duration() < editor_playback_ui_frame_duration()) {
@@ -843,8 +873,7 @@ void TitleEditor::update_display_refresh_pacing()
          * e.g. 75 Hz becomes 14 ms rather than 13 ms (>75 Hz). */
         gui_refresh_timer_->setInterval(
             std::max(1, static_cast<int>(std::ceil(1000.0 / hz))));
-        if (!gui_refresh_timer_->isActive())
-            gui_refresh_timer_->start();
+        /* Started only for an explicit pointer interaction by eventFilter(). */
     }
 
 }
@@ -853,53 +882,105 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
 {
     if (shutting_down_)
         return QMainWindow::eventFilter(watched, event);
+
+    const QEvent::Type type = event->type();
+    switch (type) {
+    case QEvent::LayoutRequest:
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::ParentAboutToChange:
+    case QEvent::ParentChange:
+    case QEvent::Show:
+    case QEvent::Hide:
+    case QEvent::ScreenChangeInternal:
+    case QEvent::Polish:
+    case QEvent::Wheel:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::KeyPress:
+    case QEvent::FocusOut:
+    case QEvent::ShortcutOverride:
+        break;
+    default:
+        return QMainWindow::eventFilter(watched, event);
+    }
+
     QWidget *watched_widget = qobject_cast<QWidget *>(watched);
-    const bool editor_widget = watched_widget &&
-        (watched_widget == this || isAncestorOf(watched_widget));
-    if (editor_widget &&
-        (event->type() == QEvent::LayoutRequest ||
-         event->type() == QEvent::ParentAboutToChange ||
-         event->type() == QEvent::ParentChange ||
-         event->type() == QEvent::Move ||
-         event->type() == QEvent::Resize)) {
+    const bool watched_canvas_window = canvas_ && canvas_->windowHandle() &&
+        watched == canvas_->windowHandle();
+    const bool watched_in_editor = watched_canvas_window ||
+        (watched_widget &&
+         (watched_widget == this || isAncestorOf(watched_widget)));
+    auto *watched_dock = watched_in_editor
+        ? qobject_cast<QDockWidget *>(watched_widget) : nullptr;
+
+    const bool main_window_layout_transition = watched == this &&
+        (type == QEvent::LayoutRequest || type == QEvent::Move ||
+         type == QEvent::Resize);
+    const bool dock_structure_transition = watched_dock &&
+        (type == QEvent::ParentAboutToChange || type == QEvent::ParentChange ||
+         type == QEvent::Move || type == QEvent::Resize ||
+         type == QEvent::Show || type == QEvent::Hide);
+    /* Only this editor's own window/docks can suspend its presentation loop.
+     * The application-wide filter also sees OBS' docks and dialogs; allowing
+     * those events here caused apparently random 90 ms editor pauses. */
+    if (main_window_layout_transition || dock_structure_transition) {
+        BGL_LOG_TRACE("Performance", QStringLiteral(
+            "Editor layout transition object=%1 event=%2")
+            .arg(watched_widget ? watched_widget->objectName()
+                                : QStringLiteral("<window>"))
+            .arg(static_cast<int>(type)));
         dock_layout_transition_ = true;
+        if (gui_refresh_timer_)
+            gui_refresh_timer_->stop();
         if (layout_settle_timer_)
             layout_settle_timer_->start();
     }
-    if (qobject_cast<QDockWidget *>(watched) &&
-        (event->type() == QEvent::Move || event->type() == QEvent::Resize)) {
+    if (watched_dock && (type == QEvent::Move || type == QEvent::Resize)) {
         QTimer::singleShot(0, this, [this]() { save_editor_layout(); });
     }
 
-    if (watched == this && (event->type() == QEvent::Show || event->type() == QEvent::Move ||
-                            event->type() == QEvent::ScreenChangeInternal)) {
-        // Defer monitor refresh recalculation until the dock/layout operation has
-        // completed; querying/painting through a half-rebuilt widget hierarchy is unsafe.
+    if (watched == this &&
+        (type == QEvent::Show || type == QEvent::Move ||
+         type == QEvent::ScreenChangeInternal)) {
         if (layout_settle_timer_)
             layout_settle_timer_->start();
         else
             QTimer::singleShot(0, this, &TitleEditor::update_display_refresh_pacing);
     }
-    if (auto *spin = qobject_cast<QAbstractSpinBox *>(watched)) {
-        if (event->type() == QEvent::Polish || event->type() == QEvent::Show) {
-            spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
-            if (!spin->property("bgsDefaultValue").isValid()) {
-                if (auto *double_spin = qobject_cast<QDoubleSpinBox *>(spin))
-                    spin->setProperty("bgsDefaultValue", double_spin->value());
-                else if (auto *int_spin = qobject_cast<QSpinBox *>(spin))
-                    spin->setProperty("bgsDefaultValue", int_spin->value());
+
+    if (type == QEvent::MouseButtonPress && watched_in_editor &&
+        gui_refresh_timer_ && !playing_ && !dock_layout_transition_) {
+        auto *mouse_event = static_cast<QMouseEvent *>(event);
+        if (mouse_event->button() != Qt::NoButton)
+            gui_refresh_timer_->start();
+    } else if (type == QEvent::MouseButtonRelease && gui_refresh_timer_) {
+        auto *mouse_event = static_cast<QMouseEvent *>(event);
+        if (mouse_event->buttons() == Qt::NoButton)
+            gui_refresh_timer_->stop();
+    }
+
+    if (watched_in_editor) {
+        if (auto *spin = qobject_cast<QAbstractSpinBox *>(watched_widget)) {
+            if (type == QEvent::Polish || type == QEvent::Show) {
+                spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+                if (!spin->property("bgsDefaultValue").isValid()) {
+                    if (auto *double_spin = qobject_cast<QDoubleSpinBox *>(spin))
+                        spin->setProperty("bgsDefaultValue", double_spin->value());
+                    else if (auto *int_spin = qobject_cast<QSpinBox *>(spin))
+                        spin->setProperty("bgsDefaultValue", int_spin->value());
+                }
             }
-        }
-        if (event->type() == QEvent::Wheel && spin->isEnabled()) {
-            // Spin boxes intentionally accept wheel changes while hovered, without
-            // stealing keyboard focus from the canvas/timeline.
-            auto *wheel = static_cast<QWheelEvent *>(event);
-            const int steps = wheel->angleDelta().y() / 120;
-            if (steps != 0) {
-                for (int i = 0; i < std::abs(steps); ++i)
-                    steps > 0 ? spin->stepUp() : spin->stepDown();
-                wheel->accept();
-                return true;
+            if (type == QEvent::Wheel && spin->isEnabled()) {
+                auto *wheel = static_cast<QWheelEvent *>(event);
+                const int steps = wheel->angleDelta().y() / 120;
+                if (steps != 0) {
+                    for (int i = 0; i < std::abs(steps); ++i)
+                        steps > 0 ? spin->stepUp() : spin->stepDown();
+                    wheel->accept();
+                    return true;
+                }
             }
         }
     }
@@ -926,6 +1007,9 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    if (type != QEvent::KeyPress && type != QEvent::ShortcutOverride)
+        return QMainWindow::eventFilter(watched, event);
+
     QWidget *focused_widget = QApplication::focusWidget();
     QWidget *active_window = QApplication::activeWindow();
     const bool focus_in_editor = focused_widget &&
@@ -936,16 +1020,14 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
      * descendant. Route commands whenever the focused/watched object belongs to
      * this editor, or this editor is the active top-level window. Only modal
      * child windows keep their own shortcut scope. */
-    const bool watched_in_editor = watched_widget &&
-        (watched_widget == this || isAncestorOf(watched_widget));
     const bool editor_is_active = !modal_child_active &&
         (focus_in_editor || watched_in_editor || active_window == this);
     if ((event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) && editor_is_active) {
         auto *key_event = static_cast<QKeyEvent *>(event);
         const bool shortcut_override = event->type() == QEvent::ShortcutOverride;
-        auto *widget = qobject_cast<QWidget *>(watched);
         const bool in_editor = editor_is_active ||
-            (widget && (widget == this || isAncestorOf(widget)));
+            (watched_widget &&
+             (watched_widget == this || isAncestorOf(watched_widget)));
         const bool editing_value = editor_focus_accepts_text(focused_widget);
         const Qt::KeyboardModifiers shortcut_modifiers =
             key_event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier |
@@ -959,11 +1041,14 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
              * otherwise consume Space or tool keys before the real KeyPress
              * reaches this filter. Executing commands during ShortcutOverride
              * is also incorrect and can cause duplicate/uneven activation. */
+            const bool canvas_has_focus = watched_canvas_window ||
+                (canvas_ &&
+                 (focused_widget == canvas_ || watched_widget == canvas_));
             const bool plain_tool_key =
                 tool_modifiers == Qt::NoModifier &&
                 (key_event->key() == Qt::Key_V ||
                  key_event->key() == Qt::Key_A ||
-                 key_event->key() == Qt::Key_E ||
+                 (!canvas_has_focus && key_event->key() == Qt::Key_E) ||
                  key_event->key() == Qt::Key_P ||
                  key_event->key() == Qt::Key_M ||
                  key_event->key() == Qt::Key_L ||

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "animation.h"
+#include "../core/serialization-passthrough.h"
 
 #include <algorithm>
 #include <cmath>
@@ -70,6 +71,7 @@ inline bool layer_transition_type_is_text(LayerTransitionType type)
 }
 
 struct LayerTransition {
+    OpaqueSerializationPassthrough serialization_passthrough_json;
     std::string id;
     std::string preset_id;
     std::string display_name;

@@ -1,4 +1,6 @@
 #include "title-editor-internal.h"
+#include "bgl-modern-controls.h"
+#include <array>
 
 TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     : QGroupBox(parent)
@@ -6,9 +8,9 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     apply_theme_style();
 
     auto *fl = new QFormLayout(this);
-    fl->setContentsMargins(8, 8, 8, 9);
-    fl->setHorizontalSpacing(6);
-    fl->setVerticalSpacing(4);
+    fl->setContentsMargins(6, 5, 6, 6);
+    fl->setHorizontalSpacing(4);
+    fl->setVerticalSpacing(2);
     fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     fl->setFormAlignment(Qt::AlignTop);
     fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -31,7 +33,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
 
     spn_duration_ = new TimecodeSpinBox(this);
     spn_duration_->setRange(0.1, 3600.0);
-    spn_duration_->setFixedHeight(22);
+    spn_duration_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.LengthLabel"), spn_duration_);
 
     cmb_cue_end_behavior_ = new QComboBox(this);
@@ -39,7 +41,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     cmb_cue_end_behavior_->addItem(bgl_tr("OBSTitles.CueEndShowNothing"), 1);
     cmb_cue_end_behavior_->addItem(bgl_tr("OBSTitles.CueEndShowFirstFrame"), 2);
     cmb_cue_end_behavior_->setToolTip(bgl_tr("OBSTitles.CueEndBehaviorTooltip"));
-    cmb_cue_end_behavior_->setFixedHeight(22);
+    cmb_cue_end_behavior_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.CueEndBehaviorLabel"), cmb_cue_end_behavior_);
 
     auto *playback_row = new QWidget(this);
@@ -71,19 +73,19 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_pause_frame_ = new TimecodeSpinBox(this);
     spn_pause_frame_->setRange(0.0, 3600.0);
     spn_pause_frame_->setToolTip(bgl_tr("OBSTitles.PauseFrameTooltip"));
-    spn_pause_frame_->setFixedHeight(22);
+    spn_pause_frame_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.PauseFrameLabel"), spn_pause_frame_);
 
 
     spn_loop_start_ = new TimecodeSpinBox(this);
     spn_loop_start_->setRange(0.0, 3600.0);
     spn_loop_start_->setToolTip(bgl_tr("OBSTitles.LoopStartTooltip"));
-    spn_loop_start_->setFixedHeight(22);
+    spn_loop_start_->setFixedHeight(20);
 
     spn_loop_end_ = new TimecodeSpinBox(this);
     spn_loop_end_->setRange(0.0, 3600.0);
     spn_loop_end_->setToolTip(bgl_tr("OBSTitles.LoopEndTooltip"));
-    spn_loop_end_->setFixedHeight(22);
+    spn_loop_end_->setFixedHeight(20);
 
     loop_area_row_ = new QWidget(this);
     auto *loop_area_layout = new QHBoxLayout(loop_area_row_);
@@ -99,6 +101,166 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     loop_area_layout->addWidget(spn_loop_end_, 1);
     add_form_row(fl, bgl_tr("OBSTitles.LoopAreaLabel"), loop_area_row_);
 
+    camera_box_ = new QWidget(this);
+    camera_box_->setObjectName(QStringLiteral("BglTitleCameraContent"));
+    auto *camera_form = new QFormLayout(camera_box_);
+    camera_form->setContentsMargins(5, 4, 5, 5);
+    camera_form->setHorizontalSpacing(4);
+    camera_form->setVerticalSpacing(2);
+    camera_form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    auto begin_camera_drag = [this]() {
+        if (loading_values_) return;
+        numeric_label_dragging_ = true;
+        emit title_changed(true);
+    };
+    auto end_camera_drag = [this]() {
+        if (loading_values_) return;
+        numeric_label_dragging_ = false;
+        emit title_changed(true);
+    };
+    auto make_camera_label = [this, begin_camera_drag, end_camera_drag](
+                                 const QString &text, QWidget *target,
+                                 QWidget *parent) {
+        auto *label = new NumericDragLabel(text, target, parent,
+                                           begin_camera_drag,
+                                           end_camera_drag);
+        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        label->setStyleSheet(QStringLiteral("font-size:10px;background:transparent;"));
+        return label;
+    };
+    auto add_camera_row = [camera_form, &make_camera_label](
+                              const QString &label_text, QWidget *field,
+                              QWidget *drag_target = nullptr) {
+        if (label_text.isEmpty()) {
+            camera_form->addRow(QString(), field);
+            return;
+        }
+        camera_form->addRow(make_camera_label(label_text,
+                                               drag_target ? drag_target : field,
+                                               camera_form->parentWidget()),
+                            field);
+    };
+    auto make_camera_spin = [this](double minimum, double maximum,
+                                   int decimals = 3) {
+        auto *spin = new QDoubleSpinBox(camera_box_);
+        spin->setRange(minimum, maximum);
+        spin->setDecimals(decimals);
+        spin->setKeyboardTracking(true);
+        spin->setFixedHeight(20);
+        spin->setMinimumWidth(66);
+        spin->setStyleSheet(QStringLiteral("font-size:10px;padding:0 2px;"));
+        return spin;
+    };
+    auto make_xyz_row = [camera_box_ = camera_box_, &make_camera_label](
+                            QDoubleSpinBox *x, QDoubleSpinBox *y,
+                            QDoubleSpinBox *z) {
+        auto *row = new QWidget(camera_box_);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(2);
+        const std::array<std::pair<const char *, QDoubleSpinBox *>, 3> entries{{
+            {"X", x}, {"Y", y}, {"Z", z}
+        }};
+        for (const auto &entry : entries) {
+            auto *label = make_camera_label(QString::fromLatin1(entry.first),
+                                            entry.second, row);
+            label->setMinimumWidth(9);
+            label->setAlignment(Qt::AlignCenter);
+            layout->addWidget(label);
+            layout->addWidget(entry.second, 1);
+        }
+        return row;
+    };
+
+    auto *camera_select_row = new QWidget(camera_box_);
+    auto *camera_select_layout = new QHBoxLayout(camera_select_row);
+    camera_select_layout->setContentsMargins(0, 0, 0, 0);
+    camera_select_layout->setSpacing(2);
+    cmb_camera_ = new QComboBox(camera_select_row);
+    cmb_camera_->setFixedHeight(20);
+    btn_camera_add_ = new QPushButton(QStringLiteral("+"), camera_select_row);
+    btn_camera_delete_ = new QPushButton(QStringLiteral("−"), camera_select_row);
+    btn_camera_actions_ = new QToolButton(camera_select_row);
+    btn_camera_add_->setFixedSize(22, 20);
+    btn_camera_delete_->setFixedSize(22, 20);
+    btn_camera_actions_->setFixedSize(24, 20);
+    btn_camera_actions_->setText(QStringLiteral("⋯"));
+    btn_camera_actions_->setPopupMode(QToolButton::InstantPopup);
+    btn_camera_add_->setToolTip(QStringLiteral("Add camera"));
+    btn_camera_delete_->setToolTip(QStringLiteral("Delete selected camera"));
+    btn_camera_actions_->setToolTip(QStringLiteral("Camera actions"));
+    auto *camera_actions_menu = new QMenu(btn_camera_actions_);
+    act_camera_duplicate_ = camera_actions_menu->addAction(
+        obs_icon("duplicate.svg"), QStringLiteral("Duplicate Camera"));
+    act_camera_copy_ = camera_actions_menu->addAction(QStringLiteral("Copy Camera"));
+    act_camera_paste_ = camera_actions_menu->addAction(QStringLiteral("Paste Camera"));
+    act_camera_paste_->setEnabled(false);
+    btn_camera_actions_->setMenu(camera_actions_menu);
+    camera_select_layout->addWidget(cmb_camera_, 1);
+    camera_select_layout->addWidget(btn_camera_add_);
+    camera_select_layout->addWidget(btn_camera_actions_);
+    camera_select_layout->addWidget(btn_camera_delete_);
+    add_camera_row(QStringLiteral("Active"), camera_select_row, cmb_camera_);
+
+    chk_camera_canvas_default_ = new QCheckBox(
+        QStringLiteral("Match canvas (legacy 2D view)"), camera_box_);
+    chk_camera_canvas_default_->setStyleSheet(QStringLiteral("font-size:10px;"));
+    add_camera_row(QString(), chk_camera_canvas_default_);
+    cmb_camera_projection_ = new QComboBox(camera_box_);
+    cmb_camera_projection_->addItem(QStringLiteral("Perspective"),
+                                    static_cast<int>(CameraProjection::Perspective));
+    cmb_camera_projection_->addItem(QStringLiteral("Orthographic"),
+                                    static_cast<int>(CameraProjection::Orthographic));
+    cmb_camera_projection_->setFixedHeight(20);
+    add_camera_row(QStringLiteral("Projection"), cmb_camera_projection_);
+
+    spn_camera_pos_x_ = make_camera_spin(-1000000.0, 1000000.0);
+    spn_camera_pos_y_ = make_camera_spin(-1000000.0, 1000000.0);
+    spn_camera_pos_z_ = make_camera_spin(-1000000.0, 1000000.0);
+    QWidget *camera_position_row = make_xyz_row(
+        spn_camera_pos_x_, spn_camera_pos_y_, spn_camera_pos_z_);
+    add_camera_row(QStringLiteral("Position"), camera_position_row,
+                   spn_camera_pos_x_);
+    spn_camera_target_x_ = make_camera_spin(-1000000.0, 1000000.0);
+    spn_camera_target_y_ = make_camera_spin(-1000000.0, 1000000.0);
+    spn_camera_target_z_ = make_camera_spin(-1000000.0, 1000000.0);
+    QWidget *camera_target_row = make_xyz_row(
+        spn_camera_target_x_, spn_camera_target_y_, spn_camera_target_z_);
+    add_camera_row(QStringLiteral("Target"), camera_target_row,
+                   spn_camera_target_x_);
+    spn_camera_orientation_x_ = make_camera_spin(-360000.0, 360000.0);
+    spn_camera_orientation_y_ = make_camera_spin(-360000.0, 360000.0);
+    spn_camera_orientation_z_ = make_camera_spin(-360000.0, 360000.0);
+    QWidget *camera_orientation_row = make_xyz_row(
+        spn_camera_orientation_x_, spn_camera_orientation_y_, spn_camera_orientation_z_);
+    add_camera_row(QStringLiteral("Orientation"), camera_orientation_row,
+                   spn_camera_orientation_x_);
+    spn_camera_rot_x_ = make_camera_spin(-360000.0, 360000.0);
+    spn_camera_rot_y_ = make_camera_spin(-360000.0, 360000.0);
+    spn_camera_rot_z_ = make_camera_spin(-360000.0, 360000.0);
+    QWidget *camera_rotation_row = make_xyz_row(
+        spn_camera_rot_x_, spn_camera_rot_y_, spn_camera_rot_z_);
+    add_camera_row(QStringLiteral("Rotation"), camera_rotation_row,
+                   spn_camera_rot_x_);
+    spn_camera_focal_ = make_camera_spin(1.0, 1000000.0);
+    spn_camera_fov_ = make_camera_spin(0.1, 179.0);
+    spn_camera_zoom_ = make_camera_spin(0.0001, 10000.0, 4);
+    spn_camera_near_ = make_camera_spin(0.0001, 1000000.0, 4);
+    spn_camera_far_ = make_camera_spin(0.001, 1000000000.0);
+    add_camera_row(QStringLiteral("Focal length"), spn_camera_focal_);
+    add_camera_row(QStringLiteral("Field of view"), spn_camera_fov_);
+    add_camera_row(QStringLiteral("Zoom"), spn_camera_zoom_);
+    add_camera_row(QStringLiteral("Near clip"), spn_camera_near_);
+    add_camera_row(QStringLiteral("Far clip"), spn_camera_far_);
+
+    camera_panel_ = new BglCollapsiblePanel(QStringLiteral("3D Camera"),
+                                            camera_box_, this);
+    camera_panel_->setPersistenceKey(QStringLiteral("title-properties"),
+                                     QStringLiteral("3d-camera"));
+    camera_panel_->setOrderPersistenceEnabled(false);
+    fl->addRow(camera_panel_);
+
     cmb_stinger_switch_mode_ = new QComboBox(this);
     cmb_stinger_switch_mode_->addItem(
         bgl_tr("OBSTitles.StingerSwitchAtPoint"),
@@ -106,12 +268,12 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     cmb_stinger_switch_mode_->addItem(
         bgl_tr("OBSTitles.StingerManualSceneAnimation"),
         static_cast<int>(StingerSwitchMode::ManualSceneAnimation));
-    cmb_stinger_switch_mode_->setFixedHeight(22);
+    cmb_stinger_switch_mode_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.StingerSwitchMode"), cmb_stinger_switch_mode_);
 
     spn_stinger_transition_timecode_ = new TimecodeSpinBox(this);
     spn_stinger_transition_timecode_->setRange(0.0, 3600.0);
-    spn_stinger_transition_timecode_->setFixedHeight(22);
+    spn_stinger_transition_timecode_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.StingerTransitionPoint"), spn_stinger_transition_timecode_);
 
     chk_stinger_audio_ = new QCheckBox(bgl_tr("OBSTitles.StingerOptionalAudio"), this);
@@ -123,8 +285,8 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_stinger_post_roll_ = new TimecodeSpinBox(this);
     spn_stinger_pre_roll_->setRange(0.0, 3600.0);
     spn_stinger_post_roll_->setRange(0.0, 3600.0);
-    spn_stinger_pre_roll_->setFixedHeight(22);
-    spn_stinger_post_roll_->setFixedHeight(22);
+    spn_stinger_pre_roll_->setFixedHeight(20);
+    spn_stinger_post_roll_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.StingerPreRoll"), spn_stinger_pre_roll_);
     add_form_row(fl, bgl_tr("OBSTitles.StingerPostRoll"), spn_stinger_post_roll_);
 
@@ -133,13 +295,179 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                                       static_cast<int>(StingerRenderMode::ProceduralLive));
     cmb_stinger_render_mode_->addItem(bgl_tr("OBSTitles.StingerPrerenderedProxy"),
                                       static_cast<int>(StingerRenderMode::PrerenderedProxy));
-    cmb_stinger_render_mode_->setFixedHeight(22);
+    cmb_stinger_render_mode_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.StingerRenderMode"), cmb_stinger_render_mode_);
 
     lbl_stinger_validation_ = new QLabel(this);
     lbl_stinger_validation_->setWordWrap(true);
     lbl_stinger_validation_->setTextFormat(Qt::RichText);
     fl->addRow(bgl_tr("OBSTitles.StingerValidation"), lbl_stinger_validation_);
+
+    connect(cmb_camera_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (!title_ || loading_values_ || index < 0) return;
+                const std::string camera_id = cmb_camera_->itemData(index).toString().toStdString();
+                if (title_->active_camera.is_animated()) {
+                    title_->active_camera.set(playhead_, camera_id);
+                } else {
+                    title_->active_camera.static_value = camera_id;
+                    title_->active_camera_id = camera_id;
+                }
+                load_values();
+                emit title_changed(true);
+            });
+    connect(btn_camera_add_, &QPushButton::clicked, this, [this]() {
+        if (!title_ || loading_values_) return;
+        TitleCamera camera;
+        camera.id = TitleDataStore::make_uuid();
+        camera.name = QStringLiteral("Camera %1")
+                          .arg(title_->cameras.size() + 1).toStdString();
+        camera.use_canvas_default = false;
+        camera.position_x.static_value = title_->width * 0.5;
+        camera.position_y.static_value = title_->height * 0.5;
+        camera.position_z.static_value = -1000.0;
+        camera.target_x.static_value = title_->width * 0.5;
+        camera.target_y.static_value = title_->height * 0.5;
+        camera.target_z.static_value = 0.0;
+        const std::string camera_id = camera.id;
+        title_->cameras.push_back(std::move(camera));
+        if (title_->active_camera.is_animated()) {
+            title_->active_camera.set(playhead_, camera_id);
+        } else {
+            title_->active_camera.static_value = camera_id;
+            title_->active_camera_id = camera_id;
+        }
+        load_values();
+        emit title_changed(true);
+    });
+    connect(act_camera_duplicate_, &QAction::triggered, this, [this]() {
+        if (loading_values_) return;
+        if (const TitleCamera *camera = current_camera())
+            insert_camera_copy(*camera);
+    });
+    connect(act_camera_copy_, &QAction::triggered, this, [this]() {
+        if (loading_values_) return;
+        if (const TitleCamera *camera = current_camera()) {
+            camera_clipboard_ = std::make_unique<TitleCamera>(*camera);
+            if (act_camera_paste_) act_camera_paste_->setEnabled(true);
+        }
+    });
+    connect(act_camera_paste_, &QAction::triggered, this, [this]() {
+        if (loading_values_ || !camera_clipboard_) return;
+        insert_camera_copy(*camera_clipboard_);
+    });
+    connect(btn_camera_delete_, &QPushButton::clicked, this, [this]() {
+        if (!title_ || loading_values_ || title_->cameras.size() <= 1) return;
+        const std::string selected = title_->active_camera.evaluate(playhead_);
+        auto it = std::find_if(title_->cameras.begin(), title_->cameras.end(),
+            [&](const TitleCamera &camera) { return camera.id == selected; });
+        if (it == title_->cameras.end() || it->id == "default") return;
+        title_->cameras.erase(it);
+        const std::string fallback = title_->cameras.front().id;
+        if (title_->active_camera.static_value == selected)
+            title_->active_camera.static_value = fallback;
+        for (auto &key : title_->active_camera.keyframes)
+            if (key.value == selected) key.value = fallback;
+        title_->active_camera_id = title_->active_camera.static_value;
+        for (auto &layer : title_->layers) {
+            if (!layer) continue;
+            if (layer->camera_id == selected) layer->camera_id.clear();
+            if (layer->camera_assignment.static_value == selected)
+                layer->camera_assignment.static_value.clear();
+            for (auto &key : layer->camera_assignment.keyframes)
+                if (key.value == selected) key.value.clear();
+            layer->camera_id = layer->camera_assignment.static_value;
+        }
+        load_values();
+        emit title_changed(true);
+    });
+    connect(chk_camera_canvas_default_, &QCheckBox::toggled, this, [this](bool value) {
+        if (loading_values_) return;
+        if (TitleCamera *camera = current_camera()) {
+            camera->use_canvas_default = value;
+            load_values();
+            emit title_changed(true);
+        }
+    });
+    connect(cmb_camera_projection_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (loading_values_) return;
+                if (TitleCamera *camera = current_camera()) {
+                    const auto projection = static_cast<CameraProjection>(
+                        cmb_camera_projection_->itemData(index).toInt());
+                    const double value = projection == CameraProjection::Orthographic ? 1.0 : 0.0;
+                    set_animated_value(camera->projection_mode, playhead_, value);
+                    for (Keyframe &key : camera->projection_mode.keyframes) {
+                        if (std::abs(key.time - playhead_) > 1.0 / 240.0) continue;
+                        key.easing = EasingType::Hold;
+                        key.temporal_mode = TemporalInterpolationMode::Hold;
+                        key.temporal_velocity_explicit = true;
+                    }
+                    camera->projection = static_cast<CameraProjection>(
+                        static_cast<int>(std::round(
+                            std::clamp(camera->projection_mode.static_value, 0.0, 1.0))));
+                    emit title_changed(true);
+                }
+            });
+    auto connect_camera_property = [this](QDoubleSpinBox *spin,
+                                          AnimatedProperty TitleCamera::*member) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, member](double value) {
+                    if (loading_values_) return;
+                    if (TitleCamera *camera = current_camera()) {
+                        set_animated_value(camera->*member, playhead_, value);
+                        if (member == &TitleCamera::near_clip &&
+                            camera->far_clip.evaluate(playhead_) <= value)
+                            set_animated_value(camera->far_clip, playhead_, value + 0.001);
+                        if (member == &TitleCamera::far_clip &&
+                            value <= camera->near_clip.evaluate(playhead_))
+                            set_animated_value(camera->far_clip, playhead_,
+                                camera->near_clip.evaluate(playhead_) + 0.001);
+                        emit title_changed(!numeric_label_dragging_);
+                    }
+                });
+    };
+    auto connect_camera_vector_component = [this](QDoubleSpinBox *spin,
+                                                   bool target, int component) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, target, component](double value) {
+            if (loading_values_) return;
+            if (TitleCamera *camera = current_camera()) {
+                promote_camera_spatial_tracks(*camera);
+                AnimatedVec3Property &property = target ? camera->target_3d
+                                                        : camera->position_3d;
+                Vec3Value next = property.evaluate(playhead_);
+                if (component == 0) next.x = value;
+                else if (component == 1) next.y = value;
+                else next.z = value;
+                set_animated_value(property, playhead_, next);
+                if (target)
+                    mirror_camera_vector_track_to_legacy(camera->target_3d, playhead_,
+                        camera->target_x, camera->target_y, camera->target_z);
+                else
+                    mirror_camera_vector_track_to_legacy(camera->position_3d, playhead_,
+                        camera->position_x, camera->position_y, camera->position_z);
+                emit title_changed(!numeric_label_dragging_);
+            }
+        });
+    };
+    connect_camera_vector_component(spn_camera_pos_x_, false, 0);
+    connect_camera_vector_component(spn_camera_pos_y_, false, 1);
+    connect_camera_vector_component(spn_camera_pos_z_, false, 2);
+    connect_camera_vector_component(spn_camera_target_x_, true, 0);
+    connect_camera_vector_component(spn_camera_target_y_, true, 1);
+    connect_camera_vector_component(spn_camera_target_z_, true, 2);
+    connect_camera_property(spn_camera_orientation_x_, &TitleCamera::orientation_x);
+    connect_camera_property(spn_camera_orientation_y_, &TitleCamera::orientation_y);
+    connect_camera_property(spn_camera_orientation_z_, &TitleCamera::orientation_z);
+    connect_camera_property(spn_camera_rot_x_, &TitleCamera::rotation_x);
+    connect_camera_property(spn_camera_rot_y_, &TitleCamera::rotation_y);
+    connect_camera_property(spn_camera_rot_z_, &TitleCamera::rotation_z);
+    connect_camera_property(spn_camera_focal_, &TitleCamera::focal_length);
+    connect_camera_property(spn_camera_fov_, &TitleCamera::field_of_view);
+    connect_camera_property(spn_camera_zoom_, &TitleCamera::zoom);
+    connect_camera_property(spn_camera_near_, &TitleCamera::near_clip);
+    connect_camera_property(spn_camera_far_, &TitleCamera::far_clip);
 
     connect(grp_playback_mode_, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
             this, [this](QAbstractButton *button) {
@@ -356,36 +684,74 @@ void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
     }
     setTitle(QString());
 
-    if (same_title && !loading_values_ &&
-        (!title_ || title_->graphic_type != TitleGraphicType::Stinger)) {
-        const double duration = title_ ? title_->duration : 5.0;
-        const double loop_start = title_ ? title_->loop_start : 1.0;
-        const double loop_end = title_ ? title_->loop_end : 4.0;
-        const int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
-        const int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
-        const int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 2) : 0;
-        const int playback_selection = playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
-                                                           : (playback_mode == 2 ? 3 : 0);
-        const double clamped_loop_start = std::clamp(loop_start, 0.0, duration);
-        const double clamped_loop_end = std::clamp(loop_end, clamped_loop_start, duration);
-        const double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;
-        const int cue_index = cmb_cue_end_behavior_ ? cmb_cue_end_behavior_->findData(cue_end_behavior) : -1;
-        auto same_value = [](QDoubleSpinBox *spin, double value) {
-            return spin && std::abs(spin->value() - value) < 0.000001;
-        };
-
-        if (same_value(spn_duration_, duration) &&
-            same_value(spn_loop_start_, clamped_loop_start) &&
-            same_value(spn_loop_end_, clamped_loop_end) &&
-            same_value(spn_pause_frame_, pause_time) &&
-            (!grp_playback_mode_ || grp_playback_mode_->checkedId() == playback_selection) &&
-            (!cmb_cue_end_behavior_ ||
-             cmb_cue_end_behavior_->currentIndex() == (cue_index >= 0 ? cue_index : 0))) {
-            return;
-        }
-    }
 
     load_values();
+}
+
+void TitlePropertiesPanel::set_playhead(double timeline_time)
+{
+    playhead_ = std::max(0.0, timeline_time);
+    load_values();
+}
+
+TitleCamera *TitlePropertiesPanel::current_camera()
+{
+    if (!title_ || title_->cameras.empty()) return nullptr;
+    auto it = std::find_if(title_->cameras.begin(), title_->cameras.end(),
+        [this](const TitleCamera &camera) {
+            return camera.id == title_->active_camera.evaluate(playhead_);
+        });
+    return it == title_->cameras.end() ? &title_->cameras.front() : &*it;
+}
+
+const TitleCamera *TitlePropertiesPanel::current_camera() const
+{
+    if (!title_ || title_->cameras.empty()) return nullptr;
+    auto it = std::find_if(title_->cameras.begin(), title_->cameras.end(),
+        [this](const TitleCamera &camera) {
+            return camera.id == title_->active_camera.evaluate(playhead_);
+        });
+    return it == title_->cameras.end() ? &title_->cameras.front() : &*it;
+}
+
+std::string TitlePropertiesPanel::unique_camera_name(const std::string &base) const
+{
+    const QString stem = QString::fromStdString(base).trimmed().isEmpty()
+        ? QStringLiteral("Camera") : QString::fromStdString(base).trimmed();
+    std::set<std::string> used;
+    if (title_) {
+        for (const TitleCamera &camera : title_->cameras)
+            used.insert(camera.name);
+    }
+    QString candidate = stem + QStringLiteral(" Copy");
+    if (used.find(candidate.toStdString()) == used.end())
+        return candidate.toStdString();
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        candidate = QStringLiteral("%1 Copy %2").arg(stem).arg(suffix);
+        if (used.find(candidate.toStdString()) == used.end())
+            return candidate.toStdString();
+    }
+    return (stem + QStringLiteral(" ") +
+            QString::fromStdString(TitleDataStore::make_uuid().substr(0, 8))).toStdString();
+}
+
+void TitlePropertiesPanel::insert_camera_copy(const TitleCamera &source)
+{
+    if (!title_ || loading_values_)
+        return;
+    TitleCamera camera = source;
+    camera.id = TitleDataStore::make_uuid();
+    camera.name = unique_camera_name(source.name);
+    const std::string camera_id = camera.id;
+    title_->cameras.push_back(std::move(camera));
+    if (title_->active_camera.is_animated()) {
+        title_->active_camera.set(playhead_, camera_id);
+    } else {
+        title_->active_camera.static_value = camera_id;
+        title_->active_camera_id = camera_id;
+    }
+    load_values();
+    emit title_changed(true);
 }
 
 void TitlePropertiesPanel::load_values()
@@ -416,6 +782,72 @@ void TitlePropertiesPanel::load_values()
     spn_loop_end_->setValue(std::clamp(loop_end, std::clamp(loop_start, 0.0, duration), duration));
     spn_pause_frame_->setMaximum(duration);
     spn_pause_frame_->setValue(pause_time);
+
+    if (title_ && title_->cameras.empty())
+        title_->cameras.push_back(TitleCamera{});
+    if (cmb_camera_) {
+        cmb_camera_->clear();
+        if (title_) {
+            for (const TitleCamera &camera : title_->cameras)
+                cmb_camera_->addItem(QString::fromStdString(camera.name),
+                                     QString::fromStdString(camera.id));
+            const std::string evaluated_camera = title_->active_camera.evaluate(playhead_);
+            int camera_index = cmb_camera_->findData(
+                QString::fromStdString(evaluated_camera));
+            if (camera_index < 0 && cmb_camera_->count() > 0)
+                camera_index = 0;
+            cmb_camera_->setCurrentIndex(camera_index);
+        }
+    }
+    const TitleCamera *camera = current_camera();
+    const bool has_camera = camera != nullptr;
+    if (camera_box_) camera_box_->setEnabled(has_camera);
+    if (act_camera_duplicate_) act_camera_duplicate_->setEnabled(has_camera);
+    if (act_camera_copy_) act_camera_copy_->setEnabled(has_camera);
+    if (act_camera_paste_) act_camera_paste_->setEnabled(camera_clipboard_ != nullptr);
+    if (camera) {
+        chk_camera_canvas_default_->setChecked(camera->use_canvas_default);
+        const int projection_index = cmb_camera_projection_->findData(
+            static_cast<int>(camera->projection_mode.evaluate(playhead_) >= 0.5
+                ? CameraProjection::Orthographic : CameraProjection::Perspective));
+        cmb_camera_projection_->setCurrentIndex(projection_index >= 0 ? projection_index : 0);
+        const Vec3Value camera_position = evaluated_camera_position_3d(*camera, playhead_);
+        const Vec3Value camera_target = evaluated_camera_target_3d(*camera, playhead_);
+        spn_camera_pos_x_->setValue(camera_position.x);
+        spn_camera_pos_y_->setValue(camera_position.y);
+        spn_camera_pos_z_->setValue(camera_position.z);
+        spn_camera_target_x_->setValue(camera_target.x);
+        spn_camera_target_y_->setValue(camera_target.y);
+        spn_camera_target_z_->setValue(camera_target.z);
+        spn_camera_orientation_x_->setValue(camera->orientation_x.evaluate(playhead_));
+        spn_camera_orientation_y_->setValue(camera->orientation_y.evaluate(playhead_));
+        spn_camera_orientation_z_->setValue(camera->orientation_z.evaluate(playhead_));
+        spn_camera_rot_x_->setValue(camera->rotation_x.evaluate(playhead_));
+        spn_camera_rot_y_->setValue(camera->rotation_y.evaluate(playhead_));
+        spn_camera_rot_z_->setValue(camera->rotation_z.evaluate(playhead_));
+        spn_camera_focal_->setValue(camera->focal_length.evaluate(playhead_));
+        spn_camera_fov_->setValue(camera->field_of_view.evaluate(playhead_));
+        spn_camera_zoom_->setValue(camera->zoom.evaluate(playhead_));
+        spn_camera_near_->setValue(camera->near_clip.evaluate(playhead_));
+        spn_camera_far_->setMinimum(camera->near_clip.evaluate(playhead_) + 0.001);
+        spn_camera_far_->setValue(std::max(camera->far_clip.evaluate(playhead_),
+                                           camera->near_clip.evaluate(playhead_) + 0.001));
+        const bool custom = !camera->use_canvas_default;
+        for (QWidget *widget : {static_cast<QWidget *>(spn_camera_pos_x_),
+                                static_cast<QWidget *>(spn_camera_pos_y_),
+                                static_cast<QWidget *>(spn_camera_pos_z_),
+                                static_cast<QWidget *>(spn_camera_target_x_),
+                                static_cast<QWidget *>(spn_camera_target_y_),
+                                static_cast<QWidget *>(spn_camera_target_z_),
+                                static_cast<QWidget *>(spn_camera_orientation_x_),
+                                static_cast<QWidget *>(spn_camera_orientation_y_),
+                                static_cast<QWidget *>(spn_camera_orientation_z_),
+                                static_cast<QWidget *>(spn_camera_rot_x_),
+                                static_cast<QWidget *>(spn_camera_rot_y_),
+                                static_cast<QWidget *>(spn_camera_rot_z_)})
+            widget->setEnabled(custom);
+        btn_camera_delete_->setEnabled(title_->cameras.size() > 1 && camera->id != "default");
+    }
 
     bool show_loop = playback_mode == 1;
     bool show_pause = playback_mode == 2;

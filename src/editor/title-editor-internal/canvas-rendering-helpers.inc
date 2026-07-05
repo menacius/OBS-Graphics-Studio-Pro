@@ -823,6 +823,37 @@ static void apply_easing_preset(VectorKeyframe &keyframe, EasingType easing)
     }
 }
 
+static void apply_easing_preset(Vector3Keyframe &keyframe, EasingType easing)
+{
+    keyframe.easing = easing;
+    keyframe.temporal_velocity_explicit = false;
+    keyframe.temporal_tangents_linked = true;
+    switch (easing) {
+    case EasingType::Bezier:
+        keyframe.cx1 = 0.33f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.67f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseIn:
+        keyframe.cx1 = 0.42f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 1.0f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseOut:
+        keyframe.cx1 = 0.0f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.58f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseInOut:
+        keyframe.cx1 = 0.42f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.58f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::Linear:
+    case EasingType::Hold:
+    default:
+        keyframe.cx1 = 0.333f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.667f; keyframe.cy2 = 1.0f;
+        break;
+    }
+}
+
 static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double value)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -863,6 +894,28 @@ static void add_or_replace_keyframe(AnimatedVec2Property &prop, double time, Vec
               [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
 }
 
+static void add_or_replace_keyframe(AnimatedVec3Property &prop, double time, Vec3Value value)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.static_value = value;
+    for (auto &kf : prop.keyframes) {
+        if (std::abs(kf.time - time) <= kEpsilon) {
+            kf.time = time;
+            kf.value = value;
+            return;
+        }
+    }
+    Vector3Keyframe kf;
+    kf.time = time;
+    kf.value = value;
+    apply_easing_preset(kf, EasingType::Linear);
+    kf.temporal_mode = TemporalInterpolationMode::Linear;
+    prop.keyframes.push_back(kf);
+    std::sort(prop.keyframes.begin(), prop.keyframes.end(),
+              [](const Vector3Keyframe &a, const Vector3Keyframe &b) { return a.time < b.time; });
+    prop.recalculate_rove_times();
+}
+
 static void set_animated_value(AnimatedProperty &prop, double time, double value)
 {
     if (prop.is_animated())
@@ -877,6 +930,24 @@ static void set_animated_value(AnimatedVec2Property &prop, double time, Vec2Valu
         add_or_replace_keyframe(prop, time, value);
     else
         prop.static_value = value;
+}
+
+static void set_animated_value(AnimatedVec3Property &prop, double time, Vec3Value value)
+{
+    if (prop.is_animated())
+        add_or_replace_keyframe(prop, time, value);
+    else
+        prop.static_value = value;
+}
+
+static void set_animated_component(AnimatedVec3Property &prop, double time,
+                                   int component, double value)
+{
+    Vec3Value next = prop.evaluate(time);
+    if (component == 0) next.x = value;
+    else if (component == 1) next.y = value;
+    else next.z = value;
+    set_animated_value(prop, time, next);
 }
 
 static void set_animated_x(AnimatedVec2Property &prop, double time, double value)

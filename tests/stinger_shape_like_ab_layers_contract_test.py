@@ -27,7 +27,7 @@ assert "layer_type_uses_shape_geometry(layer_->type)" in property_actions
 assert "layer.lock_aspect_ratio = false" in core
 assert "layer.shape_type = ShapeType::Rectangle" in core
 assert "layer.size.static_value = {canvas_width, canvas_height}" in core
-assert "layer.scale.static_value = {1.0, 1.0}" in core
+assert "layer.scale.static_value = {1.0, 1.0, 1.0}" in core
 assert "layer.in_time = 0.0" in core
 assert "layer.out_time = std::max(0.001, title.duration)" in core
 
@@ -45,7 +45,7 @@ assert "|runtime-input=" in mask_graph
 
 assert "layer_is_editor_visible" in canvas_geometry
 assert "StingerSwitchMode::ManualSceneAnimation" in canvas_geometry
-assert 'OBS_BGS_DEVELOPMENT_VERSION "189"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "189"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
 
 print("Shape-like Stinger Scene A/B layer contract passed")

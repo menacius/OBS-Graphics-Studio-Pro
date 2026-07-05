@@ -4,7 +4,7 @@ void CanvasPreview::draw_direct_selection_path(QPainter &p, const Layer &layer)
         return;
     const QRectF local_rect = layer_local_rect(layer);
     QPainterPath local_path = bgs::layer_shape_path(layer, local_rect);
-    QPainterPath canvas_path = editor_layer_world_transform(title_, layer, playhead_).map(local_path);
+    QPainterPath canvas_path = editor_layer_world_transform(projection_title(), layer, playhead_).map(local_path);
     QTransform canvas_to_view_transform;
     canvas_to_view_transform.translate(view_origin().x(), view_origin().y());
     canvas_to_view_transform.scale(view_scale(), view_scale());
@@ -347,19 +347,37 @@ void CanvasPreview::reframe_custom_path(Layer &layer, const std::vector<QPointF>
     const double width = bounds.width();
     const double height = bounds.height();
 
-    const QTransform old_world = editor_layer_world_transform(title_, layer, playhead_);
+    const QTransform old_world = editor_layer_world_transform(projection_title(), layer, playhead_);
     const QPointF center_canvas = old_world.map(bounds.center());
     const QTransform parent_world = editor_parent_world_transform(title_, layer, playhead_);
     const QPointF new_position = parent_world.inverted().map(center_canvas);
     const double lt = std::clamp(playhead_ - layer.in_time, 0.0,
                                  std::max(0.0, layer.out_time - layer.in_time));
-    set_animated_value(layer.position, lt, {new_position.x(), new_position.y()});
-    set_animated_value(layer.size, lt, {width, height});
+    if (layer.dimension_mode == LayerDimensionMode::ThreeD ||
+        layer.position_3d_path_enabled) {
+        promote_layer_position_to_3d_path(layer);
+        const Vec3Value current = layer.position_3d.evaluate(lt);
+        set_animated_value(layer.position_3d, lt,
+                           {new_position.x(), new_position.y(), current.z});
+        mirror_position_3d_to_legacy(layer, lt);
+    } else {
+        Vec2Value next_position = layer.position.evaluate(lt);
+        next_position.x = new_position.x();
+        next_position.y = new_position.y();
+        set_animated_value(layer.position, lt, next_position);
+    }
+    Vec2Value next_size = layer.size.evaluate(lt);
+    next_size.x = width;
+    next_size.y = height;
+    set_animated_value(layer.size, lt, next_size);
     layer.rect_width = (float)width;
     layer.rect_height = (float)height;
     layer.origin_x = 0.5f;
     layer.origin_y = 0.5f;
-    set_animated_value(layer.origin_prop, lt, {0.5, 0.5});
+    Vec2Value next_origin = layer.origin_prop.evaluate(lt);
+    next_origin.x = 0.5;
+    next_origin.y = 0.5;
+    set_animated_value(layer.origin_prop, lt, next_origin);
 
     for (size_t i = 0; i < layer.path_points.size(); ++i) {
         BezierPathPoint &point = layer.path_points[i];
@@ -543,22 +561,31 @@ void CanvasPreview::invalidate_canvas_overlay_caches() const
 {
     invalidate_selection_overlay_cache();
     invalidate_hover_overlay_cache();
+    gizmo_geometry_cache_valid_ = false;
+    gizmo_geometry_cache_ = GizmoGeometry{};
     gpu_overlay_dirty_ = true;
 }
 
 bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) const
 {
-    if (layer.position.is_animated() || layer.scale.is_animated() || layer.rotation.is_animated() ||
-        layer.size.is_animated() || layer.origin_prop.is_animated())
+    auto transform_is_animated = [](const Layer &candidate) {
+        return candidate.position.is_animated() || candidate.position_z.is_animated() ||
+            candidate.scale.is_animated() || candidate.scale_z.is_animated() ||
+            candidate.rotation.is_animated() || candidate.rotation_x.is_animated() ||
+            candidate.rotation_y.is_animated() || candidate.anchor_z.is_animated() ||
+            candidate.orientation_x.is_animated() || candidate.orientation_y.is_animated() ||
+            candidate.orientation_z.is_animated() || candidate.size.is_animated() ||
+            candidate.origin_prop.is_animated();
+    };
+    if ((title_ && bgs::transform3d::title_camera_has_animation(*title_)) ||
+        transform_is_animated(layer))
         return true;
 
     if (layer_type_is_container(layer.type) && title_) {
         for (const auto &candidate : title_->layers) {
             if (!candidate || !editor_layer_has_ancestor(title_, *candidate, layer.id))
                 continue;
-            if (candidate->position.is_animated() || candidate->scale.is_animated() ||
-                candidate->rotation.is_animated() || candidate->size.is_animated() ||
-                candidate->origin_prop.is_animated())
+            if (transform_is_animated(*candidate))
                 return true;
         }
     }
@@ -574,7 +601,7 @@ bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) cons
             continue;
         const Layer *parent = editor_find_layer_by_id(title_, parent_id);
         if (!parent) continue;
-        if (parent->position.is_animated() || parent->scale.is_animated() || parent->rotation.is_animated())
+        if (transform_is_animated(*parent))
             return true;
         if (!parent->parent_id.empty()) pending.push_back(parent->parent_id);
         if (!parent->transform_parent_id.empty()) pending.push_back(parent->transform_parent_id);
@@ -633,27 +660,102 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
         layer_geometry.layer = &layer;
         layer_geometry.editing_text_layer = editing_text_layer;
         const QRectF box = layer_local_rect(layer);
-        auto layer_point_to_view = [&](const QPointF &pt) {
-            return canvas_to_view(transformed_layer_point(layer, pt));
+        const auto projected_title = projection_title();
+        const bool projected_3d = projected_title &&
+            bgs::transform3d::layer_or_ancestor_uses_3d(
+                *projected_title, layer);
+        const qreal overlay_pixel_scale =
+            std::max<qreal>(1.0, devicePixelRatioF());
+        auto quantize_overlay = [&](QPointF view) {
+            if (projected_3d) {
+                view.setX(std::round(view.x() * overlay_pixel_scale) /
+                          overlay_pixel_scale);
+                view.setY(std::round(view.y() * overlay_pixel_scale) /
+                          overlay_pixel_scale);
+            }
+            return view;
         };
-        const QPointF corners[] = {
-            layer_point_to_view(box.topLeft()),
-            layer_point_to_view(box.topRight()),
-            layer_point_to_view(box.bottomRight()),
-            layer_point_to_view(box.bottomLeft())
+        auto legacy_layer_point_to_view = [&](const QPointF &pt) {
+            return quantize_overlay(canvas_to_view(
+                transformed_layer_point(layer, pt)));
         };
-        for (const QPointF &corner : corners)
-            layer_geometry.outline << corner;
+        auto projected_layer_point_to_view = [&](const QPointF &pt,
+                                                  QPointF &view) {
+            if (!projected_3d || !projected_title) {
+                view = legacy_layer_point_to_view(pt);
+                return true;
+            }
+            const QPointF warped = editor_warped_layer_local_point(
+                layer, box, pt, playhead_);
+            QVector4D clip;
+            if (!bgs::transform3d::layer_local_clip_point(
+                    *projected_title, layer, playhead_,
+                    QVector3D(static_cast<float>(warped.x()),
+                              static_cast<float>(warped.y()), 0.0f), clip))
+                return false;
+            const double w = static_cast<double>(clip.w());
+            if (w <= 1.0e-8)
+                return false;
+            const double ndc_x = static_cast<double>(clip.x()) / w;
+            const double ndc_y = static_cast<double>(clip.y()) / w;
+            const double ndc_z = static_cast<double>(clip.z()) / w;
+            if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) ||
+                !std::isfinite(ndc_z) || ndc_x < -1.000001 ||
+                ndc_x > 1.000001 || ndc_y < -1.000001 ||
+                ndc_y > 1.000001 || ndc_z < -1.000001 ||
+                ndc_z > 1.000001)
+                return false;
+            const QPointF canvas_point(
+                (ndc_x + 1.0) * 0.5 *
+                    std::max(1, projected_title->width),
+                (1.0 - ndc_y) * 0.5 *
+                    std::max(1, projected_title->height));
+            view = quantize_overlay(canvas_to_view(canvas_point));
+            return true;
+        };
 
-        layer_geometry.handles[0] = corners[0];
-        layer_geometry.handles[1] = layer_point_to_view(QPointF(box.center().x(), box.top()));
-        layer_geometry.handles[2] = corners[1];
-        layer_geometry.handles[3] = layer_point_to_view(QPointF(box.right(), box.center().y()));
-        layer_geometry.handles[4] = corners[2];
-        layer_geometry.handles[5] = layer_point_to_view(QPointF(box.center().x(), box.bottom()));
-        layer_geometry.handles[6] = corners[3];
-        layer_geometry.handles[7] = layer_point_to_view(QPointF(box.left(), box.center().y()));
-        layer_geometry.origin = layer_point_to_view(QPointF(0, 0));
+        if (projected_3d && projected_title) {
+            QPolygonF warped_local_polygon;
+            warped_local_polygon
+                << editor_warped_layer_local_point(
+                       layer, box, box.topLeft(), playhead_)
+                << editor_warped_layer_local_point(
+                       layer, box, box.topRight(), playhead_)
+                << editor_warped_layer_local_point(
+                       layer, box, box.bottomRight(), playhead_)
+                << editor_warped_layer_local_point(
+                       layer, box, box.bottomLeft(), playhead_);
+            QRectF clipped_bounds;
+            QPolygonF clipped_canvas_polygon;
+            if (bgs::transform3d::projected_local_polygon(
+                    *projected_title, layer, playhead_,
+                    warped_local_polygon, clipped_bounds,
+                    &clipped_canvas_polygon)) {
+                for (const QPointF &point : clipped_canvas_polygon)
+                    layer_geometry.outline <<
+                        quantize_overlay(canvas_to_view(point));
+            }
+        } else {
+            layer_geometry.outline
+                << legacy_layer_point_to_view(box.topLeft())
+                << legacy_layer_point_to_view(box.topRight())
+                << legacy_layer_point_to_view(box.bottomRight())
+                << legacy_layer_point_to_view(box.bottomLeft());
+        }
+
+        const QPointF handle_points[] = {
+            box.topLeft(), QPointF(box.center().x(), box.top()),
+            box.topRight(), QPointF(box.right(), box.center().y()),
+            box.bottomRight(), QPointF(box.center().x(), box.bottom()),
+            box.bottomLeft(), QPointF(box.left(), box.center().y())
+        };
+        for (int index = 0; index < 8; ++index) {
+            layer_geometry.handle_visible[index] =
+                projected_layer_point_to_view(
+                    handle_points[index], layer_geometry.handles[index]);
+        }
+        layer_geometry.origin_visible = projected_layer_point_to_view(
+            QPointF(0.0, 0.0), layer_geometry.origin);
         return layer_geometry;
     };
 
@@ -684,19 +786,33 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
     }
 
     if (geometry.layers.size() > 1) {
-        const QRectF bounds = selected_canvas_bounds();
-        if (bounds.isValid() && !bounds.isEmpty()) {
-            geometry.multi_bounds_view = QRectF(canvas_to_view(bounds.topLeft()),
-                                                canvas_to_view(bounds.bottomRight())).normalized();
-            const QRectF &view_bounds = geometry.multi_bounds_view;
+        QRectF view_bounds;
+        bool have_view_bounds = false;
+        for (const SelectionOverlayLayerGeometry &layer_geometry :
+             geometry.layers) {
+            if (layer_geometry.outline.size() < 3)
+                continue;
+            const QRectF candidate =
+                layer_geometry.outline.boundingRect().normalized();
+            view_bounds = have_view_bounds
+                ? view_bounds.united(candidate) : candidate;
+            have_view_bounds = true;
+        }
+        if (have_view_bounds && view_bounds.isValid() &&
+            !view_bounds.isEmpty()) {
+            geometry.multi_bounds_view = view_bounds;
             geometry.multi_handles[0] = view_bounds.topLeft();
-            geometry.multi_handles[1] = QPointF(view_bounds.center().x(), view_bounds.top());
+            geometry.multi_handles[1] = QPointF(
+                view_bounds.center().x(), view_bounds.top());
             geometry.multi_handles[2] = view_bounds.topRight();
-            geometry.multi_handles[3] = QPointF(view_bounds.right(), view_bounds.center().y());
+            geometry.multi_handles[3] = QPointF(
+                view_bounds.right(), view_bounds.center().y());
             geometry.multi_handles[4] = view_bounds.bottomRight();
-            geometry.multi_handles[5] = QPointF(view_bounds.center().x(), view_bounds.bottom());
+            geometry.multi_handles[5] = QPointF(
+                view_bounds.center().x(), view_bounds.bottom());
             geometry.multi_handles[6] = view_bounds.bottomLeft();
-            geometry.multi_handles[7] = QPointF(view_bounds.left(), view_bounds.center().y());
+            geometry.multi_handles[7] = QPointF(
+                view_bounds.left(), view_bounds.center().y());
         }
     }
 
@@ -726,17 +842,57 @@ const CanvasPreview::HoverOverlayGeometry &CanvasPreview::hover_overlay_geometry
             playhead_ >= layer.in_time && playhead_ <= layer.out_time) {
             const QRectF box = layer_local_rect(layer);
             if (box.isValid() && !box.isEmpty()) {
-                auto layer_point_to_view = [&](const QPointF &pt) {
-                    return canvas_to_view(transformed_layer_point(layer, pt));
+                const auto projected_title = projection_title();
+                const bool projected_3d = projected_title &&
+                    bgs::transform3d::layer_or_ancestor_uses_3d(
+                        *projected_title, layer);
+                const qreal overlay_pixel_scale =
+                    std::max<qreal>(1.0, devicePixelRatioF());
+                auto quantize_overlay = [&](QPointF view) {
+                    if (projected_3d) {
+                        view.setX(std::round(view.x() * overlay_pixel_scale) /
+                                  overlay_pixel_scale);
+                        view.setY(std::round(view.y() * overlay_pixel_scale) /
+                                  overlay_pixel_scale);
+                    }
+                    return view;
                 };
                 geometry.layer = &layer;
                 geometry.hovered_is_selected =
                     std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hovered_layer_id_) != selected_layer_ids_.end() ||
                     sel_layer_id_ == hovered_layer_id_;
-                geometry.outline << layer_point_to_view(box.topLeft())
-                                 << layer_point_to_view(box.topRight())
-                                 << layer_point_to_view(box.bottomRight())
-                                 << layer_point_to_view(box.bottomLeft());
+                if (projected_3d) {
+                    QPolygonF warped_local_polygon;
+                    warped_local_polygon
+                        << editor_warped_layer_local_point(
+                               layer, box, box.topLeft(), playhead_)
+                        << editor_warped_layer_local_point(
+                               layer, box, box.topRight(), playhead_)
+                        << editor_warped_layer_local_point(
+                               layer, box, box.bottomRight(), playhead_)
+                        << editor_warped_layer_local_point(
+                               layer, box, box.bottomLeft(), playhead_);
+                    QRectF clipped_bounds;
+                    QPolygonF clipped_canvas_polygon;
+                    if (bgs::transform3d::projected_local_polygon(
+                            *projected_title, layer, playhead_,
+                            warped_local_polygon, clipped_bounds,
+                            &clipped_canvas_polygon)) {
+                        for (const QPointF &point : clipped_canvas_polygon)
+                            geometry.outline << quantize_overlay(
+                                canvas_to_view(point));
+                    }
+                } else {
+                    geometry.outline
+                        << canvas_to_view(transformed_layer_point(
+                               layer, box.topLeft()))
+                        << canvas_to_view(transformed_layer_point(
+                               layer, box.topRight()))
+                        << canvas_to_view(transformed_layer_point(
+                               layer, box.bottomRight()))
+                        << canvas_to_view(transformed_layer_point(
+                               layer, box.bottomLeft()));
+                }
             }
         }
     }

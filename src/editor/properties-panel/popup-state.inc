@@ -224,8 +224,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *inner = new QWidget(this);
     inner->setStyleSheet(QStringLiteral("background:%1;").arg(panel_bg_name));
     auto *vl = new QVBoxLayout(inner);
-    vl->setContentsMargins(3, 3, 3, 3);
-    vl->setSpacing(5);
+    vl->setContentsMargins(2, 2, 2, 2);
+    vl->setSpacing(3);
 
     const QString section_style =
         QStringLiteral("QGroupBox{color:%1;background:%2;border:none;"
@@ -256,9 +256,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                  hover_bg_name, highlight_name, highlighted_text_name, subtle_text_name);
 
     auto style_form = [](QFormLayout *form) {
-        form->setContentsMargins(6, 5, 6, 6);
-        form->setHorizontalSpacing(5);
-        form->setVerticalSpacing(3);
+        form->setContentsMargins(4, 3, 4, 4);
+        form->setHorizontalSpacing(4);
+        form->setVerticalSpacing(2);
         form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
         form->setFormAlignment(Qt::AlignTop);
         form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -282,7 +282,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                emit property_changed(true);
                                            });
         label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        label->setStyleSheet(QStringLiteral("color:%1;font-size:12px;background:transparent;").arg(panel_text_name));
+        label->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(panel_text_name));
         form->addRow(label, field);
     };
 
@@ -301,11 +301,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             .arg(button_text_name, button_bg_name, border_name, hover_bg_name, highlight_name, highlighted_text_name);
 
     auto style_checkbox = [&](QCheckBox *box) {
-        box->setFixedHeight(22);
+        box->setFixedHeight(20);
         box->setStyleSheet(checkbox_style);
     };
     auto style_push_button = [&](QPushButton *button) {
-        button->setFixedHeight(22);
+        button->setFixedHeight(20);
         button->setStyleSheet(push_button_style);
     };
 
@@ -315,15 +315,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         s->setSingleStep(step);
         s->setDecimals(1);
         s->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
-        s->setFixedHeight(22);
+        s->setFixedHeight(20);
         s->setStyleSheet(control_style);
         return s;
     };
 
     auto mk_kf_button = [&](const QString &tip) {
         auto *b = new QPushButton(inner);
-        b->setFixedSize(22, 22);
-        b->setIconSize(QSize(16, 16));
+        b->setFixedSize(20, 20);
+        b->setIconSize(QSize(14, 14));
         b->setIcon(keyframe_diamond_icon(false));
         b->setToolTip(tip);
         b->setAccessibleName(tip);
@@ -368,6 +368,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_transform_size_lock_->setChecked(true);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
+    spn_pz_ = mk_dspin(-1000000.0, 1000000.0, 1.0);
+    spn_rot_x_ = mk_dspin(-99999.0, 99999.0, 0.5);
+    spn_rot_y_ = mk_dspin(-99999.0, 99999.0, 0.5);
+    spn_scale_z_ = mk_dspin(-10000.0, 10000.0, 1.0);
+    spn_scale_z_->setSuffix("%");
+    spn_anchor_z_ = mk_dspin(-1000000.0, 1000000.0, 1.0);
+    spn_orientation_x_ = mk_dspin(-99999.0, 99999.0, 0.5);
+    spn_orientation_y_ = mk_dspin(-99999.0, 99999.0, 0.5);
+    spn_orientation_z_ = mk_dspin(-99999.0, 99999.0, 0.5);
     chk_scene_mask_ = new BglSwitch(bgl_tr("OBSTitles.UseAsSceneMask"), inner);
     chk_scene_mask_->setToolTip(bgl_tr("OBSTitles.SceneMaskRenderTooltip"));
     style_checkbox(chk_scene_mask_);
@@ -387,7 +396,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     for (const QString &label : QStringList{bgl_tr("OBSTitles.TopLeft"), bgl_tr("OBSTitles.TopCenter"), bgl_tr("OBSTitles.TopRight"), bgl_tr("OBSTitles.CenterLeft"), bgl_tr("OBSTitles.Center"), bgl_tr("OBSTitles.CenterRight"), bgl_tr("OBSTitles.BottomLeft"), bgl_tr("OBSTitles.BottomCenter"), bgl_tr("OBSTitles.BottomRight")})
         cmb_anchor_->addItem(label);
     cmb_anchor_->setToolTip(bgl_tr("OBSTitles.AnchorChangeTooltip"));
-    cmb_anchor_->setFixedHeight(22);
+    cmb_anchor_->setFixedHeight(20);
     cmb_anchor_->setStyleSheet(control_style);
 
     btn_kf_pos_x_ = mk_kf_button(bgl_tr("OBSTitles.ToggleXKeyframe"));
@@ -400,10 +409,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_kf_opacity_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOpacityKeyframe"));
     btn_kf_origin_x_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOriginXKeyframe"));
     btn_kf_origin_y_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOriginYKeyframe"));
+    btn_kf_position_z_ = mk_kf_button(QStringLiteral("Toggle Position Z keyframe"));
+    btn_kf_rotation_x_ = mk_kf_button(QStringLiteral("Toggle Rotation X keyframe"));
+    btn_kf_rotation_y_ = mk_kf_button(QStringLiteral("Toggle Rotation Y keyframe"));
+    btn_kf_scale_z_ = mk_kf_button(QStringLiteral("Toggle Scale Z keyframe"));
+    btn_kf_anchor_z_ = mk_kf_button(QStringLiteral("Toggle Anchor Z keyframe"));
+    btn_kf_orientation_x_ = mk_kf_button(QStringLiteral("Toggle Orientation X keyframe"));
+    btn_kf_orientation_y_ = mk_kf_button(QStringLiteral("Toggle Orientation Y keyframe"));
+    btn_kf_orientation_z_ = mk_kf_button(QStringLiteral("Toggle Orientation Z keyframe"));
     btn_kf_pos_y_->hide();
     btn_kf_scale_y_->hide();
     btn_kf_opacity_->hide();
     btn_kf_origin_y_->hide();
+    btn_kf_position_z_->hide();
+    btn_kf_rotation_x_->hide();
+    btn_kf_rotation_y_->hide();
+    btn_kf_scale_z_->hide();
+    btn_kf_anchor_z_->hide();
+    btn_kf_orientation_y_->hide();
+    btn_kf_orientation_z_->hide();
     spn_opacity_->hide();
     chk_scene_mask_->hide();
 
@@ -411,7 +435,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_box_ = new QWidget(inner);
     transform_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *tform_layout = new QVBoxLayout(transform_box_);
-    tform_layout->setContentsMargins(10, 8, 10, 10);
+    tform_layout->setContentsMargins(7, 5, 7, 6);
     tform_layout->setSpacing(8);
 
     btn_transform_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), transform_box_);
@@ -421,23 +445,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_transform_defaults_->setToolTip(bgl_tr("OBSTitles.RestoreTransformDefaults"));
     btn_transform_defaults_->setStyleSheet(push_button_style);
 
-    auto *transform_grid = new QGridLayout();
-    transform_grid->setContentsMargins(0, 4, 0, 0);
-    transform_grid->setHorizontalSpacing(8);
-    transform_grid->setVerticalSpacing(8);
-    transform_grid->setColumnMinimumWidth(0, 24);
-    transform_grid->setColumnMinimumWidth(1, 82);
-    transform_grid->setColumnMinimumWidth(2, 86);
-    transform_grid->setColumnMinimumWidth(3, 22);
-    transform_grid->setColumnMinimumWidth(4, 86);
-    transform_grid->setColumnStretch(5, 1);
+    transform_grid_ = new QGridLayout();
+    auto *transform_grid = transform_grid_;
+    transform_grid->setContentsMargins(0, 2, 0, 0);
+    transform_grid->setHorizontalSpacing(5);
+    transform_grid->setVerticalSpacing(4);
+    transform_grid->setColumnMinimumWidth(0, 20);
+    transform_grid->setColumnMinimumWidth(1, 68);
+    transform_grid->setColumnMinimumWidth(2, 90);
+    transform_grid->setColumnMinimumWidth(3, 90);
+    transform_grid->setColumnMinimumWidth(4, 90);
+    transform_grid->setColumnMinimumWidth(5, 20);
+    transform_grid->setColumnMinimumWidth(6, 0);
+    transform_grid->setColumnStretch(7, 1);
 
     auto style_transform_spin = [&](QDoubleSpinBox *spin) {
-        spin->setFixedSize(78, 22);
+        spin->setFixedSize(70, 20);
         spin->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
         spin->setPrefix(QString());
         spin->setStyleSheet(QStringLiteral("QDoubleSpinBox{color:%1;background:transparent;border:none;"
-                            "padding:1px 2px;font-size:12px;selection-background-color:%2;}"
+                            "padding:1px 2px;font-size:10px;selection-background-color:%2;}"
                             "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:12px;background:%3;"
                             "border-left:1px solid %4;}"
                             "QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover{background:%5;}")
@@ -452,6 +479,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_origin_x_);
     style_transform_spin(spn_origin_y_);
     style_transform_spin(spn_rot_);
+    style_transform_spin(spn_pz_);
+    style_transform_spin(spn_rot_x_);
+    style_transform_spin(spn_rot_y_);
+    style_transform_spin(spn_scale_z_);
+    style_transform_spin(spn_anchor_z_);
+    style_transform_spin(spn_orientation_x_);
+    style_transform_spin(spn_orientation_y_);
+    style_transform_spin(spn_orientation_z_);
     spn_rot_->setPrefix(QString());
 
     auto make_transform_field = [&](const QString &label, QDoubleSpinBox *spin, const char *icon_name = nullptr) {
@@ -473,7 +508,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                      numeric_label_dragging_ = false;
                                                      emit property_changed(true);
                                                  });
-        field_label->setFixedWidth(16);
+        field_label->setFixedWidth(14);
         field_label->setAlignment(Qt::AlignCenter);
         if (icon_name && *icon_name) {
             field_label->setPixmap(obs_icon(icon_name).pixmap(14, 14));
@@ -482,37 +517,48 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         field_label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:11px;padding:0;}").arg(subtle_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin);
-        field->setFixedSize(104, 24);
+        field->setFixedSize(90, 20);
         return field;
     };
 
     QWidget *field_pos_x = make_transform_field(bgl_tr("OBSTitles.X"), spn_px_);
     QWidget *field_pos_y = make_transform_field(bgl_tr("OBSTitles.Y"), spn_py_);
+    transform_position_field_z_ = make_transform_field(QStringLiteral("Z"), spn_pz_);
+    const QString local_position_tooltip = QStringLiteral(
+        "Stored and keyframed relative to the effective parent. Root layers "
+        "therefore have identical local and world coordinates.");
+    spn_px_->setToolTip(local_position_tooltip);
+    spn_py_->setToolTip(local_position_tooltip);
+    spn_pz_->setToolTip(local_position_tooltip);
     QWidget *field_scale_x = make_transform_field(bgl_tr("OBSTitles.W"), spn_scale_x_);
     QWidget *field_scale_y = make_transform_field(bgl_tr("OBSTitles.H"), spn_scale_y_);
+    transform_scale_axis_label_x_ = field_scale_x->findChild<QLabel *>();
+    transform_scale_axis_label_y_ = field_scale_y->findChild<QLabel *>();
+    transform_scale_field_z_ = make_transform_field(QStringLiteral("Z"), spn_scale_z_);
     QWidget *field_transform_size_w = make_transform_field(bgl_tr("OBSTitles.W"), spn_transform_size_w_);
     QWidget *field_transform_size_h = make_transform_field(bgl_tr("OBSTitles.H"), spn_transform_size_h_);
     QWidget *field_origin_x = make_transform_field(bgl_tr("OBSTitles.X"), spn_origin_x_);
     QWidget *field_origin_y = make_transform_field(bgl_tr("OBSTitles.Y"), spn_origin_y_);
-    QWidget *field_rotation = make_transform_field(bgl_tr("OBSTitles.R"), spn_rot_, "transform-rotation.svg");
+    transform_anchor_field_z_ = make_transform_field(QStringLiteral("Z"), spn_anchor_z_);
+    transform_rotation_field_x_ = make_transform_field(QStringLiteral("X"), spn_rot_x_);
+    transform_rotation_field_y_ = make_transform_field(QStringLiteral("Y"), spn_rot_y_);
+    transform_rotation_field_z_ = make_transform_field(QStringLiteral("Z"), spn_rot_);
+    transform_rotation_axis_label_ = transform_rotation_field_z_->findChild<QLabel *>();
+    QWidget *field_orientation_x = make_transform_field(QStringLiteral("X"), spn_orientation_x_);
+    QWidget *field_orientation_y = make_transform_field(QStringLiteral("Y"), spn_orientation_y_);
+    QWidget *field_orientation_z = make_transform_field(QStringLiteral("Z"), spn_orientation_z_);
 
-    btn_anchor_grid_ = new AnchorGridButton(transform_box_);
-    btn_anchor_grid_->setFixedSize(36, 36);
-    btn_anchor_grid_->setToolTip(bgl_tr("OBSTitles.AnchorChangeTooltip"));
-    if (auto *anchor_button = static_cast<AnchorGridButton *>(btn_anchor_grid_)) {
-        anchor_button->anchor_selected = [this](int i) {
-            if (cmb_anchor_) cmb_anchor_->setCurrentIndex(i);
-        };
-    }
+    /* Anchor preset control lives in the editor dynamic toolbar. */
+    btn_anchor_grid_ = nullptr;
 
     chk_scale_lock_->setText(QString());
     chk_scale_lock_->setToolTip(bgl_tr("OBSTitles.ScaleLock"));
-    chk_scale_lock_->setFixedSize(24, 24);
+    chk_scale_lock_->setFixedSize(20, 20);
     chk_transform_size_lock_->setText(QString());
     chk_transform_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_transform_size_lock_->setFixedSize(24, 24);
+    chk_transform_size_lock_->setFixedSize(20, 20);
 
-    const QString transform_label_style = QStringLiteral("color:%1;font-size:12px;background:transparent;").arg(panel_text_name);
+    const QString transform_label_style = QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(panel_text_name);
     auto add_transform_row = [&](int row, QPushButton *kf, const QString &label, QWidget *drag_field, QWidget *first,
                                  QWidget *middle, QWidget *second) {
         transform_grid->addWidget(kf, row, 0, Qt::AlignCenter);
@@ -535,14 +581,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return text;
     };
 
-    add_transform_row(0, btn_kf_pos_x_, bgl_tr("OBSTitles.Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
-    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, bgl_tr("OBSTitles.Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
+    add_transform_row(0, btn_kf_pos_x_, QStringLiteral("Local Position"), field_pos_x,
+                      field_pos_x, field_pos_y, nullptr);
+    transform_grid->addWidget(transform_position_field_z_, 0, 4, Qt::AlignLeft);
+
+    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, bgl_tr("OBSTitles.Scale"),
+                                               field_scale_x, field_scale_x,
+                                               field_scale_y, nullptr);
     transform_scale_field_x_ = field_scale_x;
     transform_scale_field_y_ = field_scale_y;
-    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, bgl_tr("OBSTitles.Size"), field_transform_size_w,
-                                              field_transform_size_w, chk_transform_size_lock_, field_transform_size_h);
+    transform_grid->addWidget(transform_scale_field_z_, 1, 4, Qt::AlignLeft);
+    transform_grid->addWidget(chk_scale_lock_, 1, 5, Qt::AlignCenter);
+
+    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, bgl_tr("OBSTitles.Size"),
+                                              field_transform_size_w, field_transform_size_w,
+                                              field_transform_size_h, nullptr);
+    transform_grid->addWidget(chk_transform_size_lock_, 1, 4, Qt::AlignCenter);
     transform_size_field_w_ = field_transform_size_w;
     transform_size_field_h_ = field_transform_size_h;
+
     auto *anchor_label = new NumericDragLabel(bgl_tr("OBSTitles.Anchor"), field_origin_x, transform_box_,
                                               [this]() {
                                                   if (loading_values_) return;
@@ -558,8 +615,40 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_grid->addWidget(anchor_label, 2, 1, Qt::AlignVCenter);
     transform_grid->addWidget(btn_kf_origin_x_, 2, 0, Qt::AlignCenter);
     transform_grid->addWidget(field_origin_x, 2, 2, Qt::AlignLeft);
-    transform_grid->addWidget(field_origin_y, 2, 4, Qt::AlignLeft);
-    add_transform_row(3, btn_kf_rotation_, bgl_tr("OBSTitles.Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
+    transform_grid->addWidget(field_origin_y, 2, 3, Qt::AlignLeft);
+    transform_grid->addWidget(transform_anchor_field_z_, 2, 4, Qt::AlignLeft);
+
+    add_transform_row(3, btn_kf_rotation_, bgl_tr("OBSTitles.Rotation"),
+                      transform_rotation_field_z_, transform_rotation_field_x_,
+                      transform_rotation_field_y_, nullptr);
+    transform_grid->addWidget(transform_rotation_field_z_, 3, 4, Qt::AlignLeft);
+
+    transform_orientation_row_ = new QWidget(transform_box_);
+    auto *orientation_layout = new QHBoxLayout(transform_orientation_row_);
+    orientation_layout->setContentsMargins(0, 0, 0, 0);
+    orientation_layout->setSpacing(5);
+    orientation_layout->addWidget(btn_kf_orientation_x_, 0, Qt::AlignCenter);
+    auto *orientation_label = new NumericDragLabel(QStringLiteral("Orientation"), field_orientation_x,
+                                                    transform_orientation_row_,
+                                                    [this]() {
+                                                        if (loading_values_) return;
+                                                        numeric_label_dragging_ = true;
+                                                        emit property_changed(true);
+                                                    },
+                                                    [this]() {
+                                                        if (loading_values_) return;
+                                                        numeric_label_dragging_ = false;
+                                                        emit property_changed(true);
+                                                    });
+    orientation_label->setStyleSheet(transform_label_style);
+    orientation_label->setFixedWidth(68);
+    orientation_layout->addWidget(orientation_label);
+    orientation_layout->addWidget(field_orientation_x);
+    orientation_layout->addSpacing(0);
+    orientation_layout->addWidget(field_orientation_y);
+    orientation_layout->addWidget(field_orientation_z);
+    orientation_layout->addStretch(1);
+
     row_shape_scale_options_ = new QWidget(transform_box_);
     row_shape_scale_options_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *shape_scale_options_layout = new QHBoxLayout(row_shape_scale_options_);
@@ -568,10 +657,84 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     shape_scale_options_layout->addWidget(chk_shape_scale_stroke_);
     shape_scale_options_layout->addWidget(chk_shape_scale_corners_);
     shape_scale_options_layout->addStretch(1);
-    transform_grid->addWidget(row_shape_scale_options_, 4, 1, 1, 4);
 
     cmb_anchor_->hide();
+
+    /* The AE-style 2D/3D switch lives at the end of every layer-list row.
+     * Keep the combo as an internal synchronization control so older code and
+     * keyboard/accessibility paths continue to share one dimension-mode signal. */
+    auto *dimension_row = new QWidget(transform_box_);
+    auto *dimension_layout = new QHBoxLayout(dimension_row);
+    dimension_layout->setContentsMargins(0, 0, 0, 0);
+    dimension_layout->setSpacing(8);
+    auto *dimension_label = new QLabel(QStringLiteral("Layer Mode"), dimension_row);
+    dimension_label->setStyleSheet(transform_label_style);
+    cmb_dimension_mode_ = new QComboBox(dimension_row);
+    cmb_dimension_mode_->addItem(QStringLiteral("2D Layer"), static_cast<int>(LayerDimensionMode::TwoD));
+    cmb_dimension_mode_->addItem(QStringLiteral("3D Layer"), static_cast<int>(LayerDimensionMode::ThreeD));
+    cmb_dimension_mode_->setFixedHeight(20);
+    cmb_dimension_mode_->setStyleSheet(control_style);
+    dimension_layout->addWidget(dimension_label);
+    dimension_layout->addWidget(cmb_dimension_mode_, 1);
+    dimension_row->hide();
+
     tform_layout->addLayout(transform_grid);
+    tform_layout->addWidget(transform_orientation_row_);
+    tform_layout->addWidget(row_shape_scale_options_);
+
+    three_d_controls_ = new QWidget(transform_box_);
+    auto *three_d_layout = new QGridLayout(three_d_controls_);
+    three_d_layout->setContentsMargins(0, 4, 0, 0);
+    three_d_layout->setHorizontalSpacing(5);
+    three_d_layout->setVerticalSpacing(6);
+    three_d_layout->setColumnMinimumWidth(0, 106);
+    three_d_layout->setColumnStretch(2, 1);
+
+    cmb_transform_axis_space_ = new QComboBox(three_d_controls_);
+    cmb_transform_axis_space_->addItem(QStringLiteral("Local Axes"), static_cast<int>(TransformAxisSpace::Local));
+    cmb_transform_axis_space_->addItem(QStringLiteral("Parent Axes"), static_cast<int>(TransformAxisSpace::Parent));
+    cmb_transform_axis_space_->addItem(QStringLiteral("World Axes"), static_cast<int>(TransformAxisSpace::World));
+    cmb_transform_axis_space_->setFixedHeight(20);
+    cmb_transform_axis_space_->setStyleSheet(control_style);
+    cmb_transform_axis_space_->setToolTip(QStringLiteral(
+        "Controls the 3D gizmo axis orientation only. Transform values above "
+        "are always authored in the layer's local transform relative to its "
+        "effective parent."));
+    three_d_layout->addWidget(new QLabel(QStringLiteral("Axis Space"), three_d_controls_), 0, 0);
+    three_d_layout->addWidget(cmb_transform_axis_space_, 0, 1, 1, 2);
+
+    cmb_layer_camera_ = new QComboBox(three_d_controls_);
+    cmb_layer_camera_->setFixedHeight(20);
+    cmb_layer_camera_->setStyleSheet(control_style);
+    three_d_layout->addWidget(new QLabel(QStringLiteral("Camera"), three_d_controls_), 1, 0);
+    three_d_layout->addWidget(cmb_layer_camera_, 1, 1, 1, 2);
+
+    auto *depth_row = new QWidget(three_d_controls_);
+    auto *depth_layout = new QGridLayout(depth_row);
+    depth_layout->setContentsMargins(0, 0, 0, 0);
+    depth_layout->setHorizontalSpacing(10);
+    depth_layout->setVerticalSpacing(4);
+    chk_depth_test_ = new BglSwitch(QStringLiteral("Depth Test"), depth_row);
+    chk_depth_test_->setToolTip(QStringLiteral(
+        "Compare this layer against depth already written by compatible 3D layers."));
+    chk_write_depth_ = new BglSwitch(QStringLiteral("Write Depth"), depth_row);
+    chk_write_depth_->setToolTip(QStringLiteral(
+        "Persist this layer's visible pixels in the 3D depth buffer."));
+    chk_double_sided_ = new BglSwitch(QStringLiteral("Double-sided"), depth_row);
+    chk_double_sided_->setToolTip(QStringLiteral(
+        "Render both projected sides of the planar layer."));
+    chk_backface_culling_ = new BglSwitch(QStringLiteral("Backface Culling"), depth_row);
+    chk_backface_culling_->setToolTip(QStringLiteral(
+        "Hide the projected back side using editor/OBS-identical winding."));
+    for (auto *check : {chk_depth_test_, chk_write_depth_, chk_double_sided_, chk_backface_culling_})
+        style_checkbox(check);
+    depth_layout->addWidget(chk_depth_test_, 0, 0);
+    depth_layout->addWidget(chk_write_depth_, 0, 1);
+    depth_layout->addWidget(chk_double_sided_, 1, 0);
+    depth_layout->addWidget(chk_backface_culling_, 1, 1);
+    three_d_layout->addWidget(depth_row, 2, 0, 1, 3);
+    tform_layout->addWidget(three_d_controls_);
+
     bgl_add_panel_section(vl, transform_box_, bgl_tr("OBSTitles.Transform"), btn_transform_defaults_);
 
     /* ── Audio Layer ── */
@@ -791,13 +954,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     appearance_box_ = new QWidget(inner);
     appearance_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *appearance_layout = new QVBoxLayout(appearance_box_);
-    appearance_layout->setContentsMargins(10, 8, 10, 10);
+    appearance_layout->setContentsMargins(7, 5, 7, 6);
     appearance_layout->setSpacing(8);
 
     auto *appearance_grid = new QGridLayout();
     appearance_grid->setContentsMargins(0, 4, 0, 0);
-    appearance_grid->setHorizontalSpacing(8);
-    appearance_grid->setVerticalSpacing(8);
+    appearance_grid->setHorizontalSpacing(5);
+    appearance_grid->setVerticalSpacing(4);
     appearance_grid->setColumnMinimumWidth(0, 24);
     appearance_grid->setColumnMinimumWidth(1, 82);
     appearance_grid->setColumnMinimumWidth(2, 48);
@@ -845,7 +1008,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             emit property_changed(true);
         });
     btn_appearance_stroke_label_->setStyleSheet(
-        QStringLiteral("QLabel{color:%1;background:transparent;text-decoration:underline;font-size:12px;padding:0;}"
+        QStringLiteral("QLabel{color:%1;background:transparent;text-decoration:underline;font-size:10px;padding:0;}"
         "QLabel:hover{color:%2;}").arg(panel_text_name, highlighted_text_name));
 
     auto add_appearance_row = [&](int row, QPushButton *kf, const QString &label, QWidget *primary,
@@ -920,7 +1083,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *combo = new QComboBox(inner);
         for (int i = 0; i < labels.size(); ++i)
             combo->addItem(labels[i], i < values.size() ? values[i] : i);
-        combo->setFixedHeight(22);
+        combo->setFixedHeight(20);
         combo->setStyleSheet(control_style);
         return combo;
     };
@@ -968,13 +1131,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     /* ── Character ── */
     text_box_ = new QGroupBox("Character", inner);
     text_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *char_grid = make_property_grid(text_box_);
     char_grid->setContentsMargins(14, 28, 14, 12);
-    char_grid->setHorizontalSpacing(8);
+    char_grid->setHorizontalSpacing(5);
     char_grid->setVerticalSpacing(6);
 
     txt_content_ = new QTextEdit(inner);
@@ -994,7 +1157,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
 
     cmb_font_ = new QComboBox(inner);
-    cmb_font_->setFixedHeight(22);
+    cmb_font_->setFixedHeight(20);
     cmb_font_->setEditable(true);
     cmb_font_->setInsertPolicy(QComboBox::NoInsert);
     cmb_font_->setMaxVisibleItems(24);
@@ -1004,11 +1167,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         cmb_font_->addItem(fam, fam);
 
     cmb_font_style_ = new QComboBox(inner);
-    cmb_font_style_->setFixedHeight(22);
+    cmb_font_style_->setFixedHeight(20);
     cmb_font_style_->setStyleSheet(control_style);
 
     spn_size_ = new QSpinBox(inner);
     spn_size_->setRange(6, 500);
-    spn_size_->setFixedHeight(22);
+    spn_size_->setFixedHeight(20);
     spn_size_->setStyleSheet(control_style);
 

@@ -1,21 +1,8 @@
     connect(canvas_, &CanvasPreview::layer_clicked,
-            this, [this](const std::string &id) {
-                if (timeline_) timeline_->clear_transition_target_selection();
-                on_layer_selected(id);
-            });
+            this, &TitleEditor::on_layer_selected);
     connect(canvas_, &CanvasPreview::layers_selected,
             this, [this](const std::vector<std::string> &ids) {
-                sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
-                layers_->set_selected_layers(ids);
-                canvas_->set_selected_layers(ids);
-                timeline_->clear_transition_target_selection();
-                timeline_->set_selected_layers(ids);
-                if (!title_ || ids.size() != 1) {
-                    update_layer_panels(nullptr, playhead_);
-                    return;
-                }
-                auto layer = title_->find_layer(sel_layer_id_);
-                update_layer_panels(layer, playhead_);
+                synchronize_layer_selection(ids);
             });
     connect(canvas_, &CanvasPreview::layer_geometry_changed,
             this, [this]() {
@@ -286,34 +273,43 @@
 
 void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.empty()) return;
     std::shared_ptr<Layer> last_layer;
     for (const auto &id : ids) {
         auto layer = title_->find_layer(id);
-        if (!layer) continue;
-        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
-        double w = eval_box_width(*layer, lt);
-        double h = eval_box_height(*layer, lt);
-        double x = layer->origin_x * w;
-        if (x_mode == 1) x = title_->width / 2.0;
-        if (x_mode == 2) x = title_->width - (1.0 - layer->origin_x) * w;
-        double y = layer->origin_y * h;
-        if (y_mode == 1) y = title_->height / 2.0;
-        if (y_mode == 2) y = title_->height - (1.0 - layer->origin_y) * h;
-        set_animated_x(layer->position, lt, x);
-        set_animated_y(layer->position, lt, y);
+        if (!layer || layer->locked) continue;
+        const QRectF bounds = editor_layer_canvas_bounds_for_grouping(
+            title_, *layer, playhead_);
+        if (!bounds.isValid() || bounds.isEmpty()) continue;
+
+        QPointF canvas_delta;
+        if (x_mode == 0) canvas_delta.setX(-bounds.left());
+        if (x_mode == 1)
+            canvas_delta.setX(title_->width / 2.0 - bounds.center().x());
+        if (x_mode == 2)
+            canvas_delta.setX(title_->width - bounds.right());
+        if (y_mode == 0) canvas_delta.setY(-bounds.top());
+        if (y_mode == 1)
+            canvas_delta.setY(title_->height / 2.0 - bounds.center().y());
+        if (y_mode == 2)
+            canvas_delta.setY(title_->height - bounds.bottom());
+
+        editor_translate_layer_in_canvas_for_parenting(
+            title_, *layer, playhead_, canvas_delta);
         last_layer = layer;
     }
+    if (!last_layer) return;
     on_title_modified();
-    if (last_layer) update_layer_panels(last_layer, playhead_);
+    update_layer_panels(last_layer, playhead_);
 }
 
 
 void TitleEditor::flip_selected_layers(bool horizontal)
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
     if (ids.empty()) return;
 
     std::shared_ptr<Layer> last_layer;
@@ -338,8 +334,8 @@ void TitleEditor::flip_selected_layers(bool horizontal)
 
 void TitleEditor::rotate_selected_layers(double degrees)
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
     if (ids.empty()) return;
 
     std::shared_ptr<Layer> last_layer;
@@ -366,10 +362,8 @@ void TitleEditor::reorder_selected_layers(int action)
         return;
 
     layers_->refresh();
-    layers_->set_selected_layers(requested_ids);
-    canvas_->set_selected_layers(requested_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(requested_ids);
+    synchronize_layer_selection(requested_ids);
     force_next_title_visual_update();
     on_title_modified();
 }
@@ -395,7 +389,6 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
 
     struct Entry {
         std::shared_ptr<Layer> layer;
-        double lt = 0.0;
         double anchor_x = 0.0;
         double anchor_y = 0.0;
         double left_offset = 0.0;
@@ -420,50 +413,26 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
         auto layer = title_->find_layer(id);
         if (!layer || layer->locked) continue;
 
-        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
-                                     std::max(0.0, layer->out_time - layer->in_time));
-        const double width = eval_box_width(*layer, lt);
-        const double height = eval_box_height(*layer, lt);
-        const Vec2Value scale = layer->scale.evaluate(lt);
-        const Vec2Value position = layer->position.evaluate(lt);
-        const double origin_x = eval_origin_x(*layer, lt);
-        const double origin_y = eval_origin_y(*layer, lt);
-        const double rotation = layer->rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
-        const double cos_r = std::cos(rotation);
-        const double sin_r = std::sin(rotation);
+        const QRectF bounds = editor_layer_canvas_bounds_for_grouping(
+            title_, *layer, playhead_);
+        if (!bounds.isValid() || bounds.isEmpty()) continue;
+        const QPointF anchor = editor_layer_world_transform_for_parenting(
+            title_, *layer, playhead_).map(QPointF(0.0, 0.0));
+        const double left_offset = bounds.left() - anchor.x();
+        const double right_offset = bounds.right() - anchor.x();
+        const double top_offset = bounds.top() - anchor.y();
+        const double bottom_offset = bounds.bottom() - anchor.y();
 
-        const double local_left = -origin_x * width;
-        const double local_right = (1.0 - origin_x) * width;
-        const double local_top = -origin_y * height;
-        const double local_bottom = (1.0 - origin_y) * height;
-        const double xs[4] = {local_left, local_right, local_right, local_left};
-        const double ys[4] = {local_top, local_top, local_bottom, local_bottom};
+        min_left = std::min(min_left, bounds.left());
+        max_right = std::max(max_right, bounds.right());
+        min_top = std::min(min_top, bounds.top());
+        max_bottom = std::max(max_bottom, bounds.bottom());
+        min_anchor_x = std::min(min_anchor_x, anchor.x());
+        max_anchor_x = std::max(max_anchor_x, anchor.x());
+        min_anchor_y = std::min(min_anchor_y, anchor.y());
+        max_anchor_y = std::max(max_anchor_y, anchor.y());
 
-        double left_offset = std::numeric_limits<double>::infinity();
-        double right_offset = -std::numeric_limits<double>::infinity();
-        double top_offset = std::numeric_limits<double>::infinity();
-        double bottom_offset = -std::numeric_limits<double>::infinity();
-        for (int i = 0; i < 4; ++i) {
-            const double sx = xs[i] * scale.x;
-            const double sy = ys[i] * scale.y;
-            const double tx = sx * cos_r - sy * sin_r;
-            const double ty = sx * sin_r + sy * cos_r;
-            left_offset = std::min(left_offset, tx);
-            right_offset = std::max(right_offset, tx);
-            top_offset = std::min(top_offset, ty);
-            bottom_offset = std::max(bottom_offset, ty);
-        }
-
-        min_left = std::min(min_left, position.x + left_offset);
-        max_right = std::max(max_right, position.x + right_offset);
-        min_top = std::min(min_top, position.y + top_offset);
-        max_bottom = std::max(max_bottom, position.y + bottom_offset);
-        min_anchor_x = std::min(min_anchor_x, position.x);
-        max_anchor_x = std::max(max_anchor_x, position.x);
-        min_anchor_y = std::min(min_anchor_y, position.y);
-        max_anchor_y = std::max(max_anchor_y, position.y);
-
-        entries.push_back({layer, lt, position.x, position.y,
+        entries.push_back({layer, anchor.x(), anchor.y(),
                            left_offset, right_offset, top_offset, bottom_offset});
     }
 
@@ -500,32 +469,36 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
 
     std::shared_ptr<Layer> last_layer;
     for (const auto &entry : entries) {
+        QPointF next_anchor(entry.anchor_x, entry.anchor_y);
         if (x_mode >= 0) {
-            double next_x = entry.anchor_x;
             if (selection_anchors) {
-                if (x_mode == 0) next_x = target_left;
-                if (x_mode == 1) next_x = target_hcenter;
-                if (x_mode == 2) next_x = target_right;
+                if (x_mode == 0) next_anchor.setX(target_left);
+                if (x_mode == 1) next_anchor.setX(target_hcenter);
+                if (x_mode == 2) next_anchor.setX(target_right);
             } else {
-                if (x_mode == 0) next_x = target_left - entry.left_offset;
-                if (x_mode == 1) next_x = target_hcenter - (entry.left_offset + entry.right_offset) / 2.0;
-                if (x_mode == 2) next_x = target_right - entry.right_offset;
+                if (x_mode == 0) next_anchor.setX(target_left - entry.left_offset);
+                if (x_mode == 1) next_anchor.setX(
+                    target_hcenter -
+                    (entry.left_offset + entry.right_offset) / 2.0);
+                if (x_mode == 2) next_anchor.setX(target_right - entry.right_offset);
             }
-            set_animated_x(entry.layer->position, entry.lt, next_x);
         }
         if (y_mode >= 0) {
-            double next_y = entry.anchor_y;
             if (selection_anchors) {
-                if (y_mode == 0) next_y = target_top;
-                if (y_mode == 1) next_y = target_vcenter;
-                if (y_mode == 2) next_y = target_bottom;
+                if (y_mode == 0) next_anchor.setY(target_top);
+                if (y_mode == 1) next_anchor.setY(target_vcenter);
+                if (y_mode == 2) next_anchor.setY(target_bottom);
             } else {
-                if (y_mode == 0) next_y = target_top - entry.top_offset;
-                if (y_mode == 1) next_y = target_vcenter - (entry.top_offset + entry.bottom_offset) / 2.0;
-                if (y_mode == 2) next_y = target_bottom - entry.bottom_offset;
+                if (y_mode == 0) next_anchor.setY(target_top - entry.top_offset);
+                if (y_mode == 1) next_anchor.setY(
+                    target_vcenter -
+                    (entry.top_offset + entry.bottom_offset) / 2.0);
+                if (y_mode == 2) next_anchor.setY(target_bottom - entry.bottom_offset);
             }
-            set_animated_y(entry.layer->position, entry.lt, next_y);
         }
+        editor_translate_layer_in_canvas_for_parenting(
+            title_, *entry.layer, playhead_,
+            next_anchor - QPointF(entry.anchor_x, entry.anchor_y));
         last_layer = entry.layer;
     }
 
@@ -547,7 +520,6 @@ void TitleEditor::distribute_selected_layers(bool horizontal)
 
     struct Entry {
         std::shared_ptr<Layer> layer;
-        double lt = 0.0;
         double anchor = 0.0;
         double start = 0.0;
         double end = 0.0;
@@ -560,42 +532,17 @@ void TitleEditor::distribute_selected_layers(bool horizontal)
         auto layer = title_->find_layer(id);
         if (!layer || layer->locked) continue;
 
-        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
-                                     std::max(0.0, layer->out_time - layer->in_time));
-        const double width = eval_box_width(*layer, lt);
-        const double height = eval_box_height(*layer, lt);
-        const Vec2Value scale = layer->scale.evaluate(lt);
-        const Vec2Value position = layer->position.evaluate(lt);
-        const double origin_x = eval_origin_x(*layer, lt);
-        const double origin_y = eval_origin_y(*layer, lt);
-        const double rotation_radians = layer->rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
-        const double cos_r = std::cos(rotation_radians);
-        const double sin_r = std::sin(rotation_radians);
-
-        // Build the axis-aligned bounds from this layer's own transformed
-        // corners. Do not use the aggregate selection bounds as an item in
-        // the distribution calculation.
-        const double local_left = -origin_x * width;
-        const double local_right = (1.0 - origin_x) * width;
-        const double local_top = -origin_y * height;
-        const double local_bottom = (1.0 - origin_y) * height;
-        const double xs[4] = {local_left, local_right, local_right, local_left};
-        const double ys[4] = {local_top, local_top, local_bottom, local_bottom};
-        double start_offset = std::numeric_limits<double>::max();
-        double end_offset = std::numeric_limits<double>::lowest();
-        for (int corner = 0; corner < 4; ++corner) {
-            const double sx = xs[corner] * scale.x;
-            const double sy = ys[corner] * scale.y;
-            const double axis_offset = horizontal
-                ? (sx * cos_r - sy * sin_r)
-                : (sx * sin_r + sy * cos_r);
-            start_offset = std::min(start_offset, axis_offset);
-            end_offset = std::max(end_offset, axis_offset);
-        }
-        const double axis_position = horizontal ? position.x : position.y;
-
-        entries.push_back({layer, lt, axis_position, axis_position + start_offset,
-                           axis_position + end_offset, start_offset});
+        const QRectF bounds = editor_layer_canvas_bounds_for_grouping(
+            title_, *layer, playhead_);
+        if (!bounds.isValid() || bounds.isEmpty()) continue;
+        const QPointF anchor_canvas = editor_layer_world_transform_for_parenting(
+            title_, *layer, playhead_).map(QPointF(0.0, 0.0));
+        const double axis_position =
+            horizontal ? anchor_canvas.x() : anchor_canvas.y();
+        const double start = horizontal ? bounds.left() : bounds.top();
+        const double end = horizontal ? bounds.right() : bounds.bottom();
+        entries.push_back(
+            {layer, axis_position, start, end, start - axis_position});
     }
 
     if (entries.size() < 3) return;
@@ -608,11 +555,13 @@ void TitleEditor::distribute_selected_layers(bool horizontal)
         const double step = (entries.back().anchor - entries.front().anchor) /
                             static_cast<double>(entries.size() - 1);
         for (size_t i = 1; i + 1 < entries.size(); ++i) {
-            const double next_position = entries.front().anchor + step * static_cast<double>(i);
-            if (horizontal)
-                set_animated_x(entries[i].layer->position, entries[i].lt, next_position);
-            else
-                set_animated_y(entries[i].layer->position, entries[i].lt, next_position);
+            const double next_position =
+                entries.front().anchor + step * static_cast<double>(i);
+            const double axis_delta = next_position - entries[i].anchor;
+            editor_translate_layer_in_canvas_for_parenting(
+                title_, *entries[i].layer, playhead_,
+                horizontal ? QPointF(axis_delta, 0.0)
+                           : QPointF(0.0, axis_delta));
         }
     } else {
         std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
@@ -634,11 +583,13 @@ void TitleEditor::distribute_selected_layers(bool horizontal)
 
         double next_start = entries.front().end + gap;
         for (size_t i = 1; i + 1 < entries.size(); ++i) {
-            const double next_position = next_start - entries[i].start_offset;
-            if (horizontal)
-                set_animated_x(entries[i].layer->position, entries[i].lt, next_position);
-            else
-                set_animated_y(entries[i].layer->position, entries[i].lt, next_position);
+            const double next_position =
+                next_start - entries[i].start_offset;
+            const double axis_delta = next_position - entries[i].anchor;
+            editor_translate_layer_in_canvas_for_parenting(
+                title_, *entries[i].layer, playhead_,
+                horizontal ? QPointF(axis_delta, 0.0)
+                           : QPointF(0.0, axis_delta));
             next_start += (entries[i].end - entries[i].start) + gap;
         }
     }
@@ -890,6 +841,29 @@ void TitleEditor::build_toolbar()
     transform_toolbar_layout->addWidget(transform_toolbar_reset_);
     dynamic_toolbar_layout->addWidget(transform_toolbar_widget_);
 
+    anchor_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
+    anchor_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *anchor_toolbar_layout = new QHBoxLayout(anchor_toolbar_widget_);
+    anchor_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    anchor_toolbar_layout->setSpacing(2);
+    auto *anchor_toolbar_label = new QLabel(bgl_tr("OBSTitles.Anchor"),
+                                            anchor_toolbar_widget_);
+    anchor_toolbar_label->setStyleSheet(QStringLiteral("font-size:10px;"));
+    auto *anchor_grid = new AnchorGridButton(anchor_toolbar_widget_);
+    anchor_grid->setFixedSize(kEditorToolbarButtonExtent,
+                              kEditorToolbarButtonExtent);
+    anchor_grid->setToolTip(bgl_tr("OBSTitles.AnchorChangeTooltip"));
+    anchor_grid->anchor_selected = [this](int index) {
+        if (updating_corner_toolbar_ || !props_)
+            return;
+        props_->apply_anchor_preset(index);
+        update_corner_toolbar();
+    };
+    anchor_toolbar_grid_ = anchor_grid;
+    anchor_toolbar_layout->addWidget(anchor_toolbar_label);
+    anchor_toolbar_layout->addWidget(anchor_toolbar_grid_);
+    dynamic_toolbar_layout->addWidget(anchor_toolbar_widget_);
+
     boolean_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
     boolean_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     auto *boolean_toolbar_layout = new QHBoxLayout(boolean_toolbar_widget_);
@@ -995,6 +969,7 @@ void TitleEditor::build_toolbar()
     dynamic_toolbar_action_->setPriority(QAction::HighPriority);
     dynamic_toolbar_action_->setVisible(false);
     transform_toolbar_widget_->setVisible(false);
+    anchor_toolbar_widget_->setVisible(false);
     boolean_toolbar_widget_->setVisible(false);
     point_toolbar_widget_->setVisible(false);
     corner_toolbar_widget_->setVisible(false);

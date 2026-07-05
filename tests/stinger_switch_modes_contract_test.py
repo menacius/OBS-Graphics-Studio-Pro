@@ -91,7 +91,7 @@ assert "title_gpu_render_session_draw_transition_inputs" in transition
 assert "point <= 1.0e-9" in model_cpp
 assert "OBSTitles.StingerSwitchMode=" in locale
 assert "OBSTitles.StingerTransitionInputProtected=" in locale
-assert 'OBS_BGS_DEVELOPMENT_VERSION "189"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "189"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
 
 print("Stinger switch modes and manual Scene A/B contract passed")

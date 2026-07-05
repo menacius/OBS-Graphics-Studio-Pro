@@ -206,7 +206,7 @@ void PropertiesPanel::build_text_animator_section(QWidget *parent,
         : palette.color(QPalette::Window).darker(104);
     text_animators_box_ = new QGroupBox(QStringLiteral("Text Animators"), parent);
     text_animators_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{background:%1;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{background:%1;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}")
         .arg(section_bg.name(QColor::HexRgb)));
     auto *layout = new QVBoxLayout(text_animators_box_);
@@ -215,7 +215,7 @@ void PropertiesPanel::build_text_animator_section(QWidget *parent,
 
     auto make_button = [this](const QString &text, const QString &tip) {
         auto *button = new QPushButton(text, text_animators_box_);
-        button->setFixedHeight(22);
+        button->setFixedHeight(20);
         button->setToolTip(tip);
         return button;
     };
@@ -812,7 +812,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
         spin->setDecimals(decimals);
         spin->setSingleStep(decimals == 0 ? 1.0 : 0.1);
         spin->setValue(value);
-        spin->setFixedHeight(22);
+        spin->setFixedHeight(20);
         return spin;
     };
     auto add_animated_row = [this, form, find_animator, local_time, make_spin](

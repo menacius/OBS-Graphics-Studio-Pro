@@ -15,7 +15,7 @@
     spn_baseline_shift_ = mk_dspin(-500.0, 500.0, 1.0);
     spn_baseline_shift_->setSuffix(" px");
     btn_text_color_ = new QPushButton(inner);
-    btn_text_color_->setFixedHeight(22);
+    btn_text_color_->setFixedHeight(20);
     btn_kf_font_size_ = mk_kf_button("Toggle Size keyframe");
     btn_kf_char_scale_x_ = mk_kf_button("Toggle H Scale keyframe");
     btn_kf_char_scale_y_ = mk_kf_button("Toggle V Scale keyframe");
@@ -54,11 +54,11 @@
     type_options_box_->setObjectName(QStringLiteral("BroadcastGraphicsLiveTextTypePanel"));
     type_options_box_->setStyleSheet(QStringLiteral(
         "QGroupBox#BroadcastGraphicsLiveTextTypePanel{color:%1;background:%2;border:1px solid %3;"
-        "border-radius:2px;margin-top:16px;padding:0;font-size:14px;}"
+        "border-radius:2px;margin-top:16px;padding:0;font-size:11px;}"
         "QGroupBox#BroadcastGraphicsLiveTextTypePanel::title{subcontrol-origin:margin;left:14px;top:2px;padding:0 4px;background:%2;}")
         .arg(panel_text_name, section_bg_name, border_name));
     auto *type_grid = new QGridLayout(type_options_box_);
-    type_grid->setContentsMargins(10, 8, 10, 10);
+    type_grid->setContentsMargins(7, 5, 7, 6);
     type_grid->setHorizontalSpacing(4);
     type_grid->setVerticalSpacing(4);
     chk_bold_ = mk_type_icon_button("text-style-bold.svg", bgl_tr("OBSTitles.Bold"));
@@ -85,12 +85,12 @@
     /* ── Paragraph ── */
     paragraph_box_ = new QGroupBox("Paragraph", inner);
     paragraph_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *paragraph_layout = new QVBoxLayout(paragraph_box_);
-    paragraph_layout->setContentsMargins(10, 8, 10, 10);
+    paragraph_layout->setContentsMargins(7, 5, 7, 6);
     paragraph_layout->setSpacing(7);
 
     auto add_paragraph_button = [&](QHBoxLayout *layout, QButtonGroup *group,
@@ -183,7 +183,7 @@
     auto *paragraph_space_after_field = with_kf(spn_paragraph_space_after_, btn_kf_paragraph_space_after_);
     auto *metric_grid = new QGridLayout();
     metric_grid->setContentsMargins(0, 0, 0, 0);
-    metric_grid->setHorizontalSpacing(8);
+    metric_grid->setHorizontalSpacing(5);
     metric_grid->setVerticalSpacing(4);
     metric_grid->setColumnStretch(1, 1);
     metric_grid->setColumnStretch(3, 1);
@@ -203,14 +203,14 @@
     /* ── Dynamic Text ── */
     dynamic_text_box_ = new QGroupBox("Text Flow", inner);
     dynamic_text_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *dynamic_form = new QFormLayout(dynamic_text_box_);
     style_form(dynamic_form);
-    dynamic_form->setContentsMargins(10, 8, 10, 10);
-    dynamic_form->setHorizontalSpacing(8);
+    dynamic_form->setContentsMargins(7, 5, 7, 6);
+    dynamic_form->setHorizontalSpacing(5);
     dynamic_form->setVerticalSpacing(6);
     cmb_text_style_ = new QComboBox(inner);
     cmb_text_style_->addItem(bgl_tr("OBSTitles.Normal"), 0);
@@ -219,14 +219,14 @@
     cmb_text_style_->addItem(bgl_tr("OBSTitles.Superscript"), 3);
     cmb_text_style_->addItem(bgl_tr("OBSTitles.Subscript"), 4);
     cmb_text_style_->setToolTip(bgl_tr("OBSTitles.TextStyleTooltip"));
-    cmb_text_style_->setFixedHeight(22);
+    cmb_text_style_->setFixedHeight(20);
     cmb_text_style_->setStyleSheet(control_style);
     cmb_text_overflow_ = new QComboBox(inner);
     cmb_text_overflow_->addItem(bgl_tr("OBSTitles.Wrap"), 0);
     cmb_text_overflow_->addItem(bgl_tr("OBSTitles.Clip"), 1);
     cmb_text_overflow_->addItem(bgl_tr("OBSTitles.HorizontalFit"), 2);
     cmb_text_overflow_->setToolTip(bgl_tr("OBSTitles.TextOverflowTooltip"));
-    cmb_text_overflow_->setFixedHeight(22);
+    cmb_text_overflow_->setFixedHeight(20);
     cmb_text_overflow_->setStyleSheet(control_style);
     spn_text_fit_min_scale_ = mk_dspin(0.05, 1.0, 0.05);
     spn_text_fit_min_scale_->setDecimals(2);
@@ -251,7 +251,7 @@
     ticker_playback_layout->setSpacing(6);
     btn_ticker_pause_ = new QToolButton(row_ticker_playback_);
     btn_ticker_pause_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    btn_ticker_pause_->setFixedHeight(22);
+    btn_ticker_pause_->setFixedHeight(20);
     btn_ticker_pause_->setAutoRaise(false);
     btn_ticker_pause_->setStyleSheet(control_style);
     cmb_ticker_playback_mode_ = new QComboBox(row_ticker_playback_);
@@ -263,7 +263,7 @@
                                        static_cast<int>(TickerPlaybackMode::PausedUntilHotkey));
     cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerCustomPlayback"),
                                        static_cast<int>(TickerPlaybackMode::CustomPlayback));
-    cmb_ticker_playback_mode_->setFixedHeight(22);
+    cmb_ticker_playback_mode_->setFixedHeight(20);
     cmb_ticker_playback_mode_->setStyleSheet(control_style);
     ticker_playback_layout->addWidget(btn_ticker_pause_);
     ticker_playback_layout->addWidget(cmb_ticker_playback_mode_, 1);
@@ -283,16 +283,16 @@
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerHorizontal"), 0);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerVerticalLine"), 1);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerVerticalSmooth"), 2);
-    cmb_ticker_style_->setFixedHeight(22);
+    cmb_ticker_style_->setFixedHeight(20);
     cmb_ticker_style_->setStyleSheet(control_style);
     spn_ticker_speed_ = mk_dspin(1.0, 5000.0, 1.0);
     spn_ticker_speed_->setSuffix(" px/s");
     spn_ticker_line_hold_ = new TimecodeSpinBox(inner);
     spn_ticker_line_hold_->setRange(0.1, 60.0);
-    spn_ticker_line_hold_->setFixedHeight(22);
+    spn_ticker_line_hold_->setFixedHeight(20);
     spn_ticker_line_hold_->setStyleSheet(control_style);
     cmb_ticker_direction_ = new QComboBox(inner);
-    cmb_ticker_direction_->setFixedHeight(22);
+    cmb_ticker_direction_->setFixedHeight(20);
     cmb_ticker_direction_->setStyleSheet(control_style);
     add_form_row(dynamic_form, "Text Style", cmb_text_style_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.OverflowLabel"), cmb_text_overflow_);
@@ -309,12 +309,12 @@
     /* ── Auto Styling ── */
     auto_style_box_ = new QGroupBox("Auto Styling Rules", inner);
     auto_style_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *auto_layout = new QVBoxLayout(auto_style_box_);
-    auto_layout->setContentsMargins(10, 8, 10, 10);
+    auto_layout->setContentsMargins(7, 5, 7, 6);
     auto_layout->setSpacing(6);
     chk_auto_style_enabled_ = new BglSwitch("Enable automatic text styling", auto_style_box_);
     chk_auto_style_enabled_->setToolTip("When enabled, the selected text layer is styled by the rule engine before rendering. The original text stays editable; rules only produce final style runs.");
@@ -413,7 +413,7 @@
     auto *default_style_form = new QFormLayout();
     style_form(default_style_form);
     cmb_auto_default_style_ = new QComboBox(auto_rules_dialog_);
-    cmb_auto_default_style_->setFixedHeight(22);
+    cmb_auto_default_style_->setFixedHeight(20);
     cmb_auto_default_style_->setStyleSheet(control_style);
     cmb_auto_default_style_->setToolTip("Base preset for the entire text box. Rules are applied on top of this default style.");
     default_style_form->addRow("Base style", cmb_auto_default_style_);
@@ -426,12 +426,12 @@
     auto *rule_form = new QFormLayout();
     style_form(rule_form);
     cmb_auto_rule_style_ = new QComboBox(auto_rules_dialog_);
-    cmb_auto_rule_style_->setFixedHeight(22);
+    cmb_auto_rule_style_->setFixedHeight(20);
     cmb_auto_rule_style_->setStyleSheet(control_style);
     cmb_auto_rule_style_->setToolTip("Text style preset to apply when this rule matches.");
     edt_auto_rule_name_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_name_->setPlaceholderText("Optional rule name");
-    edt_auto_rule_name_->setFixedHeight(22);
+    edt_auto_rule_name_->setFixedHeight(20);
     edt_auto_rule_name_->setStyleSheet(control_style);
     edt_auto_rule_name_->setToolTip("Optional friendly name shown in the rule list. Leave empty to use the preset name.");
     chk_auto_rule_enabled_ = new BglSwitch("This rule is active", auto_rules_dialog_);
@@ -455,8 +455,8 @@
     cmb_auto_rule_end_condition_ = new QComboBox(auto_rules_dialog_);
     fill_auto_marker_combo(cmb_auto_rule_start_condition_);
     fill_auto_marker_combo(cmb_auto_rule_end_condition_);
-    cmb_auto_rule_start_condition_->setFixedHeight(22);
-    cmb_auto_rule_end_condition_->setFixedHeight(22);
+    cmb_auto_rule_start_condition_->setFixedHeight(20);
+    cmb_auto_rule_end_condition_->setFixedHeight(20);
     cmb_auto_rule_start_condition_->setStyleSheet(control_style);
     cmb_auto_rule_end_condition_->setStyleSheet(control_style);
     cmb_auto_rule_start_condition_->setToolTip("Where the styled range begins. Marker rules scan the entire text box, not only the beginning.");
@@ -465,7 +465,7 @@
     spn_auto_rule_end_offset_ = new QSpinBox(auto_rules_dialog_);
     for (auto *spin : {spn_auto_rule_start_offset_, spn_auto_rule_end_offset_}) {
         spin->setRange(0, 100000);
-        spin->setFixedHeight(22);
+        spin->setFixedHeight(20);
         spin->setStyleSheet(control_style);
         spin->setToolTip("Offset / occurrence number. For Character index, this is the exact character position. For marker rules, 0 means the first matching marker.");
     }
@@ -475,8 +475,8 @@
     edt_auto_rule_end_chars_->setMaxLength(8);
     edt_auto_rule_start_chars_->setPlaceholderText("custom");
     edt_auto_rule_end_chars_->setPlaceholderText("custom");
-    edt_auto_rule_start_chars_->setFixedHeight(22);
-    edt_auto_rule_end_chars_->setFixedHeight(22);
+    edt_auto_rule_start_chars_->setFixedHeight(20);
+    edt_auto_rule_end_chars_->setFixedHeight(20);
     edt_auto_rule_start_chars_->setStyleSheet(control_style);
     edt_auto_rule_end_chars_->setStyleSheet(control_style);
     edt_auto_rule_start_chars_->setToolTip("Characters to search for when From is set to Custom character. Example: : or #.");
@@ -522,20 +522,20 @@
     cmb_auto_rule_conflict_mode_->addItem("Apply only if empty", "apply_if_empty");
     cmb_auto_rule_conflict_mode_->addItem("Merge", "merge");
     cmb_auto_rule_conflict_mode_->addItem("Exclude selected rules", "exclude_other_rules");
-    cmb_auto_rule_conflict_mode_->setFixedHeight(22);
+    cmb_auto_rule_conflict_mode_->setFixedHeight(20);
     cmb_auto_rule_conflict_mode_->setStyleSheet(control_style);
     cmb_auto_rule_conflict_mode_->setToolTip("How this rule behaves when another rule already styled the same text. Override wins, Respect keeps previous fields, Apply only if empty affects unstyled text, Exclude blocks selected rules.");
     cmb_auto_rule_match_mode_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_rule_match_mode_->addItem("All matches", "all_matches");
     cmb_auto_rule_match_mode_->addItem("First match only", "first_match");
-    cmb_auto_rule_match_mode_->setFixedHeight(22);
+    cmb_auto_rule_match_mode_->setFixedHeight(20);
     cmb_auto_rule_match_mode_->setStyleSheet(control_style);
     cmb_auto_rule_match_mode_->setToolTip("Apply to every matching range in the text box or only to the first one.");
     cmb_auto_rule_generalization_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_rule_generalization_->addItem("Smart merge equivalent examples", "auto_merge");
     cmb_auto_rule_generalization_->addItem("Exact structure only", "exact_only");
     cmb_auto_rule_generalization_->addItem("Always keep separate", "keep_separate");
-    cmb_auto_rule_generalization_->setFixedHeight(22);
+    cmb_auto_rule_generalization_->setFixedHeight(20);
     cmb_auto_rule_generalization_->setStyleSheet(control_style);
     cmb_auto_rule_generalization_->setToolTip("Controls whether learned examples that describe the same reusable structure are folded into one rule.");
     chk_auto_rule_prevent_duplicates_ = new QCheckBox("Skip exact duplicate rules", auto_rules_dialog_);
@@ -544,7 +544,7 @@
     chk_auto_rule_allow_multiple_cases_->setChecked(true);
     edt_auto_rule_excludes_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_excludes_->setPlaceholderText("Rule IDs to exclude, comma-separated");
-    edt_auto_rule_excludes_->setFixedHeight(22);
+    edt_auto_rule_excludes_->setFixedHeight(20);
     edt_auto_rule_excludes_->setStyleSheet(control_style);
     edt_auto_rule_excludes_->setToolTip("Comma-separated rule IDs to block where this rule matches. Example: rule_1, rule_3. Use with Conflict: Exclude selected rules.");
     chk_auto_rule_stop_processing_ = new BglSwitch("Stop later rules on this matched text", auto_rules_dialog_);
@@ -616,18 +616,18 @@
     /* ── Live Edit ── */
     live_edit_box_ = new QGroupBox(bgl_tr("OBSTitles.LiveEdit"), inner);
     live_edit_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *live_edit_form = new QFormLayout(live_edit_box_);
     style_form(live_edit_form);
-    live_edit_form->setContentsMargins(10, 8, 10, 10);
-    live_edit_form->setHorizontalSpacing(8);
+    live_edit_form->setContentsMargins(7, 5, 7, 6);
+    live_edit_form->setHorizontalSpacing(5);
     live_edit_form->setVerticalSpacing(6);
     chk_scene_mask_->setText(bgl_tr("OBSTitles.SetAsSceneMask"));
     chk_scene_mask_->setToolTip(bgl_tr("OBSTitles.LiveSceneMaskTooltip"));
-    chk_scene_mask_->setFixedHeight(22);
+    chk_scene_mask_->setFixedHeight(20);
     chk_scene_mask_->setStyleSheet(checkbox_style);
     chk_expose_text_->setText(bgl_tr("OBSTitles.ExposeToDock"));
     chk_expose_text_->setToolTip(bgl_tr("OBSTitles.ExposeInDockTooltip"));
@@ -642,7 +642,7 @@
     bullets_box_ = new QGroupBox("Bullets and Numbering", inner);
     bullets_box_->setStyleSheet(section_style);
     auto *bullets_layout = new QVBoxLayout(bullets_box_);
-    bullets_layout->setContentsMargins(10, 8, 10, 10);
+    bullets_layout->setContentsMargins(7, 5, 7, 6);
     auto *bullets_hint = new QLabel("Broadcast lower thirds typically use manual bullet glyphs; this group is ready for list presets.", inner);
     bullets_hint->setWordWrap(true);
     bullets_hint->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name));
@@ -655,7 +655,7 @@
     rect_box_->setTitle(QString());
     rect_box_->setStyleSheet(QStringLiteral("QGroupBox{background:%1;border:none;margin:0;padding:0;}").arg(section_bg_name));
     auto *shape_layout = new QVBoxLayout(rect_box_);
-    shape_layout->setContentsMargins(10, 8, 10, 10);
+    shape_layout->setContentsMargins(7, 5, 7, 6);
     shape_layout->setSpacing(8);
 
     btn_shape_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), rect_box_);
@@ -699,13 +699,13 @@
 
     auto *shape_grid = new QGridLayout();
     shape_grid->setContentsMargins(0, 0, 0, 0);
-    shape_grid->setHorizontalSpacing(8);
-    shape_grid->setVerticalSpacing(8);
+    shape_grid->setHorizontalSpacing(5);
+    shape_grid->setVerticalSpacing(4);
     shape_grid->setColumnMinimumWidth(0, 24);
     shape_grid->setColumnMinimumWidth(1, 82);
-    shape_grid->setColumnMinimumWidth(2, 86);
-    shape_grid->setColumnMinimumWidth(3, 22);
-    shape_grid->setColumnMinimumWidth(4, 86);
+    shape_grid->setColumnMinimumWidth(2, 90);
+    shape_grid->setColumnMinimumWidth(3, 90);
+    shape_grid->setColumnMinimumWidth(4, 20);
     shape_grid->setColumnStretch(5, 1);
 
     auto make_shape_field = [&](const QString &label, QDoubleSpinBox *spin, const QIcon &icon = QIcon()) {
@@ -734,10 +734,10 @@
             field_label->setPixmap(icon.pixmap(QSize(14, 14)));
             field_label->setAccessibleName(label);
         }
-        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:12px;").arg(control_text_name));
+        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(control_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin, 1);
-        field->setFixedSize(104, 24);
+        field->setFixedSize(90, 20);
         return field;
     };
 
@@ -768,11 +768,11 @@
     cmb_shape_type_->addItem("Polygon", (int)ShapeType::Polygon);
     cmb_shape_type_->addItem("Diamond", (int)ShapeType::Diamond);
     cmb_shape_type_->addItem(bgl_tr("OBSTitles.Path"), (int)ShapeType::Path);
-    cmb_shape_type_->setFixedHeight(22);
+    cmb_shape_type_->setFixedHeight(20);
     cmb_shape_type_->setStyleSheet(control_style);
     cmb_shape_type_->hide();
-    spn_shape_points_ = new QSpinBox(inner); spn_shape_points_->setRange(3, 64); spn_shape_points_->setFixedHeight(22); spn_shape_points_->setStyleSheet(control_style);
-    spn_shape_sides_ = new QSpinBox(inner); spn_shape_sides_->setRange(3, 64); spn_shape_sides_->setFixedHeight(22); spn_shape_sides_->setStyleSheet(control_style);
+    spn_shape_points_ = new QSpinBox(inner); spn_shape_points_->setRange(3, 64); spn_shape_points_->setFixedHeight(20); spn_shape_points_->setStyleSheet(control_style);
+    spn_shape_sides_ = new QSpinBox(inner); spn_shape_sides_->setRange(3, 64); spn_shape_sides_->setFixedHeight(20); spn_shape_sides_->setStyleSheet(control_style);
     spn_shape_inner_radius_ = mk_dspin(0.0, 1.0, 0.05); spn_shape_inner_radius_->setDecimals(2);
     spn_shape_outer_radius_ = mk_dspin(0.0, 1.0, 0.05); spn_shape_outer_radius_->setDecimals(2);
     spn_shape_roundness_ = mk_dspin(0.0, 1000.0, 1.0);
@@ -794,25 +794,25 @@
     chk_size_lock_ = new TransformLockCheckBox(rect_box_);
     chk_size_lock_->setText(QString());
     chk_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_size_lock_->setFixedSize(24, 24);
+    chk_size_lock_->setFixedSize(20, 20);
     chk_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *size_label = new QLabel(bgl_tr("OBSTitles.Size"), rect_box_);
-    size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
+    size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(panel_text_name));
     shape_size_label_ = size_label;
     shape_size_field_w_ = field_width;
     shape_size_field_h_ = field_height;
     shape_grid->addWidget(btn_kf_width_, 0, 0, Qt::AlignCenter);
     shape_grid->addWidget(size_label, 0, 1);
     shape_grid->addWidget(field_width, 0, 2);
-    shape_grid->addWidget(chk_size_lock_, 0, 3, Qt::AlignCenter);
-    shape_grid->addWidget(field_height, 0, 4);
+    shape_grid->addWidget(field_height, 0, 3);
+    shape_grid->addWidget(chk_size_lock_, 0, 4, Qt::AlignCenter);
     shape_layout->addLayout(shape_grid);
 
     row_rect_corners_ = new QWidget(rect_box_);
     row_rect_corners_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *corners_layout = new QGridLayout(row_rect_corners_);
     corners_layout->setContentsMargins(0, 0, 0, 0);
-    corners_layout->setHorizontalSpacing(8);
+    corners_layout->setHorizontalSpacing(5);
     corners_layout->setVerticalSpacing(6);
     corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
     corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
@@ -843,7 +843,7 @@
     cmb_fill_type_ = new QComboBox(inner);
     cmb_fill_type_->addItem(bgl_tr("OBSTitles.Solid"), 0);
     cmb_fill_type_->addItem(bgl_tr("OBSTitles.Gradient"), 1);
-    cmb_fill_type_->setFixedHeight(22);
+    cmb_fill_type_->setFixedHeight(20);
     cmb_fill_type_->setStyleSheet(control_style);
     row_fill_type_ = cmb_fill_type_;
     add_form_row(rfl, bgl_tr("OBSTitles.FillTypeLabel"), row_fill_type_);
@@ -863,13 +863,13 @@
     cmb_gradient_type_->addItem(bgl_tr("OBSTitles.LinearGradient"), 0);
     cmb_gradient_type_->addItem(bgl_tr("OBSTitles.RadialGradient"), 1);
     cmb_gradient_type_->addItem(bgl_tr("OBSTitles.ConicalGradient"), 2);
-    cmb_gradient_type_->setFixedHeight(22);
+    cmb_gradient_type_->setFixedHeight(20);
     cmb_gradient_type_->setStyleSheet(control_style);
     cmb_gradient_spread_ = new QComboBox(inner);
     cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.No"), 0);
     cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.Repeat"), 2);
     cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.Reflect"), 1);
-    cmb_gradient_spread_->setFixedHeight(22);
+    cmb_gradient_spread_->setFixedHeight(20);
     cmb_gradient_spread_->setStyleSheet(control_style);
     btn_gradient_start_color_ = new QPushButton(inner);
     btn_gradient_end_color_ = new QPushButton(inner);
@@ -912,7 +912,7 @@
     image_box_ = new QWidget(inner);
     image_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *image_layout = new QVBoxLayout(image_box_);
-    image_layout->setContentsMargins(10, 8, 10, 10);
+    image_layout->setContentsMargins(7, 5, 7, 6);
     image_layout->setSpacing(8);
 
     auto *image_content = new QWidget(image_box_);

@@ -1,9 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "../core/serialization-passthrough.h"
 #include "external-data-types.h"
 #include "layer-effects.h"
 #include "animation.h"
@@ -65,6 +69,38 @@ inline constexpr bool layer_type_is_authored_shape(LayerType type)
     return type == LayerType::Shape || type == LayerType::SolidRect;
 }
 
+
+/* 3D transform contract.
+ * Coordinate system: +X right, +Y down, +Z away from the active camera.
+ * Existing 2D layers remain on Z=0 and keep the exact legacy transform path.
+ * A 2D child of a 3D parent inherits the complete parent matrix while its own
+ * local Z/XY tilt stay zero, which makes mixed hierarchies deterministic. */
+enum class LayerDimensionMode {
+    TwoD = 0,
+    ThreeD = 1,
+};
+
+/* Public XYZ value used by the authoring and renderer facades. The serialized
+ * representation intentionally remains the legacy XY animated property plus
+ * its Z channel, so old projects require no schema rewrite while 3D-aware code
+ * consumes one coherent Vector3 value. */
+struct LayerVector3Value {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
+enum class TransformAxisSpace {
+    Local = 0,
+    Parent = 1,
+    World = 2,
+};
+
+enum class LayerDepthMode {
+    Automatic = 0,
+    LayerOrder = 1,
+};
+
 enum class AudioPlaybackMode {
     PlayOnce = 0,
     Loop = 1,
@@ -86,6 +122,7 @@ enum class AudioEffectType {
 };
 
 struct AudioEffect {
+    OpaqueSerializationPassthrough serialization_passthrough_json;
     AudioEffectType type = AudioEffectType::Gain;
     bool enabled = true;
     float gain_db = 0.0f;
@@ -196,6 +233,8 @@ struct GradientStop {
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
 struct Layer {
+    /* Opaque source JSON used to preserve fields introduced by newer builds. */
+    OpaqueSerializationPassthrough serialization_passthrough_json;
     std::string id;          /* UUID */
     std::string name;
     LayerType   type = LayerType::Text;
@@ -217,6 +256,20 @@ struct Layer {
     /* Independent transform parenting. This never changes group membership,
      * layer ordering, or the Layers/Timeline hierarchy. */
     std::string transform_parent_id;
+
+    /* Development Version 216: a non-animated bind matrix between the
+     * effective parent basis and the authored local transform. Reparenting
+     * updates this matrix at the current playhead instead of baking sampled
+     * values into every transform channel. Authored keyframes, easing and
+     * spatial tangents therefore remain byte-for-byte intact. The matrix is
+     * row-major and follows QMatrix4x4 column-vector semantics. */
+    bool parent_bind_enabled = false;
+    std::array<double, 16> parent_bind_matrix = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    };
 
     /* Asset instance metadata. Asset layers are reusable title containers.
      * Their cloned descendants carry asset_owner_id and asset_source_layer_id
@@ -289,11 +342,38 @@ struct Layer {
     double audio_waveform_duration = 0.0; /* decoded asset duration represented by audio_waveform */
 
     /* ----- Animated properties ----- */
-    AnimatedVec2Property position { "position", {0.0, 0.0} };
-    AnimatedVec2Property scale    { "scale",    {1.0, 1.0} };
+    AnimatedVectorProperty position { "position", {0.0, 0.0} };
+    AnimatedVectorProperty scale    { "scale",    {1.0, 1.0, 1.0} };
     bool             scale_lock = true;
-    AnimatedProperty rotation{ "rotation", 0.0 };
+    AnimatedProperty rotation{ "rotation", 0.0 }; /* legacy/2D and 3D Z rotation */
     AnimatedProperty opacity { "opacity",  1.0 };
+
+    /* ----- Optional planar 3D transform -----
+     * The legacy XY properties above remain authoritative for 2D and are also
+     * the X/Y components in 3D mode. This avoids migrations and guarantees
+     * byte-for-byte 2D rendering for old projects. */
+    LayerDimensionMode dimension_mode = LayerDimensionMode::TwoD;
+    TransformAxisSpace transform_axis_space = TransformAxisSpace::Local;
+    AnimatedProperty position_z { "position_z", 0.0 };
+    /* Development Version 208: a unified XYZ position path. Legacy XY/Z
+     * properties remain authoritative until this track is explicitly promoted,
+     * preserving old 2D and 3D project output exactly. */
+    AnimatedVec3Property position_3d { "position_3d", {0.0, 0.0, 0.0} };
+    bool position_3d_path_enabled = false;
+    AnimatedProperty rotation_x { "rotation_x", 0.0 };
+    AnimatedProperty rotation_y { "rotation_y", 0.0 };
+    AnimatedProperty scale_z { "scale_z", 1.0 };
+    AnimatedProperty anchor_z { "anchor_z", 0.0 };
+    AnimatedProperty orientation_x { "orientation_x", 0.0 };
+    AnimatedProperty orientation_y { "orientation_y", 0.0 };
+    AnimatedProperty orientation_z { "orientation_z", 0.0 };
+    std::string camera_id; /* empty = active title camera */
+    AnimatedDiscreteProperty camera_assignment { "camera_assignment", "" };
+    LayerDepthMode depth_mode = LayerDepthMode::Automatic;
+    bool depth_test = true;
+    bool write_to_depth = true;
+    bool double_sided = true;
+    bool backface_culling = false;
 
     /* Illustrator-style Free Transform quad offsets, normalized to the local
      * layer box. Zero values preserve the ordinary affine transform. The four
@@ -310,10 +390,10 @@ struct Layer {
     /* Animatable counterparts used by the Free Transform tool. Legacy float
      * fields remain as a compatibility mirror for older project files and
      * extension code. */
-    AnimatedVec2Property transform_quad_tl { "transform_quad_tl", {0.0, 0.0} };
-    AnimatedVec2Property transform_quad_tr { "transform_quad_tr", {0.0, 0.0} };
-    AnimatedVec2Property transform_quad_br { "transform_quad_br", {0.0, 0.0} };
-    AnimatedVec2Property transform_quad_bl { "transform_quad_bl", {0.0, 0.0} };
+    AnimatedVectorProperty transform_quad_tl { "transform_quad_tl", {0.0, 0.0} };
+    AnimatedVectorProperty transform_quad_tr { "transform_quad_tr", {0.0, 0.0} };
+    AnimatedVectorProperty transform_quad_br { "transform_quad_br", {0.0, 0.0} };
+    AnimatedVectorProperty transform_quad_bl { "transform_quad_bl", {0.0, 0.0} };
 
     /* ----- Text-specific ----- */
     std::string text_content  = "Title";
@@ -523,7 +603,7 @@ struct Layer {
     /* Keyframable geometry mirrors the static fields above so older saved
      * titles remain readable while new titles can animate size/origin.
      */
-    AnimatedVec2Property size { "size", {1920.0, 100.0} };
+    AnimatedVectorProperty size { "size", {1920.0, 100.0} };
 
     /* ----- Geometry anchor / origin -----
      * Normalized inside the editable bounding box: 0.0 = left/top,
@@ -531,7 +611,7 @@ struct Layer {
      */
     float       origin_x      = 0.5f;
     float       origin_y      = 0.5f;
-    AnimatedVec2Property origin_prop { "origin", {0.5, 0.5} };
+    AnimatedVectorProperty origin_prop { "origin", {0.5, 0.5} };
 
     /* ----- Drop shadow ----- */
     bool        shadow_enabled = false;
@@ -583,5 +663,179 @@ struct Layer {
     float       image_anchor_y = 0.5f;
     float       image_width = 1920.0f;
     float       image_height = 1080.0f;
-    AnimatedVec2Property image_size { "image_size", {1920.0, 1080.0} };
+    AnimatedVectorProperty image_size { "image_size", {1920.0, 1080.0} };
 };
+
+inline LayerVector3Value evaluated_layer_position_3d(const Layer &layer, double time)
+{
+    if (layer.position_3d_path_enabled) {
+        const Vec3Value xyz = layer.position_3d.evaluate(time);
+        return {xyz.x, xyz.y, xyz.z};
+    }
+    const Vec2Value xyz = layer.position.evaluate(time);
+    return {xyz.x, xyz.y, xyz.z};
+}
+
+inline Vec3Value legacy_layer_position_3d(const Layer &layer, double time)
+{
+    const Vec2Value xyz = layer.position.evaluate(time);
+    return {xyz.x, xyz.y, xyz.z};
+}
+
+inline void promote_layer_position_to_3d_path(Layer &layer, bool activate = true)
+{
+    if (layer.position_3d_path_enabled) return;
+    layer.position_3d.name = "position_3d";
+    layer.position_3d.static_value = legacy_layer_position_3d(layer, 0.0);
+
+    std::vector<double> times;
+    times.reserve(layer.position.keyframes.size() + layer.position_z.keyframes.size());
+    for (const VectorKeyframe &key : layer.position.keyframes) times.push_back(key.time);
+    for (const Keyframe &key : layer.position_z.keyframes) times.push_back(key.time);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end(), [](double a, double b) {
+        return std::abs(a - b) <= 1.0e-9;
+    }), times.end());
+
+    layer.position_3d.keyframes.clear();
+    layer.position_3d.keyframes.reserve(times.size());
+    for (double time : times) {
+        Vector3Keyframe key;
+        key.time = time;
+        key.value = legacy_layer_position_3d(layer, time);
+        auto xy = std::find_if(layer.position.keyframes.begin(),
+                               layer.position.keyframes.end(),
+            [time](const VectorKeyframe &candidate) {
+                return std::abs(candidate.time - time) <= 1.0e-9;
+            });
+        if (xy != layer.position.keyframes.end()) {
+            key.easing = xy->easing;
+            key.cx1 = xy->cx1; key.cy1 = xy->cy1;
+            key.cx2 = xy->cx2; key.cy2 = xy->cy2;
+            key.temporal_mode = xy->temporal_mode;
+            key.incoming_influence = xy->incoming_influence;
+            key.outgoing_influence = xy->outgoing_influence;
+            key.incoming_speed = xy->incoming_speed;
+            key.outgoing_speed = xy->outgoing_speed;
+            key.temporal_tangents_linked = xy->temporal_tangents_linked;
+            key.temporal_velocity_explicit = xy->temporal_velocity_explicit;
+            key.incoming_tangent = {xy->incoming_tangent.x,
+                                    xy->incoming_tangent.y,
+                                    xy->incoming_tangent.z};
+            key.outgoing_tangent = {xy->outgoing_tangent.x,
+                                    xy->outgoing_tangent.y,
+                                    xy->outgoing_tangent.z};
+            key.spatial_mode = xy->spatial_mode;
+            key.spatial_tangents_linked = xy->spatial_tangents_linked;
+            key.rove_across_time = xy->rove_across_time;
+        }
+        layer.position_3d.keyframes.push_back(key);
+    }
+    layer.position_3d_path_enabled = activate;
+    layer.position_3d.recalculate_rove_times();
+}
+
+inline void mirror_position_3d_to_legacy(Layer &layer, double time)
+{
+    if (!layer.position_3d_path_enabled) return;
+    const Vec3Value value = layer.position_3d.evaluate(time);
+    layer.position.static_value = {value.x, value.y, value.z};
+    layer.position_z.static_value = value.z;
+}
+
+inline void mirror_position_3d_track_to_legacy(Layer &layer)
+{
+    if (!layer.position_3d_path_enabled) return;
+
+    const Vec3Value static_value = layer.position_3d.static_value;
+    layer.position.static_value =
+        {static_value.x, static_value.y, static_value.z};
+    layer.position_z.static_value = static_value.z;
+    layer.position.keyframes.clear();
+    layer.position_z.keyframes.clear();
+    layer.position.keyframes.reserve(layer.position_3d.keyframes.size());
+    layer.position_z.keyframes.reserve(layer.position_3d.keyframes.size());
+
+    for (const Vector3Keyframe &source : layer.position_3d.keyframes) {
+        VectorKeyframe xy;
+        xy.time = source.time;
+        xy.value = {source.value.x, source.value.y, source.value.z};
+        xy.easing = source.easing;
+        xy.cx1 = source.cx1; xy.cy1 = source.cy1;
+        xy.cx2 = source.cx2; xy.cy2 = source.cy2;
+        xy.temporal_mode = source.temporal_mode;
+        xy.incoming_influence = source.incoming_influence;
+        xy.outgoing_influence = source.outgoing_influence;
+        xy.incoming_speed = source.incoming_speed;
+        xy.outgoing_speed = source.outgoing_speed;
+        xy.temporal_tangents_linked = source.temporal_tangents_linked;
+        xy.temporal_velocity_explicit = source.temporal_velocity_explicit;
+        xy.incoming_tangent = {source.incoming_tangent.x,
+                               source.incoming_tangent.y,
+                               source.incoming_tangent.z};
+        xy.outgoing_tangent = {source.outgoing_tangent.x,
+                               source.outgoing_tangent.y,
+                               source.outgoing_tangent.z};
+        xy.spatial_mode = source.spatial_mode;
+        xy.spatial_tangents_linked = source.spatial_tangents_linked;
+        xy.rove_across_time = source.rove_across_time;
+        layer.position.keyframes.push_back(xy);
+
+        Keyframe z;
+        z.time = source.time;
+        z.value = source.value.z;
+        z.easing = source.easing;
+        z.cx1 = source.cx1; z.cy1 = source.cy1;
+        z.cx2 = source.cx2; z.cy2 = source.cy2;
+        z.temporal_mode = source.temporal_mode;
+        z.incoming_influence = source.incoming_influence;
+        z.outgoing_influence = source.outgoing_influence;
+        z.incoming_speed = source.incoming_speed;
+        z.outgoing_speed = source.outgoing_speed;
+        z.temporal_tangents_linked = source.temporal_tangents_linked;
+        z.temporal_velocity_explicit = source.temporal_velocity_explicit;
+        layer.position_z.keyframes.push_back(z);
+    }
+    layer.position.recalculate_rove_times();
+}
+
+inline void set_layer_dimension_mode_preserving_position_track(
+    Layer &layer, LayerDimensionMode mode)
+{
+    if (layer.dimension_mode == mode) return;
+    if (mode == LayerDimensionMode::ThreeD) {
+        promote_layer_position_to_3d_path(layer);
+        layer.position_3d_path_enabled = true;
+    } else {
+        mirror_position_3d_track_to_legacy(layer);
+        /* In 2D mode the legacy XYZ-compatible vector is authoritative.
+         * Leaving the 3D path active would make panel edits write one track
+         * while rendering continued to read another. */
+        layer.position_3d_path_enabled = false;
+    }
+    layer.dimension_mode = mode;
+}
+
+inline LayerVector3Value evaluated_layer_scale_3d(const Layer &layer, double time)
+{
+    const Vec2Value xyz = layer.scale.evaluate(time);
+    return {xyz.x, xyz.y, xyz.z};
+}
+
+inline LayerVector3Value evaluated_layer_anchor_3d(const Layer &layer, double time)
+{
+    const Vec2Value xyz = layer.origin_prop.evaluate(time);
+    return {xyz.x, xyz.y, xyz.z};
+}
+
+inline LayerVector3Value evaluated_layer_rotation_3d(const Layer &layer, double time)
+{
+    return {layer.rotation_x.evaluate(time), layer.rotation_y.evaluate(time),
+            layer.rotation.evaluate(time)};
+}
+
+inline LayerVector3Value evaluated_layer_orientation_3d(const Layer &layer, double time)
+{
+    return {layer.orientation_x.evaluate(time), layer.orientation_y.evaluate(time),
+            layer.orientation_z.evaluate(time)};
+}

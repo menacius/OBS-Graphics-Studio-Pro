@@ -57,6 +57,42 @@ bool motion_path_layer_depends_on(const std::shared_ptr<Title> &title,
     return false;
 }
 
+
+bool position_path_is_3d(const Layer &layer)
+{
+    return layer.dimension_mode == LayerDimensionMode::ThreeD &&
+           layer.position_3d_path_enabled;
+}
+
+size_t position_path_keyframe_count(const Layer &layer)
+{
+    return position_path_is_3d(layer)
+        ? layer.position_3d.keyframes.size()
+        : layer.position.keyframes.size();
+}
+
+double position_path_keyframe_time(const Layer &layer, size_t index)
+{
+    return position_path_is_3d(layer)
+        ? layer.position_3d.keyframes[index].time
+        : layer.position.keyframes[index].time;
+}
+
+SpatialInterpolationMode position_path_spatial_mode(const Layer &layer,
+                                                     size_t index)
+{
+    return position_path_is_3d(layer)
+        ? layer.position_3d.keyframes[index].spatial_mode
+        : layer.position.keyframes[index].spatial_mode;
+}
+
+bool position_path_roving(const Layer &layer, size_t index)
+{
+    return position_path_is_3d(layer)
+        ? layer.position_3d.keyframes[index].rove_across_time
+        : layer.position.keyframes[index].rove_across_time;
+}
+
 } // namespace
 
 bool CanvasPreview::position_motion_path_visible(const Layer &layer) const
@@ -64,21 +100,22 @@ bool CanvasPreview::position_motion_path_visible(const Layer &layer) const
     return title_ && active_tool_ == CanvasTool::Selection &&
         selected_layer_ids_.size() == 1 &&
         selected_layer_ids_.front() == layer.id &&
-        layer.position.keyframes.size() >= 2;
+        position_path_keyframe_count(layer) >= 2;
 }
 
 int CanvasPreview::position_keyframe_at_playhead(const Layer &layer) const
 {
-    if (layer.position.keyframes.empty()) return -1;
+    const size_t count = position_path_keyframe_count(layer);
+    if (count == 0) return -1;
     const double local_time = std::clamp(
         playhead_ - layer.in_time, 0.0,
         std::max(0.0, layer.out_time - layer.in_time));
     constexpr double kTolerance = 1.0 / 240.0;
     int best = -1;
     double best_distance = kTolerance;
-    for (int i = 0; i < static_cast<int>(layer.position.keyframes.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(count); ++i) {
         const double distance = std::abs(
-            layer.position.keyframes[static_cast<size_t>(i)].time - local_time);
+            position_path_keyframe_time(layer, static_cast<size_t>(i)) - local_time);
         if (distance <= best_distance) {
             best = i;
             best_distance = distance;
@@ -91,18 +128,43 @@ int CanvasPreview::active_position_keyframe_index(const Layer &layer) const
 {
     if (selected_position_keyframe_index_ >= 0 &&
         selected_position_keyframe_index_ <
-            static_cast<int>(layer.position.keyframes.size()))
+            static_cast<int>(position_path_keyframe_count(layer)))
         return selected_position_keyframe_index_;
     const int playhead_keyframe = position_keyframe_at_playhead(layer);
     return playhead_keyframe >= 0 ? playhead_keyframe : 0;
 }
 
 QPointF CanvasPreview::position_keyframe_canvas_point(
-    const Layer &layer, int keyframe_index, const Vec2Value &offset) const
+    const Layer &layer, int keyframe_index, const Vec3Value &offset) const
 {
+    const size_t count = position_path_keyframe_count(layer);
     if (!title_ || keyframe_index < 0 ||
-        keyframe_index >= static_cast<int>(layer.position.keyframes.size()))
+        keyframe_index >= static_cast<int>(count))
         return {};
+
+    if (position_path_is_3d(layer)) {
+        const Vector3Keyframe &keyframe =
+            layer.position_3d.keyframes[static_cast<size_t>(keyframe_index)];
+        const double title_time = layer.in_time + keyframe.time;
+        const std::shared_ptr<Title> projected_title = projection_title();
+        if (!projected_title) return {};
+        const Layer *projected_layer = editor_find_layer_by_id(projected_title, layer.id);
+        if (!projected_layer) return {};
+        const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time);
+        const QVector3D world = parent.map(QVector3D(
+            static_cast<float>(keyframe.value.x + offset.x),
+            static_cast<float>(keyframe.value.y + offset.y),
+            static_cast<float>(keyframe.value.z + offset.z)));
+        QPointF canvas;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (bgs::transform3d::project_world_point(
+                *projected_title, world, title_time, canvas, nullptr, camera_id))
+            return canvas;
+        return {};
+    }
+
     const VectorKeyframe &keyframe =
         layer.position.keyframes[static_cast<size_t>(keyframe_index)];
     const double title_time = layer.in_time + keyframe.time;
@@ -114,9 +176,39 @@ QPointF CanvasPreview::position_keyframe_canvas_point(
 QPointF CanvasPreview::position_segment_canvas_point(
     const Layer &layer, size_t segment_index, double temporal_progress) const
 {
-    if (!title_ || segment_index + 1 >= layer.position.keyframes.size())
-        return {};
+    const size_t count = position_path_keyframe_count(layer);
+    if (!title_ || segment_index + 1 >= count) return {};
     temporal_progress = std::clamp(temporal_progress, 0.0, 1.0);
+
+    if (position_path_is_3d(layer)) {
+        const Vector3Keyframe &start = layer.position_3d.keyframes[segment_index];
+        const Vector3Keyframe &end = layer.position_3d.keyframes[segment_index + 1];
+        const double local_time = start.time +
+            temporal_progress * (end.time - start.time);
+        const double spatial_progress =
+            layer.position_3d.spatial_progress_for_segment(
+                segment_index, temporal_progress);
+        const Vec3Value local = layer.position_3d.evaluate_spatial_segment(
+            segment_index, spatial_progress);
+        const double title_time = layer.in_time + local_time;
+        const std::shared_ptr<Title> projected_title = projection_title();
+        if (!projected_title) return {};
+        const Layer *projected_layer = editor_find_layer_by_id(projected_title, layer.id);
+        if (!projected_layer) return {};
+        const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time);
+        const QVector3D world = parent.map(QVector3D(
+            static_cast<float>(local.x), static_cast<float>(local.y),
+            static_cast<float>(local.z)));
+        QPointF canvas;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (bgs::transform3d::project_world_point(
+                *projected_title, world, title_time, canvas, nullptr, camera_id))
+            return canvas;
+        return {};
+    }
+
     const VectorKeyframe &start = layer.position.keyframes[segment_index];
     const VectorKeyframe &end = layer.position.keyframes[segment_index + 1];
     const double local_time = start.time + temporal_progress * (end.time - start.time);
@@ -143,7 +235,7 @@ CanvasPreview::motion_path_canvas_samples(const Layer &layer,
     if (motion_path_sample_cache_.valid &&
         motion_path_sample_cache_.title_id == title_id &&
         motion_path_sample_cache_.layer_id == layer.id &&
-        motion_path_sample_cache_.keyframe_count == layer.position.keyframes.size() &&
+        motion_path_sample_cache_.keyframe_count == position_path_keyframe_count(layer) &&
         motion_path_sample_cache_.samples_per_segment == samples_per_segment) {
         bgl::perf::add(bgl::perf::Counter::MotionPathCacheHits);
         return motion_path_sample_cache_.canvas_segments;
@@ -153,10 +245,10 @@ CanvasPreview::motion_path_canvas_samples(const Layer &layer,
     MotionPathSampleCache rebuilt;
     rebuilt.title_id = title_id;
     rebuilt.layer_id = layer.id;
-    rebuilt.keyframe_count = layer.position.keyframes.size();
+    rebuilt.keyframe_count = position_path_keyframe_count(layer);
     rebuilt.samples_per_segment = samples_per_segment;
-    if (title_ && layer.position.keyframes.size() >= 2) {
-        rebuilt.canvas_segments.resize(layer.position.keyframes.size() - 1);
+    if (title_ && position_path_keyframe_count(layer) >= 2) {
+        rebuilt.canvas_segments.resize(position_path_keyframe_count(layer) - 1);
         for (size_t segment = 0; segment < rebuilt.canvas_segments.size(); ++segment) {
             auto &points = rebuilt.canvas_segments[segment];
             points.reserve(static_cast<size_t>(samples_per_segment + 1));
@@ -181,7 +273,7 @@ int CanvasPreview::hit_test_position_keyframe_vertices(
     int best = -1;
     double best_distance = kHitRadius;
     for (int index = 0;
-         index < static_cast<int>(layer.position.keyframes.size()); ++index) {
+         index < static_cast<int>(position_path_keyframe_count(layer)); ++index) {
         const QPointF vertex = canvas_to_view(position_keyframe_canvas_point(
             layer, index, {}));
         const double distance = QLineF(view_pt, vertex).length();
@@ -201,17 +293,26 @@ CanvasPreview::DragMode CanvasPreview::hit_test_position_tangent_handles(
         return DragMode::None;
     const int index = active_position_keyframe_index(layer);
     if (index < 0) return DragMode::None;
-    const VectorKeyframe &keyframe =
-        layer.position.keyframes[static_cast<size_t>(index)];
-    if (keyframe.spatial_mode == SpatialInterpolationMode::Linear)
+    const size_t key_index = static_cast<size_t>(index);
+    if (position_path_spatial_mode(layer, key_index) ==
+        SpatialInterpolationMode::Linear)
         return DragMode::None;
 
+    Vec3Value incoming_offset;
+    Vec3Value outgoing_offset;
+    if (position_path_is_3d(layer)) {
+        incoming_offset = layer.position_3d.resolved_incoming_tangent(key_index);
+        outgoing_offset = layer.position_3d.resolved_outgoing_tangent(key_index);
+    } else {
+        const Vec2Value incoming = layer.position.resolved_incoming_tangent(key_index);
+        const Vec2Value outgoing = layer.position.resolved_outgoing_tangent(key_index);
+        incoming_offset = {incoming.x, incoming.y, 0.0};
+        outgoing_offset = {outgoing.x, outgoing.y, 0.0};
+    }
     const QPointF incoming = canvas_to_view(position_keyframe_canvas_point(
-        layer, index, layer.position.resolved_incoming_tangent(
-            static_cast<size_t>(index))));
+        layer, index, incoming_offset));
     const QPointF outgoing = canvas_to_view(position_keyframe_canvas_point(
-        layer, index, layer.position.resolved_outgoing_tangent(
-            static_cast<size_t>(index))));
+        layer, index, outgoing_offset));
     constexpr double kHitRadius = 9.0;
     if (QLineF(view_pt, incoming).length() <= kHitRadius) {
         if (keyframe_index) *keyframe_index = index;
@@ -234,7 +335,7 @@ bool CanvasPreview::hit_test_position_motion_path(
     double best_distance = hit_radius;
     size_t best_segment = 0;
     double best_progress = 0.0;
-    const size_t segment_count = layer.position.keyframes.size() - 1;
+    const size_t segment_count = position_path_keyframe_count(layer) - 1;
     const int samples_per_segment = segment_count > 256 ? 4
         : segment_count > 96 ? 8
         : 24;
@@ -272,51 +373,42 @@ bool CanvasPreview::hit_test_position_motion_path(
 
 void CanvasPreview::draw_position_motion_path(QPainter &p, const Layer &layer)
 {
-    if (!position_motion_path_visible(layer))
-        return;
+    if (!position_motion_path_visible(layer)) return;
 
     QColor color = layer_color(layer, 0);
     if (!color.isValid()) color = QColor(255, 181, 46);
     color.setAlpha(220);
     const bool editable_handles = !layer.locked && inline_text_layer_id_.empty();
     const int selected_index = active_position_keyframe_index(layer);
+    const size_t key_count = position_path_keyframe_count(layer);
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
     QPen path_pen(color, motion_path_hover_type_ == MotionPathHoverType::Path
-                            ? 2.0 : 1.25,
-                  Qt::SolidLine);
+                            ? 2.0 : 1.25, Qt::SolidLine);
     path_pen.setCosmetic(true);
     p.setPen(path_pen);
     p.setBrush(Qt::NoBrush);
 
     QPainterPath path;
     bool started = false;
-    const size_t segment_count = layer.position.keyframes.size() - 1;
+    const size_t segment_count = key_count - 1;
     const int samples_per_segment = segment_count > 256 ? 4
-        : segment_count > 96 ? 8
-        : 24;
-    const auto &segments = motion_path_canvas_samples(
-        layer, samples_per_segment);
+        : segment_count > 96 ? 8 : 24;
+    const auto &segments = motion_path_canvas_samples(layer, samples_per_segment);
     for (size_t segment = 0; segment < segments.size(); ++segment) {
         const auto &points = segments[segment];
         for (size_t sample = 0; sample < points.size(); ++sample) {
-            if (segment > 0 && sample == 0)
-                continue;
+            if (segment > 0 && sample == 0) continue;
             const QPointF view = canvas_to_view(points[sample]);
-            if (!started) {
-                path.moveTo(view);
-                started = true;
-            } else {
-                path.lineTo(view);
-            }
+            if (!started) { path.moveTo(view); started = true; }
+            else path.lineTo(view);
         }
     }
     if (started) p.drawPath(path);
 
     if (editable_handles) {
-        for (int index = 0;
-             index < static_cast<int>(layer.position.keyframes.size()); ++index) {
+        for (int index = 0; index < static_cast<int>(key_count); ++index) {
             const QPointF point = canvas_to_view(position_keyframe_canvas_point(
                 layer, index, {}));
             const bool selected = index == selected_index;
@@ -331,55 +423,74 @@ void CanvasPreview::draw_position_motion_path(QPainter &p, const Layer &layer)
             p.setPen(QPen(color, selected ? 1.6 : 1.0));
             p.setBrush(selected || hovered ? color : QColor(255, 255, 255, 235));
             p.drawPolygon(diamond);
-            if (layer.position.keyframes[static_cast<size_t>(index)].rove_across_time) {
+            if (position_path_roving(layer, static_cast<size_t>(index))) {
                 p.setBrush(QColor(255, 255, 255, 235));
                 p.setPen(Qt::NoPen);
                 p.drawEllipse(point, 1.5, 1.5);
             }
         }
 
-        if (selected_index >= 0) {
-            const VectorKeyframe &keyframe =
-                layer.position.keyframes[static_cast<size_t>(selected_index)];
-            if (keyframe.spatial_mode != SpatialInterpolationMode::Linear) {
-                const QPointF anchor = canvas_to_view(position_keyframe_canvas_point(
-                    layer, selected_index, {}));
-                const QPointF incoming = canvas_to_view(position_keyframe_canvas_point(
-                    layer, selected_index,
-                    layer.position.resolved_incoming_tangent(
-                        static_cast<size_t>(selected_index))));
-                const QPointF outgoing = canvas_to_view(position_keyframe_canvas_point(
-                    layer, selected_index,
-                    layer.position.resolved_outgoing_tangent(
-                        static_cast<size_t>(selected_index))));
-                QPen tangent_pen(color, 1.0, Qt::DashLine);
-                tangent_pen.setCosmetic(true);
-                p.setPen(tangent_pen);
-                p.drawLine(anchor, incoming);
-                p.drawLine(anchor, outgoing);
-                p.setPen(QPen(color, 1.25));
-                p.setBrush(QColor(255, 255, 255, 245));
-                const bool hover_in =
-                    motion_path_hover_type_ == MotionPathHoverType::InTangent;
-                const bool hover_out =
-                    motion_path_hover_type_ == MotionPathHoverType::OutTangent;
-                p.drawEllipse(incoming, hover_in ? 5.5 : 4.5,
-                              hover_in ? 5.5 : 4.5);
-                p.drawEllipse(outgoing, hover_out ? 5.5 : 4.5,
-                              hover_out ? 5.5 : 4.5);
+        if (selected_index >= 0 &&
+            position_path_spatial_mode(layer, static_cast<size_t>(selected_index)) !=
+                SpatialInterpolationMode::Linear) {
+            Vec3Value incoming_offset;
+            Vec3Value outgoing_offset;
+            if (position_path_is_3d(layer)) {
+                incoming_offset = layer.position_3d.resolved_incoming_tangent(
+                    static_cast<size_t>(selected_index));
+                outgoing_offset = layer.position_3d.resolved_outgoing_tangent(
+                    static_cast<size_t>(selected_index));
+            } else {
+                const Vec2Value incoming = layer.position.resolved_incoming_tangent(
+                    static_cast<size_t>(selected_index));
+                const Vec2Value outgoing = layer.position.resolved_outgoing_tangent(
+                    static_cast<size_t>(selected_index));
+                incoming_offset = {incoming.x, incoming.y, 0.0};
+                outgoing_offset = {outgoing.x, outgoing.y, 0.0};
             }
+            const QPointF anchor = canvas_to_view(position_keyframe_canvas_point(
+                layer, selected_index, {}));
+            const QPointF incoming = canvas_to_view(position_keyframe_canvas_point(
+                layer, selected_index, incoming_offset));
+            const QPointF outgoing = canvas_to_view(position_keyframe_canvas_point(
+                layer, selected_index, outgoing_offset));
+            QPen tangent_pen(color, 1.0, Qt::DashLine);
+            tangent_pen.setCosmetic(true);
+            p.setPen(tangent_pen);
+            p.drawLine(anchor, incoming);
+            p.drawLine(anchor, outgoing);
+            p.setPen(QPen(color, 1.25));
+            p.setBrush(QColor(255, 255, 255, 245));
+            const bool hover_in = motion_path_hover_type_ == MotionPathHoverType::InTangent;
+            const bool hover_out = motion_path_hover_type_ == MotionPathHoverType::OutTangent;
+            p.drawEllipse(incoming, hover_in ? 5.5 : 4.5, hover_in ? 5.5 : 4.5);
+            p.drawEllipse(outgoing, hover_out ? 5.5 : 4.5, hover_out ? 5.5 : 4.5);
         }
     }
 
-    /* Current-position marker and a small forward arrow use the same evaluated
-     * property and hierarchy transforms as the rendered frame. This keeps the
-     * indication correct for children of animated groups/parents and nested
-     * compositions instead of showing a local-space approximation. */
     const double local_duration = std::max(0.0, layer.out_time - layer.in_time);
-    const double local_time = std::clamp(playhead_ - layer.in_time, 0.0,
-                                         local_duration);
+    const double local_time = std::clamp(playhead_ - layer.in_time, 0.0, local_duration);
     auto evaluated_canvas_point = [&](double time) {
         time = std::clamp(time, 0.0, local_duration);
+        if (position_path_is_3d(layer)) {
+            const Vec3Value value = layer.position_3d.evaluate(time);
+            const std::shared_ptr<Title> projected_title = projection_title();
+            if (!projected_title) return QPointF{};
+            const Layer *projected_layer = editor_find_layer_by_id(projected_title, layer.id);
+            if (!projected_layer) return QPointF{};
+            const double title_time = layer.in_time + time;
+            const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
+                *projected_title, *projected_layer, title_time);
+            const QVector3D world = parent.map(QVector3D(
+                static_cast<float>(value.x), static_cast<float>(value.y),
+                static_cast<float>(value.z)));
+            QPointF canvas;
+            const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+                *projected_title, *projected_layer, title_time);
+            bgs::transform3d::project_world_point(*projected_title, world,
+                title_time, canvas, nullptr, camera_id);
+            return canvas;
+        }
         const Vec2Value value = layer.position.evaluate(time);
         const QTransform parent = editor_parent_world_transform(
             title_, layer, layer.in_time + time);
@@ -392,7 +503,7 @@ void CanvasPreview::draw_position_motion_path(QPainter &p, const Layer &layer)
         std::max(0.0, local_time - sample_delta)));
     const QPointF after = canvas_to_view(evaluated_canvas_point(
         std::min(local_duration, local_time + sample_delta)));
-    QPointF direction = after - before;
+    const QPointF direction = after - before;
     if (std::hypot(direction.x(), direction.y()) > 0.5) {
         p.setPen(QPen(color, 1.5));
         p.setBrush(color);
@@ -422,16 +533,48 @@ bool CanvasPreview::begin_position_tangent_drag(
         *layer, view_pt, &keyframe_index);
     if (mode == DragMode::None || keyframe_index < 0) return false;
 
-    selected_position_keyframe_index_ = keyframe_index;
-    VectorKeyframe &keyframe =
-        layer->position.keyframes[static_cast<size_t>(keyframe_index)];
+    const size_t index = static_cast<size_t>(keyframe_index);
     spatial_tangent_drag_ = SpatialTangentDragState{};
     spatial_tangent_drag_.active = true;
     spatial_tangent_drag_.layer_id = layer->id;
     spatial_tangent_drag_.keyframe_index = keyframe_index;
     spatial_tangent_drag_.incoming = mode == DragMode::PositionInTangent;
-    spatial_tangent_drag_.linked = keyframe.spatial_tangents_linked &&
-        !modifiers.testFlag(Qt::AltModifier);
+    spatial_tangent_drag_.path_3d = position_path_is_3d(*layer);
+    spatial_tangent_drag_.linked = spatial_tangent_drag_.path_3d
+        ? layer->position_3d.keyframes[index].spatial_tangents_linked
+        : layer->position.keyframes[index].spatial_tangents_linked;
+    spatial_tangent_drag_.linked &= !modifiers.testFlag(Qt::AltModifier);
+
+    if (spatial_tangent_drag_.path_3d) {
+        const double title_time = layer->in_time +
+            layer->position_3d.keyframes[index].time;
+        const std::shared_ptr<Title> projected_title = projection_title();
+        const Layer *projected_layer = projected_title
+            ? editor_find_layer_by_id(projected_title, layer->id) : nullptr;
+        if (!projected_layer) {
+            spatial_tangent_drag_ = SpatialTangentDragState{};
+            return false;
+        }
+        const Vec3Value value = layer->position_3d.keyframes[index].value;
+        const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time);
+        spatial_tangent_drag_.plane_point = parent.map(QVector3D(
+            static_cast<float>(value.x), static_cast<float>(value.y),
+            static_cast<float>(value.z)));
+        QVector3D ray_origin, ray_direction;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (!bgs::transform3d::canvas_world_ray(
+                *projected_title,
+                position_keyframe_canvas_point(*layer, keyframe_index, {}),
+                title_time, ray_origin, ray_direction, camera_id)) {
+            spatial_tangent_drag_ = SpatialTangentDragState{};
+            return false;
+        }
+        spatial_tangent_drag_.plane_normal = ray_direction;
+    }
+
+    selected_position_keyframe_index_ = keyframe_index;
     drag_mode_ = mode;
     drag_changed_ = false;
     drag_start_view_ = view_pt;
@@ -452,18 +595,50 @@ bool CanvasPreview::begin_position_vertex_drag(const QPointF &view_pt)
         !inline_text_layer_id_.empty())
         return false;
     const int keyframe_index = hit_test_position_keyframe_vertices(*layer, view_pt);
-    if (keyframe_index < 0)
-        return false;
+    if (keyframe_index < 0) return false;
 
-    selected_position_keyframe_index_ = keyframe_index;
-    const VectorKeyframe &keyframe =
-        layer->position.keyframes[static_cast<size_t>(keyframe_index)];
+    const size_t index = static_cast<size_t>(keyframe_index);
     spatial_vertex_drag_ = SpatialVertexDragState{};
     spatial_vertex_drag_.active = true;
     spatial_vertex_drag_.layer_id = layer->id;
     spatial_vertex_drag_.keyframe_index = keyframe_index;
-    spatial_vertex_drag_.keyframe_time = keyframe.time;
-    spatial_vertex_drag_.start_value = keyframe.value;
+    spatial_vertex_drag_.path_3d = position_path_is_3d(*layer);
+    if (spatial_vertex_drag_.path_3d) {
+        const Vector3Keyframe &keyframe = layer->position_3d.keyframes[index];
+        spatial_vertex_drag_.keyframe_time = keyframe.time;
+        spatial_vertex_drag_.start_value = keyframe.value;
+        const double title_time = layer->in_time + keyframe.time;
+        const std::shared_ptr<Title> projected_title = projection_title();
+        const Layer *projected_layer = projected_title
+            ? editor_find_layer_by_id(projected_title, layer->id) : nullptr;
+        if (!projected_layer) {
+            spatial_vertex_drag_ = SpatialVertexDragState{};
+            return false;
+        }
+        const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time);
+        spatial_vertex_drag_.plane_point = parent.map(QVector3D(
+            static_cast<float>(keyframe.value.x),
+            static_cast<float>(keyframe.value.y),
+            static_cast<float>(keyframe.value.z)));
+        QVector3D ray_origin, ray_direction;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (!bgs::transform3d::canvas_world_ray(
+                *projected_title,
+                position_keyframe_canvas_point(*layer, keyframe_index, {}),
+                title_time, ray_origin, ray_direction, camera_id)) {
+            spatial_vertex_drag_ = SpatialVertexDragState{};
+            return false;
+        }
+        spatial_vertex_drag_.plane_normal = ray_direction;
+    } else {
+        const VectorKeyframe &keyframe = layer->position.keyframes[index];
+        spatial_vertex_drag_.keyframe_time = keyframe.time;
+        spatial_vertex_drag_.start_value = {
+            keyframe.value.x, keyframe.value.y, 0.0};
+    }
+    selected_position_keyframe_index_ = keyframe_index;
     drag_mode_ = DragMode::PositionVertex;
     drag_changed_ = false;
     drag_start_view_ = view_pt;
@@ -501,7 +676,7 @@ QPointF CanvasPreview::snap_position_keyframe_canvas_point(
 
     for (const auto &candidate : title_->layers) {
         if (!candidate || !candidate->visible ||
-            candidate->position.keyframes.empty())
+            position_path_keyframe_count(*candidate) == 0)
             continue;
         /* A group/parent motion path must not snap back to artwork carried by
          * that same hierarchy. Only actual keyframe vertices are targets, and
@@ -510,7 +685,7 @@ QPointF CanvasPreview::snap_position_keyframe_canvas_point(
             motion_path_layer_depends_on(title_, *candidate, layer.id))
             continue;
         for (int index = 0;
-             index < static_cast<int>(candidate->position.keyframes.size()); ++index) {
+             index < static_cast<int>(position_path_keyframe_count(*candidate)); ++index) {
             if (candidate->id == layer.id && index == keyframe_index)
                 continue;
             targets.push_back({position_keyframe_canvas_point(*candidate, index, {}),
@@ -553,25 +728,57 @@ bool CanvasPreview::apply_position_vertex_drag(
     auto layer = title_->find_layer(spatial_vertex_drag_.layer_id);
     if (!layer || layer->locked) return false;
     const int index = spatial_vertex_drag_.keyframe_index;
-    if (index < 0 || index >= static_cast<int>(layer->position.keyframes.size()))
-        return false;
+    const size_t count = position_path_keyframe_count(*layer);
+    if (index < 0 || index >= static_cast<int>(count)) return false;
 
     const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
     const QPointF canvas_target = snap_position_keyframe_canvas_point(
         *layer, index, view_to_canvas(view_pt), allow_snap);
     const double title_time = layer->in_time + spatial_vertex_drag_.keyframe_time;
-    const QTransform parent = editor_parent_world_transform(title_, *layer, title_time);
-    bool invertible = false;
-    const QTransform inverse = parent.inverted(&invertible);
-    if (!invertible) return false;
-    const QPointF local_target = inverse.map(canvas_target);
 
-    VectorKeyframe &keyframe = layer->position.keyframes[static_cast<size_t>(index)];
-    const Vec2Value next{local_target.x(), local_target.y()};
-    if (std::hypot(next.x - keyframe.value.x,
-                   next.y - keyframe.value.y) < 1e-9)
-        return false;
-    keyframe.value = next;
+    if (spatial_vertex_drag_.path_3d) {
+        const std::shared_ptr<Title> projected_title = projection_title();
+        const Layer *projected_layer = projected_title
+            ? editor_find_layer_by_id(projected_title, layer->id) : nullptr;
+        if (!projected_layer) return false;
+        QVector3D world_target;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (!bgs::transform3d::canvas_point_on_world_plane(
+                *projected_title, canvas_target, title_time,
+                spatial_vertex_drag_.plane_point,
+                spatial_vertex_drag_.plane_normal,
+                world_target, camera_id))
+            return false;
+        bool invertible = false;
+        const QMatrix4x4 inverse = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time).inverted(&invertible);
+        if (!invertible) return false;
+        const QVector3D local = inverse.map(world_target);
+        Vector3Keyframe &keyframe =
+            layer->position_3d.keyframes[static_cast<size_t>(index)];
+        const Vec3Value next{local.x(), local.y(), local.z()};
+        const Vec3Value delta{next.x - keyframe.value.x,
+                              next.y - keyframe.value.y,
+                              next.z - keyframe.value.z};
+        if (std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z) < 1e-9)
+            return false;
+        keyframe.value = next;
+        mirror_position_3d_to_legacy(*layer, keyframe.time);
+    } else {
+        const QTransform parent = editor_parent_world_transform(title_, *layer, title_time);
+        bool invertible = false;
+        const QTransform inverse = parent.inverted(&invertible);
+        if (!invertible) return false;
+        const QPointF local_target = inverse.map(canvas_target);
+        VectorKeyframe &keyframe = layer->position.keyframes[static_cast<size_t>(index)];
+        const Vec2Value next{local_target.x(), local_target.y()};
+        if (std::hypot(next.x - keyframe.value.x,
+                       next.y - keyframe.value.y) < 1e-9)
+            return false;
+        keyframe.value = next;
+    }
+
     spatial_vertex_drag_.moved = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
@@ -590,65 +797,123 @@ bool CanvasPreview::apply_position_tangent_drag(
     auto layer = title_->find_layer(spatial_tangent_drag_.layer_id);
     if (!layer || layer->locked) return false;
     const int index = spatial_tangent_drag_.keyframe_index;
-    if (index < 0 || index >= static_cast<int>(layer->position.keyframes.size()))
-        return false;
+    const size_t count = position_path_keyframe_count(*layer);
+    if (index < 0 || index >= static_cast<int>(count)) return false;
+    const size_t key_index = static_cast<size_t>(index);
+    const double key_time = position_path_keyframe_time(*layer, key_index);
+    const double title_time = layer->in_time + key_time;
 
-    VectorKeyframe &keyframe = layer->position.keyframes[static_cast<size_t>(index)];
-    const double title_time = layer->in_time + keyframe.time;
-    const QTransform parent = editor_parent_world_transform(title_, *layer, title_time);
-    bool invertible = false;
-    const QTransform inverse = parent.inverted(&invertible);
-    if (!invertible) return false;
-
-    const QPointF canvas_anchor = parent.map(
-        QPointF(keyframe.value.x, keyframe.value.y));
-    QPointF canvas_target = view_to_canvas(view_pt);
-    if (modifiers.testFlag(Qt::ShiftModifier)) {
-        const QPointF canvas_delta = canvas_target - canvas_anchor;
-        const double angle = std::atan2(canvas_delta.y(), canvas_delta.x());
-        const double tangent_length = std::hypot(canvas_delta.x(), canvas_delta.y());
-        const double step = std::acos(-1.0) / 4.0;
-        const double snapped = std::round(angle / step) * step;
-        canvas_target = canvas_anchor + QPointF(
-            std::cos(snapped) * tangent_length,
-            std::sin(snapped) * tangent_length);
-    }
-    const QPointF local_target = inverse.map(canvas_target);
-    Vec2Value tangent{local_target.x() - keyframe.value.x,
-                      local_target.y() - keyframe.value.y};
-
-    if (modifiers.testFlag(Qt::AltModifier))
-        spatial_tangent_drag_.linked = false;
-    const bool linked = spatial_tangent_drag_.linked;
-
-    const Vec2Value opposite_before = spatial_tangent_drag_.incoming
-        ? layer->position.resolved_outgoing_tangent(static_cast<size_t>(index))
-        : layer->position.resolved_incoming_tangent(static_cast<size_t>(index));
-    double opposite_length = std::hypot(opposite_before.x, opposite_before.y);
-    const double dragged_length = std::hypot(tangent.x, tangent.y);
-    if (opposite_length < 1e-9)
-        opposite_length = dragged_length;
-
-    Vec2Value opposite{};
-    if (linked && dragged_length >= 1e-9) {
-        opposite = {
-            -tangent.x * opposite_length / dragged_length,
-            -tangent.y * opposite_length / dragged_length};
-    }
-
-    if (spatial_tangent_drag_.incoming) {
-        keyframe.incoming_tangent = tangent;
-        if (linked)
-            keyframe.outgoing_tangent = opposite;
+    if (spatial_tangent_drag_.path_3d) {
+        Vector3Keyframe &keyframe = layer->position_3d.keyframes[key_index];
+        QPointF canvas_target = view_to_canvas(view_pt);
+        const QPointF anchor_canvas = position_keyframe_canvas_point(*layer, index, {});
+        if (modifiers.testFlag(Qt::ShiftModifier)) {
+            const QPointF delta = canvas_target - anchor_canvas;
+            const double angle = std::atan2(delta.y(), delta.x());
+            const double tangent_length = std::hypot(delta.x(), delta.y());
+            const double step = std::acos(-1.0) / 4.0;
+            const double snapped = std::round(angle / step) * step;
+            canvas_target = anchor_canvas + QPointF(
+                std::cos(snapped) * tangent_length,
+                std::sin(snapped) * tangent_length);
+        }
+        const std::shared_ptr<Title> projected_title = projection_title();
+        const Layer *projected_layer = projected_title
+            ? editor_find_layer_by_id(projected_title, layer->id) : nullptr;
+        if (!projected_layer) return false;
+        QVector3D world_target;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projected_title, *projected_layer, title_time);
+        if (!bgs::transform3d::canvas_point_on_world_plane(
+                *projected_title, canvas_target, title_time,
+                spatial_tangent_drag_.plane_point,
+                spatial_tangent_drag_.plane_normal,
+                world_target, camera_id))
+            return false;
+        bool invertible = false;
+        const QMatrix4x4 inverse = bgs::transform3d::layer_parent_world_matrix(
+            *projected_title, *projected_layer, title_time).inverted(&invertible);
+        if (!invertible) return false;
+        const QVector3D local_target = inverse.map(world_target);
+        Vec3Value tangent{local_target.x() - keyframe.value.x,
+                          local_target.y() - keyframe.value.y,
+                          local_target.z() - keyframe.value.z};
+        if (modifiers.testFlag(Qt::AltModifier))
+            spatial_tangent_drag_.linked = false;
+        const bool linked = spatial_tangent_drag_.linked;
+        const Vec3Value opposite_before = spatial_tangent_drag_.incoming
+            ? layer->position_3d.resolved_outgoing_tangent(key_index)
+            : layer->position_3d.resolved_incoming_tangent(key_index);
+        const auto magnitude = [](const Vec3Value &value) {
+            return std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+        };
+        double opposite_length = magnitude(opposite_before);
+        const double dragged_length = magnitude(tangent);
+        if (opposite_length < 1e-9) opposite_length = dragged_length;
+        Vec3Value opposite{};
+        if (linked && dragged_length >= 1e-9) {
+            const double factor = -opposite_length / dragged_length;
+            opposite = {tangent.x * factor, tangent.y * factor, tangent.z * factor};
+        }
+        if (spatial_tangent_drag_.incoming) {
+            keyframe.incoming_tangent = tangent;
+            if (linked) keyframe.outgoing_tangent = opposite;
+        } else {
+            keyframe.outgoing_tangent = tangent;
+            if (linked) keyframe.incoming_tangent = opposite;
+        }
+        keyframe.spatial_tangents_linked = linked;
+        keyframe.spatial_mode = linked
+            ? SpatialInterpolationMode::ContinuousBezier
+            : SpatialInterpolationMode::ManualBezier;
     } else {
-        keyframe.outgoing_tangent = tangent;
-        if (linked)
-            keyframe.incoming_tangent = opposite;
+        VectorKeyframe &keyframe = layer->position.keyframes[key_index];
+        const QTransform parent = editor_parent_world_transform(title_, *layer, title_time);
+        bool invertible = false;
+        const QTransform inverse = parent.inverted(&invertible);
+        if (!invertible) return false;
+        const QPointF canvas_anchor = parent.map(
+            QPointF(keyframe.value.x, keyframe.value.y));
+        QPointF canvas_target = view_to_canvas(view_pt);
+        if (modifiers.testFlag(Qt::ShiftModifier)) {
+            const QPointF delta = canvas_target - canvas_anchor;
+            const double angle = std::atan2(delta.y(), delta.x());
+            const double tangent_length = std::hypot(delta.x(), delta.y());
+            const double step = std::acos(-1.0) / 4.0;
+            const double snapped = std::round(angle / step) * step;
+            canvas_target = canvas_anchor + QPointF(
+                std::cos(snapped) * tangent_length,
+                std::sin(snapped) * tangent_length);
+        }
+        const QPointF local_target = inverse.map(canvas_target);
+        Vec2Value tangent{local_target.x() - keyframe.value.x,
+                          local_target.y() - keyframe.value.y};
+        if (modifiers.testFlag(Qt::AltModifier))
+            spatial_tangent_drag_.linked = false;
+        const bool linked = spatial_tangent_drag_.linked;
+        const Vec2Value opposite_before = spatial_tangent_drag_.incoming
+            ? layer->position.resolved_outgoing_tangent(key_index)
+            : layer->position.resolved_incoming_tangent(key_index);
+        double opposite_length = std::hypot(opposite_before.x, opposite_before.y);
+        const double dragged_length = std::hypot(tangent.x, tangent.y);
+        if (opposite_length < 1e-9) opposite_length = dragged_length;
+        Vec2Value opposite{};
+        if (linked && dragged_length >= 1e-9) {
+            opposite = {-tangent.x * opposite_length / dragged_length,
+                        -tangent.y * opposite_length / dragged_length};
+        }
+        if (spatial_tangent_drag_.incoming) {
+            keyframe.incoming_tangent = tangent;
+            if (linked) keyframe.outgoing_tangent = opposite;
+        } else {
+            keyframe.outgoing_tangent = tangent;
+            if (linked) keyframe.incoming_tangent = opposite;
+        }
+        keyframe.spatial_tangents_linked = linked;
+        keyframe.spatial_mode = linked
+            ? SpatialInterpolationMode::ContinuousBezier
+            : SpatialInterpolationMode::ManualBezier;
     }
-    keyframe.spatial_tangents_linked = linked;
-    keyframe.spatial_mode = linked
-        ? SpatialInterpolationMode::ContinuousBezier
-        : SpatialInterpolationMode::ManualBezier;
 
     spatial_tangent_drag_.moved = true;
     drag_changed_ = true;
@@ -672,13 +937,23 @@ bool CanvasPreview::add_position_keyframe_at_path(const QPointF &view_pt)
     if (!hit_test_position_motion_path(*layer, view_pt, &segment,
                                        &temporal_progress, 7.0))
         return false;
-    const double spatial_progress = layer->position.spatial_progress_for_segment(
-        segment, temporal_progress);
-    const size_t inserted = layer->position.split_spatial_segment(
-        segment, temporal_progress, spatial_progress);
-    if (inserted >= layer->position.keyframes.size())
-        return false;
-
+    size_t inserted = 0;
+    size_t count = 0;
+    if (position_path_is_3d(*layer)) {
+        const double spatial_progress =
+            layer->position_3d.spatial_progress_for_segment(
+                segment, temporal_progress);
+        inserted = layer->position_3d.split_spatial_segment(
+            segment, temporal_progress, spatial_progress);
+        count = layer->position_3d.keyframes.size();
+    } else {
+        const double spatial_progress = layer->position.spatial_progress_for_segment(
+            segment, temporal_progress);
+        inserted = layer->position.split_spatial_segment(
+            segment, temporal_progress, spatial_progress);
+        count = layer->position.keyframes.size();
+    }
+    if (inserted >= count) return false;
     selected_position_keyframe_index_ = static_cast<int>(inserted);
     dirty_ = true;
     gpu_model_dirty_ = true;
@@ -695,22 +970,28 @@ bool CanvasPreview::show_position_motion_path_context_menu(QContextMenuEvent *ev
         !inline_text_layer_id_.empty())
         return false;
 
-    int keyframe_index = hit_test_position_keyframe_vertices(*layer, ev->pos());
-    if (keyframe_index < 0) {
-        size_t segment = 0;
-        double progress = 0.0;
-        if (!hit_test_position_motion_path(*layer, ev->pos(), &segment,
-                                           &progress, 7.0))
-            return false;
-        keyframe_index = static_cast<int>(segment + (progress >= 0.5 ? 1 : 0));
-    }
-    if (keyframe_index < 0 ||
-        keyframe_index >= static_cast<int>(layer->position.keyframes.size()))
+    /* A motion-path segment is only a visual/editor guide. Let it fall through
+     * to the normal layer context menu; otherwise right-clicking the same layer
+     * appears to choose a random menu depending on whether the path happens to
+     * cross that pixel. Keyframe actions are intentionally scoped to the
+     * explicit keyframe vertex handle. */
+    const int keyframe_index =
+        hit_test_position_keyframe_vertices(*layer, ev->pos());
+    if (keyframe_index < 0)
+        return false;
+    const size_t count = position_path_keyframe_count(*layer);
+    if (keyframe_index >= static_cast<int>(count))
         return false;
 
     selected_position_keyframe_index_ = keyframe_index;
-    VectorKeyframe &keyframe =
-        layer->position.keyframes[static_cast<size_t>(keyframe_index)];
+    const size_t index = static_cast<size_t>(keyframe_index);
+    const SpatialInterpolationMode current_mode =
+        position_path_spatial_mode(*layer, index);
+    const bool current_rove = position_path_roving(*layer, index);
+    const bool linked = position_path_is_3d(*layer)
+        ? layer->position_3d.keyframes[index].spatial_tangents_linked
+        : layer->position.keyframes[index].spatial_tangents_linked;
+
     QMenu menu(this);
     auto *mode_group = new QActionGroup(&menu);
     mode_group->setExclusive(true);
@@ -725,49 +1006,60 @@ bool CanvasPreview::show_position_motion_path_context_menu(QContextMenuEvent *ev
         QAction *action = menu.addAction(label);
         action->setCheckable(true);
         action->setActionGroup(mode_group);
-        action->setChecked(keyframe.spatial_mode == mode);
+        action->setChecked(current_mode == mode);
         modes[action] = mode;
     }
     menu.addSeparator();
     QAction *rove = menu.addAction(bgl_tr("OBSTitles.RoveAcrossTime"));
     rove->setCheckable(true);
-    rove->setChecked(keyframe.rove_across_time);
+    rove->setChecked(current_rove);
     rove->setEnabled(keyframe_index > 0 &&
-        keyframe_index + 1 < static_cast<int>(layer->position.keyframes.size()));
+        keyframe_index + 1 < static_cast<int>(count));
     menu.addSeparator();
     QAction *break_tangents = menu.addAction(
         bgl_tr("OBSTitles.BreakSpatialTangents"));
     QAction *join_tangents = menu.addAction(
         bgl_tr("OBSTitles.JoinSpatialTangents"));
-    break_tangents->setEnabled(keyframe.spatial_tangents_linked);
-    join_tangents->setEnabled(!keyframe.spatial_tangents_linked);
+    break_tangents->setEnabled(linked);
+    join_tangents->setEnabled(!linked);
 
     QAction *chosen = menu.exec(ev->globalPos());
-    if (!chosen) {
-        ev->accept();
-        return true;
-    }
+    if (!chosen) { ev->accept(); return true; }
 
     bool changed = false;
+    auto apply_mode = [&](SpatialInterpolationMode mode) {
+        if (position_path_is_3d(*layer))
+            layer->position_3d.set_spatial_mode(index, mode);
+        else
+            layer->position.set_spatial_mode(index, mode);
+    };
+    auto apply_rove = [&](bool value) {
+        if (position_path_is_3d(*layer))
+            layer->position_3d.set_rove_across_time(index, value);
+        else
+            layer->position.set_rove_across_time(index, value);
+    };
+    auto apply_link = [&](bool value) {
+        if (position_path_is_3d(*layer))
+            layer->position_3d.set_spatial_tangents_linked(index, value);
+        else
+            layer->position.set_spatial_tangents_linked(index, value);
+    };
+
     const auto mode_it = modes.find(chosen);
     if (mode_it != modes.end()) {
-        if (keyframe.spatial_mode != mode_it->second) {
-            layer->position.set_spatial_mode(static_cast<size_t>(keyframe_index),
-                                             mode_it->second);
+        if (current_mode != mode_it->second) {
+            apply_mode(mode_it->second);
             changed = true;
         }
     } else if (chosen == rove) {
-        const bool next = !keyframe.rove_across_time;
-        layer->position.set_rove_across_time(
-            static_cast<size_t>(keyframe_index), next);
-        changed = keyframe.rove_across_time == next;
+        apply_rove(!current_rove);
+        changed = true;
     } else if (chosen == break_tangents) {
-        layer->position.set_spatial_tangents_linked(
-            static_cast<size_t>(keyframe_index), false);
+        apply_link(false);
         changed = true;
     } else if (chosen == join_tangents) {
-        layer->position.set_spatial_tangents_linked(
-            static_cast<size_t>(keyframe_index), true);
+        apply_link(true);
         changed = true;
     }
 

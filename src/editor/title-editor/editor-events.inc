@@ -127,6 +127,12 @@
                 key_event->accept();
                 return true;
             case Qt::Key_E:
+                /* Canvas focus reserves E for the 3D Rotate gizmo. Outside the
+                 * canvas, E retains the existing Free Transform shortcut. */
+                if (watched_canvas_window ||
+                    (canvas_ && (focused_widget == canvas_ ||
+                                 watched_widget == canvas_)))
+                    break;
                 tools_sidebar_->activate_free_transform_tool();
                 key_event->accept();
                 return true;
@@ -932,6 +938,8 @@ void TitleEditor::edit_layer_transition(const std::string &layer_id, int edge_va
 
 void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playhead)
 {
+    QElapsedTimer panel_cost;
+    panel_cost.start();
     QScopedValueRollback<bool> panel_update_guard(updating_layer_panels_, true);
     if (layer_props_dock_) {
         layer_props_dock_->setWindowTitle(layer
@@ -942,21 +950,61 @@ void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playh
     update_sidebar_color_swatches(layer);
     if (effects_panel_) effects_panel_->set_layer(layer, playhead);
     update_corner_toolbar();
+    BGL_LOG_TRACE("Performance", QStringLiteral(
+        "Editor panel refresh layer=%1 costUs=%2")
+        .arg(layer ? QString::fromStdString(layer->id)
+                   : QStringLiteral("<none>"))
+        .arg(panel_cost.nsecsElapsed() / 1000));
+}
+
+void TitleEditor::synchronize_layer_selection(
+    const std::vector<std::string> &layer_ids, bool clear_transition_target)
+{
+    if (synchronizing_layer_selection_)
+        return;
+
+    std::vector<std::string> normalized;
+    normalized.reserve(layer_ids.size());
+    std::set<std::string> seen;
+    for (const auto &id : layer_ids) {
+        if (id.empty() || !seen.insert(id).second)
+            continue;
+        if (title_ && title_->find_layer(id))
+            normalized.push_back(id);
+    }
+
+    if (clear_transition_target && timeline_)
+        timeline_->clear_transition_target_selection();
+    const bool selection_changed =
+        synchronized_layer_selection_ != normalized;
+
+    QScopedValueRollback<bool> guard(synchronizing_layer_selection_, true);
+    synchronized_layer_selection_ = normalized;
+    sel_layer_id_ = normalized.size() == 1 ? normalized.back() : std::string();
+
+    /* Always offer the canonical selection to each view. Their setters are
+     * no-op guarded, so this also repairs a stale mirror without triggering
+     * redundant paints or panel rebuilds. */
+    if (layers_)
+        layers_->set_selected_layers(normalized);
+    if (canvas_)
+        canvas_->set_selected_layers(normalized);
+    if (timeline_)
+        timeline_->set_selected_layers(normalized);
+    if (!selection_changed)
+        return;
+
+    std::shared_ptr<Layer> panel_layer;
+    if (title_ && normalized.size() == 1)
+        panel_layer = title_->find_layer(normalized.back());
+    update_layer_panels(panel_layer, playhead_);
 }
 
 void TitleEditor::on_layer_selected(const std::string &lid)
 {
-    sel_layer_id_ = lid;
-    layers_->set_selected_layer(lid);
-    canvas_->set_selected_layer(lid);
-    timeline_->set_selected_layer(lid);
-
-    if (!title_ || lid.empty()) {
-        update_layer_panels(nullptr, playhead_);
-        return;
-    }
-    auto layer = title_->find_layer(lid);
-    if (layer) update_layer_panels(layer, playhead_);
+    synchronize_layer_selection(
+        lid.empty() ? std::vector<std::string>()
+                    : std::vector<std::string>{lid});
 }
 
 void TitleEditor::on_playhead_changed(double t)
@@ -982,6 +1030,7 @@ void TitleEditor::apply_playhead_change(double t, bool playback_frame)
     canvas_->set_playhead(t, playback_frame);
     timeline_->set_playhead(t);
     if (layers_) layers_->set_playhead(t);
+    if (title_props_) title_props_->set_playhead(t);
     if (prerender_panel_) prerender_panel_->setPlayhead(t);
     if (!cache_reprioritize_clock_.isValid() || cache_reprioritize_clock_.elapsed() >= 80) {
         CacheManager::instance().reprioritize(title_, t);

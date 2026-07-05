@@ -694,69 +694,212 @@
                 emit_change();
             });
 
-    auto toggle_vec2_keyframe = [](AnimatedVec2Property &prop, double time, double x_value, double y_value) {
-        toggle_keyframe(prop, time, {x_value, y_value});
+    auto toggle_vec2_keyframe = [](AnimatedVec2Property &prop, double time,
+                                      double x_value, double y_value) {
+        Vec2Value value = prop.evaluate(time);
+        value.x = x_value;
+        value.y = y_value;
+        toggle_keyframe(prop, time, value);
+    };
+    auto toggle_vec3_keyframe = [](AnimatedVec2Property &xy, AnimatedProperty &z,
+                                      double time, double x_value,
+                                      double y_value, double z_value) {
+        const bool has_key = keyframe_at_time(xy, time) || keyframe_at_time(z, time);
+        if (has_key) {
+            remove_keyframe_at(xy, time);
+            remove_keyframe_at(z, time);
+        } else {
+            add_or_replace_keyframe(xy, time, {x_value, y_value, z_value});
+            add_or_replace_keyframe(z, time, z_value);
+        }
+    };
+    auto toggle_scalar3_keyframe = [](AnimatedProperty &x, AnimatedProperty &y,
+                                         AnimatedProperty &z, double time,
+                                         double x_value, double y_value,
+                                         double z_value) {
+        const bool has_key = keyframe_at_time(x, time) ||
+                             keyframe_at_time(y, time) ||
+                             keyframe_at_time(z, time);
+        if (has_key) {
+            remove_keyframe_at(x, time);
+            remove_keyframe_at(y, time);
+            remove_keyframe_at(z, time);
+        } else {
+            add_or_replace_keyframe(x, time, x_value);
+            add_or_replace_keyframe(y, time, y_value);
+            add_or_replace_keyframe(z, time, z_value);
+        }
     };
 
-    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->position, local_time(), spn_px_->value(), spn_py_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->position, local_time(), spn_px_->value(), spn_py_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_scale_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->scale, local_time(),
-                             spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_scale_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->scale, local_time(),
-                             spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_transform_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->size, local_time(),
-                             spn_transform_size_w_->value(), spn_transform_size_h_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_rotation_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->rotation, local_time(), spn_rot_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_opacity_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->origin_prop, local_time(),
-                             spn_origin_x_->value(), spn_origin_y_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->origin_prop, local_time(),
-                             spn_origin_x_->value(), spn_origin_y_->value());
-        load_values();
-        emit_change();
-    });
+    auto toggle_position_keyframe = [this, local_time, toggle_vec2_keyframe]() {
+        const double time = local_time();
+        if (layer_->dimension_mode == LayerDimensionMode::ThreeD) {
+            promote_layer_position_to_3d_path(*layer_);
+            toggle_keyframe(layer_->position_3d, time,
+                            {spn_px_->value(), spn_py_->value(), spn_pz_->value()});
+            mirror_position_3d_to_legacy(*layer_, time);
+        } else {
+            toggle_vec2_keyframe(layer_->position, time,
+                                 spn_px_->value(), spn_py_->value());
+        }
+    };
+    connect(btn_kf_pos_x_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_position_keyframe]() {
+                if (!can_edit()) return;
+                toggle_position_keyframe();
+                load_values();
+                emit_change();
+            });
+    connect(btn_kf_pos_y_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_position_keyframe]() {
+                if (!can_edit()) return;
+                toggle_position_keyframe();
+                load_values();
+                emit_change();
+            });
+
+    auto toggle_scale_keyframe = [this, local_time, toggle_vec2_keyframe,
+                                  toggle_vec3_keyframe]() {
+        const double time = local_time();
+        const double x = spn_scale_x_->value() / 100.0;
+        const double y = spn_scale_y_->value() / 100.0;
+        if (layer_->dimension_mode == LayerDimensionMode::ThreeD) {
+            toggle_vec3_keyframe(layer_->scale, layer_->scale_z, time,
+                                 x, y, spn_scale_z_->value() / 100.0);
+        } else {
+            toggle_vec2_keyframe(layer_->scale, time, x, y);
+        }
+    };
+    connect(btn_kf_scale_x_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_scale_keyframe]() {
+                if (!can_edit()) return;
+                toggle_scale_keyframe();
+                load_values();
+                emit_change();
+            });
+    connect(btn_kf_scale_y_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_scale_keyframe]() {
+                if (!can_edit()) return;
+                toggle_scale_keyframe();
+                load_values();
+                emit_change();
+            });
+
+    connect(btn_kf_transform_size_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+                if (!can_edit()) return;
+                toggle_vec2_keyframe(layer_->size, local_time(),
+                                     spn_transform_size_w_->value(),
+                                     spn_transform_size_h_->value());
+                load_values();
+                emit_change();
+            });
+
+    connect(btn_kf_rotation_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change, toggle_scalar3_keyframe]() {
+                if (!can_edit()) return;
+                const double time = local_time();
+                if (layer_->dimension_mode == LayerDimensionMode::ThreeD) {
+                    toggle_scalar3_keyframe(layer_->rotation_x, layer_->rotation_y,
+                                            layer_->rotation, time,
+                                            spn_rot_x_->value(), spn_rot_y_->value(),
+                                            spn_rot_->value());
+                } else {
+                    toggle_keyframe(layer_->rotation, time, spn_rot_->value());
+                }
+                load_values();
+                emit_change();
+            });
+    connect(btn_kf_opacity_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
+                toggle_keyframe(layer_->opacity, local_time(), spn_opacity_->value());
+                load_values();
+                emit_change();
+            });
+
+    auto toggle_anchor_keyframe = [this, local_time, toggle_vec2_keyframe,
+                                   toggle_vec3_keyframe]() {
+        const double time = local_time();
+        if (layer_->dimension_mode == LayerDimensionMode::ThreeD) {
+            toggle_vec3_keyframe(layer_->origin_prop, layer_->anchor_z, time,
+                                 spn_origin_x_->value(), spn_origin_y_->value(),
+                                 spn_anchor_z_->value());
+        } else {
+            toggle_vec2_keyframe(layer_->origin_prop, time,
+                                 spn_origin_x_->value(), spn_origin_y_->value());
+        }
+    };
+    connect(btn_kf_origin_x_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_anchor_keyframe]() {
+                if (!can_edit()) return;
+                toggle_anchor_keyframe();
+                load_values();
+                emit_change();
+            });
+    connect(btn_kf_origin_y_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_anchor_keyframe]() {
+                if (!can_edit()) return;
+                toggle_anchor_keyframe();
+                load_values();
+                emit_change();
+            });
+
+    connect(btn_kf_position_z_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_position_keyframe]() {
+                if (!can_edit()) return;
+                toggle_position_keyframe();
+                load_values();
+                emit_change();
+            });
+    auto toggle_rotation_keyframe = [this, local_time, toggle_scalar3_keyframe]() {
+        toggle_scalar3_keyframe(layer_->rotation_x, layer_->rotation_y,
+                                layer_->rotation, local_time(),
+                                spn_rot_x_->value(), spn_rot_y_->value(),
+                                spn_rot_->value());
+    };
+    connect(btn_kf_rotation_x_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_rotation_keyframe]() {
+                if (!can_edit()) return;
+                toggle_rotation_keyframe(); load_values(); emit_change();
+            });
+    connect(btn_kf_rotation_y_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_rotation_keyframe]() {
+                if (!can_edit()) return;
+                toggle_rotation_keyframe(); load_values(); emit_change();
+            });
+    connect(btn_kf_scale_z_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_scale_keyframe]() {
+                if (!can_edit()) return;
+                toggle_scale_keyframe(); load_values(); emit_change();
+            });
+    connect(btn_kf_anchor_z_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_anchor_keyframe]() {
+                if (!can_edit()) return;
+                toggle_anchor_keyframe(); load_values(); emit_change();
+            });
+    auto toggle_orientation_keyframe = [this, local_time, toggle_scalar3_keyframe]() {
+        toggle_scalar3_keyframe(layer_->orientation_x, layer_->orientation_y,
+                                layer_->orientation_z, local_time(),
+                                spn_orientation_x_->value(),
+                                spn_orientation_y_->value(),
+                                spn_orientation_z_->value());
+    };
+    connect(btn_kf_orientation_x_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_orientation_keyframe]() {
+                if (!can_edit()) return;
+                toggle_orientation_keyframe(); load_values(); emit_change();
+            });
+    connect(btn_kf_orientation_y_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_orientation_keyframe]() {
+                if (!can_edit()) return;
+                toggle_orientation_keyframe(); load_values(); emit_change();
+            });
+    connect(btn_kf_orientation_z_, &QPushButton::clicked, this,
+            [this, can_edit, emit_change, toggle_orientation_keyframe]() {
+                if (!can_edit()) return;
+                toggle_orientation_keyframe(); load_values(); emit_change();
+            });
     connect(btn_kf_paragraph_indent_left_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit() || active_text_edit_layer_id_ == layer_->id) return;
         toggle_keyframe(layer_->paragraph_indent_left_prop, local_time(), spn_paragraph_indent_left_->value());

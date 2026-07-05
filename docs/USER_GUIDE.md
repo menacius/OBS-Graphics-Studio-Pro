@@ -31,7 +31,13 @@ Layers can be reordered from the layer list or timeline. Groups behave as compos
 
 Track mattes support Alpha, Luma, inverted variants, and Clipping Matte behavior. Matte visibility controls whether the source artwork is visible, hidden, or visible while still acting as a mask.
 
-## 5. Animate
+## 5. Work in 3D
+
+Enable the **2D/3D** toggle on a compatible visual layer to expose Position, Scale, Anchor, Rotation and Orientation XYZ controls. Choose or create a perspective/orthographic camera, then use Active Camera or an editor-only orthographic/custom view. The W/E/R tools activate Move, Rotate and Scale gizmos; Local, Parent and World choose axis orientation without changing the stored local transform.
+
+Camera rows in the timeline expose Position, Point of Interest, Rotation, Orientation, focal length, FOV, zoom, clipping and projection. Active-camera switching and per-layer camera assignment are Hold tracks. Depth Test and Write Depth are independent, while Double Sided and Backface Culling control plane visibility.
+
+## 6. Animate
 
 Properties with a diamond control can be keyframed. The timeline supports multi-selection, easing, negative values, layer strips, group expansion, and keyframe navigation. During ordinary editing and scrubbing the editor can present at the monitor refresh rate; authored playback runs at the project frame rate.
 
@@ -39,19 +45,19 @@ Use the **Graph Editor** button in the timeline footer for AE-style temporal cur
 
 For animated Position, select the layer to edit its motion path directly on the canvas. Diamond points are Position keyframes, round points are Bezier handles, the white marker is the current position, and the arrow shows travel direction. Drag vertices or handles, Shift-drag a handle to constrain its angle, Alt-drag to break its pair, double-click a segment to add a keyframe, and right-click the path for spatial interpolation, roving, and tangent commands. Motion-path edits remain correct through parents and groups because displayed final-space points are written back as layer-local values.
 
-## 6. Audio layers
+## 7. Audio layers
 
 Audio layers provide source selection, range/trim, gain, pan, mute, solo, loop, independent playback, fade-in/out curves, keyframeable mix controls, waveform display, and audio effects. Editor monitoring follows the exact editor playhead. Forward, reverse, and ping-pong transport play the audio in the same direction as the picture.
 
 Only title sources containing at least one Audio layer are exposed as devices in the OBS Audio Mixer. Adding or removing the final Audio layer updates mixer visibility without recreating the source.
 
-## 7. Effects
+## 8. Effects
 
 Open **Effects Settings**. Each effect is a collapsible panel and also the actual stack item. Drag the panel header to reorder the render stack, use the switch in the header to enable or disable the effect, and open the header menu to duplicate, delete, move up, or move down.
 
 Use **Effects and Presets** for reusable effect and transition content. The bottom toolbar in Effects Settings contains **Add Effect** and **Respect Masks**. A layer with effects shows an **FX** badge in the layer list; when the complete stack is disabled, the badge remains visible with a diagonal strike-through.
 
-## 8. Live text and image cues
+## 9. Live text and image cues
 
 Expose selected text or image properties to the dock. Each row can hold its own values. Cue a row to apply it to the active source; queued, active, and outgoing states use distinct visual indicators. Editing a row does not alter the already-active cue snapshot—the new values appear on the next cue.
 
@@ -59,14 +65,14 @@ To build the cue list from a provider table, open the Live Text Cues **Data Sour
 
 Playback modes include Play Once, Pause, Loop, and Ping-Pong Loop. Uncue continues from the current on-air frame through the authored outro and applies the configured end behavior when the title reaches the end.
 
-## 9. Native Stinger titles
+## 10. Native Stinger titles
 
 Choose **Stinger** in Playback Mode to author a native OBS transition. **Switch at Point** uses an authored transition point, while **Manual Scene Animation** exposes Scene A and Scene B input layers that can be transformed, timed, animated, masked, parented, grouped, blended, transitioned, and processed through effects. Pre-roll and post-roll are visible on the timeline, and Stinger audio can be mixed with the outgoing/incoming scenes according to the transition settings.
 
-## 10. Cache and prerender
+## 11. Cache and prerender
 
 Caching can store rendered frames in RAM and optionally on disk. Titles containing real-time clock or ordinary ticker behavior are excluded unless their mode is explicitly cacheable. Cache indicators show title and cue-row progress. See [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md) for policy and troubleshooting.
 
-## 11. Preferences and persistent UI
+## 12. Preferences and persistent UI
 
 Editor panel collapse states and user-defined panel order persist between sessions. UI colors follow the active OBS palette unless a property or widget explicitly defines another color. Cache location, RAM limits, cleanup behavior, and editor presentation options are available in Preferences.

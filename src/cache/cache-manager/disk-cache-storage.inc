@@ -307,8 +307,10 @@ void CacheManager::scheduleCacheStatesChanged(const QString &title_id,
 void CacheManager::scheduleUiNotificationFlush()
 {
     bool expected = false;
-    if (!ui_notification_flush_scheduled_.compare_exchange_strong(expected, true))
+    if (!ui_notification_flush_scheduled_.compare_exchange_strong(expected, true)) {
+        bgl::perf::add(bgl::perf::Counter::UiNotificationsCoalesced);
         return;
+    }
 
     /* Cache production happens on worker threads. Deliver one compact UI burst
      * per display-sized interval instead of one queued Qt event per frame. */
@@ -319,6 +321,7 @@ void CacheManager::scheduleUiNotificationFlush()
 
 void CacheManager::flushUiNotifications()
 {
+    bgl::perf::add(bgl::perf::Counter::UiNotificationFlushes);
     bool queue_changed = false;
     bool diagnostics_changed = false;
     QHash<QString, QPair<int, int>> cache_state_ranges;
@@ -552,16 +555,40 @@ QString CacheManager::contentHash(const Title &title) const
             add(k.temporal_velocity_explicit);
         }
     };
-    auto add_anim_vec2 = [&](const AnimatedVec2Property &p) {
-        add(p.static_value.x); add(p.static_value.y); add((quint64)p.keyframes.size());
+    auto add_discrete = [&](const AnimatedDiscreteProperty &p) {
+        add(QString::fromStdString(p.static_value));
+        add((quint64)p.keyframes.size());
         for (const auto &k : p.keyframes) {
-            add(k.time); add(k.value.x); add(k.value.y);
+            add(k.time);
+            add(QString::fromStdString(k.value));
+        }
+    };
+    auto add_anim_vec2 = [&](const AnimatedVec2Property &p) {
+        add(p.static_value.x); add(p.static_value.y); add(p.static_value.z);
+        add((quint64)p.keyframes.size());
+        for (const auto &k : p.keyframes) {
+            add(k.time); add(k.value.x); add(k.value.y); add(k.value.z);
             add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
             add((int)k.temporal_mode); add(k.incoming_influence); add(k.outgoing_influence);
             add(k.incoming_speed); add(k.outgoing_speed); add(k.temporal_tangents_linked);
             add(k.temporal_velocity_explicit);
-            add(k.incoming_tangent.x); add(k.incoming_tangent.y);
-            add(k.outgoing_tangent.x); add(k.outgoing_tangent.y);
+            add(k.incoming_tangent.x); add(k.incoming_tangent.y); add(k.incoming_tangent.z);
+            add(k.outgoing_tangent.x); add(k.outgoing_tangent.y); add(k.outgoing_tangent.z);
+            add((int)k.spatial_mode); add(k.spatial_tangents_linked);
+            add(k.rove_across_time);
+        }
+    };
+    auto add_anim_vec3 = [&](const AnimatedVec3Property &p) {
+        add(p.static_value.x); add(p.static_value.y); add(p.static_value.z);
+        add((quint64)p.keyframes.size());
+        for (const auto &k : p.keyframes) {
+            add(k.time); add(k.value.x); add(k.value.y); add(k.value.z);
+            add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
+            add((int)k.temporal_mode); add(k.incoming_influence); add(k.outgoing_influence);
+            add(k.incoming_speed); add(k.outgoing_speed); add(k.temporal_tangents_linked);
+            add(k.temporal_velocity_explicit);
+            add(k.incoming_tangent.x); add(k.incoming_tangent.y); add(k.incoming_tangent.z);
+            add(k.outgoing_tangent.x); add(k.outgoing_tangent.y); add(k.outgoing_tangent.z);
             add((int)k.spatial_mode); add(k.spatial_tangents_linked);
             add(k.rove_across_time);
         }
@@ -705,6 +732,24 @@ QString CacheManager::contentHash(const Title &title) const
     add((quint64)title.cue_persistent_text_columns.size());
     for (bool persistent_col : title.cue_persistent_text_columns) add(persistent_col);
     add((quint32)title.bg_color);
+    add_discrete(title.active_camera);
+    add((quint64)title.cameras.size());
+    for (const TitleCamera &camera : title.cameras) {
+        add(QString::fromStdString(camera.id));
+        add(camera.use_canvas_default);
+        add_anim(camera.position_x); add_anim(camera.position_y); add_anim(camera.position_z);
+        add(camera.position_3d_path_enabled);
+        if (camera.position_3d_path_enabled)
+            add_anim_vec3(camera.position_3d);
+        add_anim(camera.target_x); add_anim(camera.target_y); add_anim(camera.target_z);
+        add(camera.target_3d_path_enabled);
+        if (camera.target_3d_path_enabled)
+            add_anim_vec3(camera.target_3d);
+        add_anim(camera.orientation_x); add_anim(camera.orientation_y); add_anim(camera.orientation_z);
+        add_anim(camera.rotation_x); add_anim(camera.rotation_y); add_anim(camera.rotation_z);
+        add_anim(camera.focal_length); add_anim(camera.field_of_view); add_anim(camera.zoom);
+        add_anim(camera.near_clip); add_anim(camera.far_clip); add_anim(camera.projection_mode);
+    }
     add((quint64)title.layers.size());
     for (const auto &layer : title.layers) {
         if (!layer) continue;
@@ -715,6 +760,9 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->visible);
         add(QString::fromStdString(layer->parent_id));
         add(QString::fromStdString(layer->transform_parent_id));
+        add(layer->parent_bind_enabled);
+        if (layer->parent_bind_enabled)
+            for (double value : layer->parent_bind_matrix) add(value);
         add(QString::fromStdString(layer->asset_title_id));
         add(QString::fromStdString(layer->asset_owner_id));
         add(QString::fromStdString(layer->asset_source_layer_id));
@@ -741,9 +789,24 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->in_time);
         add(layer->out_time);
 
+        add((int)layer->dimension_mode);
+        add((int)layer->transform_axis_space);
+        add_discrete(layer->camera_assignment);
+        add((int)layer->depth_mode);
+        add(layer->depth_test); add(layer->write_to_depth);
+        add(layer->double_sided); add(layer->backface_culling);
         add_anim_vec2(layer->position);
+        add_anim(layer->position_z);
+        add(layer->position_3d_path_enabled);
+        if (layer->position_3d_path_enabled)
+            add_anim_vec3(layer->position_3d);
         add_anim_vec2(layer->scale);
+        add_anim(layer->scale_z);
         add_anim(layer->rotation);
+        add_anim(layer->rotation_x); add_anim(layer->rotation_y);
+        add_anim(layer->anchor_z);
+        add_anim(layer->orientation_x); add_anim(layer->orientation_y);
+        add_anim(layer->orientation_z);
         add(layer->transform_quad_tl_x); add(layer->transform_quad_tl_y);
         add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
         add(layer->transform_quad_br_x); add(layer->transform_quad_br_y);
@@ -956,10 +1019,18 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
     auto add_anim = [&](const AnimatedProperty &p) {
         if (p.is_animated()) add(p.evaluate(sample_time));
     };
+    auto add_discrete = [&](const AnimatedDiscreteProperty &p) {
+        if (p.is_animated()) add(QString::fromStdString(p.evaluate(sample_time)));
+    };
     auto add_vec = [&](const AnimatedVec2Property &p) {
         if (!p.is_animated()) return;
         const Vec2Value v = p.evaluate(sample_time);
-        add(v.x); add(v.y);
+        add(v.x); add(v.y); add(v.z);
+    };
+    auto add_vec3 = [&](const AnimatedVec3Property &p) {
+        if (!p.is_animated()) return;
+        const Vec3Value v = p.evaluate(sample_time);
+        add(v.x); add(v.y); add(v.z);
     };
     auto add_effect = [&](const LayerEffect &e) {
         add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop);
@@ -980,13 +1051,37 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
             add(sample_time);
     };
 
+    sample_time = time;
+    add_discrete(title.active_camera);
+    for (const TitleCamera &camera : title.cameras) {
+        add_anim(camera.position_x); add_anim(camera.position_y); add_anim(camera.position_z);
+        add(camera.position_3d_path_enabled);
+        if (camera.position_3d_path_enabled)
+            add_vec3(camera.position_3d);
+        add_anim(camera.target_x); add_anim(camera.target_y); add_anim(camera.target_z);
+        add(camera.target_3d_path_enabled);
+        if (camera.target_3d_path_enabled)
+            add_vec3(camera.target_3d);
+        add_anim(camera.orientation_x); add_anim(camera.orientation_y); add_anim(camera.orientation_z);
+        add_anim(camera.rotation_x); add_anim(camera.rotation_y); add_anim(camera.rotation_z);
+        add_anim(camera.focal_length); add_anim(camera.field_of_view); add_anim(camera.zoom);
+        add_anim(camera.near_clip); add_anim(camera.far_clip); add_anim(camera.projection_mode);
+    }
+
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         sample_time = cache_layer_sample_time(title, *layer, time);
         /* Visibility boundaries are renderer state even when no numeric
          * property is animated. Hash the resolved active flag, not raw time. */
         add(layer->visible && sample_time >= layer->in_time && sample_time <= layer->out_time);
-        add_vec(layer->position); add_vec(layer->scale); add_anim(layer->rotation);
+        add_vec(layer->position); add_anim(layer->position_z);
+        if (layer->position_3d_path_enabled)
+            add_vec3(layer->position_3d);
+        add_vec(layer->scale); add_anim(layer->scale_z);
+        add_anim(layer->rotation); add_anim(layer->rotation_x); add_anim(layer->rotation_y);
+        add_anim(layer->anchor_z); add_anim(layer->orientation_x);
+        add_anim(layer->orientation_y); add_anim(layer->orientation_z);
+        add_discrete(layer->camera_assignment);
         add(layer->transform_quad_tl_x); add(layer->transform_quad_tl_y);
         add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
         add(layer->transform_quad_br_x); add(layer->transform_quad_br_y);
@@ -1055,7 +1150,15 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
     auto add_vec = [&](const AnimatedVec2Property &p, double step) {
         if (!p.is_animated()) return;
         const Vec2Value v = p.evaluate(sample_time);
-        add(quant(v.x, step)); add(quant(v.y, step));
+        add(quant(v.x, step)); add(quant(v.y, step)); add(quant(v.z, step));
+    };
+    auto add_vec3 = [&](const AnimatedVec3Property &p, double step) {
+        if (!p.is_animated()) return;
+        const Vec3Value v = p.evaluate(sample_time);
+        add(quant(v.x, step)); add(quant(v.y, step)); add(quant(v.z, step));
+    };
+    auto add_discrete = [&](const AnimatedDiscreteProperty &p) {
+        if (p.is_animated()) add(QString::fromStdString(p.evaluate(sample_time)));
     };
     auto add_effect = [&](const LayerEffect &e) {
         add_anim(e.enabled_prop, 1.0);

@@ -53,13 +53,19 @@ int main(int argc, char **argv)
 
     ok &= require(schema, "kFirstAuditedDevelopmentVersion = 144",
                   "migration range starts at 144");
-    for (int version = 144; version <= 189; ++version) {
+    for (int version = 144; version <= 219; ++version) {
         ok &= require(schema, "case " + std::to_string(version) + ":",
                       "explicit migration step for development " + std::to_string(version));
     }
     ok &= require(schema,
                   "unknown fields on valid objects retain their original JSON values",
-                  "unknown-field preservation");
+                  "raw migration unknown-field preservation");
+    ok &= require(title_data, "merge_nested_passthrough",
+                  "nested model round-trip unknown-field preservation");
+    ok &= require(title_data, "duplicateOrMissingIds",
+                  "post-load layer identity repair");
+    ok &= require(title_data, "danglingOrCyclicLinks",
+                  "post-load hierarchy reference repair");
     ok &= require(schema, "development_migration_ledger",
                   "contiguous migration ledger API");
 

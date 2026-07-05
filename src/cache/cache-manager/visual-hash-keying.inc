@@ -48,7 +48,7 @@ constexpr int kCacheTileSize = bgs::cache_tile_payload::kTileSize;
  * visual cache identity and prevents stale prerenders from surviving renderer
  * fixes. */
 constexpr const char *kGpuRendererCacheAbi =
-    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur-v37-live-cue-transition-persistence";
+    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur-v37-live-cue-transition-persistence-v38-camera-timeline-animation-static-compatible-v39-parent-bind-matrix-3d-pipeline-completion";
 
 static bool gpu_ram_frame_contains(const CacheFrameKey &key)
 {

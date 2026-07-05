@@ -25,6 +25,10 @@
                                                                 : bgl_tr("OBSTitles.TextBox"))));
     }
     const bool is_shape_geometry = layer_type_uses_shape_geometry(layer_->type);
+    const bool supports_3d = !layer_type_is_audio(layer_->type) &&
+                             layer_->type != LayerType::Adjustment;
+    const bool is_three_d_transform = supports_3d &&
+        layer_->dimension_mode == LayerDimensionMode::ThreeD;
     const bool is_authored_shape = layer_type_is_authored_shape(layer_->type);
     const ShapeType current_shape =
         (layer_->type == LayerType::SolidRect || is_transition_input)
@@ -41,8 +45,8 @@
                                 current_shape != ShapeType::Line &&
                                 current_shape != ShapeType::Rectangle &&
                                 current_shape != ShapeType::RoundedRectangle;
-    const bool show_transform_scale = !is_shape_geometry;
-    const bool show_transform_size = is_shape_geometry;
+    const bool show_transform_scale = !is_shape_geometry || is_three_d_transform;
+    const bool show_transform_size = is_shape_geometry && !is_three_d_transform;
     const bool show_shape_panel_size = !is_shape_geometry && (is_text_like || is_image);
     auto set_visible = [](QWidget *widget, bool visible) {
         if (widget) widget->setVisible(visible);
@@ -133,12 +137,9 @@
 
     double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
                            std::max(0.0, layer_->out_time - layer_->in_time));
-    spn_px_->setValue(layer_->position.is_animated()
-                      ? layer_->position.evaluate(lt).x
-                      : layer_->position.static_value.x);
-    spn_py_->setValue(layer_->position.is_animated()
-                      ? layer_->position.evaluate(lt).y
-                      : layer_->position.static_value.y);
+    const LayerVector3Value evaluated_position = evaluated_layer_position_3d(*layer_, lt);
+    spn_px_->setValue(evaluated_position.x);
+    spn_py_->setValue(evaluated_position.y);
     spn_scale_x_->setValue((layer_->scale.is_animated()
                             ? layer_->scale.evaluate(lt).x
                             : layer_->scale.static_value.x) * 100.0);
@@ -154,6 +155,46 @@
     spn_rot_->setValue(layer_->rotation.is_animated()
                        ? layer_->rotation.evaluate(lt)
                        : layer_->rotation.static_value);
+    if (cmb_dimension_mode_) {
+        QSignalBlocker blocker(cmb_dimension_mode_);
+        const int index = cmb_dimension_mode_->findData(
+            static_cast<int>(layer_->dimension_mode));
+        cmb_dimension_mode_->setCurrentIndex(index >= 0 ? index : 0);
+        cmb_dimension_mode_->setEnabled(supports_3d);
+    }
+    if (cmb_transform_axis_space_) {
+        QSignalBlocker blocker(cmb_transform_axis_space_);
+        const int index = cmb_transform_axis_space_->findData(
+            static_cast<int>(layer_->transform_axis_space));
+        cmb_transform_axis_space_->setCurrentIndex(index >= 0 ? index : 0);
+    }
+    if (cmb_layer_camera_) {
+        QSignalBlocker blocker(cmb_layer_camera_);
+        cmb_layer_camera_->clear();
+        cmb_layer_camera_->addItem(QStringLiteral("Active Camera"), QString());
+        if (title_) {
+            for (const TitleCamera &camera : title_->cameras)
+                cmb_layer_camera_->addItem(QString::fromStdString(camera.name),
+                                           QString::fromStdString(camera.id));
+        }
+        const std::string evaluated_camera = layer_->camera_assignment.evaluate(lt);
+        const int index = cmb_layer_camera_->findData(
+            QString::fromStdString(evaluated_camera));
+        cmb_layer_camera_->setCurrentIndex(index >= 0 ? index : 0);
+    }
+    update_transform_dimension_ui(supports_3d, layer_->dimension_mode);
+    if (spn_pz_) spn_pz_->setValue(evaluated_position.z);
+    if (spn_rot_x_) spn_rot_x_->setValue(layer_->rotation_x.evaluate(lt));
+    if (spn_rot_y_) spn_rot_y_->setValue(layer_->rotation_y.evaluate(lt));
+    if (spn_scale_z_) spn_scale_z_->setValue(layer_->scale.evaluate(lt).z * 100.0);
+    if (spn_anchor_z_) spn_anchor_z_->setValue(layer_->origin_prop.evaluate(lt).z);
+    if (spn_orientation_x_) spn_orientation_x_->setValue(layer_->orientation_x.evaluate(lt));
+    if (spn_orientation_y_) spn_orientation_y_->setValue(layer_->orientation_y.evaluate(lt));
+    if (spn_orientation_z_) spn_orientation_z_->setValue(layer_->orientation_z.evaluate(lt));
+    if (chk_depth_test_) chk_depth_test_->setChecked(layer_->depth_test);
+    if (chk_write_depth_) chk_write_depth_->setChecked(layer_->write_to_depth);
+    if (chk_double_sided_) chk_double_sided_->setChecked(layer_->double_sided);
+    if (chk_backface_culling_) chk_backface_culling_->setChecked(layer_->backface_culling);
     spn_opacity_->setValue(layer_->opacity.is_animated()
                            ? layer_->opacity.evaluate(lt)
                            : layer_->opacity.static_value);
@@ -350,14 +391,56 @@
     auto set_vec_kf_icon = [&](QPushButton *button, const AnimatedVec2Property &prop) {
         set_kf_icon(button, keyframe_at_time(prop, lt), prop.is_animated());
     };
-    set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
-    set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
-    set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+    auto set_vec3_kf_icon = [&](QPushButton *button,
+                                const AnimatedVec2Property &xy,
+                                const AnimatedProperty &z) {
+        set_kf_icon(button,
+                    keyframe_at_time(xy, lt) || keyframe_at_time(z, lt),
+                    xy.is_animated() || z.is_animated());
+    };
+    auto set_position3_kf_icon = [&](QPushButton *button) {
+        if (layer_->position_3d_path_enabled)
+            set_kf_icon(button, keyframe_at_time(layer_->position_3d, lt),
+                        layer_->position_3d.is_animated());
+        else
+            set_vec3_kf_icon(button, layer_->position, layer_->position_z);
+    };
+    auto set_scalar3_kf_icon = [&](QPushButton *button,
+                                   const AnimatedProperty &x,
+                                   const AnimatedProperty &y,
+                                   const AnimatedProperty &z) {
+        set_kf_icon(button,
+                    any_keyframe_at_time({&x, &y, &z}, lt),
+                    any_keyframes({&x, &y, &z}));
+    };
+    const bool transform_is_3d = layer_->dimension_mode == LayerDimensionMode::ThreeD;
+    if (transform_is_3d) {
+        set_position3_kf_icon(btn_kf_pos_x_);
+        set_vec3_kf_icon(btn_kf_scale_x_, layer_->scale, layer_->scale_z);
+        set_vec3_kf_icon(btn_kf_origin_x_, layer_->origin_prop, layer_->anchor_z);
+        set_scalar3_kf_icon(btn_kf_rotation_, layer_->rotation_x,
+                            layer_->rotation_y, layer_->rotation);
+        set_scalar3_kf_icon(btn_kf_orientation_x_, layer_->orientation_x,
+                            layer_->orientation_y, layer_->orientation_z);
+    } else {
+        set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
+        set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+        set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
+        set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
+    }
+    if (transform_is_3d) set_position3_kf_icon(btn_kf_pos_y_);
+    else set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
     set_vec_kf_icon(btn_kf_scale_y_, layer_->scale);
     set_vec_kf_icon(btn_kf_transform_size_, layer_->size);
-    set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
+    if (transform_is_3d) set_position3_kf_icon(btn_kf_position_z_);
+    else set_prop_kf_icon(btn_kf_position_z_, layer_->position_z);
+    set_prop_kf_icon(btn_kf_rotation_x_, layer_->rotation_x);
+    set_prop_kf_icon(btn_kf_rotation_y_, layer_->rotation_y);
+    set_prop_kf_icon(btn_kf_scale_z_, layer_->scale_z);
+    set_prop_kf_icon(btn_kf_anchor_z_, layer_->anchor_z);
+    set_prop_kf_icon(btn_kf_orientation_y_, layer_->orientation_y);
+    set_prop_kf_icon(btn_kf_orientation_z_, layer_->orientation_z);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
-    set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
     set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
@@ -816,6 +899,64 @@ bool PropertiesPanel::apply_external_picked_color(const QColor &color, bool comm
         emit live_visual_changed();
     emit gradient_model_refresh_requested();
     return true;
+}
+
+
+void PropertiesPanel::update_transform_dimension_ui(bool supports_3d,
+                                                    LayerDimensionMode mode)
+{
+    const bool show_3d = supports_3d && mode == LayerDimensionMode::ThreeD;
+    const bool shape_geometry = layer_ && layer_type_uses_shape_geometry(layer_->type);
+
+    if (transform_position_field_z_) transform_position_field_z_->setVisible(show_3d);
+    if (transform_scale_field_z_) transform_scale_field_z_->setVisible(show_3d);
+    if (transform_scale_axis_label_x_)
+        transform_scale_axis_label_x_->setText(show_3d ? QStringLiteral("X") : bgl_tr("OBSTitles.W"));
+    if (transform_scale_axis_label_y_)
+        transform_scale_axis_label_y_->setText(show_3d ? QStringLiteral("Y") : bgl_tr("OBSTitles.H"));
+    if (transform_anchor_field_z_) transform_anchor_field_z_->setVisible(show_3d);
+    if (transform_rotation_field_x_) transform_rotation_field_x_->setVisible(show_3d);
+    if (transform_rotation_field_y_) transform_rotation_field_y_->setVisible(show_3d);
+    if (transform_rotation_field_z_) transform_rotation_field_z_->setVisible(true);
+    if (transform_rotation_axis_label_)
+        transform_rotation_axis_label_->setText(show_3d ? QStringLiteral("Z") : QString());
+    if (transform_grid_ && transform_rotation_field_z_) {
+        transform_grid_->removeWidget(transform_rotation_field_z_);
+        transform_grid_->addWidget(transform_rotation_field_z_, 3, show_3d ? 4 : 2,
+                                   Qt::AlignLeft);
+    }
+    if (transform_grid_ && chk_scale_lock_) {
+        transform_grid_->removeWidget(chk_scale_lock_);
+        transform_grid_->addWidget(chk_scale_lock_, 1, show_3d ? 5 : 4,
+                                   Qt::AlignCenter);
+    }
+    if (transform_orientation_row_) transform_orientation_row_->setVisible(show_3d);
+    if (three_d_controls_) three_d_controls_->setVisible(show_3d);
+
+    /* In 2D, shape geometry keeps the historic Size row. In 3D, Scale becomes
+     * a true XYZ transform for every compatible visual layer; geometry size
+     * remains available in the shape/image section. */
+    const bool show_scale = !shape_geometry || show_3d;
+    const bool show_size = shape_geometry && !show_3d;
+    if (btn_kf_scale_x_) btn_kf_scale_x_->setVisible(show_scale);
+    if (transform_scale_label_) transform_scale_label_->setVisible(show_scale);
+    if (transform_scale_field_x_) transform_scale_field_x_->setVisible(show_scale);
+    if (chk_scale_lock_) chk_scale_lock_->setVisible(show_scale);
+    if (transform_scale_field_y_) transform_scale_field_y_->setVisible(show_scale);
+    if (transform_scale_field_z_) transform_scale_field_z_->setVisible(show_scale && show_3d);
+    if (btn_kf_transform_size_) btn_kf_transform_size_->setVisible(show_size);
+    if (transform_size_label_) transform_size_label_->setVisible(show_size);
+    if (transform_size_field_w_) transform_size_field_w_->setVisible(show_size);
+    if (chk_transform_size_lock_) chk_transform_size_lock_->setVisible(show_size);
+    if (transform_size_field_h_) transform_size_field_h_->setVisible(show_size);
+
+    if (btn_kf_position_z_) btn_kf_position_z_->hide();
+    if (btn_kf_scale_z_) btn_kf_scale_z_->hide();
+    if (btn_kf_anchor_z_) btn_kf_anchor_z_->hide();
+    if (btn_kf_rotation_x_) btn_kf_rotation_x_->hide();
+    if (btn_kf_rotation_y_) btn_kf_rotation_y_->hide();
+    if (btn_kf_orientation_y_) btn_kf_orientation_y_->hide();
+    if (btn_kf_orientation_z_) btn_kf_orientation_z_->hide();
 }
 
 void PropertiesPanel::open_foreground_color_selector()

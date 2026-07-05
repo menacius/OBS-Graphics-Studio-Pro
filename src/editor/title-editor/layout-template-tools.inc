@@ -66,17 +66,10 @@
     const std::vector<std::string> selection = result_layer
         ? std::vector<std::string>{result_layer->id}
         : std::vector<std::string>{};
-    sel_layer_id_ = result_layer ? result_layer->id : std::string();
     layers_->refresh();
-    layers_->set_selected_layers(selection);
     canvas_->set_title(title_, true);
-    canvas_->set_selected_layers(selection);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(selection);
-    if (result_layer)
-        update_layer_panels(result_layer, playhead_);
-    else
-        update_layer_panels(nullptr, playhead_);
+    synchronize_layer_selection(selection);
     force_next_title_visual_update();
     on_title_modified();
 }
@@ -246,27 +239,33 @@ void TitleEditor::duplicate_selected_layers()
             clone_ids.push_back(found->second->id);
     }
 
-    sel_layer_id_ = clone_ids.empty() ? std::string() : clone_ids.back();
     layers_->refresh();
-    layers_->set_selected_layers(clone_ids);
-    canvas_->set_selected_layers(clone_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(clone_ids);
-    if (!sel_layer_id_.empty()) {
-        if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
-    }
+    synchronize_layer_selection(clone_ids);
     on_title_modified();
 }
 
 
 void TitleEditor::group_selected_layers()
 {
+    const auto operation_started = std::chrono::steady_clock::now();
     if (!title_)
         return;
     const auto selected_ids = selected_layer_ids_for_operation();
     auto roots = editor_top_level_selected_layers(title_, selected_ids);
     if (roots.size() < 2)
         return;
+    std::size_t transform_keyframes = 0;
+    for (const auto &layer : roots) {
+        if (layer)
+            transform_keyframes += editor_layer_transform_keyframe_count(*layer);
+    }
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Group command begin selected=%1 roots=%2 transformKeyframes=%3 playhead=%4")
+        .arg(static_cast<qulonglong>(selected_ids.size()))
+        .arg(static_cast<qulonglong>(roots.size()))
+        .arg(static_cast<qulonglong>(transform_keyframes))
+        .arg(playhead_, 0, 'f', 6));
 
     std::string common_parent = roots.front()->parent_id;
     for (const auto &layer : roots) {
@@ -335,39 +334,46 @@ void TitleEditor::group_selected_layers()
         title_->layers.insert(title_->layers.begin() + insertion_index + 1,
                               group);
 
+    std::size_t bind_reparents = 0;
     for (const auto &layer : roots) {
         if (!layer)
             continue;
-        if (layer->parent_id == common_parent && layer->transform_parent_id.empty()) {
-            /* The new group is a pure translation inside the same parent.
-             * Offset the complete position track, not just the current frame,
-             * so grouping never changes animated artwork. */
-            editor_offset_position_track(layer->position,
-                                         -group_local_center.x(),
-                                         -group_local_center.y());
-            layer->parent_id = group->id;
+        if (editor_reparent_layer_with_parent_bind(
+                title_, *layer, group->id, layer->transform_parent_id,
+                playhead_)) {
+            ++bind_reparents;
         } else {
-            const QTransform world = editor_layer_world_transform_for_parenting(
-                title_, *layer, playhead_);
-            editor_set_local_transform_from_world(title_, *layer, world,
-                                                  group->id, layer->transform_parent_id,
-                                                  playhead_);
+            BGL_LOG_WARNING("Grouping", QStringLiteral(
+                "Group command skipped layer=%1 reason=bind-reparent-failed")
+                .arg(QString::fromStdString(layer->id)));
         }
     }
 
-    sel_layer_id_ = group->id;
+    const uint64_t mutation_us = editor_elapsed_us(operation_started);
+    const auto refresh_started = std::chrono::steady_clock::now();
     layers_->refresh();
-    layers_->set_selected_layer(group->id);
-    canvas_->set_selected_layer(group->id);
     timeline_->set_title(title_);
-    timeline_->set_selected_layer(group->id);
-    update_layer_panels(group, playhead_);
+    synchronize_layer_selection({group->id});
     force_next_title_visual_update();
+    const uint64_t refresh_us = editor_elapsed_us(refresh_started);
+    const auto commit_started = std::chrono::steady_clock::now();
     on_title_modified();
+    const uint64_t commit_us = editor_elapsed_us(commit_started);
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Group command complete group=%1 children=%2 bindReparents=%3 "
+        "mutationUs=%4 refreshUs=%5 commitUs=%6 totalUs=%7")
+        .arg(QString::fromStdString(group->id))
+        .arg(static_cast<qulonglong>(roots.size()))
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(mutation_us))
+        .arg(static_cast<qulonglong>(refresh_us))
+        .arg(static_cast<qulonglong>(commit_us))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(operation_started))));
 }
 
 void TitleEditor::ungroup_selected_layers()
 {
+    const auto operation_started = std::chrono::steady_clock::now();
     if (!title_)
         return;
     const auto selected_ids = selected_layer_ids_for_operation();
@@ -379,63 +385,57 @@ void TitleEditor::ungroup_selected_layers()
     }
     if (groups.empty())
         return;
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Ungroup command begin selected=%1 groups=%2 playhead=%3")
+        .arg(static_cast<qulonglong>(selected_ids.size()))
+        .arg(static_cast<qulonglong>(groups.size()))
+        .arg(playhead_, 0, 'f', 6));
 
-    std::vector<std::string> next_selection;
     std::set<std::string> removed_group_ids;
-    for (const auto &group : groups) {
+    for (const auto &group : groups)
         if (group)
             removed_group_ids.insert(group->id);
-    }
 
-    std::map<std::string, QTransform> detached_transform_worlds;
+    auto surviving_group_parent = [&](std::string parent_id) {
+        std::set<std::string> visited;
+        while (!parent_id.empty() &&
+               removed_group_ids.find(parent_id) != removed_group_ids.end() &&
+               visited.insert(parent_id).second) {
+            auto parent = title_->find_layer(parent_id);
+            parent_id = parent ? parent->parent_id : std::string();
+        }
+        return parent_id;
+    };
+
+    std::vector<std::string> next_selection;
+    std::size_t bind_reparents = 0;
     for (const auto &layer : title_->layers) {
         if (!layer || removed_group_ids.find(layer->id) != removed_group_ids.end())
             continue;
-        if (removed_group_ids.find(layer->transform_parent_id) != removed_group_ids.end()) {
-            detached_transform_worlds.emplace(
-                layer->id, editor_layer_world_transform_for_parenting(
-                    title_, *layer, playhead_));
-        }
-    }
+        const bool group_changes =
+            removed_group_ids.find(layer->parent_id) != removed_group_ids.end();
+        const bool transform_parent_changes =
+            removed_group_ids.find(layer->transform_parent_id) != removed_group_ids.end();
+        if (!group_changes && !transform_parent_changes)
+            continue;
 
-    std::set<std::string> reparented_children;
-    for (const auto &group : groups) {
-        if (!group)
-            continue;
-        std::vector<std::shared_ptr<Layer>> children;
-        for (const auto &candidate : title_->layers) {
-            if (candidate && candidate->parent_id == group->id)
-                children.push_back(candidate);
+        const std::string next_group_parent =
+            group_changes ? surviving_group_parent(layer->parent_id)
+                          : layer->parent_id;
+        const std::string next_transform_parent =
+            transform_parent_changes ? std::string()
+                                     : layer->transform_parent_id;
+        if (editor_reparent_layer_with_parent_bind(
+                title_, *layer, next_group_parent, next_transform_parent,
+                playhead_)) {
+            ++bind_reparents;
+            if (group_changes)
+                next_selection.push_back(layer->id);
+        } else {
+            BGL_LOG_WARNING("Grouping", QStringLiteral(
+                "Ungroup skipped dependent layer=%1 reason=bind-reparent-failed")
+                .arg(QString::fromStdString(layer->id)));
         }
-        for (const auto &child : children) {
-            const auto detached = detached_transform_worlds.find(child->id);
-            const QTransform world = detached != detached_transform_worlds.end()
-                ? detached->second
-                : editor_layer_world_transform_for_parenting(title_, *child, playhead_);
-            const std::string transform_parent_id =
-                removed_group_ids.find(child->transform_parent_id) == removed_group_ids.end()
-                    ? child->transform_parent_id : std::string();
-            editor_set_local_transform_from_world(title_, *child, world,
-                                                  group->parent_id,
-                                                  transform_parent_id,
-                                                  playhead_);
-            reparented_children.insert(child->id);
-            next_selection.push_back(child->id);
-        }
-    }
-
-    for (const auto &[layer_id, world] : detached_transform_worlds) {
-        if (reparented_children.find(layer_id) != reparented_children.end())
-            continue;
-        auto layer = title_->find_layer(layer_id);
-        if (!layer)
-            continue;
-        const std::string group_parent_id =
-            removed_group_ids.find(layer->parent_id) == removed_group_ids.end()
-                ? layer->parent_id : std::string();
-        editor_set_local_transform_from_world(title_, *layer, world,
-                                              group_parent_id, std::string(),
-                                              playhead_);
     }
 
     title_->layers.erase(std::remove_if(title_->layers.begin(),
@@ -448,9 +448,6 @@ void TitleEditor::ungroup_selected_layers()
     for (auto &layer : title_->layers) {
         if (!layer)
             continue;
-        if (removed_group_ids.find(layer->transform_parent_id) !=
-            removed_group_ids.end())
-            layer->transform_parent_id.clear();
         if (removed_group_ids.find(layer->mask_source_id) !=
             removed_group_ids.end()) {
             layer->mask_source_id.clear();
@@ -458,22 +455,31 @@ void TitleEditor::ungroup_selected_layers()
         }
     }
 
-    sel_layer_id_ = next_selection.empty() ? std::string()
-                                           : next_selection.back();
+    const uint64_t mutation_us = editor_elapsed_us(operation_started);
+    const auto refresh_started = std::chrono::steady_clock::now();
     layers_->refresh();
-    layers_->set_selected_layers(next_selection);
-    canvas_->set_selected_layers(next_selection);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(next_selection);
-    update_layer_panels(sel_layer_id_.empty() ? nullptr
-                                              : title_->find_layer(sel_layer_id_),
-                        playhead_);
+    synchronize_layer_selection(next_selection);
     force_next_title_visual_update();
+    const uint64_t refresh_us = editor_elapsed_us(refresh_started);
+    const auto commit_started = std::chrono::steady_clock::now();
     on_title_modified();
+    const uint64_t commit_us = editor_elapsed_us(commit_started);
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Ungroup command complete groups=%1 selectedChildren=%2 bindReparents=%3 "
+        "mutationUs=%4 refreshUs=%5 commitUs=%6 totalUs=%7")
+        .arg(static_cast<qulonglong>(groups.size()))
+        .arg(static_cast<qulonglong>(next_selection.size()))
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(mutation_us))
+        .arg(static_cast<qulonglong>(refresh_us))
+        .arg(static_cast<qulonglong>(commit_us))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(operation_started))));
 }
 
 void TitleEditor::add_selected_layers_to_group(const std::string &group_id)
 {
+    const auto operation_started = std::chrono::steady_clock::now();
     if (!title_ || group_id.empty())
         return;
     auto group = title_->find_layer(group_id);
@@ -482,41 +488,77 @@ void TitleEditor::add_selected_layers_to_group(const std::string &group_id)
 
     const auto selected_ids = selected_layer_ids_for_operation();
     auto roots = editor_top_level_selected_layers(title_, selected_ids);
+    std::size_t transform_keyframes = 0;
+    for (const auto &layer : roots) {
+        if (layer)
+            transform_keyframes += editor_layer_transform_keyframe_count(*layer);
+    }
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Add-to-group command begin group=%1 selected=%2 roots=%3 "
+        "transformKeyframes=%4 playhead=%5")
+        .arg(QString::fromStdString(group_id))
+        .arg(static_cast<qulonglong>(selected_ids.size()))
+        .arg(static_cast<qulonglong>(roots.size()))
+        .arg(static_cast<qulonglong>(transform_keyframes))
+        .arg(playhead_, 0, 'f', 6));
     bool changed = false;
+    std::size_t bind_reparents = 0;
     for (const auto &layer : roots) {
         if (!layer || layer->id == group_id || layer->locked ||
+            layer->parent_id == group_id ||
             editor_layer_has_ancestor_for_grouping(title_, *group,
                                                    layer->id))
             continue;
-        const QTransform world = editor_layer_world_transform_for_parenting(
-            title_, *layer, playhead_);
-        editor_set_local_transform_from_world(title_, *layer, world,
-                                              group_id, layer->transform_parent_id,
-                                              playhead_);
-        changed = true;
+        if (editor_reparent_layer_with_parent_bind(
+                title_, *layer, group_id, layer->transform_parent_id,
+                playhead_)) {
+            ++bind_reparents;
+            changed = true;
+        } else {
+            BGL_LOG_WARNING("Grouping", QStringLiteral(
+                "Add-to-group skipped layer=%1 reason=bind-reparent-failed")
+                .arg(QString::fromStdString(layer->id)));
+        }
     }
     if (!changed)
         return;
 
     /* Adding artwork to an existing group must not silently change its
      * presentation/editing state. */
-    sel_layer_id_ = group_id;
+    const uint64_t mutation_us = editor_elapsed_us(operation_started);
+    const auto refresh_started = std::chrono::steady_clock::now();
     layers_->refresh();
-    layers_->set_selected_layer(group_id);
-    canvas_->set_selected_layer(group_id);
     timeline_->set_title(title_);
-    timeline_->set_selected_layer(group_id);
-    update_layer_panels(group, playhead_);
+    synchronize_layer_selection({group_id});
     force_next_title_visual_update();
+    const uint64_t refresh_us = editor_elapsed_us(refresh_started);
+    const auto commit_started = std::chrono::steady_clock::now();
     on_title_modified();
+    const uint64_t commit_us = editor_elapsed_us(commit_started);
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Add-to-group command complete group=%1 moved=%2 bindReparents=%3 "
+        "mutationUs=%4 refreshUs=%5 commitUs=%6 totalUs=%7")
+        .arg(QString::fromStdString(group_id))
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(mutation_us))
+        .arg(static_cast<qulonglong>(refresh_us))
+        .arg(static_cast<qulonglong>(commit_us))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(operation_started))));
 }
 
 void TitleEditor::remove_selected_layers_from_group()
 {
+    const auto operation_started = std::chrono::steady_clock::now();
     if (!title_)
         return;
     const auto selected_ids = selected_layer_ids_for_operation();
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Remove-from-group command begin selected=%1 playhead=%2")
+        .arg(static_cast<qulonglong>(selected_ids.size()))
+        .arg(playhead_, 0, 'f', 6));
     bool changed = false;
+    std::size_t bind_reparents = 0;
     for (const auto &id : selected_ids) {
         auto layer = title_->find_layer(id);
         if (!layer || layer->locked || layer->parent_id.empty())
@@ -524,23 +566,39 @@ void TitleEditor::remove_selected_layers_from_group()
         auto parent = title_->find_layer(layer->parent_id);
         if (!parent || parent->type != LayerType::Group)
             continue;
-        const QTransform world = editor_layer_world_transform_for_parenting(
-            title_, *layer, playhead_);
-        editor_set_local_transform_from_world(title_, *layer, world,
-                                              parent->parent_id, layer->transform_parent_id,
-                                              playhead_);
-        changed = true;
+        if (editor_reparent_layer_with_parent_bind(
+                title_, *layer, parent->parent_id,
+                layer->transform_parent_id, playhead_)) {
+            ++bind_reparents;
+            changed = true;
+        } else {
+            BGL_LOG_WARNING("Grouping", QStringLiteral(
+                "Remove-from-group skipped layer=%1 reason=bind-reparent-failed")
+                .arg(QString::fromStdString(layer->id)));
+        }
     }
     if (!changed)
         return;
 
+    const uint64_t mutation_us = editor_elapsed_us(operation_started);
+    const auto refresh_started = std::chrono::steady_clock::now();
     layers_->refresh();
-    layers_->set_selected_layers(selected_ids);
-    canvas_->set_selected_layers(selected_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(selected_ids);
+    synchronize_layer_selection(selected_ids);
     force_next_title_visual_update();
+    const uint64_t refresh_us = editor_elapsed_us(refresh_started);
+    const auto commit_started = std::chrono::steady_clock::now();
     on_title_modified();
+    const uint64_t commit_us = editor_elapsed_us(commit_started);
+    BGL_LOG_INFO("Grouping", QStringLiteral(
+        "Remove-from-group command complete moved=%1 bindReparents=%2 "
+        "mutationUs=%3 refreshUs=%4 commitUs=%5 totalUs=%6")
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(bind_reparents))
+        .arg(static_cast<qulonglong>(mutation_us))
+        .arg(static_cast<qulonglong>(refresh_us))
+        .arg(static_cast<qulonglong>(commit_us))
+        .arg(static_cast<qulonglong>(editor_elapsed_us(operation_started))));
 }
 
 void TitleEditor::copy_selected_layer()
@@ -551,11 +609,25 @@ void TitleEditor::copy_selected_layer()
     const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
 
     layer_clipboard_.clear();
+    layer_clipboard_cameras_.clear();
+    layer_clipboard_source_title_id_ = title_->id;
     layer_clipboard_.reserve(ids.size());
+    std::set<std::string> referenced_camera_ids;
+    auto remember_camera_id = [&referenced_camera_ids](const std::string &camera_id) {
+        if (!camera_id.empty()) referenced_camera_ids.insert(camera_id);
+    };
     for (const auto &id : ids) {
         auto layer = title_->find_layer(id);
-        if (layer)
-            layer_clipboard_.push_back(std::make_shared<Layer>(*layer));
+        if (!layer) continue;
+        layer_clipboard_.push_back(std::make_shared<Layer>(*layer));
+        remember_camera_id(layer->camera_id);
+        remember_camera_id(layer->camera_assignment.static_value);
+        for (const DiscreteKeyframe &key : layer->camera_assignment.keyframes)
+            remember_camera_id(key.value);
+    }
+    for (const TitleCamera &camera : title_->cameras) {
+        if (referenced_camera_ids.find(camera.id) != referenced_camera_ids.end())
+            layer_clipboard_cameras_.push_back(camera);
     }
     if (layers_) layers_->set_layer_clipboard_available(!layer_clipboard_.empty());
 }
@@ -568,7 +640,70 @@ void TitleEditor::paste_layer_from_clipboard()
     clipboard_layers.reserve(layer_clipboard_.size());
     for (const auto &layer : layer_clipboard_)
         if (layer)
-            clipboard_layers.push_back(layer);
+            clipboard_layers.push_back(std::make_shared<Layer>(*layer));
+
+    /* Camera IDs are document-local. Copying layers to another open title must
+     * carry every explicitly assigned camera and rewrite static/keyframed
+     * assignments, otherwise the loader silently falls back to the active
+     * camera and the pasted 3D result changes. */
+    if (!layer_clipboard_cameras_.empty()) {
+        std::map<std::string, std::string> camera_id_remap;
+        std::set<std::string> used_camera_names;
+        std::set<std::string> destination_camera_ids;
+        for (const TitleCamera &camera : title_->cameras) {
+            used_camera_names.insert(camera.name);
+            destination_camera_ids.insert(camera.id);
+        }
+
+        auto unique_camera_name = [&used_camera_names](const std::string &source_name) {
+            const std::string stem = source_name.empty() ? std::string("Camera") : source_name;
+            std::string candidate = stem + " Copy";
+            if (used_camera_names.insert(candidate).second)
+                return candidate;
+            for (int suffix = 2; suffix < 10000; ++suffix) {
+                candidate = stem + " Copy " + std::to_string(suffix);
+                if (used_camera_names.insert(candidate).second)
+                    return candidate;
+            }
+            candidate = stem + " " + TitleDataStore::make_uuid().substr(0, 8);
+            used_camera_names.insert(candidate);
+            return candidate;
+        };
+
+        const bool copying_between_titles =
+            !layer_clipboard_source_title_id_.empty() &&
+            layer_clipboard_source_title_id_ != title_->id;
+        for (const TitleCamera &source_camera : layer_clipboard_cameras_) {
+            if (source_camera.id.empty()) continue;
+            /* Same-title paste reuses a live camera. If that camera was deleted
+             * after Copy, or the paste targets another title, materialize an
+             * independent camera and remap every static/keyframed assignment. */
+            if (!copying_between_titles &&
+                destination_camera_ids.find(source_camera.id) !=
+                    destination_camera_ids.end())
+                continue;
+            TitleCamera camera = source_camera;
+            const std::string source_id = camera.id;
+            camera.id = TitleDataStore::make_uuid();
+            camera.name = unique_camera_name(camera.name);
+            camera_id_remap[source_id] = camera.id;
+            destination_camera_ids.insert(camera.id);
+            title_->cameras.push_back(std::move(camera));
+        }
+
+        auto remap_camera_id = [&camera_id_remap](std::string &camera_id) {
+            const auto it = camera_id_remap.find(camera_id);
+            if (it != camera_id_remap.end()) camera_id = it->second;
+        };
+        for (auto &layer : clipboard_layers) {
+            if (!layer) continue;
+            remap_camera_id(layer->camera_id);
+            remap_camera_id(layer->camera_assignment.static_value);
+            for (DiscreteKeyframe &key : layer->camera_assignment.keyframes)
+                remap_camera_id(key.value);
+            layer->camera_id = layer->camera_assignment.static_value;
+        }
+    }
 
     auto pasted_layers = clone_layers_for_insert(clipboard_layers, true);
     if (pasted_layers.empty()) return;
@@ -601,15 +736,9 @@ void TitleEditor::paste_layer_from_clipboard()
             if (layer) pasted_ids.push_back(layer->id);
     }
 
-    sel_layer_id_ = pasted_ids.empty() ? std::string() : pasted_ids.back();
     layers_->refresh();
-    layers_->set_selected_layers(pasted_ids);
-    canvas_->set_selected_layers(pasted_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layers(pasted_ids);
-    if (!sel_layer_id_.empty()) {
-        if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
-    }
+    synchronize_layer_selection(pasted_ids);
     on_title_modified();
 }
 
@@ -681,13 +810,37 @@ void TitleEditor::delete_selected_layer()
     if (ids.empty()) return;
 
     std::set<std::string> removed_ids(ids.begin(), ids.end());
-    std::vector<std::pair<std::shared_ptr<Layer>, QTransform>> detached_transform_children;
+    auto surviving_group_parent = [&](std::string parent_id) {
+        std::set<std::string> visited;
+        while (!parent_id.empty() &&
+               removed_ids.find(parent_id) != removed_ids.end() &&
+               visited.insert(parent_id).second) {
+            auto parent = title_->find_layer(parent_id);
+            parent_id = parent ? parent->parent_id : std::string();
+        }
+        return parent_id;
+    };
     for (const auto &layer : title_->layers) {
         if (!layer || removed_ids.find(layer->id) != removed_ids.end())
             continue;
-        if (removed_ids.find(layer->transform_parent_id) != removed_ids.end()) {
-            detached_transform_children.push_back({
-                layer, editor_layer_world_transform_for_parenting(title_, *layer, playhead_)});
+        const bool group_changes =
+            removed_ids.find(layer->parent_id) != removed_ids.end();
+        const bool transform_parent_changes =
+            removed_ids.find(layer->transform_parent_id) != removed_ids.end();
+        if (!group_changes && !transform_parent_changes)
+            continue;
+        const std::string next_group_parent =
+            group_changes ? surviving_group_parent(layer->parent_id)
+                          : layer->parent_id;
+        const std::string next_transform_parent =
+            transform_parent_changes ? std::string()
+                                     : layer->transform_parent_id;
+        if (!editor_reparent_layer_with_parent_bind(
+                title_, *layer, next_group_parent, next_transform_parent,
+                playhead_)) {
+            BGL_LOG_WARNING("Grouping", QStringLiteral(
+                "Delete dependent reparent failed layer=%1")
+                .arg(QString::fromStdString(layer->id)));
         }
     }
 
@@ -706,16 +859,6 @@ void TitleEditor::delete_selected_layer()
     if (remaining.size() == title_->layers.size()) return;
 
     title_->layers = std::move(remaining);
-    for (const auto &[layer, world] : detached_transform_children) {
-        if (!layer)
-            continue;
-        const std::string group_parent_id =
-            removed_ids.find(layer->parent_id) == removed_ids.end()
-                ? layer->parent_id : std::string();
-        editor_set_local_transform_from_world(title_, *layer, world,
-                                              group_parent_id, std::string(),
-                                              playhead_);
-    }
     for (auto &layer : title_->layers) {
         if (!layer) continue;
         if (removed_ids.find(layer->parent_id) != removed_ids.end())
@@ -734,11 +877,8 @@ void TitleEditor::delete_selected_layer()
         const int select_index = std::clamp(first_removed_index, 0, (int)title_->layers.size() - 1);
         on_layer_selected(title_->layers[(size_t)select_index]->id);
     } else {
-        layers_->set_selected_layers({});
-        canvas_->set_selected_layers({});
         timeline_->set_title(title_);
-        timeline_->set_selected_layers({});
-        update_layer_panels(nullptr, playhead_);
+        synchronize_layer_selection({});
 
         /* Deleting the final layer is a special hard-empty transition.  Clear
          * the editor artwork synchronously and discard every RAM/disk frame for
@@ -776,59 +916,37 @@ void TitleEditor::restore_undo_snapshot(int index)
     if (!title_ || index < 0 || index >= (int)undo_stack_.size()) return;
     restoring_undo_ = true;
     auto snapshot = undo_stack_[(size_t)index];
-    title_->name = snapshot->name;
-    title_->description = snapshot->description;
-    title_->creator = snapshot->creator;
-    title_->creation_date = snapshot->creation_date;
-    title_->duration = snapshot->duration;
-    title_->loop_start = snapshot->loop_start;
-    title_->loop_end = snapshot->loop_end;
-    title_->playback_mode = snapshot->playback_mode;
-    title_->loop_type = snapshot->loop_type;
-    title_->pause_time = snapshot->pause_time;
-    title_->bg_color = snapshot->bg_color;
-    title_->width = snapshot->width;
-    title_->height = snapshot->height;
-    title_->graphic_type = snapshot->graphic_type;
-    title_->stinger_transition_point = snapshot->stinger_transition_point;
-    title_->stinger_audio_enabled = snapshot->stinger_audio_enabled;
-    title_->stinger_alpha_output = snapshot->stinger_alpha_output;
-    title_->stinger_pre_roll = snapshot->stinger_pre_roll;
-    title_->stinger_post_roll = snapshot->stinger_post_roll;
-    title_->stinger_render_mode = snapshot->stinger_render_mode;
-    title_->stinger_switch_mode = snapshot->stinger_switch_mode;
-    title_->stinger_editor_background = snapshot->stinger_editor_background;
-    title_->live_text_rows = snapshot->live_text_rows;
-    title_->live_text_row_ids = snapshot->live_text_row_ids;
-    title_->live_text_column_order = snapshot->live_text_column_order;
-    title_->live_text_header_state = snapshot->live_text_header_state;
-    title_->external_data_enabled = snapshot->external_data_enabled;
-    title_->current_cue_row = snapshot->current_cue_row;
-    title_->pending_cue_row = snapshot->pending_cue_row;
-    title_->cue_revision = snapshot->cue_revision;
-    title_->layers.clear();
-    title_->layers.reserve(snapshot->layers.size());
-    for (const auto &layer : snapshot->layers) {
-        if (layer) title_->layers.push_back(std::make_shared<Layer>(*layer));
-    }
+    restore_title_authoring_snapshot(*title_, *snapshot);
     undo_index_ = index;
     if (!sel_layer_id_.empty() && !title_->find_layer(sel_layer_id_))
         sel_layer_id_.clear();
     if (sel_layer_id_.empty() && !title_->layers.empty())
         sel_layer_id_ = title_->layers.back()->id;
     update_title_bar();
+    /* Undo/redo is an authoritative document replacement. Force the editor GPU
+     * session and the deferred RAM/disk cache invalidation path to observe the
+     * restored model before lightweight transform-only presentation resumes. */
+    force_next_title_visual_update();
+    schedule_cache_invalidation();
     canvas_->set_title(title_, true);
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
     title_props_->set_title(title_);
-    if (!sel_layer_id_.empty()) on_layer_selected(sel_layer_id_);
-    else update_layer_panels(nullptr, playhead_);
+    if (!sel_layer_id_.empty())
+        synchronize_layer_selection({sel_layer_id_});
+    else
+        synchronize_layer_selection({});
     on_playhead_changed(std::clamp(playhead_, 0.0, title_->duration));
     restoring_undo_ = false;
     update_undo_redo_actions();
     set_dirty(true);
     save_live_edit();
+    /* Audio transport may not receive a playhead callback when undo restores at
+     * the same time. Publish the restored audio model and force one seek/sync
+     * so forward, reverse, fades and mixer state cannot remain stale. */
+    publish_editor_audio_runtime_state();
+    sync_editor_audio_preview(true);
 }
 
 void TitleEditor::update_undo_redo_actions()
@@ -937,6 +1055,7 @@ void TitleEditor::play_pause()
         act_play_->setText("⏸");
         act_play_->setIcon(obs_icon("pause.svg"));
         playback_clock_.restart();
+        reset_playback_timer_cadence();
         play_timer_->start();
         sync_editor_audio_preview(true);
     } else {
@@ -959,6 +1078,7 @@ void TitleEditor::play_full_loop()
     act_play_->setText("⏸");
     act_play_->setIcon(obs_icon("pause.svg"));
     playback_clock_.restart();
+    reset_playback_timer_cadence();
     play_timer_->start();
     sync_editor_audio_preview(true);
 }
@@ -986,6 +1106,7 @@ void TitleEditor::reverse_play()
     act_play_->setText("⏸");
     act_play_->setIcon(obs_icon("pause.svg"));
     playback_clock_.restart();
+    reset_playback_timer_cadence();
     play_timer_->start();
     sync_editor_audio_preview(true);
 }
@@ -1105,9 +1226,9 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
         }
 
         if (source->parent_id.empty()) {
-            editor_offset_position_track(clone->position,
-                                         -source_center.x(),
-                                         -source_center.y());
+            editor_offset_layer_position_track(*clone,
+                                               -source_center.x(),
+                                               -source_center.y());
         }
         clones.push_back(clone);
     }
@@ -1116,13 +1237,9 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
         title_->layers.push_back(std::move(clone));
     title_->layers.push_back(asset_layer);
 
-    sel_layer_id_ = asset_layer->id;
     layers_->refresh();
-    layers_->set_selected_layer(asset_layer->id);
-    canvas_->set_selected_layer(asset_layer->id);
     timeline_->set_title(title_);
-    timeline_->set_selected_layer(asset_layer->id);
-    update_layer_panels(asset_layer, playhead_);
+    synchronize_layer_selection({asset_layer->id});
     force_next_title_visual_update();
     on_title_modified(false);
 }
