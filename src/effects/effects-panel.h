@@ -35,6 +35,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 #include <set>
 
 class QEvent;
@@ -60,6 +61,7 @@ class EffectsPanel : public QWidget {
 public:
     explicit EffectsPanel(QWidget *parent = nullptr);
     ~EffectsPanel() override;
+    void set_title(std::shared_ptr<Title> title) { title_ = std::move(title); }
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
     void update_playhead(double playhead);
     void begin_shutdown();
@@ -94,6 +96,15 @@ private:
     void move_effect(int effect_index, int delta);
     void sync_legacy_enabled_flags();
     void emit_effect_changed();
+    bool choose_effect(LayerEffect *effect, int replace_index = -1);
+    void copy_effect_to_clipboard(int effect_index) const;
+    void copy_stack_to_clipboard() const;
+    bool paste_effect_from_clipboard(int insert_after = -1);
+    bool paste_stack_from_clipboard(bool replace_existing);
+    bool save_stack_preset(bool export_file);
+    bool import_stack_preset(bool replace_existing);
+    void reset_effect(int effect_index);
+    void set_stack_enabled(bool enabled);
     bool settings_editor_has_focus() const;
     void update_bound_controls();
     void publish_canvas_handles(bool force = false);
@@ -127,6 +138,7 @@ private:
         int effect_index = -1;
     };
 
+    std::shared_ptr<Title> title_;
     std::shared_ptr<Layer> layer_;
     double playhead_ = 0.0;
     bool loading_values_ = false;
@@ -146,5 +158,7 @@ private:
     QWidget *settings_container_ = nullptr;
     QVBoxLayout *settings_layout_ = nullptr;
     QToolButton *btn_respect_masks_ = nullptr;
+    QToolButton *btn_stack_enabled_ = nullptr;
+    QToolButton *btn_stack_menu_ = nullptr;
     std::vector<QPointer<BglCollapsiblePanel>> effect_panels_;
 };

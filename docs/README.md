@@ -1,6 +1,6 @@
 # Broadcast Graphics Live documentation
 
-These are the canonical documents for `v0.8.10-alpha` Development Version 219. Historical delivery reports and one-feature notes have been merged into the thematic guides and the consolidated changelog.
+These are the canonical documents for `v0.8.11-alpha` Development Version 239. Historical delivery reports and one-feature notes have been merged into the thematic guides and the consolidated changelog.
 
 | Document | Purpose |
 | --- | --- |

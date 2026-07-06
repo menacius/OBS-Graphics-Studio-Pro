@@ -98,7 +98,7 @@ bool CanvasPreview::active_draw_tool_can_manipulate_selected() const
             if (!is_canvas_text_layer(*layer))
                 return false;
         } else if (active_tool_ == CanvasTool::Image) {
-            if (layer->type != LayerType::Image)
+            if (!layer_type_is_image_like(layer->type))
                 return false;
         }
     }
@@ -222,7 +222,12 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
                 selected_ids.find(layer->id) != selected_ids.end())
                 continue;
             auto parent = title_->find_layer(layer->parent_id);
-            if (parent && layer_type_is_container(parent->type) &&
+            const bool regular_child = parent && layer_type_is_container(parent->type);
+            const bool linked_video_stream =
+                parent && parent->type == LayerType::Video &&
+                layer->type == LayerType::Audio && layer->linked_media_stream &&
+                layer->linked_media_layer_id == parent->id;
+            if ((regular_child || linked_video_stream) &&
                 selected_ids.find(parent->id) != selected_ids.end()) {
                 selected_ids.insert(layer->id);
                 added_descendant = true;
@@ -274,6 +279,14 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
             clone->mask_source_id.clear();
             clone->mask_mode = MaskMode::None;
         }
+        auto media_owner_clone = cloned_ids_by_original.find(clone->linked_media_layer_id);
+        if (media_owner_clone != cloned_ids_by_original.end()) {
+            clone->linked_media_layer_id = media_owner_clone->second;
+        } else if (clone->linked_media_stream) {
+            clone->linked_media_layer_id.clear();
+            clone->linked_media_stream = false;
+            clone->parent_id.clear();
+        }
     }
 
     std::vector<std::shared_ptr<Layer>> next_layers;
@@ -289,6 +302,7 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
             next_layers.push_back(clone->second);
     }
     title_->layers = std::move(next_layers);
+    synchronize_video_audio_streams(*title_);
 
     selected_layer_ids_.clear();
     drag_layer_states_.clear();
@@ -1059,7 +1073,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             return start_xf.inverted().map(canvas_pt);
         };
         const bool lock_aspect_resize =
-            ((layer->type == LayerType::Image && layer->image_box_lock_aspect_ratio) ||
+            ((layer_type_is_image_like(layer->type) && layer->image_box_lock_aspect_ratio) ||
              (layer_is_shape_sized(*layer) && layer->lock_aspect_ratio)) &&
             drag_start_h_ > 0.0f;
         Qt::KeyboardModifiers resize_modifiers = modifiers;

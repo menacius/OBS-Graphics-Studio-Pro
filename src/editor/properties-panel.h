@@ -57,6 +57,7 @@ public:
 
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
     void update_playhead(double playhead);
+    void refresh_media_range_controls();
     void set_title(std::shared_ptr<Title> t);
     void set_active_text_edit_layer(const std::string &layer_id);
 
@@ -111,11 +112,19 @@ private:
     int external_gradient_stop_index_ = -1;
     bool external_gradient_stroke_ = false;
 
+    QGroupBox       *video_box_    = nullptr;
+    QDoubleSpinBox  *spn_video_in_ = nullptr;
+    QDoubleSpinBox  *spn_video_out_ = nullptr;
+
     QGroupBox       *audio_box_    = nullptr;
     QLineEdit       *edt_audio_source_ = nullptr;
     QToolButton     *btn_audio_browse_ = nullptr;
     QDoubleSpinBox  *spn_audio_in_ = nullptr;
     QDoubleSpinBox  *spn_audio_out_ = nullptr;
+    QPushButton     *btn_audio_set_in_ = nullptr;
+    QPushButton     *btn_audio_set_out_ = nullptr;
+    QLabel          *lbl_audio_range_preview_ = nullptr;
+    QLabel          *lbl_audio_range_feedback_ = nullptr;
     QDoubleSpinBox  *spn_audio_volume_ = nullptr;
     QDoubleSpinBox  *spn_audio_pan_ = nullptr;
     QSlider         *sld_audio_volume_ = nullptr;

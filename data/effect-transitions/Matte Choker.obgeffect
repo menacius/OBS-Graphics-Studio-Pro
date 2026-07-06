@@ -1,0 +1,9 @@
+{
+  "format": "obs-bgs-effect-preset",
+  "version": 1,
+  "kind": "effect",
+  "id": "matte-choker",
+  "name": "Matte Choker",
+  "type": "matte-choker",
+  "category": "Effects/Keying & Matte"
+}

@@ -11,7 +11,7 @@
                 adjustment_group.effects.push_back(backdrop_effect);
                 gs_texture_t *adjusted_background = apply_gpu_layer_effect_stack(
                     session, adjustment_group, layer_time, frame,
-                    width, height, nullptr, true);
+                    width, height, nullptr, true, frame, true);
                 if (!adjusted_background || adjusted_background == frame)
                     continue;
                 gs_texrender_t *backdrop_target = current_is_a
@@ -52,7 +52,8 @@
             if (!coverage)
                 continue;
             gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
-                session, layer, layer_time, frame, width, height);
+                session, layer, layer_time, frame, width, height,
+                nullptr, false, frame, true);
             if (adjusted && adjusted != frame) {
                 gs_texrender_t *next = current_is_a ? session->frame_b
                                                     : session->frame_a;
@@ -72,7 +73,8 @@
                                         layer.effect_stack_respects_masks;
         if (!render_gpu_layer_to_target(session, session->title, layer,
                                         session->time, session->layer_target,
-                                        !effects_after_mask, std::string(), 1.0))
+                                        !effects_after_mask, std::string(), 1.0,
+                                        std::string(), false, frame))
             continue;
         gs_texture_t *foreground = gs_texrender_get_texture(session->layer_target);
         if (!foreground)
@@ -125,7 +127,7 @@
                     adjustment_layer.effects.push_back(backdrop_effect);
                     gs_texture_t *adjusted_background = apply_gpu_layer_effect_stack(
                         session, adjustment_layer, layer_time, frame,
-                        width, height, nullptr, true);
+                        width, height, nullptr, true, frame, true);
                     if (!adjusted_background || adjusted_background == frame)
                         continue;
                     gs_texrender_t *backdrop_target = current_is_a
@@ -151,7 +153,7 @@
             if (!render_gpu_layer_to_target(
                     session, session->title, layer, session->time,
                     session->layer_target, !effects_after_mask,
-                    std::string(), 1.0))
+                    std::string(), 1.0, std::string(), false, frame))
                 continue;
             foreground = gs_texrender_get_texture(session->layer_target);
             if (!foreground)
@@ -177,7 +179,7 @@
         if (effects_after_mask) {
             foreground = apply_gpu_layer_effect_stack(
                 session, layer, layer_time, foreground,
-                session->width, session->height);
+                session->width, session->height, nullptr, false, frame, true);
             if (!foreground)
                 continue;
         }
@@ -533,12 +535,16 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
     session->pending_base_frame = QImage();
     session->base_frame_pending = false;
 
-    const bool model_changed = !session->has_title ||
+    const bool forced_compatibility_rebuild =
+        session->force_compatibility_raster_rebuild;
+    const bool model_changed = forced_compatibility_rebuild ||
+        !session->has_title ||
         session->model_revision != model_revision ||
         session->title.id != title.id;
     if (model_changed) {
         bool updated_transform_snapshot = false;
-        if (transform_only_update && session->has_title &&
+        if (!forced_compatibility_rebuild && transform_only_update &&
+            session->has_title &&
             session->title.id == title.id &&
             session->title.layers.size() == title.layers.size()) {
             updated_transform_snapshot = true;
@@ -603,6 +609,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         }
         session->has_title = true;
         session->model_revision = model_revision;
+        session->force_compatibility_raster_rebuild = false;
     }
 
     const std::size_t layer_count = session->title.layers.size();
@@ -623,11 +630,22 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
      * track-matte sources it references. Parent layers are evaluated as
      * transforms and do not need their own raster texture. */
     std::unordered_set<std::string> needed_ids;
-    needed_ids.reserve((resolved_last - resolved_first) * 2 + 4);
+    needed_ids.reserve((resolved_last - resolved_first) * 3 + 8);
+    auto add_effect_source_dependencies = [&](const Layer &owner) {
+        for (const LayerEffect &effect : owner.effects) {
+            if ((effect.type == LayerEffectType::LightWrap ||
+                 effect.type == LayerEffectType::DisplacementMap) &&
+                !effect.effect_source_layer_id.empty() &&
+                effect.effect_source_layer_id != owner.id) {
+                needed_ids.insert(effect.effect_source_layer_id);
+            }
+        }
+    };
     for (std::size_t index = resolved_first; index < resolved_last; ++index) {
         const auto &layer = session->title.layers[index];
         if (!layer)
             continue;
+        add_effect_source_dependencies(*layer);
         if (layer->type != LayerType::Adjustment &&
             !layer_type_is_container(layer->type))
             needed_ids.insert(gpu_session_layer_id(*layer));
@@ -640,6 +658,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                 for (const auto &candidate : session->title.layers) {
                     if (!candidate || candidate->parent_id != group_ids[cursor])
                         continue;
+                    add_effect_source_dependencies(*candidate);
                     if (layer_type_is_container(candidate->type))
                         group_ids.push_back(candidate->id);
                     else if (candidate->type != LayerType::Adjustment)
@@ -666,10 +685,12 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             if (!dependency)
                 continue;
 
+            add_effect_source_dependencies(*dependency);
             if (layer_type_is_container(dependency->type)) {
                 for (const auto &candidate : session->title.layers) {
                     if (!candidate || candidate->parent_id != dependency->id)
                         continue;
+                    add_effect_source_dependencies(*candidate);
                     const std::string child_id = layer_type_is_container(candidate->type)
                         ? candidate->id : gpu_session_layer_id(*candidate);
                     if (candidate->type != LayerType::Adjustment)
@@ -758,10 +779,19 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             key += "|clock=" + std::to_string(clock_second);
         else if (layer.type == LayerType::Ticker)
             key += "|ticker=" + std::to_string(QDateTime::currentMSecsSinceEpoch());
+        else if (layer.type == LayerType::Video) {
+            key += "|" + bgl::video::FrameRuntime::instance()
+                .frame_cache_key_for_layer(
+                    layer, layer_time, 1.0 / std::max(1e-6, source_frame_duration()));
+        }
         if (layer.type == LayerType::TransitionInput)
             key += session->transition_input_preview_enabled
                 ? "|transition-input-preview=1"
                 : "|transition-input-preview=0";
+        if (layer.use_as_scene_mask)
+            key += session->scene_mask_placeholder_preview_enabled
+                ? "|scene-mask-placeholder-preview=1"
+                : "|scene-mask-placeholder-preview=0";
 
         auto &entry = session->layers[id];
         /* Moving/rotating a layer or one of its parents changes only the GPU
@@ -839,6 +869,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const bool dynamic_raster = layer.type != LayerType::TransitionInput &&
             (layer.type == LayerType::Clock ||
              layer.type == LayerType::Ticker ||
+             layer.type == LayerType::Video ||
              layer_has_non_transform_animation(base_key_layer) ||
              text_animator_stack_is_time_dependent(layer.text_animators));
         if (!model_changed && !dynamic_raster && !local_geometry_changed &&
@@ -932,7 +963,8 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             const double raster_scale = session->editor_draft
                 ? session->preview_quality_scale : 1.0;
             const MotionBaseRaster raster = render_gpu_layer_base_raster(
-                session->title, layer, layer_time, raster_scale);
+                session->title, layer, layer_time, raster_scale,
+                session->scene_mask_placeholder_preview_enabled);
             entry.gpu_text = false;
             entry.gpu_primitive = false;
             entry.pending_image = raster.image;
@@ -1007,6 +1039,24 @@ void title_gpu_render_session_set_transition_input_preview(
         return;
     session->transition_input_preview_enabled = enabled;
     session->frame_dirty = true;
+}
+
+
+void title_gpu_render_session_set_scene_mask_placeholder_preview(
+    TitleGpuRenderSession *session, bool enabled)
+{
+    if (!session || session->destroying.load())
+        return;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        session->scene_mask_placeholder_preview_enabled == enabled)
+        return;
+    session->scene_mask_placeholder_preview_enabled = enabled;
+    session->frame_dirty = true;
+    for (auto &pair : session->layers) {
+        if (pair.second.key.find("|scene-mask-placeholder-preview=") != std::string::npos)
+            pair.second.key.clear();
+    }
 }
 
 void title_gpu_render_session_update(TitleGpuRenderSession *session,

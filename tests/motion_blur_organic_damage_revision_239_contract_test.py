@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Development Version 239 motion blur and organic damage shader contract."""
+from pathlib import Path
+import json
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding='utf-8')
+
+cmake = read('CMakeLists.txt')
+build = read('src/core/build-info.h')
+schema = read('src/core/title-serialization-schema.h')
+manifest = json.loads(read('tests/test-suite-manifest.json'))
+readme = read('README.md')
+changelog = read('docs/CHANGELOG.md')
+
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build
+assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 239:' in schema
+assert manifest['development_version'] == 239
+assert 'Development Version 239' in readme
+assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+
+cpu_motion = read('src/obs/title-source/gpu-resources-primitives.inc')
+gpu_motion = read('src/obs/title-source/gpu-presentation-readback.inc')
+shader = read('data/effect-transitions/shaders/damage-distortion/damage-distortion.effect')
+embedded = read('src/rendering/title-effect-registry.cpp')
+runtime = read('src/effects/effect-runtime.cpp')
+
+# Image/video motion blur must not use the old low 12/24 sample ceiling that
+# made bitmap and video exposures look like posterized ghost frames.
+assert 'sharp_image_layer ? 2.25 : 1.0' in cpu_motion
+assert 'sharp_image_layer ? 96 : 48' in cpu_motion
+assert 'image_or_video_motion ? 64 : 14' in gpu_motion
+assert 'image_or_video_motion ? 96 : 24' in gpu_motion
+assert 'gpu-effects-v21-organic-damage-motion239' in gpu_motion
+assert 'gpu-effects-v20-unified-effect-technique-video238' not in gpu_motion
+
+# The damage shader should be layered and organic, not a single noise overlay.
+for token in [
+    'film_vertical_scratch', 'film_hair_fiber', 'film_dust_blob', 'film_blotch', 'emulsion_grain',
+    'analog_yiq', 'analog_from_yiq', 'analog_dropout', 'tracking_band', 'head_switch', 'interlace',
+    'macroblock compression artifact selector', 'digital_ringing', 'packet_jump', 'quant_levels', 'block_local',
+]:
+    assert token in shader, token
+    assert token in embedded, token
+
+for token in ['PSDamage', 'composite_film', 'composite_analog', 'composite_digital', 'technique Draw']:
+    assert token in shader and token in embedded, token
+
+# Damage controls used by the organic shader are part of animatable metadata.
+for token in ['"effect_roundness"', '"effect_center"', '"effect_secondary_color"']:
+    assert token in runtime, token
+
+# Blur effects must still use the existing fast Gaussian backend.
+blur_backend = read('src/obs/title-source/gpu-masks-groups-cache.inc')
+assert 'render_separable_gaussian' in blur_backend
+assert 'gs_effect_loop(blur, "Gaussian")' in blur_backend
+
+print('Development Version 239 motion blur and organic damage contract: PASS')

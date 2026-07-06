@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "development_version": 219,
+  "development_version": 239,
   "default_timeout_seconds": 90,
   "required_areas": [
     "editor_gui",
@@ -17,9 +17,18 @@
   "areas": {
     "editor_gui": {
       "python": [
+        "tests/effects_ui_presets_animation_revision_226_contract_test.py",
         "tests/editor_stability_interaction_consistency_revision_213_contract_test.py",
         "tests/editor_usability_frame_pacing_revision_212_3_contract_test.py",
-        "tests/title_dock_list_icon_scope_contract_test.py"
+        "tests/title_dock_list_icon_scope_contract_test.py",
+        "tests/video_layer_performance_ui_3d_revision_229_contract_test.py",
+        "tests/video_frame_accurate_playback_audit_revision_230_contract_test.py",
+        "tests/video_decode_efficiency_scene_mask_transform_revision_231_contract_test.py",
+        "tests/scene_mask_video_audio_cleanup_hotfix_231_contract_test.py",
+        "tests/video_audio_range_scene_mask_fx_timeline_revision_232_contract_test.py",
+        "tests/modular_visual_effects_sdk_revision_233_contract_test.py",
+        "tests/range_video_decode_playback_revision_234_contract_test.py",
+        "tests/motion_blur_organic_damage_revision_239_contract_test.py"
       ],
       "native": [
         "editor_ui_revision_140_contract_test",
@@ -31,7 +40,8 @@
       "python": [
         "tests/timeline_graph_editor_completion_revision_215_contract_test.py",
         "tests/timeline_layer_list_row_parity_revision_212_2_contract_test.py",
-        "tests/layer_list_vector3_graph_channels_revision_212_contract_test.py"
+        "tests/layer_list_vector3_graph_channels_revision_212_contract_test.py",
+        "tests/video_audio_range_scene_mask_fx_timeline_revision_232_contract_test.py"
       ],
       "native": [
         "temporal_graph_editor_contract_test",
@@ -52,11 +62,30 @@
     },
     "rendering_2d_3d": {
       "python": [
+        "tests/keying_matte_spill_revision_225_contract_test.py",
+        "tests/test_development_version_224_effect_shader_entrypoints.py",
+        "tests/development_version_224_first_frame_fail_open_contract_test.py",
+        "tests/lens_distortion_finishing_effects_revision_224_contract_test.py",
+        "tests/convolution_detail_core_revision_222_contract_test.py",
+        "tests/procedural_noise_engine_revision_221_contract_test.py",
+        "tests/noise_shader_runtime_recovery_revision_221_contract_test.py",
+        "tests/unified_effects_runtime_revision_220_contract_test.py",
+        "tests/effect_runtime_startup_lifetime_revision_220_contract_test.py",
+        "tests/scene_mask_backdrop_compositing_revision_220_contract_test.py",
         "tests/three_d_pipeline_completion_revision_216_contract_test.py",
         "tests/hardware_depth_pipeline_contract_test.py",
         "tests/masks_blends_effects_3d_revision_206_contract_test.py",
         "tests/anchor_stable_projected_content_contract_test.py",
-        "tests/gpu_text_glyph_overdraw_contract_test.py"
+        "tests/gpu_text_glyph_overdraw_contract_test.py",
+        "tests/video_layer_visual_effects_performance_revision_228_contract_test.py",
+        "tests/video_layer_performance_ui_3d_revision_229_contract_test.py",
+        "tests/video_frame_accurate_playback_audit_revision_230_contract_test.py",
+        "tests/video_decode_efficiency_scene_mask_transform_revision_231_contract_test.py",
+        "tests/scene_mask_video_audio_cleanup_hotfix_231_contract_test.py",
+        "tests/video_audio_range_scene_mask_fx_timeline_revision_232_contract_test.py",
+        "tests/video_playback_range_damage_effects_revision_235_contract_test.py",
+        "tests/video_decode_damage_engine_revision_237_contract_test.py",
+        "tests/effect_pipeline_audit_revision_238_contract_test.py"
       ],
       "native": [
         "layer_3d_transform_contract_test",
@@ -68,7 +97,10 @@
       "python": [
         "tests/performance_cache_threading_revision_217_contract_test.py",
         "tests/cache_prerender_realtime_performance_contract_test.py",
-        "tests/performance_cache_rendering_revision_210_contract_test.py"
+        "tests/performance_cache_rendering_revision_210_contract_test.py",
+        "tests/video_layer_performance_ui_3d_revision_229_contract_test.py",
+        "tests/video_frame_accurate_playback_audit_revision_230_contract_test.py",
+        "tests/video_decode_efficiency_scene_mask_transform_revision_231_contract_test.py"
       ],
       "native": [
         "performance_cache_threading_contract_test",
@@ -78,9 +110,14 @@
     },
     "audio_transport": {
       "python": [
+        "tests/video_layer_multistream_av_revision_227_contract_test.py",
+        "tests/video_audio_runtime_refresh_hotfix_227_contract_test.py",
         "tests/audio_layer_mixing_effects_contract_test.py",
         "tests/audio_playback_obs_integration_contract_test.py",
-        "tests/audio_transport_waveform_regression_contract_test.py"
+        "tests/audio_transport_waveform_regression_contract_test.py",
+        "tests/video_frame_accurate_playback_audit_revision_230_contract_test.py",
+        "tests/scene_mask_video_audio_cleanup_hotfix_231_contract_test.py",
+        "tests/video_audio_range_scene_mask_fx_timeline_revision_232_contract_test.py"
       ],
       "native": [
         "audio_output_scheduler_test",
@@ -91,7 +128,8 @@
       "python": [
         "tests/manual_uncue_persistence_transition_contract.py",
         "tests/manual_uncue_terminal_transition_contract_test.py",
-        "tests/scene_mask_uncue_initial_state_contract_test.py"
+        "tests/scene_mask_uncue_initial_state_contract_test.py",
+        "tests/video_frame_accurate_playback_audit_revision_230_contract_test.py"
       ],
       "native": [
         "cue_ending_visual_contract_test",
@@ -121,7 +159,10 @@
       "python": [
         "tests/qt6_websockets_bootstrap_contract_test.py",
         "tests/audio_thread_name_portability_contract_test.py",
-        "tests/stinger_qt_slots_compile_contract_test.py"
+        "tests/stinger_qt_slots_compile_contract_test.py",
+        "tests/gpu_effects_transitions_msvc_scope_hotfix_227_contract_test.py",
+        "tests/video_layer_msvc_fps_fallback_hotfix_227_contract_test.py",
+        "tests/scene_mask_video_audio_cleanup_hotfix_231_contract_test.py"
       ],
       "native": [
         "development_audit_contract_test"

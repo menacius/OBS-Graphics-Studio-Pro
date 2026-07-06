@@ -144,6 +144,15 @@ static void complete_import_diagnostics(const Title &title, TitleImportDiagnosti
                          QString::fromStdString(layer->image_path)));
         }
 
+        if (layer->type == LayerType::Video && !layer->video_source.empty() &&
+            !QFileInfo::exists(QString::fromStdString(layer->video_source))) {
+            append_unique_diagnostic(
+                diagnostics.missing_images,
+                QStringLiteral("%1: %2")
+                    .arg(QString::fromStdString(layer->name),
+                         QString::fromStdString(layer->video_source)));
+        }
+
         if (layer->type == LayerType::Audio && !layer->audio_source.empty() &&
             !QFileInfo::exists(QString::fromStdString(layer->audio_source))) {
             append_unique_diagnostic(

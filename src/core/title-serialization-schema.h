@@ -18,7 +18,7 @@ using json = nlohmann::json;
  * schema/development identity therefore lives on every title object. Template
  * exports additionally expose the same values on their object root. */
 inline constexpr int kCurrentTitleSchemaVersion = 6;
-inline constexpr int kCurrentDevelopmentVersion = 219;
+inline constexpr int kCurrentDevelopmentVersion = 239;
 inline constexpr int kFirstAuditedDevelopmentVersion = 144;
 inline constexpr int kCurrentProxyManifestSchemaVersion = 2;
 inline constexpr int kCurrentDockSettingsSchemaVersion = 2;
@@ -86,6 +86,8 @@ inline int infer_development_version(const json &title)
 
     /* Inference is deliberately conservative. It is used only to skip
      * migrations that clearly predate the fields already present. */
+    if (title_has_layer_type(title, 12))
+        return 227;
     if (title.contains("layers") && title["layers"].is_array()) {
         for (const auto &layer : title["layers"])
             if (layer.is_object() &&
@@ -719,6 +721,140 @@ inline void apply_development_migration(int target_version, json &title,
          * payloads remain persisted, but are shared immutably and excluded from
          * render fingerprints; no authored schema fields changed. */
         validate_recover_title_shape(title, report);
+        break;
+    case 220:
+        /* Unified effects runtime and render baseline. Effect descriptors,
+         * evaluated parameter snapshots, resource pools and diagnostics are
+         * runtime-only; stable effect IDs and authored schema 6 are unchanged. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 221:
+        /* Initial procedural Noise runtime. Development Version 222 replaces
+         * older built-in effect schemas with fresh current-default instances. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 222:
+        /* Noise schema 3 removes compatibility modes. The built-in loader
+         * resets older effect instances to current defaults. New convolution
+         * and detail effects use append-only stable IDs and existing fields. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 223:
+        /* Optical effects and catalog manifests use append-only effect IDs. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 224:
+        /* Lens, distortion and finishing effects use append-only IDs and the
+         * existing effect parameter envelope. Changed built-ins carry a new
+         * schema and are intentionally reset to their current defaults. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 225:
+        /* Development Version 225 appends keying/matte IDs without reshaping
+         * existing effect records or retaining compatibility modes. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 226:
+        /* Source-aware effects append stable effect IDs and optional source
+         * fields. Presets and the shared effect/timeline hierarchy reuse the
+         * existing effect envelope, so migration only validates/recoveries. */
+        validate_recover_title_shape(title, report);
+        break;
+    case 227:
+        /* Video layers append a new layer type and source metadata. Linked
+         * audio streams remain ordinary Audio rows, so existing audio schema
+         * recovery and forward-compatible passthrough continue to apply. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 228:
+        /* Video visual-effect eligibility and decoded-frame cache keys do not
+         * reshape saved documents. Re-run the Video/audio stream recovery so
+         * old 227 projects keep synchronized embedded stream rows. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 229:
+        /* Video performance, fixed layer-list columns and 3D editor refresh
+         * semantics are runtime/editor-only. Keep saved projects unchanged,
+         * but validate/recover media stream rows in case the file came from
+         * an earlier 227/228 build. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 230:
+        /* Frame-accurate Video playback is runtime-only: persisted media
+         * sources keep the same trim, FPS metadata and stream links. Re-run
+         * validation so older 227-229 documents recover missing stream rows
+         * before the deterministic timeline-frame mapper evaluates them. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 231:
+        /* Video decode/effects optimizations, frame-step shortcuts, scene-mask
+         * placeholders and transform menu actions do not reshape saved data.
+         * Validate/recover media stream rows and keep forward-compatible fields. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 232:
+        /* Editor-only scene-mask placeholder shape preview, FX-strip filtering
+         * and Video/Audio range authoring controls are UI/runtime behavior.
+         * Saved layer fields are unchanged; keep stream rows recoverable. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 233:
+        /* Range authoring now keeps media In/Out locked to the strip length
+         * and the public Visual Effects SDK extends plugin metadata only.
+         * Validate/recover media stream rows; project effect payloads remain
+         * forward-compatible by stable extension ids and JSON state. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 234:
+        /* Inspector-only range compaction, realtime timeline-trim refresh,
+         * decoder LRU/reverse-step stability, playback start semantics,
+         * effect preset additions and control styling do not change persisted
+         * layer schema. Re-run media validation for older video/audio titles. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 235:
+        /* Video decoder seek fixes, lightweight live range refresh and the
+         * Noise/Grain/distortion effect split are compatible with existing
+         * project JSON. Keep the same validation pass for older media titles. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 236:
+        /* Video presentation fallback, faster live range trim and dedicated
+         * Film/Analog/Digital damage shaders are runtime/UI/effect implementation
+         * changes; saved title JSON remains compatible. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 237:
+        /* Decoder look-ahead caching and the damage-map/composite multi-pass
+         * effect engine are runtime implementation changes. Revalidate media
+         * rows and keep serialized effect state stable by built-in effect id. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 238:
+        /* Effect-pipeline audit unifies the GPU technique selector and moves
+         * Film/Analog/Digital distortion to the shared artifact Draw pass.
+         * Existing serialized effect ids/parameters remain stable; revalidate
+         * media rows while preserving the fast Gaussian blur backend. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 239:
+        /* Motion blur sample-density tuning and the organic damage shader
+         * revision are runtime/effect implementation changes. Serialized
+         * effect ids and parameters remain stable; keep media validation. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
         break;
     default:
         break;

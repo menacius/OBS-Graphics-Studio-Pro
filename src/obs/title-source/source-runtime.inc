@@ -362,6 +362,8 @@ struct TitleSourceData {
     bool        editor_playback_reverse = false;
     std::atomic<double> editor_transport_time {0.0};
     std::atomic<bool> editor_transport_reverse {false};
+    std::mutex editor_title_mutex;
+    std::shared_ptr<Title> editor_title_snapshot;
     bool        source_audio_active_known = false;
     bool        source_audio_active = false;
     uint64_t    seen_audio_membership_revision =
@@ -482,6 +484,35 @@ void title_source_set_editor_transport(obs_source_t *source, double time,
                                             std::memory_order_release);
     it->second->editor_transport_reverse.store(reverse,
                                                std::memory_order_release);
+}
+
+void title_source_set_editor_title_snapshot(obs_source_t *source,
+                                            const std::shared_ptr<Title> &title)
+{
+    if (!source)
+        return;
+    TitleSourceData *data = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+        const auto it = g_title_source_instances.find(source);
+        if (it == g_title_source_instances.end() || !it->second ||
+            !it->second->editor_transport_controlled)
+            return;
+        data = it->second;
+    }
+    std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
+    data->editor_title_snapshot = title;
+    data->source_audio_active_known = false;
+    data->seen_audio_membership_revision = std::numeric_limits<uint64_t>::max();
+    data->dirty = true;
+}
+
+static std::shared_ptr<Title> editor_title_snapshot_for_source(TitleSourceData *data)
+{
+    if (!data || !data->editor_transport_controlled)
+        return nullptr;
+    std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
+    return data->editor_title_snapshot;
 }
 
 static bool title_has_audio_track(const std::shared_ptr<Title> &title)
@@ -706,7 +737,7 @@ static bool effect_has_animation(const LayerEffect &effect)
            effect.secondary_color_b.is_animated() ||
            (!effect.extension_keyframes_json.empty() &&
             effect.extension_keyframes_json != "{}") ||
-           (effect.type == LayerEffectType::Noise && effect.effect_animated);
+           ((effect.type == LayerEffectType::Noise || effect.type == LayerEffectType::Grain || effect.type == LayerEffectType::FilmDistortion || effect.type == LayerEffectType::AnalogDistortion || effect.type == LayerEffectType::DigitalDistortion) && effect.effect_animated);
 }
 
 static bool layer_has_effect_animation(const Layer &layer)
@@ -897,7 +928,7 @@ static std::vector<std::shared_ptr<Layer>> scene_mask_layers(const std::shared_p
     std::vector<std::shared_ptr<Layer>> masks;
     if (!title) return masks;
     for (const auto &layer : title->layers) {
-        if (layer && layer->use_as_scene_mask)
+        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
             masks.push_back(layer);
     }
     return masks;
@@ -907,7 +938,7 @@ static std::vector<const Layer *> scene_mask_layers(const Title &title)
 {
     std::vector<const Layer *> masks;
     for (const auto &layer : title.layers) {
-        if (layer && layer->use_as_scene_mask)
+        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
             masks.push_back(layer.get());
     }
     return masks;

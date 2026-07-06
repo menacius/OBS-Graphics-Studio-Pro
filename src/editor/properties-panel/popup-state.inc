@@ -233,7 +233,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         "QGroupBox::title{subcontrol-origin:margin;left:6px;top:2px;padding:0 4px;}"
         "QGroupBox::indicator{width:10px;height:10px;margin-left:2px;}"
         "QLabel{color:%4;font-size:10px;}")
-            .arg(panel_text_name, section_bg_name, border_name, subtle_text_name);
+            .arg(panel_text_name)
+            .arg(section_bg_name)
+            .arg(border_name)
+            .arg(subtle_text_name);
     const QString control_style =
         QStringLiteral("QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
         "border:1px solid %3;border-radius:2px;padding:1px 3px;selection-background-color:%4;}"
@@ -737,6 +740,66 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     bgl_add_panel_section(vl, transform_box_, bgl_tr("OBSTitles.Transform"), btn_transform_defaults_);
 
+    /* ── Video Layer ── */
+    video_box_ = new QGroupBox(QStringLiteral("Video Layer"), inner);
+    video_box_->setStyleSheet(section_style);
+    auto *video_form = new QFormLayout(video_box_);
+    style_form(video_form);
+    /* Video Range is intentionally compact: source path, preview copy, set buttons
+     * and feedback text are omitted from the inspector. The two spin boxes keep
+     * their In/Out labels as in-field prefixes and stay on one row, matching the
+     * compact Transform-property style. */
+    spn_video_in_ = mk_dspin(0.0, 86400.0, 0.01);
+    spn_video_out_ = mk_dspin(0.0, 86400.0, 0.01);
+    spn_video_in_->setDecimals(2);
+    spn_video_out_->setDecimals(2);
+    spn_video_in_->setPrefix(QStringLiteral("In "));
+    spn_video_out_->setPrefix(QStringLiteral("Out "));
+    spn_video_in_->setSuffix(QStringLiteral(" s"));
+    spn_video_out_->setSuffix(QStringLiteral(" s"));
+    auto *video_range_row = new QWidget(video_box_);
+    auto *video_range_layout = new QHBoxLayout(video_range_row);
+    video_range_layout->setContentsMargins(0, 0, 0, 0);
+    video_range_layout->setSpacing(5);
+    spn_video_in_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    spn_video_out_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    video_range_layout->addWidget(spn_video_in_, 1);
+    video_range_layout->addWidget(spn_video_out_, 1);
+    add_form_row(video_form, QStringLiteral("Range"), video_range_row);
+    video_box_->setVisible(false);
+    bgl_add_panel_section(vl, video_box_);
+
+    auto video_changed = [this](bool commit = false) {
+        if (loading_values_ || !title_ || !layer_ || layer_->type != LayerType::Video)
+            return;
+        synchronize_video_audio_streams(*title_, layer_->id);
+        emit audio_property_changed(commit);
+        emit property_changed(commit);
+    };
+    connect(spn_video_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, video_changed](double v) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                set_layer_media_range_in_point(*layer_, v);
+                {
+                    QSignalBlocker blockIn(spn_video_in_);
+                    QSignalBlocker blockOut(spn_video_out_);
+                    spn_video_in_->setValue(layer_->video_in_point);
+                    spn_video_out_->setValue(layer_->video_out_point);
+                }
+                video_changed(false);
+            });
+    connect(spn_video_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, video_changed](double v) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                set_layer_media_range_out_point(*layer_, v);
+                {
+                    QSignalBlocker blockIn(spn_video_in_);
+                    QSignalBlocker blockOut(spn_video_out_);
+                    spn_video_in_->setValue(layer_->video_in_point);
+                    spn_video_out_->setValue(layer_->video_out_point);
+                }
+                video_changed(false);
+            });
     /* ── Audio Layer ── */
     audio_box_ = new QGroupBox(bgl_tr("OBSTitles.AudioLayer"), inner);
     audio_box_->setStyleSheet(section_style);
@@ -744,6 +807,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_form(audio_form);
     edt_audio_source_ = new QLineEdit(audio_box_);
     edt_audio_source_->setReadOnly(true);
+    edt_audio_source_->setFixedHeight(20);
     edt_audio_source_->setStyleSheet(control_style);
     btn_audio_browse_ = new QToolButton(audio_box_);
     btn_audio_browse_->setText(QStringLiteral("…"));
@@ -755,6 +819,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     spn_audio_in_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_in_->setSuffix(QStringLiteral(" s"));
     spn_audio_out_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_out_->setSuffix(QStringLiteral(" s"));
+    btn_audio_set_in_ = new QPushButton(QStringLiteral("Set In"), audio_box_);
+    btn_audio_set_out_ = new QPushButton(QStringLiteral("Set Out"), audio_box_);
+    btn_audio_set_in_->setToolTip(QStringLiteral("Set the audio media In point from the current editor playhead."));
+    btn_audio_set_out_->setToolTip(QStringLiteral("Set the audio media Out point from the current editor playhead."));
+    lbl_audio_range_preview_ = new QLabel(audio_box_);
+    lbl_audio_range_preview_->setWordWrap(true);
+    lbl_audio_range_preview_->setStyleSheet(QStringLiteral("color:%1;font-size:11px;background:transparent;").arg(panel_text_name));
+    lbl_audio_range_feedback_ = new QLabel(audio_box_);
+    lbl_audio_range_feedback_->setWordWrap(true);
+    lbl_audio_range_feedback_->setStyleSheet(QStringLiteral("color:%1;font-size:11px;background:transparent;").arg(subtle_text_name));
     spn_audio_volume_ = mk_dspin(0.0, 400.0, 1.0); spn_audio_volume_->setSuffix(QStringLiteral(" %"));
     spn_audio_pan_ = mk_dspin(-100.0, 100.0, 1.0); spn_audio_pan_->setSuffix(QStringLiteral(" %"));
     spn_audio_fade_in_ = mk_dspin(0.0, 60.0, 0.01); spn_audio_fade_in_->setSuffix(QStringLiteral(" s"));
@@ -803,19 +877,30 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_audio_fade_curve_->addItem(QStringLiteral("Linear"), (int)AudioFadeCurve::Linear);
     cmb_audio_fade_curve_->addItem(QStringLiteral("Smooth"), (int)AudioFadeCurve::Smooth);
     cmb_audio_fade_curve_->addItem(QStringLiteral("Equal Power"), (int)AudioFadeCurve::EqualPower);
+    cmb_audio_fade_curve_->setFixedHeight(20);
     cmb_audio_fade_curve_->setStyleSheet(control_style);
     cmb_audio_playback_ = new QComboBox(audio_box_);
     cmb_audio_playback_->addItem(QStringLiteral("Play once"), (int)AudioPlaybackMode::PlayOnce);
     cmb_audio_playback_->addItem(QStringLiteral("Loop"), (int)AudioPlaybackMode::Loop);
     cmb_audio_playback_->addItem(QStringLiteral("Pause at end"), (int)AudioPlaybackMode::PauseAtOut);
+    cmb_audio_playback_->setFixedHeight(20);
     cmb_audio_playback_->setStyleSheet(control_style);
     chk_audio_mute_ = new BglSwitch(QString(), audio_box_);
     chk_audio_solo_ = new BglSwitch(QString(), audio_box_);
     chk_audio_loop_ = new BglSwitch(QString(), audio_box_);
     chk_audio_independent_ = new BglSwitch(QString(), audio_box_);
     for (auto *box : {chk_audio_mute_, chk_audio_solo_, chk_audio_loop_, chk_audio_independent_}) style_checkbox(box);
+    auto *audio_range_tools = new QWidget(audio_box_);
+    auto *audio_range_tools_layout = new QHBoxLayout(audio_range_tools);
+    audio_range_tools_layout->setContentsMargins(0, 0, 0, 0);
+    audio_range_tools_layout->setSpacing(5);
+    audio_range_tools_layout->addWidget(btn_audio_set_in_);
+    audio_range_tools_layout->addWidget(btn_audio_set_out_);
+    audio_range_tools_layout->addWidget(lbl_audio_range_feedback_, 1);
     add_form_row(audio_form, QStringLiteral("Source"), source_row);
+    add_form_row(audio_form, QStringLiteral("Preview"), lbl_audio_range_preview_);
     add_form_row(audio_form, QStringLiteral("Range"), make_audio_pair_row(QStringLiteral("In"), spn_audio_in_, QStringLiteral("Out"), spn_audio_out_));
+    add_form_row(audio_form, QStringLiteral("Range tools"), audio_range_tools);
     add_form_row(audio_form, QStringLiteral("Volume"), make_slider_row(spn_audio_volume_, sld_audio_volume_, btn_kf_audio_volume_));
     add_form_row(audio_form, QStringLiteral("Pan"), make_slider_row(spn_audio_pan_, sld_audio_pan_, btn_kf_audio_pan_));
     add_form_row(audio_form, QStringLiteral("Fade"), make_audio_pair_row(QStringLiteral("In"), spn_audio_fade_in_, QStringLiteral("Out"), spn_audio_fade_out_));
@@ -842,21 +927,60 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         layer_->audio_waveform.clear();
         layer_->audio_waveform_duration = 0.0;
         layer_->audio_in_point = 0.0;
-        layer_->audio_out_point = 0.0;
+        layer_->audio_out_point = std::max(0.0, layer_->out_time - layer_->in_time);
         edt_audio_source_->setText(path);
         {
             QSignalBlocker block_in(spn_audio_in_);
             QSignalBlocker block_out(spn_audio_out_);
-            spn_audio_in_->setValue(0.0);
-            spn_audio_out_->setValue(0.0);
+            spn_audio_in_->setValue(layer_->audio_in_point);
+            spn_audio_out_->setValue(layer_->audio_out_point);
         }
         /* A file replacement changes asset identity, so publish it immediately.
          * The runtime worker will retire the old decode/waveform cache and queue
          * the new asset without waiting for focus loss or editor save. */
         audio_changed(true);
     });
-    connect(spn_audio_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_in_point=v; audio_changed(false); }});
-    connect(spn_audio_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_out_point=v; audio_changed(false); }});
+    connect(spn_audio_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){
+        if (layer_ && !loading_values_ && layer_->type == LayerType::Audio) {
+            set_layer_media_range_in_point(*layer_, v);
+            QSignalBlocker blockIn(spn_audio_in_);
+            QSignalBlocker blockOut(spn_audio_out_);
+            spn_audio_in_->setValue(layer_->audio_in_point);
+            spn_audio_out_->setValue(layer_->audio_out_point);
+            audio_changed(false);
+        }
+    });
+    connect(spn_audio_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){
+        if (layer_ && !loading_values_ && layer_->type == LayerType::Audio) {
+            set_layer_media_range_out_point(*layer_, v);
+            QSignalBlocker blockIn(spn_audio_in_);
+            QSignalBlocker blockOut(spn_audio_out_);
+            spn_audio_in_->setValue(layer_->audio_in_point);
+            spn_audio_out_->setValue(layer_->audio_out_point);
+            audio_changed(false);
+        }
+    });
+    auto set_audio_range_from_playhead = [this, audio_changed](bool set_in) {
+        if (!layer_ || loading_values_ || layer_->type != LayerType::Audio) return;
+        const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0,
+            std::max(0.0, layer_->out_time - layer_->in_time));
+        const double media_time = std::max(0.0, layer_->audio_in_point + clip_local);
+        if (set_in)
+            set_layer_media_range_in_point(*layer_, media_time);
+        else
+            set_layer_media_range_out_point(*layer_, media_time);
+        {
+            QSignalBlocker blockIn(spn_audio_in_);
+            QSignalBlocker blockOut(spn_audio_out_);
+            if (spn_audio_in_) spn_audio_in_->setValue(layer_->audio_in_point);
+            if (spn_audio_out_) spn_audio_out_->setValue(layer_->audio_out_point);
+        }
+        audio_changed(true);
+    };
+    connect(btn_audio_set_in_, &QPushButton::clicked, this,
+            [set_audio_range_from_playhead]() mutable { set_audio_range_from_playhead(true); });
+    connect(btn_audio_set_out_, &QPushButton::clicked, this,
+            [set_audio_range_from_playhead]() mutable { set_audio_range_from_playhead(false); });
     connect(spn_audio_volume_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_volume_); sld_audio_volume_->setValue(qRound(v)); audio_changed(false); }});
     connect(sld_audio_volume_, &QSlider::valueChanged, this, [this, audio_changed](int v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(spn_audio_volume_); spn_audio_volume_->setValue(v); audio_changed(false); }});
     connect(spn_audio_pan_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_pan=float(v/100.0); set_animated_value(layer_->audio_pan_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_pan_); sld_audio_pan_->setValue(qRound(v)); audio_changed(false); }});
@@ -884,18 +1008,22 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_asset_playback_ = new QComboBox(asset_box_);
     cmb_asset_playback_->addItem(bgl_tr("OBSTitles.AssetPlaybackSynchronized"), 0);
     cmb_asset_playback_->addItem(bgl_tr("OBSTitles.AssetPlaybackIndependent"), 1);
+    cmb_asset_playback_->setFixedHeight(20);
     cmb_asset_playback_->setStyleSheet(control_style);
     spn_asset_offset_ = new QDoubleSpinBox(asset_box_);
     spn_asset_offset_->setRange(-86400.0, 86400.0);
     spn_asset_offset_->setDecimals(3);
     spn_asset_offset_->setSuffix(QStringLiteral(" s"));
+    spn_asset_offset_->setFixedHeight(20);
     spn_asset_offset_->setStyleSheet(control_style);
     spn_asset_pause_duration_ = new TimecodeSpinBox(asset_box_);
     spn_asset_pause_duration_->setRange(0.0, 86400.0);
+    spn_asset_pause_duration_->setFixedHeight(20);
     spn_asset_pause_duration_->setStyleSheet(control_style);
     spn_asset_loop_count_ = new QSpinBox(asset_box_);
     spn_asset_loop_count_->setRange(1, 1000000);
     spn_asset_loop_count_->setSuffix(bgl_tr("OBSTitles.AssetLoopTimesSuffix"));
+    spn_asset_loop_count_->setFixedHeight(20);
     spn_asset_loop_count_->setStyleSheet(control_style);
     chk_asset_loop_ = new BglSwitch(bgl_tr("OBSTitles.AssetLoop"), asset_box_);
     chk_asset_loop_->setStyleSheet(checkbox_style);
@@ -981,11 +1109,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_appearance_stroke_width_->setFixedSize(86, 24);
     spn_appearance_stroke_width_->setSuffix(QStringLiteral("px"));
     spn_appearance_stroke_width_->setDecimals(0);
+    spn_appearance_stroke_width_->setFixedHeight(20);
     spn_appearance_stroke_width_->setStyleSheet(control_style);
     spn_appearance_opacity_ = mk_dspin(0.0, 100.0, 1.0);
     spn_appearance_opacity_->setFixedSize(86, 24);
     spn_appearance_opacity_->setSuffix(QStringLiteral("%"));
     spn_appearance_opacity_->setDecimals(0);
+    spn_appearance_opacity_->setFixedHeight(20);
     spn_appearance_opacity_->setStyleSheet(control_style);
     btn_kf_appearance_fill_ = mk_kf_button(bgl_tr("OBSTitles.ToggleFillColorKeyframe"));
     btn_kf_appearance_stroke_ = mk_kf_button(bgl_tr("OBSTitles.OutlineColorLabel"));
@@ -1145,6 +1275,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     txt_content_->setMinimumHeight(72);
     txt_content_->setMaximumHeight(92);
     txt_content_->setPlaceholderText(bgl_tr("OBSTitles.EnterTextPlaceholder"));
+    txt_content_->setMinimumHeight(42);
     txt_content_->setStyleSheet(control_style);
     btn_text_external_binding_ = new QToolButton(inner);
     btn_text_external_binding_->setText(QStringLiteral("⛓"));

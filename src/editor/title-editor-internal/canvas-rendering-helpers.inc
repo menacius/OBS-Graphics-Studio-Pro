@@ -463,8 +463,38 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::LensFlare: return bgl_tr("OBSTitles.LensFlare");
     case LayerEffectType::Vignette: return bgl_tr("OBSTitles.Vignette");
     case LayerEffectType::Noise: return bgl_tr("OBSTitles.Noise");
+    case LayerEffectType::Grain: return QStringLiteral("Grain");
+    case LayerEffectType::FilmDistortion: return QStringLiteral("Film Distortion");
+    case LayerEffectType::AnalogDistortion: return QStringLiteral("Analog Distortion");
+    case LayerEffectType::DigitalDistortion: return QStringLiteral("Digital Distortion");
     case LayerEffectType::RoughenEdges: return bgl_tr("OBSTitles.RoughenEdges");
     case LayerEffectType::FourColorGradient: return QStringLiteral("4-Color Gradient");
+    case LayerEffectType::Sharpen: return QStringLiteral("Sharpen");
+    case LayerEffectType::UnsharpMask: return QStringLiteral("Unsharp Mask");
+    case LayerEffectType::HighPass: return QStringLiteral("High Pass");
+    case LayerEffectType::Clarity: return QStringLiteral("Clarity / Local Contrast");
+    case LayerEffectType::BilateralSharpen: return QStringLiteral("Bilateral Sharpen");
+    case LayerEffectType::Glare: return QStringLiteral("Real Glare");
+    case LayerEffectType::Halation: return QStringLiteral("Halation");
+    case LayerEffectType::LensDistortion: return QStringLiteral("Lens Distortion");
+    case LayerEffectType::ChromaticAberration: return QStringLiteral("Chromatic Aberration");
+    case LayerEffectType::DirectionalBlur: return QStringLiteral("Directional Blur");
+    case LayerEffectType::ZoomBlur: return QStringLiteral("Zoom Blur");
+    case LayerEffectType::RadialBlur: return QStringLiteral("Radial Blur");
+    case LayerEffectType::Ripple: return QStringLiteral("Ripple");
+    case LayerEffectType::WaveWarp: return QStringLiteral("Wave Warp");
+    case LayerEffectType::Pixelate: return QStringLiteral("Pixelate / Mosaic");
+    case LayerEffectType::EdgeDetect: return QStringLiteral("Edge Detect");
+    case LayerEffectType::Posterize: return QStringLiteral("Posterize");
+    case LayerEffectType::Threshold: return QStringLiteral("Threshold");
+    case LayerEffectType::Scanlines: return QStringLiteral("Scanlines");
+    case LayerEffectType::ChromaKey: return QStringLiteral("Chroma Key");
+    case LayerEffectType::LumaKey: return QStringLiteral("Luma Key");
+    case LayerEffectType::ColorRange: return QStringLiteral("Color Range");
+    case LayerEffectType::SpillSuppression: return QStringLiteral("Spill Suppression");
+    case LayerEffectType::MatteChoker: return QStringLiteral("Matte Choker");
+    case LayerEffectType::LightWrap: return QStringLiteral("Light Wrap");
+    case LayerEffectType::DisplacementMap: return QStringLiteral("Displacement Map");
     }
     return bgl_tr("OBSTitles.Effect");
 }

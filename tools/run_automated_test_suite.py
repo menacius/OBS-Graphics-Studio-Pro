@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic BGL Development Version 219 automated test-suite runner.
+"""Deterministic BGL Development Version 239 automated test-suite runner.
 
 The source profile needs only Python. Native profiles additionally consume a
 configured CMake/CTest build directory containing the plugin's test targets.
@@ -34,8 +34,8 @@ def load_manifest(root: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
         raise ValueError("unsupported test-suite manifest schema")
-    if data.get("development_version") != 219:
-        raise ValueError("test-suite manifest is not synchronized with Development Version 219")
+    if data.get("development_version") != 239:
+        raise ValueError("test-suite manifest is not synchronized with Development Version 239")
     return data
 
 
@@ -139,7 +139,7 @@ def run_native_suite(root: Path, build_dir: Path, tests: object,
 
 def write_report(path: Path, profile: str, results: list[Result]) -> None:
     payload = {
-        "development_version": 219,
+        "development_version": 228,
         "profile": profile,
         "passed": sum(result.status == "passed" for result in results),
         "failed": sum(result.status != "passed" for result in results),

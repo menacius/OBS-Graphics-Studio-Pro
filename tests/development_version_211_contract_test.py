@@ -7,12 +7,12 @@ schema = (root / "src/core/title-serialization-schema.h").read_text(encoding="ut
 readme = (root / "README.md").read_text(encoding="utf-8")
 changelog = (root / "docs/CHANGELOG.md").read_text(encoding="utf-8")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert 'kCurrentDevelopmentVersion = 219' in schema
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert 'kCurrentDevelopmentVersion = 239' in schema
 assert 'case 211:' in schema
 assert 'Automated source, smoke, full and stress test profiles' in readme
 assert '## Development Version 211 — Compatibility and Regression Completion' in changelog
-assert 'Broadcast_Graphics_Live_v0.8.10-alpha_development-version-219.zip' in readme
+assert 'Broadcast_Graphics_Live_v0.8.11-alpha_development-version-239.zip' in readme
 
 print("Development Version 211 compatibility/regression contract passed")

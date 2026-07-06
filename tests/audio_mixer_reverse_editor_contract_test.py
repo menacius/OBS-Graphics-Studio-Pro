@@ -57,9 +57,9 @@ assert "data->editor_playback_reverse" in registration
 assert "data->playback_reverse" in tick
 
 # Delivery identity and migration ledger.
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
-assert "kCurrentDevelopmentVersion = 219" in schema
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
+assert "kCurrentDevelopmentVersion = 239" in schema
 assert "case 189:" in schema
 
 print("PASS audio mixer visibility and reverse editor audio contracts")

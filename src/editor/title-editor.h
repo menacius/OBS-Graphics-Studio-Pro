@@ -156,6 +156,7 @@ private:
     void distribute_selected_layers(bool horizontal);
     void flip_selected_layers(bool horizontal);
     void rotate_selected_layers(double degrees);
+    void fit_fill_selected_layers(bool fill_screen);
     void reorder_selected_layers(int action);
     enum class BooleanShapeOperation { Union, SubtractFront, Intersect, Exclude };
     bool boolean_shape_selection_available() const;

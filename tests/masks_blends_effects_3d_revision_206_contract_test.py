@@ -15,6 +15,8 @@ cmake = text("CMakeLists.txt")
 build = text("src/core/build-info.h")
 schema = text("src/core/title-serialization-schema.h")
 effects = text("src/effects/layer-effects.h")
+effect_runtime = text("src/effects/effect-runtime.cpp")
+effect_contract = effects + effect_runtime
 transform_h = text("src/rendering/layer-transform-3d.h")
 transform = text("src/rendering/layer-transform-3d.cpp")
 shader = text("src/obs/title-source/gpu-effects-transitions.inc")
@@ -31,9 +33,9 @@ guide = text("docs/EFFECTS_AND_EXTENSIONS.md")
 effects_guide = text("docs/EFFECTS_AND_EXTENSIONS.md")
 serialization = text("src/core/title-data.cpp")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*219", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
 
 # Effect placement is an explicit runtime contract derived from existing data,
 # so old projects need no new serialized field.
@@ -44,9 +46,10 @@ for token in (
     "ScreenSpace = 2",
     "layer_effect_execution_space",
     "effect.affect_layers_behind",
-    "effect.type == LayerEffectType::MotionBlur",
+    "LayerEffectType::MotionBlur",
+    "LayerEffectSpace::PostTransform",
 ):
-    assert token in effects
+    assert token in effect_contract
 for forbidden in ("effect_execution_space", "layer_effect_space"):
     assert forbidden not in serialization
 

@@ -36,9 +36,9 @@ def main() -> None:
     changelog = read("docs/CHANGELOG.md")
     guide = read("docs/EDITOR_WORKFLOW.md")
 
-    require(cmake, 'OBS_BGS_DEVELOPMENT_VERSION "219"', "CMake development version")
-    require(build, 'BGL_DEVELOPMENT_VERSION "219"', "runtime development version")
-    require(schema, "kCurrentDevelopmentVersion = 219", "serialization version")
+    require(cmake, 'OBS_BGS_DEVELOPMENT_VERSION "239"', "CMake development version")
+    require(build, 'BGL_DEVELOPMENT_VERSION "239"', "runtime development version")
+    require(schema, "kCurrentDevelopmentVersion = 239", "serialization version")
     require(schema, "case 208:", "contiguous migration entry")
     require(schema, "migrate_full_3d_spatial_motion_paths", "208 migration")
 

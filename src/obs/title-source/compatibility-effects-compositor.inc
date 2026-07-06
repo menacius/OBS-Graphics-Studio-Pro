@@ -307,6 +307,55 @@ static void apply_emboss_to_surface(cairo_surface_t *surface, const LayerEffect 
     write_surface_pixels(surface, px);
 }
 
+static bool is_modern_gpu_pixel_effect_type(LayerEffectType type)
+{
+    switch (type) {
+    case LayerEffectType::Sharpen:
+    case LayerEffectType::UnsharpMask:
+    case LayerEffectType::HighPass:
+    case LayerEffectType::Clarity:
+    case LayerEffectType::BilateralSharpen:
+    case LayerEffectType::LensDistortion:
+    case LayerEffectType::ChromaticAberration:
+    case LayerEffectType::DirectionalBlur:
+    case LayerEffectType::ZoomBlur:
+    case LayerEffectType::RadialBlur:
+    case LayerEffectType::Ripple:
+    case LayerEffectType::WaveWarp:
+    case LayerEffectType::Pixelate:
+    case LayerEffectType::EdgeDetect:
+    case LayerEffectType::Posterize:
+    case LayerEffectType::Threshold:
+    case LayerEffectType::Scanlines:
+    case LayerEffectType::ChromaKey:
+    case LayerEffectType::LumaKey:
+    case LayerEffectType::ColorRange:
+    case LayerEffectType::SpillSuppression:
+    case LayerEffectType::MatteChoker:
+    case LayerEffectType::LightWrap:
+    case LayerEffectType::DisplacementMap:
+    case LayerEffectType::FilmDistortion:
+    case LayerEffectType::AnalogDistortion:
+    case LayerEffectType::DigitalDistortion:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool layer_has_any_gpu_pixel_effects(const Layer &layer)
+{
+    if (layer_has_stackable_pixel_effects(layer))
+        return true;
+    return std::any_of(layer.effects.begin(), layer.effects.end(),
+        [](const LayerEffect &effect) {
+            return effect.enabled &&
+                   (is_modern_gpu_pixel_effect_type(effect.type) ||
+                    effect.type == LayerEffectType::Glare ||
+                    effect.type == LayerEffectType::Halation);
+        });
+}
+
 static bool effect_can_run_as_gpu_surface_pass(LayerEffectType type)
 {
     switch (type) {
@@ -318,14 +367,44 @@ static bool effect_can_run_as_gpu_surface_pass(LayerEffectType type)
     case LayerEffectType::LensFlare:
     case LayerEffectType::Vignette:
     case LayerEffectType::Noise:
+    case LayerEffectType::Grain:
+    case LayerEffectType::FilmDistortion:
+    case LayerEffectType::AnalogDistortion:
+    case LayerEffectType::DigitalDistortion:
     case LayerEffectType::RoughenEdges:
     case LayerEffectType::FourColorGradient:
+    case LayerEffectType::LensDistortion:
+    case LayerEffectType::ChromaticAberration:
+    case LayerEffectType::DirectionalBlur:
+    case LayerEffectType::ZoomBlur:
+    case LayerEffectType::RadialBlur:
+    case LayerEffectType::Ripple:
+    case LayerEffectType::WaveWarp:
+    case LayerEffectType::Pixelate:
+    case LayerEffectType::EdgeDetect:
+    case LayerEffectType::Posterize:
+    case LayerEffectType::Threshold:
+    case LayerEffectType::Scanlines:
+    case LayerEffectType::ChromaKey:
+    case LayerEffectType::LumaKey:
+    case LayerEffectType::ColorRange:
+    case LayerEffectType::SpillSuppression:
+    case LayerEffectType::MatteChoker:
+    case LayerEffectType::LightWrap:
+    case LayerEffectType::DisplacementMap:
         return true;
     /* These effects now require the shared two-pass Gaussian backend and a
      * second blurred texture. The old readback-oriented surface helper owns
      * only one pass/texture, so let its established CPU fallback handle these
      * rare legacy calls. Editor/live/cache composition stays GPU-only. */
     case LayerEffectType::Bloom:
+    case LayerEffectType::Halation:
+    case LayerEffectType::Glare:
+    case LayerEffectType::Sharpen:
+    case LayerEffectType::UnsharpMask:
+    case LayerEffectType::HighPass:
+    case LayerEffectType::Clarity:
+    case LayerEffectType::BilateralSharpen:
     case LayerEffectType::Blur:
     case LayerEffectType::Glow:
     case LayerEffectType::InnerGlow:
@@ -352,21 +431,83 @@ static bool layer_effects_can_run_as_gpu_surface_passes(const Layer &layer, doub
     return has_gpu_effect;
 }
 
+static bool effect_is_damage_distortion(LayerEffectType type)
+{
+    return type == LayerEffectType::FilmDistortion ||
+           type == LayerEffectType::AnalogDistortion ||
+           type == LayerEffectType::DigitalDistortion;
+}
+
+
+static bool effect_uses_damage_artifact_pipeline(LayerEffectType type)
+{
+    return effect_is_damage_distortion(type);
+}
+
+static const char *gpu_effect_primary_technique(const ResolvedLayerEffect &resolved,
+                                                bool has_gaussian_lowpass)
+{
+    if (effect_uses_damage_artifact_pipeline(resolved.type))
+        return "Draw";
+
+    if (has_gaussian_lowpass) {
+        switch (resolved.type) {
+        case LayerEffectType::Blur: return "Composite";
+        case LayerEffectType::DropShadow: return "DropShadowComposite";
+        case LayerEffectType::Glow: return "GlowComposite";
+        case LayerEffectType::InnerGlow: return "InnerGlowComposite";
+        case LayerEffectType::InnerShadow: return "InnerShadowComposite";
+        case LayerEffectType::Bloom: return "BloomComposite";
+        case LayerEffectType::Halation: return "HalationComposite";
+        case LayerEffectType::Glare: return "GlareComposite";
+        case LayerEffectType::Sharpen: return "Sharpen";
+        case LayerEffectType::UnsharpMask: return "UnsharpMask";
+        case LayerEffectType::HighPass: return "HighPass";
+        case LayerEffectType::Clarity: return "Clarity";
+        case LayerEffectType::BilateralSharpen: return "BilateralSharpen";
+        default: break;
+        }
+    }
+
+    switch (resolved.type) {
+    case LayerEffectType::LensDistortion: return "LensDistortion";
+    case LayerEffectType::ChromaticAberration: return "ChromaticAberration";
+    case LayerEffectType::DirectionalBlur: return "DirectionalBlur";
+    case LayerEffectType::ZoomBlur: return "ZoomBlur";
+    case LayerEffectType::RadialBlur: return "RadialBlur";
+    case LayerEffectType::Ripple: return "Ripple";
+    case LayerEffectType::WaveWarp: return "WaveWarp";
+    case LayerEffectType::Pixelate: return "Pixelate";
+    case LayerEffectType::EdgeDetect: return "EdgeDetect";
+    case LayerEffectType::Posterize: return "Posterize";
+    case LayerEffectType::Threshold: return "Threshold";
+    case LayerEffectType::Scanlines: return "Scanlines";
+    case LayerEffectType::ChromaKey: return "ChromaKey";
+    case LayerEffectType::LumaKey: return "LumaKey";
+    case LayerEffectType::ColorRange: return "ColorRange";
+    case LayerEffectType::SpillSuppression: return "SpillSuppression";
+    case LayerEffectType::MatteChoker: return "MatteChoker";
+    case LayerEffectType::LightWrap: return "LightWrap";
+    case LayerEffectType::DisplacementMap: return "DisplacementMap";
+    default: return "Draw";
+    }
+}
+
 static void set_effect_float_param(gs_effect_t *effect, const char *name, float value)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name))
+    if (gs_eparam_t *param = bgl_effect_param(effect, name))
         gs_effect_set_float(param, value);
 }
 
 static void set_effect_int_param(gs_effect_t *effect, const char *name, int value)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name))
+    if (gs_eparam_t *param = bgl_effect_param(effect, name))
         gs_effect_set_int(param, value);
 }
 
 static void set_effect_vec2_param(gs_effect_t *effect, const char *name, float x, float y)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name)) {
+    if (gs_eparam_t *param = bgl_effect_param(effect, name)) {
         struct vec2 value;
         vec2_set(&value, x, y);
         gs_effect_set_vec2(param, &value);
@@ -376,7 +517,7 @@ static void set_effect_vec2_param(gs_effect_t *effect, const char *name, float x
 static void set_effect_vec4_param(gs_effect_t *effect, const char *name,
                                   float x, float y, float z, float w)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name)) {
+    if (gs_eparam_t *param = bgl_effect_param(effect, name)) {
         struct vec4 value;
         vec4_set(&value, x, y, z, w);
         gs_effect_set_vec4(param, &value);
@@ -385,7 +526,7 @@ static void set_effect_vec4_param(gs_effect_t *effect, const char *name,
 
 static void set_effect_color_param(gs_effect_t *effect, const char *name, uint32_t argb)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name)) {
+    if (gs_eparam_t *param = bgl_effect_param(effect, name)) {
         struct vec4 value;
         value.x = ((argb >> 16) & 0xFF) / 255.0f;
         value.y = ((argb >> 8) & 0xFF) / 255.0f;
@@ -395,7 +536,7 @@ static void set_effect_color_param(gs_effect_t *effect, const char *name, uint32
     }
 }
 
-static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect &resolved,
+static void set_gpu_surface_effect_params(gs_effect_t *effect, const ResolvedLayerEffect &resolved,
                                           int width, int height, double time = 0.0)
 {
     set_effect_vec2_param(effect, "texelSize", 1.0f / std::max(1, width), 1.0f / std::max(1, height));
@@ -446,10 +587,16 @@ static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect
     set_effect_vec2_param(effect, "offset", dx, dy);
     set_effect_vec2_param(effect, "direction", std::cos(radians), std::sin(radians));
     set_effect_float_param(effect, "shadowLength", resolved.effect_distance);
+    set_effect_float_param(effect, "distance", resolved.effect_distance);
     if (resolved.type == LayerEffectType::LensFlare)
         set_effect_float_param(effect, "profile", static_cast<float>(resolved.effect_profile));
     else
         set_effect_int_param(effect, "profile", resolved.effect_profile);
+    int forced_damage_profile = -1;
+    if (resolved.type == LayerEffectType::FilmDistortion) forced_damage_profile = 0;
+    else if (resolved.type == LayerEffectType::AnalogDistortion) forced_damage_profile = 1;
+    else if (resolved.type == LayerEffectType::DigitalDistortion) forced_damage_profile = 2;
+    set_effect_int_param(effect, "damageProfile", forced_damage_profile);
     set_effect_int_param(effect, "animatedNoise", resolved.effect_animated ? 1 : 0);
     set_effect_int_param(effect, "monochrome", resolved.effect_monochrome ? 1 : 0);
     set_effect_int_param(effect, "invert", resolved.effect_invert ? 1 : 0);
@@ -465,6 +612,39 @@ static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect
     set_effect_float_param(effect, "angle", resolved.effect_angle);
     set_effect_float_param(effect, "complexity", resolved.effect_complexity);
     set_effect_float_param(effect, "evolution", resolved.effect_evolution);
+    set_effect_float_param(effect, "distortion", resolved.effect_roundness);
+    if (resolved.type == LayerEffectType::Noise || resolved.type == LayerEffectType::Grain ||
+        resolved.type == LayerEffectType::FilmDistortion || resolved.type == LayerEffectType::AnalogDistortion ||
+        resolved.type == LayerEffectType::DigitalDistortion) {
+        set_effect_vec2_param(effect, "noiseOffset", resolved.effect_center_x, resolved.effect_center_y);
+        set_effect_float_param(effect, "aspect", resolved.effect_roundness);
+        set_effect_float_param(effect, "lacunarity", std::max(1.01f, resolved.effect_spread));
+        set_effect_float_param(effect, "gain", std::clamp(resolved.effect_falloff, 0.0f, 1.0f));
+        set_effect_int_param(effect, "affectAlpha", resolved.effect_affect_alpha ? 1 : 0);
+        set_effect_int_param(effect, "clampOutput", resolved.effect_clamp_output ? 1 : 0);
+        set_effect_int_param(effect, "temporalStability", resolved.effect_temporal_stability ? 1 : 0);
+    }
+    int detail_mode = -1;
+    switch (resolved.type) {
+    case LayerEffectType::Sharpen: detail_mode = 0; break;
+    case LayerEffectType::UnsharpMask: detail_mode = 1; break;
+    case LayerEffectType::HighPass: detail_mode = 2; break;
+    case LayerEffectType::Clarity: detail_mode = 3; break;
+    case LayerEffectType::BilateralSharpen: detail_mode = 4; break;
+    default: break;
+    }
+    if (detail_mode >= 0) {
+        set_effect_int_param(effect, "effectMode", detail_mode);
+        set_effect_float_param(effect, "threshold", resolved.effect_softness);
+        set_effect_float_param(effect, "highlightProtection", resolved.effect_spread);
+        set_effect_float_param(effect, "shadowProtection", resolved.effect_falloff);
+        set_effect_float_param(effect, "midtoneBias", resolved.brightness);
+        set_effect_float_param(effect, "rangeThreshold", resolved.effect_softness);
+        set_effect_float_param(effect, "edgeProtection", resolved.effect_spread);
+        set_effect_int_param(effect, "luminanceOnly", resolved.effect_monochrome ? 1 : 0);
+        set_effect_int_param(effect, "overlayPreview", resolved.effect_invert ? 1 : 0);
+        set_effect_int_param(effect, "protectAlpha", resolved.effect_affect_alpha ? 1 : 0);
+    }
     set_effect_float_param(effect, "time", static_cast<float>(time));
 }
 
@@ -529,25 +709,26 @@ static QJsonObject evaluated_extension_surface_parameters(const LayerEffect &eff
 }
 
 static void set_gpu_extension_surface_params(gs_effect_t *effect,
-                                              const LayerEffect &resolved,
+                                              const ResolvedLayerEffect &resolved,
                                               double time)
 {
-    if (!effect || resolved.extension_id.empty())
+    if (!effect || !resolved.source || resolved.source->extension_id.empty())
         return;
+    const LayerEffect &source = *resolved.source;
 
     QJsonObject parameter_schema;
     auto &catalog = BglEffectExtensionCatalog::instance();
     if (catalog.effects().empty())
         catalog.reload();
     if (const auto *definition = catalog.find(
-            QString::fromStdString(resolved.extension_id)))
+            QString::fromStdString(source.extension_id)))
         parameter_schema = definition->parameterSchema;
 
     const QJsonObject parameters = evaluated_extension_surface_parameters(
-        resolved, time);
+        source, time);
     for (auto it = parameters.begin(); it != parameters.end(); ++it) {
         const QByteArray uniform_name = it.key().toUtf8();
-        gs_eparam_t *param = gs_effect_get_param_by_name(
+        gs_eparam_t *param = bgl_effect_param(
             effect, uniform_name.constData());
         if (!param)
             continue;
@@ -595,8 +776,99 @@ static void set_gpu_extension_surface_params(gs_effect_t *effect,
     }
 }
 
+static bool copy_surface_pixels_reuse(cairo_surface_t *surface,
+                                      std::vector<uint8_t> &pixels)
+{
+    if (!surface || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
+        return false;
+    cairo_surface_flush(surface);
+    uint8_t *data = cairo_image_surface_get_data(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    if (!data || width <= 0 || height <= 0 || stride <= 0)
+        return false;
+    const size_t required = static_cast<size_t>(width) *
+                            static_cast<size_t>(height) * 4;
+    pixels.resize(required);
+    for (int y = 0; y < height; ++y)
+        std::copy(data + y * stride, data + y * stride + width * 4,
+                  pixels.begin() + static_cast<size_t>(y) * width * 4);
+    return true;
+}
+
 static std::mutex g_surface_effect_registry_mutex;
 static std::unique_ptr<TitleEffectRegistry> g_surface_effect_registry;
+
+struct CompatibilityEffectSurfacePool {
+    int width = 0;
+    int height = 0;
+    gs_texture_t *source = nullptr;
+    gs_texrender_t *ping = nullptr;
+    gs_texrender_t *pong = nullptr;
+    gs_stagesurf_t *stage = nullptr;
+    std::vector<uint8_t> upload;
+    std::vector<uint8_t> readback;
+
+    void reset()
+    {
+        if (source) gs_texture_destroy(source);
+        if (ping) gs_texrender_destroy(ping);
+        if (pong) gs_texrender_destroy(pong);
+        if (stage) gs_stagesurface_destroy(stage);
+        source = nullptr;
+        ping = nullptr;
+        pong = nullptr;
+        stage = nullptr;
+        width = 0;
+        height = 0;
+        std::vector<uint8_t>().swap(upload);
+        std::vector<uint8_t>().swap(readback);
+    }
+
+    bool ensure(int requested_width, int requested_height)
+    {
+        if (requested_width <= 0 || requested_height <= 0)
+            return false;
+        const bool dimensions_match = source && stage &&
+            width == requested_width && height == requested_height;
+        if (dimensions_match && ping && pong) {
+            bgl::perf::add(bgl::perf::Counter::EffectSurfacePoolHits);
+            return true;
+        }
+
+        bgl::perf::add(bgl::perf::Counter::EffectSurfacePoolMisses);
+        if (!ping)
+            ping = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        if (!pong)
+            pong = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        if (!dimensions_match) {
+            if (source) gs_texture_destroy(source);
+            if (stage) gs_stagesurface_destroy(stage);
+            source = gs_texture_create(
+                static_cast<uint32_t>(requested_width),
+                static_cast<uint32_t>(requested_height), GS_BGRA, 1,
+                nullptr, GS_DYNAMIC);
+            stage = gs_stagesurface_create(
+                static_cast<uint32_t>(requested_width),
+                static_cast<uint32_t>(requested_height), GS_BGRA);
+            width = requested_width;
+            height = requested_height;
+            const size_t bytes = static_cast<size_t>(width) *
+                                 static_cast<size_t>(height) * 4;
+            upload.resize(bytes);
+            readback.resize(bytes);
+        }
+        return source && ping && pong && stage;
+    }
+};
+
+static CompatibilityEffectSurfacePool g_surface_effect_pool;
+
+static void reset_compatibility_effect_surface_pool_locked()
+{
+    g_surface_effect_pool.reset();
+}
 
 static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t)
 {
@@ -606,123 +878,106 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
 
     const int width = cairo_image_surface_get_width(surface);
     const int height = cairo_image_surface_get_height(surface);
-    if (width <= 0 || height <= 0 || !layer_effects_can_run_as_gpu_surface_passes(layer, t))
+    if (width <= 0 || height <= 0 || !layer_effects_can_run_as_gpu_surface_passes(layer, t)) {
+        bgl::perf::add(bgl::perf::Counter::EffectEmptyStackFastPaths);
         return false;
-
-    std::vector<uint8_t> pixels = surface_pixels(surface);
-    if (pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 4)
-        return false;
+    }
 
     std::lock_guard<std::mutex> lock(g_surface_effect_registry_mutex);
+    if (!copy_surface_pixels_reuse(surface, g_surface_effect_pool.upload))
+        return false;
 
     bool success = false;
     obs_enter_graphics();
     if (!g_surface_effect_registry)
         g_surface_effect_registry = std::make_unique<TitleEffectRegistry>();
-
-    const uint8_t *initial_data[1] = {pixels.data()};
-    gs_texture_t *source = gs_texture_create(width, height, GS_BGRA, 1, initial_data, 0);
-    gs_texrender_t *ping = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    gs_texrender_t *pong = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    gs_stagesurf_t *stage = gs_stagesurface_create(width, height, GS_BGRA);
-    gs_texture_t *current = source;
-    bool use_ping = true;
-
-    if (source && ping && pong && stage) {
-        success = true;
-        for (const auto &effect_config : layer.effects) {
-            if (!eval_effect_enabled(effect_config, t))
-                continue;
-
-            LayerEffect resolved = effect_config;
-            resolved.effect_color = eval_effect_color(effect_config, t);
-            resolved.effect_opacity = (float)std::clamp(
-                effect_config.opacity_prop.is_animated() ? effect_config.opacity_prop.evaluate(t)
-                                                         : (double)effect_config.effect_opacity,
-                0.0, 1.0);
-            resolved.effect_size = (float)std::max(
-                0.0, effect_config.size_prop.is_animated() ? effect_config.size_prop.evaluate(t)
-                                                           : (double)effect_config.effect_size);
-            resolved.effect_distance = (float)std::max(
-                0.0, effect_config.distance_prop.is_animated() ? effect_config.distance_prop.evaluate(t)
-                                                               : (double)effect_config.effect_distance);
-            resolved.effect_angle = (float)(effect_config.angle_prop.is_animated()
-                                                ? effect_config.angle_prop.evaluate(t)
-                                                : (double)effect_config.effect_angle);
-            resolved.effect_spread = (float)std::max(
-                0.0, effect_config.spread_prop.is_animated() ? effect_config.spread_prop.evaluate(t)
-                                                             : (double)effect_config.effect_spread);
-            resolved.effect_falloff = (float)std::max(
-                0.0, effect_config.falloff_prop.is_animated() ? effect_config.falloff_prop.evaluate(t)
-                                                              : (double)effect_config.effect_falloff);
-
-            gs_effect_t *gpu_effect = g_surface_effect_registry->compile(resolved.type);
-            gs_texrender_t *target = use_ping ? ping : pong;
-            if (!gpu_effect || !target || !current) {
-                success = false;
-                break;
-            }
-
-            gs_texrender_reset(target);
-            if (!gs_texrender_begin(target, width, height)) {
-                success = false;
-                break;
-            }
-
-            gs_ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height), -100.0f, 100.0f);
-            struct vec4 clear;
-            vec4_zero(&clear);
-            gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
-
-            if (gs_eparam_t *image_param = gs_effect_get_param_by_name(gpu_effect, "image"))
-                gs_effect_set_texture(image_param, current);
-            /* Effects that must stay clipped to the original artwork (rather
-             * than a previous pass or the render-target rectangle) receive
-             * the immutable source texture as their hard alpha matte. */
-            if (gs_eparam_t *hard_mask = gs_effect_get_param_by_name(gpu_effect, "hardMask"))
-                gs_effect_set_texture(hard_mask, source);
-            set_gpu_surface_effect_params(gpu_effect, resolved, width, height, t);
-            set_gpu_extension_surface_params(gpu_effect, resolved, t);
-
-            while (gs_effect_loop(gpu_effect, "Draw"))
-                gs_draw_sprite(current, 0, width, height);
-
-            gs_texrender_end(target);
-            current = gs_texrender_get_texture(target);
-            use_ping = !use_ping;
-        }
-
-        if (success && current) {
-            gs_stage_texture(stage, current);
-            uint8_t *mapped = nullptr;
-            uint32_t linesize = 0;
-            if (gs_stagesurface_map(stage, &mapped, &linesize) && mapped &&
-                linesize >= static_cast<uint32_t>(width * 4)) {
-                std::vector<uint8_t> out(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-                for (int y = 0; y < height; ++y) {
-                    std::copy(mapped + static_cast<size_t>(y) * linesize,
-                              mapped + static_cast<size_t>(y) * linesize + width * 4,
-                              out.begin() + static_cast<size_t>(y) * width * 4);
-                }
-                gs_stagesurface_unmap(stage);
-                if (source) gs_texture_destroy(source);
-                if (ping) gs_texrender_destroy(ping);
-                if (pong) gs_texrender_destroy(pong);
-                if (stage) gs_stagesurface_destroy(stage);
-                obs_leave_graphics();
-                write_surface_pixels(surface, out);
-                return true;
-            }
-            if (mapped)
-                gs_stagesurface_unmap(stage);
-            success = false;
-        }
+    if (!g_surface_effect_pool.ensure(width, height)) {
+        obs_leave_graphics();
+        return false;
     }
 
-    if (source) gs_texture_destroy(source);
-    if (ping) gs_texrender_destroy(ping);
-    if (pong) gs_texrender_destroy(pong);
-    if (stage) gs_stagesurface_destroy(stage);
+    gs_texture_set_image(g_surface_effect_pool.source,
+                         g_surface_effect_pool.upload.data(),
+                         static_cast<uint32_t>(width * 4), false);
+    gs_texture_t *current = g_surface_effect_pool.source;
+    bool use_ping = true;
+    success = true;
+
+    for (const auto &effect_config : layer.effects) {
+        if (!eval_effect_enabled(effect_config, t))
+            continue;
+
+        const ResolvedLayerEffect resolved = resolve_layer_effect(effect_config, t);
+        gs_effect_t *gpu_effect = g_surface_effect_registry->compile(resolved.type);
+        gs_texrender_t *target = use_ping
+            ? g_surface_effect_pool.ping : g_surface_effect_pool.pong;
+        if (!gpu_effect || !target || !current) {
+            success = false;
+            break;
+        }
+
+        bgl::perf::ScopedTimer effect_timer(
+            bgl::perf::Counter::EffectPassNanoseconds);
+        bgl::perf::add(bgl::perf::Counter::EffectPasses);
+        gs_texrender_reset(target);
+        if (!gs_texrender_begin(target, width, height)) {
+            success = false;
+            break;
+        }
+
+        gs_ortho(0.0f, static_cast<float>(width), 0.0f,
+                 static_cast<float>(height), -100.0f, 100.0f);
+        struct vec4 clear;
+        vec4_zero(&clear);
+        gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
+
+        if (gs_eparam_t *image_param =
+                bgl_effect_param(gpu_effect, "image"))
+            gs_effect_set_texture(image_param, current);
+        if (gs_eparam_t *hard_mask =
+                bgl_effect_param(gpu_effect, "hardMask"))
+            gs_effect_set_texture(hard_mask, g_surface_effect_pool.source);
+        set_gpu_surface_effect_params(gpu_effect, resolved, width, height, t);
+        set_gpu_extension_surface_params(gpu_effect, resolved, t);
+
+        const char *technique = gpu_effect_primary_technique(resolved, false);
+        int executed_passes = 0;
+        while (gs_effect_loop(gpu_effect, technique)) {
+            ++executed_passes;
+            gs_draw_sprite(current, 0, width, height);
+        }
+        if (executed_passes == 0) {
+            success = false;
+            break;
+        }
+
+        gs_texrender_end(target);
+        current = gs_texrender_get_texture(target);
+        use_ping = !use_ping;
+    }
+
+    if (success && current) {
+        gs_stage_texture(g_surface_effect_pool.stage, current);
+        uint8_t *mapped = nullptr;
+        uint32_t linesize = 0;
+        if (gs_stagesurface_map(g_surface_effect_pool.stage, &mapped, &linesize) &&
+            mapped && linesize >= static_cast<uint32_t>(width * 4)) {
+            for (int y = 0; y < height; ++y) {
+                std::copy(mapped + static_cast<size_t>(y) * linesize,
+                          mapped + static_cast<size_t>(y) * linesize + width * 4,
+                          g_surface_effect_pool.readback.begin() +
+                              static_cast<size_t>(y) * width * 4);
+            }
+            gs_stagesurface_unmap(g_surface_effect_pool.stage);
+            obs_leave_graphics();
+            write_surface_pixels(surface, g_surface_effect_pool.readback);
+            return true;
+        }
+        if (mapped)
+            gs_stagesurface_unmap(g_surface_effect_pool.stage);
+        success = false;
+    }
+
     obs_leave_graphics();
     return success;
 }
@@ -903,102 +1158,30 @@ static int general_transition_blur_padding(const Layer &layer)
         gaussian_blur_support(std::clamp(max_blur, 0.0, 512.0)) + 4.0)));
 }
 
+static EffectBoundsExpansion stackable_effect_bounds_expansion(
+    const Layer &layer, double t)
+{
+    EffectBoundsExpansion expansion{2.0, 2.0, 2.0, 2.0};
+    const double layer_width = std::max(1.0, eval_box_width(layer, t));
+    const double layer_height = std::max(1.0, eval_box_height(layer, t));
+    for (const LayerEffect &effect : layer.effects) {
+        const ResolvedLayerEffect resolved = resolve_layer_effect(effect, t);
+        if (!resolved.enabled ||
+            resolved.execution_space == LayerEffectSpace::ScreenSpace)
+            continue;
+        expansion.accumulate(effect_bounds_expansion(
+            resolved, layer_width, layer_height));
+    }
+    expansion.left = std::ceil(quantized_effect_padding(expansion.left));
+    expansion.top = std::ceil(quantized_effect_padding(expansion.top));
+    expansion.right = std::ceil(quantized_effect_padding(expansion.right));
+    expansion.bottom = std::ceil(quantized_effect_padding(expansion.bottom));
+    return expansion;
+}
+
 static double stackable_effect_padding(const Layer &layer, double t)
 {
-    double required = 2.0;
-    for (const auto &effect : layer.effects) {
-        if (!eval_effect_enabled(effect, t) || effect.affect_layers_behind)
-            continue;
-        const double size = std::max(0.0, effect.size_prop.is_animated()
-                                              ? effect.size_prop.evaluate(t)
-                                              : (double)effect.effect_size);
-        const double distance = std::max(0.0, effect.distance_prop.is_animated()
-                                                  ? effect.distance_prop.evaluate(t)
-                                                  : (double)effect.effect_distance);
-        const double spread = std::max(0.0, effect.spread_prop.is_animated()
-                                                ? effect.spread_prop.evaluate(t)
-                                                : (double)effect.effect_spread);
-        switch (effect.type) {
-        case LayerEffectType::BackgroundColor: {
-            const double left = effect.padding_left_prop.is_animated()
-                ? effect.padding_left_prop.evaluate(t)
-                : static_cast<double>(effect.effect_padding_left);
-            const double right = effect.padding_right_prop.is_animated()
-                ? effect.padding_right_prop.evaluate(t)
-                : static_cast<double>(effect.effect_padding_right);
-            const double top = effect.padding_top_prop.is_animated()
-                ? effect.padding_top_prop.evaluate(t)
-                : static_cast<double>(effect.effect_padding_top);
-            const double bottom = effect.padding_bottom_prop.is_animated()
-                ? effect.padding_bottom_prop.evaluate(t)
-                : static_cast<double>(effect.effect_padding_bottom);
-            const double stroke = std::max(0.0,
-                effect.stroke_width_prop.is_animated()
-                    ? effect.stroke_width_prop.evaluate(t)
-                    : static_cast<double>(effect.effect_stroke_width));
-            required += std::max({0.0, left, right, top, bottom}) + stroke + 4.0;
-            break;
-        }
-        case LayerEffectType::DropShadow:
-            required += distance + gaussian_blur_support(size + spread) +
-                        size + spread + 12.0;
-            break;
-        case LayerEffectType::InnerShadow:
-            /* Inner effects do not expand the layer alpha. */
-            break;
-        case LayerEffectType::LongShadow:
-            required += distance +
-                (effect.effect_blur_type == static_cast<int>(LongShadowBlurType::None)
-                    ? 0.0 : gaussian_blur_support(size) + size) + 12.0;
-            break;
-        case LayerEffectType::Outline:
-            required += size + distance + 4.0;
-            break;
-        case LayerEffectType::Glow:
-        case LayerEffectType::Bloom:
-            required += gaussian_blur_support(size + spread) +
-                        size + spread + 12.0;
-            break;
-        case LayerEffectType::InnerGlow:
-            /* Inner glow never expands alpha outside the source. */
-            break;
-        case LayerEffectType::Blur:
-            required += gaussian_blur_support(size) + 4.0;
-            break;
-        case LayerEffectType::LensFlare: {
-            /* Lens flare is generated in layer space and can extend well past
-             * the original alpha. Reserve the longest ray/halo support so the
-             * whole stack can remain transform-neutral until final composite. */
-            const double box_extent = std::max(
-                std::max(1.0, eval_box_width(layer, t)),
-                std::max(1.0, eval_box_height(layer, t)));
-            const double scale_value = std::max(0.001,
-                effect.scale_prop.is_animated()
-                    ? effect.scale_prop.evaluate(t)
-                    : static_cast<double>(effect.effect_scale));
-            required += box_extent * std::max(0.0, size) * scale_value * 11.0 + 12.0;
-            break;
-        }
-        case LayerEffectType::RoughenEdges: {
-            const double amount = std::max(0.0,
-                effect.amount_prop.is_animated()
-                    ? effect.amount_prop.evaluate(t)
-                    : static_cast<double>(effect.effect_amount));
-            required += amount * 64.0 + 4.0;
-            break;
-        }
-        case LayerEffectType::MotionBlur:
-            /* Temporal motion blur is produced by transformed GPU samples in
-             * the full-frame target; it needs no local raster expansion. */
-            break;
-        default:
-            break;
-        }
-    }
-    /* A bucketed allocation means color/opacity/radius edits inside the same
-     * capacity do not force text/vector/image rasterization on every slider
-     * tick. The GPU effect cache still invalidates for every exact setting. */
-    return std::ceil(quantized_effect_padding(required));
+    return stackable_effect_bounds_expansion(layer, t).maximum();
 }
 
 static bool layer_requires_preserved_effect_surface(const Layer &layer,
@@ -1020,7 +1203,7 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
     const double origin_y = eval_origin_y(layer, t);
 
     QRectF bounds(-origin_x * w, -origin_y * h, w, h);
-    if (layer.type == LayerType::Image) {
+    if (layer_type_is_image_like(layer.type)) {
         const ImageBoxLayout layout = image_box_layout_for_layer(layer, w, h,
                                                                  std::max(1.0, eval_image_width(layer, t)),
                                                                  std::max(1.0, eval_image_height(layer, t)));
@@ -1077,8 +1260,10 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
                                    .adjusted(-halo, -halo, halo, halo));
     }
 
-    const double pad = stackable_effect_padding(layer, t);
-    return bounds.adjusted(-pad, -pad, pad, pad);
+    const EffectBoundsExpansion effect_expansion =
+        stackable_effect_bounds_expansion(layer, t);
+    return bounds.adjusted(-effect_expansion.left, -effect_expansion.top,
+                           effect_expansion.right, effect_expansion.bottom);
 }
 
 static QRect clipped_effect_surface_rect(const Layer &layer, double t, int canvas_w, int canvas_h)
@@ -1171,8 +1356,9 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
     }
 
     for (const auto &effect : layer.effects) {
-        key << "|e=" << (int)effect.type << ',' << effect.enabled << ','
-            << effect.brightness << ',' << effect.contrast << ',' << effect.saturation << ','
+        key << "|e=" << (int)effect.type << ',' << effect.extension_schema_version << ','
+            << effect.enabled << ',' << effect.brightness << ',' << effect.contrast << ','
+            << effect.saturation << ','
             << effect.tint_color << ',' << effect.tint_amount << ',' << effect.effect_color << ','
             << effect.effect_opacity << ',' << effect.effect_size << ',' << effect.effect_distance << ','
             << effect.effect_angle << ',' << effect.effect_spread << ',' << effect.effect_falloff << ','
@@ -1186,7 +1372,9 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << effect.effect_softness << ',' << effect.effect_roundness << ','
             << effect.effect_speed << ',' << effect.effect_center_x << ','
             << effect.effect_center_y << ',' << effect.effect_complexity << ','
-            << effect.effect_evolution << ',' << effect.effect_secondary_color;
+            << effect.effect_evolution << ',' << effect.effect_affect_alpha << ','
+            << effect.effect_clamp_output << ',' << effect.effect_temporal_stability << ','
+            << effect.effect_secondary_color;
     }
     return key.str();
 }
@@ -1197,7 +1385,7 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
     bool force_time_key = false, bool allow_plain_layer = false,
     bool strip_general_transitions = false)
 {
-    if (!data || layer.type == LayerType::Clock || (!allow_plain_layer && !layer_has_stackable_pixel_effects(layer)))
+    if (!data || layer.type == LayerType::Clock || (!allow_plain_layer && !layer_has_any_gpu_pixel_effects(layer)))
         return nullptr;
 
     const std::string cache_id = (layer.id.empty() ? std::string("__anonymous_effect_layer") : layer.id) + cache_suffix;
@@ -1300,7 +1488,7 @@ static bool paint_cached_effect_layer(cairo_t *cr,
 static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                        double title_time, int canvas_w, int canvas_h)
 {
-    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
+    if (!data || !layer_has_any_gpu_pixel_effects(layer) || layer.type == LayerType::Clock)
         return false;
 
     const auto *cached = ensure_cached_effect_layer(data, title, layer, title_time, canvas_w, canvas_h);

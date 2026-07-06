@@ -1,3 +1,17 @@
+static bool layer_should_render_as_visible_content_for_gpu_session(
+    const TitleGpuRenderSession *session, const Title &title, const Layer &layer)
+{
+    /* Scene-mask layers stay matte controls in OBS output, but the editor
+     * previews them as real placeholder artwork so their own effects, masks
+     * and blend modes can be evaluated. This mirrors the A/B TransitionInput
+     * placeholder contract for Stingers without leaking the placeholder to
+     * live output. */
+    if (session && session->scene_mask_placeholder_preview_enabled &&
+        layer.use_as_scene_mask)
+        return true;
+    return layer_should_render_as_visible_content(title, layer);
+}
+
 static std::string gpu_mask_texture_key(
     const TitleGpuRenderSession *session, const Layer &layer,
     double title_time, const std::string &raster_id,
@@ -62,7 +76,8 @@ static void prune_gpu_mask_texture_cache(TitleGpuRenderSession *session)
 }
 static gs_texture_t *render_gpu_group_graph_texture(
     TitleGpuRenderSession *session, const Title &title, const Layer &group,
-    double title_time, std::unordered_set<std::string> &visiting);
+    double title_time, std::unordered_set<std::string> &visiting,
+    gs_texture_t *composition_background = nullptr);
 static std::string gpu_hardware_depth_camera_id(const Title &title,
                                                 const Layer &layer,
                                                 double title_time);
@@ -79,8 +94,11 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
                                       gs_texrender_t *target);
 static const char *gpu_mask_graph_purpose_key(GpuMaskGraphPurpose purpose)
 {
-    return purpose == GpuMaskGraphPurpose::ClippingShape
-        ? "clipping-shape" : "matte-artwork";
+    if (purpose == GpuMaskGraphPurpose::ClippingShape)
+        return "clipping-shape";
+    if (purpose == GpuMaskGraphPurpose::EffectSource)
+        return "effect-source";
+    return "matte-artwork";
 }
 static std::string gpu_mask_cache_slot(
     const std::string &raster_id, const std::string &compositor_group_id,
@@ -106,6 +124,8 @@ static gs_texture_t *render_gpu_mask_graph_texture(
         resolved_raster_id, compositor_group_id, purpose);
     const bool clipping_shape =
         purpose == GpuMaskGraphPurpose::ClippingShape;
+    const bool effect_source =
+        purpose == GpuMaskGraphPurpose::EffectSource;
     auto cached_texture = [&](const std::string &desired_key) -> gs_texture_t * {
         auto existing = session->mask_texture_cache.find(cache_slot);
         if (existing == session->mask_texture_cache.end() ||
@@ -181,8 +201,9 @@ static gs_texture_t *render_gpu_mask_graph_texture(
         /* Clipping consumes the Group's composited shape, not its opacity.
          * Keep the ordinary matte/artwork path unchanged so a visible clipping
          * base still renders with the Group's real animated opacity. */
-        const double opacity = clipping_shape ? 1.0 : gpu_layer_compositor_opacity(
-            title, layer, title_time, compositor_group_id);
+        const double opacity = (clipping_shape || effect_source) ? 1.0 :
+            gpu_layer_compositor_opacity(
+                title, layer, title_time, compositor_group_id);
         key << "|opacity=" << std::setprecision(9) << opacity;
         const std::string desired_key = key.str();
         if (gs_texture_t *cached = cached_texture(desired_key))
@@ -243,7 +264,7 @@ static gs_texture_t *render_gpu_mask_graph_texture(
     desired_key += "|purpose=" +
         std::string(gpu_mask_graph_purpose_key(purpose));
     desired_key += "|mode=" + std::to_string(static_cast<int>(layer.mask_mode));
-    const double graph_opacity = clipping_shape ? 1.0 :
+    const double graph_opacity = (clipping_shape || effect_source) ? 1.0 :
         gpu_layer_compositor_opacity(title, layer, title_time,
                                      compositor_group_id);
     desired_key += "|opacity=" + std::to_string(graph_opacity);
@@ -272,14 +293,14 @@ static gs_texture_t *render_gpu_mask_graph_texture(
          * opacity (including 0%) cannot shrink or fade the clipping region.
          * Intrinsic artwork alpha and anti-aliased edge coverage are retained,
          * which keeps image transparency and smooth text/shape edges intact. */
-        const double matte_opacity = clipping_shape ? 1.0 :
+        const double matte_opacity = (clipping_shape || effect_source) ? 1.0 :
             gpu_layer_compositor_opacity(title, layer, title_time,
                                          compositor_group_id);
         if (!render_gpu_layer_to_target(session, title, layer, title_time,
                                         session->mask_target,
                                         !effects_after_nested_mask,
                                         resolved_raster_id, matte_opacity,
-                                        compositor_group_id)) {
+                                        compositor_group_id, effect_source)) {
             visiting.erase(visit_id);
             return nullptr;
         }
@@ -292,7 +313,7 @@ static gs_texture_t *render_gpu_mask_graph_texture(
         if (effects_after_nested_mask && matte_texture) {
             matte_texture = apply_gpu_layer_effect_stack(
                 session, layer, resolved_time, matte_texture,
-                session->width, session->height);
+                session->width, session->height, nullptr, false, nullptr, true);
         }
     }
     gs_texture_t *published = publish_texture(matte_texture, desired_key);
@@ -413,10 +434,10 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
     vec4_zero(&clear);
     if (!begin_gpu_target(target, session->width, session->height, clear))
         return false;
-    gs_eparam_t *bg = gs_effect_get_param_by_name(session->blend_effect, "background");
-    gs_eparam_t *fg = gs_effect_get_param_by_name(session->blend_effect, "foreground");
-    gs_eparam_t *blend_mode = gs_effect_get_param_by_name(session->blend_effect, "blendMode");
-    gs_eparam_t *opacity_param = gs_effect_get_param_by_name(session->blend_effect, "opacity");
+    gs_eparam_t *bg = bgl_effect_param(session->blend_effect, "background");
+    gs_eparam_t *fg = bgl_effect_param(session->blend_effect, "foreground");
+    gs_eparam_t *blend_mode = bgl_effect_param(session->blend_effect, "blendMode");
+    gs_eparam_t *opacity_param = bgl_effect_param(session->blend_effect, "opacity");
     if (!bg || !fg || !blend_mode || !opacity_param) {
         gs_texrender_end(target);
         return false;
@@ -556,7 +577,8 @@ static void gpu_record_group_render_diagnostics(
 
 static gs_texture_t *render_gpu_group_graph_texture(
     TitleGpuRenderSession *session, const Title &title, const Layer &group,
-    double title_time, std::unordered_set<std::string> &visiting)
+    double title_time, std::unordered_set<std::string> &visiting,
+    gs_texture_t *composition_background)
 {
     if (!session || !layer_type_is_container(group.type))
         return nullptr;
@@ -703,7 +725,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
         const bool visible_candidate = layer &&
             gpu_layer_visible_in_group_compositor(
                 title, *layer, title_time, group.id) &&
-            layer_should_render_as_visible_content(title, *layer) &&
+            layer_should_render_as_visible_content_for_gpu_session(session, title, *layer) &&
             bgs::transform3d::layer_passes_backface_culling(
                 title, *layer, title_time) &&
             bgs::transform3d::hardware_depth_candidate(
@@ -730,7 +752,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
             const bool candidate_visible =
                 gpu_layer_visible_in_group_compositor(
                     title, *candidate, title_time, group.id) &&
-                layer_should_render_as_visible_content(title, *candidate) &&
+                layer_should_render_as_visible_content_for_gpu_session(session, title, *candidate) &&
                 bgs::transform3d::layer_passes_backface_culling(
                     title, *candidate, title_time);
             if (!candidate_visible) {
@@ -784,7 +806,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
         const double child_time = gpu_layer_render_time(title, child, title_time);
         if (!gpu_layer_visible_in_group_compositor(title, child, title_time,
                                                 group.id) ||
-            !layer_should_render_as_visible_content(title, child) ||
+            !layer_should_render_as_visible_content_for_gpu_session(session, title, child) ||
             !bgs::transform3d::layer_passes_backface_culling(
                 title, child, title_time))
             continue;
@@ -849,16 +871,17 @@ static gs_texture_t *render_gpu_group_graph_texture(
                 Layer silhouette_group = child;
                 silhouette_group.effects.clear();
                 retain_child_silhouette(render_gpu_group_graph_texture(
-                    session, title, silhouette_group, title_time, visiting));
+                    session, title, silhouette_group, title_time, visiting,
+                    frame));
             }
             foreground = render_gpu_group_graph_texture(
-                session, title, child, title_time, visiting);
+                session, title, child, title_time, visiting, frame);
         } else if (child.type == LayerType::Adjustment) {
             gs_texture_t *coverage = render_gpu_adjustment_coverage(
                 session, title, child, title_time);
             gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
                 session, child, child_time, frame, session->width,
-                session->height);
+                session->height, nullptr, false, frame, true);
             gs_texrender_t *next = current_ping ? pong : ping;
             gs_texture_t *mixed = coverage && adjusted
                 ? mix_gpu_adjustment_layer(
@@ -876,7 +899,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
                 render_gpu_layer_to_target(
                     session, title, child, title_time,
                     session->adjustment_coverage_target, false,
-                    std::string(), 1.0, group.id)) {
+                    std::string(), 1.0, group.id, false, frame)) {
                 retain_child_silhouette(apply_child_mask(
                     gs_texrender_get_texture(
                         session->adjustment_coverage_target)));
@@ -890,7 +913,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
             if (!render_gpu_layer_to_target(
                     session, title, child, title_time,
                     session->layer_target, !effects_after_mask,
-                    std::string(), 1.0, group.id)) {
+                    std::string(), 1.0, group.id, false, frame)) {
                 destroy_child_targets();
                 continue;
             }
@@ -909,7 +932,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
             if (foreground && effects_after_mask)
                 foreground = apply_gpu_layer_effect_stack(
                     session, child, child_time, foreground,
-                    session->width, session->height);
+                    session->width, session->height, nullptr, false, frame, true);
         }
         if (!foreground) {
             destroy_child_targets();
@@ -950,7 +973,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
                 gs_texture_t *adjusted_background =
                     apply_gpu_layer_effect_stack(
                         session, adjustment_child, child_time, frame,
-                        session->width, session->height, nullptr, true);
+                        session->width, session->height, nullptr, true, frame, true);
                 if (!adjusted_background || adjusted_background == frame)
                     continue;
                 gs_texrender_t *backdrop_target = current_ping ? pong : ping;
@@ -999,7 +1022,9 @@ static gs_texture_t *render_gpu_group_graph_texture(
         frame = apply_group_target_mask(frame);
     if (frame)
         frame = apply_gpu_layer_effect_stack(session, group, group_time, frame,
-                                             session->width, session->height);
+                                             session->width, session->height,
+                                             nullptr, false,
+                                             composition_background, true);
     if (!effects_after_group_mask)
         frame = apply_group_target_mask(frame);
 
@@ -1161,7 +1186,7 @@ static bool draw_gpu_cached_image(TitleGpuRenderSession *session,
     if (!begin_gpu_target(target, session->width, session->height, clear))
         return false;
 
-    gs_eparam_t *image = gs_effect_get_param_by_name(session->blit_effect,
+    gs_eparam_t *image = bgl_effect_param(session->blit_effect,
                                                      "image");
     if (!image) {
         gs_texrender_end(target);
@@ -1358,7 +1383,7 @@ static bool draw_global_gpu_frame_locked(TitleGpuRenderSession *session,
     if (!begin_gpu_target(target, session->width, session->height, clear))
         return false;
 
-    gs_eparam_t *image = gs_effect_get_param_by_name(session->blit_effect,
+    gs_eparam_t *image = bgl_effect_param(session->blit_effect,
                                                      "image");
     if (!image) {
         gs_texrender_end(target);
@@ -1538,7 +1563,7 @@ static gs_texture_t *render_gpu_hardware_depth_run(
     };
 
     auto draw_background = [&](gs_texture_t *texture) -> bool {
-        gs_eparam_t *image = gs_effect_get_param_by_name(session->blit_effect,
+        gs_eparam_t *image = bgl_effect_param(session->blit_effect,
                                                          "image");
         if (!image || !texture)
             return false;
@@ -1619,7 +1644,8 @@ static gs_texture_t *render_gpu_hardware_depth_run(
         if (prepared.visible && !layer->effects.empty()) {
             gs_texture_t *effected = apply_gpu_layer_effect_stack(
                 session, *layer, resolved_time, entry.texture, entry.width,
-                entry.height, &entry);
+                entry.height, &entry, false, nullptr, false,
+                static_cast<int>(LayerEffectSpace::LayerSpace));
             if (!effected)
                 return nullptr;
             const gs_texture_t *cached_effect = entry.effect_cache
@@ -1935,6 +1961,7 @@ static gs_texture_t *render_gpu_session_locked(
             continue;
         auto &entry = pair.second;
         const bool was_pending = entry.pending_upload;
+        const bool optional_gpu_raster = entry.gpu_text || entry.gpu_primitive;
         /* A null pending image with no primitive is an intentional retirement,
          * not a failed replacement. The upload helper destroys the old texture
          * and returns false because there is no new raster. Treating that as a
@@ -1944,8 +1971,22 @@ static gs_texture_t *render_gpu_session_locked(
                               !entry.gpu_primitive &&
                               entry.pending_image.isNull();
         const bool ready = upload_gpu_layer_raster(session, entry);
-        if (was_pending && !ready && !retiring)
-            all_required_rasters_ready = false;
+        if (was_pending && !ready && !retiring) {
+            if (optional_gpu_raster) {
+                /* GPU text and primitive rasters are accelerators. A failure
+                 * must never suppress the complete title. Their render helpers
+                 * invalidate the layer key and request a compatibility rebuild;
+                 * publish all other ready layers immediately. */
+                BGL_LOG_WARNING("GpuPipeline", QStringLiteral(
+                    "stage=optional-raster-fail-open layer=%1 kind=%2 retainedTexture=%3")
+                    .arg(QString::fromStdString(pair.first))
+                    .arg(entry.text_layer ? QStringLiteral("text")
+                                          : QStringLiteral("primitive"))
+                    .arg(entry.texture ? 1 : 0));
+            } else {
+                all_required_rasters_ready = false;
+            }
+        }
     }
 
     /* Live frame publication remains transactional for the first frame as well
@@ -2094,7 +2135,7 @@ static gs_texture_t *render_gpu_session_locked(
         const Layer *layer = layer_ptr.get();
         const bool visible_candidate = layer &&
             gpu_layer_chain_visible(session->title, *layer, session->time) &&
-            layer_should_render_as_visible_content(session->title, *layer) &&
+            layer_should_render_as_visible_content_for_gpu_session(session, session->title, *layer) &&
             bgs::transform3d::layer_passes_backface_culling(
                 session->title, *layer, session->time) &&
             bgs::transform3d::hardware_depth_candidate(
@@ -2122,8 +2163,8 @@ static gs_texture_t *render_gpu_session_locked(
             }
             const bool candidate_visible = gpu_layer_chain_visible(
                     session->title, *candidate, session->time) &&
-                layer_should_render_as_visible_content(
-                    session->title, *candidate) &&
+                layer_should_render_as_visible_content_for_gpu_session(
+                    session, session->title, *candidate) &&
                 bgs::transform3d::layer_passes_backface_culling(
                     session->title, *candidate, session->time);
             if (!candidate_visible) {
@@ -2186,7 +2227,7 @@ static gs_texture_t *render_gpu_session_locked(
         const double layer_time = gpu_layer_render_time(
             session->title, layer, session->time);
         if (!gpu_layer_chain_visible(session->title, layer, session->time) ||
-            !layer_should_render_as_visible_content(session->title, layer) ||
+            !layer_should_render_as_visible_content_for_gpu_session(session, session->title, layer) ||
             !bgs::transform3d::layer_passes_backface_culling(
                 session->title, layer, session->time))
             continue;
@@ -2236,7 +2277,8 @@ static gs_texture_t *render_gpu_session_locked(
 
             std::unordered_set<std::string> visiting;
             gs_texture_t *foreground = render_gpu_group_graph_texture(
-                session, session->title, layer, session->time, visiting);
+                session, session->title, layer, session->time, visiting,
+                frame);
             if (!foreground) {
                 if (group_silhouette_target)
                     gs_texrender_destroy(group_silhouette_target);

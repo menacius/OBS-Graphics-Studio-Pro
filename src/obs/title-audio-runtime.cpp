@@ -99,6 +99,40 @@ static std::string asset_cache_key(const std::string &path, int stream, uint32_t
            std::to_string(size) + "|" + std::to_string(stamp);
 }
 
+struct EffectiveAudioMedia {
+    std::string path;
+    double timeline_in = 0.0;
+    double timeline_out = 0.0;
+    double media_in = 0.0;
+    double media_out = 0.0;
+    bool loop = false;
+};
+
+static EffectiveAudioMedia effective_audio_media(const Title &title,
+                                                  const Layer &audio)
+{
+    EffectiveAudioMedia result;
+    result.path = audio.audio_source;
+    result.timeline_in = audio.in_time;
+    result.timeline_out = audio.out_time;
+    result.media_in = audio.audio_in_point;
+    result.media_out = audio.audio_out_point;
+    result.loop = audio.audio_loop ||
+                  audio.audio_playback_mode == AudioPlaybackMode::Loop;
+    if (!audio.linked_media_stream || audio.linked_media_layer_id.empty())
+        return result;
+    const auto video = title.find_layer(audio.linked_media_layer_id);
+    if (!video || video->type != LayerType::Video)
+        return result;
+    result.path = video->video_source;
+    result.timeline_in = video->in_time;
+    result.timeline_out = video->out_time;
+    result.media_in = video->video_in_point;
+    result.media_out = video->video_out_point;
+    result.loop = video->video_loop;
+    return result;
+}
+
 }
 
 struct SourceAudioRuntime::ClipSpec {
@@ -282,10 +316,11 @@ void SourceAudioRuntime::request_rebuild(const std::shared_ptr<Title> &title, ui
         for (const auto &ptr : title->layers) {
             if (!ptr || ptr->type != LayerType::Audio) continue;
             const Layer &l = *ptr;
+            const EffectiveAudioMedia media = effective_audio_media(*title, l);
             ClipSpec s;
-            s.id = l.id; s.path = l.audio_source; s.stream_index = l.audio_stream_index;
-            s.timeline_in = std::max(0.0, l.in_time); s.timeline_out = std::max(s.timeline_in, l.out_time);
-            s.media_in = std::max(0.0, l.audio_in_point); s.media_out = std::max(0.0, l.audio_out_point);
+            s.id = l.id; s.path = media.path; s.stream_index = l.audio_stream_index;
+            s.timeline_in = std::max(0.0, media.timeline_in); s.timeline_out = std::max(s.timeline_in, media.timeline_out);
+            s.media_in = std::max(0.0, media.media_in); s.media_out = std::max(0.0, media.media_out);
             s.volume = std::clamp(l.audio_volume, 0.0f, 4.0f);
             s.pan = std::clamp(l.audio_pan, -1.0f, 1.0f);
             s.volume_prop = l.audio_volume_prop;
@@ -302,18 +337,44 @@ void SourceAudioRuntime::request_rebuild(const std::shared_ptr<Title> &title, ui
             s.muted = l.audio_muted || ancestor_audio_muted; s.solo = l.audio_solo;
             s.fade_in = std::max(0.0, l.audio_fade_in); s.fade_out = std::max(0.0, l.audio_fade_out);
             s.fade_curve = l.audio_fade_curve; s.effects = l.audio_effects;
-            s.loop = l.audio_loop || l.audio_playback_mode == AudioPlaybackMode::Loop;
-            s.independent = l.audio_independent; s.hidden = !l.visible;
+            s.loop = media.loop;
+            s.independent = l.audio_independent;
+            /* Visibility is visual/timeline state. Audio output is controlled by
+             * mute/solo so a Video strip can keep playing sound even when its
+             * picture visibility is toggled, and embedded stream lanes do not
+             * become silent just because they are collapsed/hidden in the UI. */
+            s.hidden = false;
             specs.push_back(std::move(s));
         }
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        std::set<std::string> requested_ids;
+        for (const auto &spec : specs)
+            requested_ids.insert(spec.id);
+        clips_.erase(
+            std::remove_if(clips_.begin(), clips_.end(),
+                           [&](const std::shared_ptr<DecodedClip> &clip) {
+                               return !clip || requested_ids.find(clip->spec.id) == requested_ids.end();
+                           }),
+            clips_.end());
+        for (auto it = pending_waveforms_.begin(); it != pending_waveforms_.end();) {
+            if (requested_ids.find(it->first) == requested_ids.end())
+                it = pending_waveforms_.erase(it);
+            else
+                ++it;
+        }
         requested_specs_ = std::move(specs);
         requested_generation_ = revision;
         duration_ms_ = duration_ms;
         rebuild_pending_ = true;
+        if (requested_specs_.empty()) {
+            clips_.clear();
+            published_generation_ = revision;
+            discontinuity_ = true;
+        }
     }
+    output_cv_.notify_all();
     cv_.notify_one();
 }
 
@@ -328,9 +389,17 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
         }
         for (const auto &entry : waveforms) {
             auto layer = title->find_layer(entry.first);
-            if (layer && layer->type == LayerType::Audio && !entry.second.peaks.empty()) {
+            if (!layer || layer->type != LayerType::Audio)
+                continue;
+            layer->audio_waveform_progress_percent =
+                std::clamp(entry.second.progress_percent, 0, 100);
+            layer->audio_waveform_generating = !entry.second.complete;
+            layer->audio_waveform_progress_label = entry.second.label;
+            if (!entry.second.peaks.empty()) {
                 layer->audio_waveform = entry.second.peaks;
                 layer->audio_waveform_duration = entry.second.duration;
+                layer->audio_waveform_progress_percent = 100;
+                layer->audio_waveform_generating = false;
             }
         }
     }
@@ -351,10 +420,11 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
         for (const auto &ptr : title->layers) {
             if (!ptr || ptr->type != LayerType::Audio) continue;
             const Layer &l = *ptr;
+            const EffectiveAudioMedia media = effective_audio_media(*title, l);
             ClipSpec spec;
-            spec.id = l.id; spec.path = l.audio_source; spec.stream_index = l.audio_stream_index;
-            spec.timeline_in = std::max(0.0, l.in_time); spec.timeline_out = std::max(spec.timeline_in, l.out_time);
-            spec.media_in = std::max(0.0, l.audio_in_point); spec.media_out = std::max(0.0, l.audio_out_point);
+            spec.id = l.id; spec.path = media.path; spec.stream_index = l.audio_stream_index;
+            spec.timeline_in = std::max(0.0, media.timeline_in); spec.timeline_out = std::max(spec.timeline_in, media.timeline_out);
+            spec.media_in = std::max(0.0, media.media_in); spec.media_out = std::max(0.0, media.media_out);
             spec.volume = std::clamp(l.audio_volume, 0.0f, 4.0f);
             spec.pan = std::clamp(l.audio_pan, -1.0f, 1.0f);
             spec.volume_prop = l.audio_volume_prop;
@@ -371,14 +441,16 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
             spec.muted = l.audio_muted || ancestor_audio_muted; spec.solo = l.audio_solo;
             spec.fade_in = std::max(0.0, l.audio_fade_in); spec.fade_out = std::max(0.0, l.audio_fade_out);
             spec.fade_curve = l.audio_fade_curve; spec.effects = l.audio_effects;
-            spec.loop = l.audio_loop || l.audio_playback_mode == AudioPlaybackMode::Loop;
-            spec.independent = l.audio_independent; spec.hidden = !l.visible;
+            spec.loop = media.loop;
+            spec.independent = l.audio_independent;
+            /* Visibility is visual/timeline state; mute/solo are the audio gates. */
+            spec.hidden = false;
             live_specs.push_back(spec);
 
             /* Decode identity only.  Timeline trim, gain, pan, mute, fades and
              * DSP are live mixer parameters and must never reopen the asset. */
             mix_hash(l.id.data(), l.id.size());
-            mix_hash(l.audio_source.data(), l.audio_source.size());
+            mix_hash(media.path.data(), media.path.size());
             mix_hash(&l.audio_stream_index, sizeof(l.audio_stream_index));
         }
     }
@@ -392,6 +464,12 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
         } else {
             std::unordered_map<std::string, ClipSpec> by_id;
             for (auto &spec : live_specs) by_id.emplace(spec.id, std::move(spec));
+            clips_.erase(
+                std::remove_if(clips_.begin(), clips_.end(),
+                               [&](const std::shared_ptr<DecodedClip> &clip) {
+                                   return !clip || by_id.find(clip->spec.id) == by_id.end();
+                               }),
+                clips_.end());
             for (const auto &clip : clips_) {
                 if (!clip) continue;
                 auto it = by_id.find(clip->spec.id);
@@ -523,6 +601,7 @@ void SourceAudioRuntime::worker_main()
         for (const auto &spec : specs) {
             if (decode_cancelled(decode_epoch))
                 break;
+            publish_waveform_status(spec, 0, "decode");
             audio_log(TitleLogLevel::Info,
                  "[BGL Audio][decode-start] source='%s' clip='%s' "
                  "stream=%d path='%s' epoch=%llu",
@@ -554,10 +633,95 @@ void SourceAudioRuntime::worker_main()
                      "path='%s'",
                      source_name_.c_str(), spec.id.c_str(), spec.path.c_str());
             }
-            decoded.push_back(std::move(clip));
+            decoded.push_back(clip);
+            /* Publish playable PCM immediately. Waveform analysis is a second,
+             * non-blocking phase from the user's point of view; the mixer must
+             * never wait for the peaks to be finished. */
+            publish_decoded(generation, decode_epoch, decoded);
         }
-        publish_decoded(generation, decode_epoch, std::move(decoded));
+        for (const auto &clip : decoded) {
+            if (decode_cancelled(decode_epoch))
+                break;
+            build_waveform_for_clip(clip, decode_epoch);
+        }
     }
+}
+
+void SourceAudioRuntime::publish_waveform_status(
+    const ClipSpec &spec, int progress_percent, const char *phase,
+    const std::vector<float> *peaks, double duration)
+{
+    if (spec.id.empty())
+        return;
+    PendingWaveform status;
+    if (peaks)
+        status.peaks = *peaks;
+    status.duration = std::max(0.0, duration);
+    status.progress_percent = std::clamp(progress_percent, 0, 100);
+    status.complete = peaks && !peaks->empty();
+    const char *safe_phase = phase && *phase ? phase : "waveform";
+    status.label = spec.id;
+    if (!spec.path.empty()) {
+        const size_t slash = spec.path.find_last_of("/\\");
+        const std::string file = slash == std::string::npos
+            ? spec.path : spec.path.substr(slash + 1);
+        if (!file.empty())
+            status.label = file;
+    }
+    if (!spec.id.empty()) {
+        status.label += " · ";
+        status.label += safe_phase;
+        if (spec.stream_index >= 0) {
+            status.label += " · stream ";
+            status.label += std::to_string(spec.stream_index);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_waveforms_[spec.id] = std::move(status);
+    }
+}
+
+void SourceAudioRuntime::build_waveform_for_clip(
+    const std::shared_ptr<DecodedClip> &clip, uint64_t decode_epoch)
+{
+    if (!clip || !clip->asset || !clip->asset->valid || clip->spec.id.empty())
+        return;
+    const auto &asset = *clip->asset;
+    constexpr size_t buckets = 1024;
+    const size_t step = std::max<size_t>(1, asset.left.size() / buckets);
+    std::vector<float> peaks;
+    peaks.reserve(buckets * 2);
+    publish_waveform_status(clip->spec, 1, "waveform");
+    const size_t total_buckets = std::max<size_t>(1,
+        (asset.left.size() + step - 1) / step);
+    int last_percent = 0;
+    for (size_t base = 0, bucket = 0; base < asset.left.size(); base += step, ++bucket) {
+        if (decode_cancelled(decode_epoch))
+            return;
+        float lo = 1.0f;
+        float hi = -1.0f;
+        const size_t stop = std::min(asset.left.size(), base + step);
+        for (size_t index = base; index < stop; ++index) {
+            const float value = 0.5f * (asset.left[index] + asset.right[index]);
+            lo = std::min(lo, value);
+            hi = std::max(hi, value);
+        }
+        peaks.push_back(lo);
+        peaks.push_back(hi);
+        const int percent = std::clamp(
+            static_cast<int>(std::llround(100.0 * double(bucket + 1) /
+                                          double(total_buckets))),
+            1, 99);
+        if (percent != last_percent && (percent == 1 || percent == 99 ||
+                                        percent - last_percent >= 2)) {
+            last_percent = percent;
+            publish_waveform_status(clip->spec, percent, "waveform");
+        }
+    }
+    publish_waveform_status(
+        clip->spec, 100, "waveform", &peaks,
+        double(asset.left.size()) / std::max<uint32_t>(1, asset.sample_rate));
 }
 
 void SourceAudioRuntime::publish_decoded(
@@ -570,16 +734,6 @@ void SourceAudioRuntime::publish_decoded(
             decode_epoch_.load(std::memory_order_acquire) != decode_epoch ||
             generation != requested_generation_)
             return;
-        pending_waveforms_.clear();
-        for (const auto &clip : decoded) {
-            if (!clip || !clip->asset || !clip->asset->valid ||
-                clip->spec.id.empty() || clip->asset->waveform.empty())
-                continue;
-            pending_waveforms_[clip->spec.id] = PendingWaveform{
-                clip->asset->waveform,
-                double(clip->asset->left.size()) /
-                    std::max<uint32_t>(1, clip->asset->sample_rate)};
-        }
         clips_ = std::move(decoded);
         published_generation_ = generation;
         discontinuity_ = true;
@@ -623,28 +777,6 @@ SourceAudioRuntime::decode_clip(const ClipSpec &spec, uint32_t target_rate,
     };
     auto finalize = [&]() {
         if (!asset->valid || cancelled())
-            return;
-        constexpr size_t buckets = 1024;
-        const size_t step = std::max<size_t>(
-            1, asset->left.size() / buckets);
-        asset->waveform.clear();
-        asset->waveform.reserve(buckets * 2);
-        for (size_t base = 0; base < asset->left.size(); base += step) {
-            if ((base & 0x3ffffU) == 0 && cancelled())
-                return;
-            float lo = 1.0f;
-            float hi = -1.0f;
-            const size_t stop = std::min(asset->left.size(), base + step);
-            for (size_t index = base; index < stop; ++index) {
-                const float value = 0.5f *
-                    (asset->left[index] + asset->right[index]);
-                lo = std::min(lo, value);
-                hi = std::max(hi, value);
-            }
-            asset->waveform.push_back(lo);
-            asset->waveform.push_back(hi);
-        }
-        if (cancelled())
             return;
         {
             std::lock_guard<std::mutex> lock(decoded_asset_cache_mutex());

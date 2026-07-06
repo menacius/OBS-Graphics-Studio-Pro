@@ -52,6 +52,12 @@ private:
     void request_rebuild(const std::shared_ptr<Title> &title, uint64_t revision);
     void publish_decoded(uint64_t generation, uint64_t decode_epoch,
                          std::vector<std::shared_ptr<DecodedClip>> decoded);
+    void publish_waveform_status(const ClipSpec &spec, int progress_percent,
+                                 const char *phase,
+                                 const std::vector<float> *peaks = nullptr,
+                                 double duration = 0.0);
+    void build_waveform_for_clip(const std::shared_ptr<DecodedClip> &clip,
+                                 uint64_t decode_epoch);
     std::shared_ptr<DecodedClip> decode_clip(const ClipSpec &spec,
                                              uint32_t target_rate,
                                              uint64_t decode_epoch);
@@ -77,7 +83,13 @@ private:
     uint64_t published_generation_ = 0;
     std::vector<ClipSpec> requested_specs_;
     std::vector<std::shared_ptr<DecodedClip>> clips_;
-    struct PendingWaveform { std::vector<float> peaks; double duration = 0.0; };
+    struct PendingWaveform {
+        std::vector<float> peaks;
+        double duration = 0.0;
+        int progress_percent = 0;
+        bool complete = false;
+        std::string label;
+    };
     std::unordered_map<std::string, PendingWaveform> pending_waveforms_;
 
     double title_time_ = 0.0;

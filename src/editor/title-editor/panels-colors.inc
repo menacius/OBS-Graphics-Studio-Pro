@@ -425,6 +425,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                   (type == LayerType::Clock) ? editor_text_std("OBSTitles.Clock") :
                   (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
                   (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") :
+                  (type == LayerType::Video) ? editor_text_std("OBSTitles.Video") :
                   (type == LayerType::Audio) ? editor_text_std("OBSTitles.Audio") :
                   (type == LayerType::Adjustment) ? editor_text_std("OBSTitles.AdjustmentLayer") :
                   (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") :
@@ -445,10 +446,10 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     const bool full_canvas_layer = type == LayerType::Adjustment || type == LayerType::ColorSolid;
     l->rect_width = full_canvas_layer ? static_cast<float>(title_->width) : title_->width * 0.5f;
     l->rect_height = full_canvas_layer ? static_cast<float>(title_->height) :
-                     ((type == LayerType::Image) ? title_->height * 0.4f : 160.0f);
+                     ((layer_type_is_image_like(type)) ? title_->height * 0.4f : 160.0f);
     l->size.static_value.x = l->rect_width;
     l->size.static_value.y = l->rect_height;
-    if (type == LayerType::Image) {
+    if (layer_type_is_image_like(type)) {
         l->image_width = l->rect_width;
         l->image_height = l->rect_height;
         l->image_size.static_value.x = l->image_width;

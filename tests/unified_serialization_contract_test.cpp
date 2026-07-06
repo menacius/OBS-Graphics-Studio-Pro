@@ -53,7 +53,7 @@ int main(int argc, char **argv)
 
     ok &= require(schema, "kFirstAuditedDevelopmentVersion = 144",
                   "migration range starts at 144");
-    for (int version = 144; version <= 219; ++version) {
+    for (int version = 144; version <= 222; ++version) {
         ok &= require(schema, "case " + std::to_string(version) + ":",
                       "explicit migration step for development " + std::to_string(version));
     }

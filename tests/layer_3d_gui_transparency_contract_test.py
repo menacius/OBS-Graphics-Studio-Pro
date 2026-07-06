@@ -30,9 +30,9 @@ readme = text("README.md")
 changelog = text("docs/CHANGELOG.md")
 guide = text("docs/EFFECTS_AND_EXTENSIONS.md")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*219", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
 assert "case 204:" in schema
 
 # The final layer-list column owns the visible switch and emits one model event.

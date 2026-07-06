@@ -20,8 +20,8 @@ changelog = read("docs/CHANGELOG.md")
 note = read("docs/EDITOR_WORKFLOW.md")
 schema = read("src/core/title-serialization-schema.h")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
 
 # Sub-frame graph time and explicit snap modifier.
 assert "graph_x_to_time(ev->pos().x())" in graph
@@ -76,6 +76,6 @@ assert "# Development Version 215 — Timeline and Graph Editor Completion" in c
 assert "sub-frame" in note
 assert "Camera switching" in note
 assert "It is serialized" in note
-assert "kCurrentDevelopmentVersion = 219" in schema
+assert "kCurrentDevelopmentVersion = 239" in schema
 
 print("Development Version 215 Timeline and Graph Editor completion contract passed")

@@ -5,6 +5,8 @@
 #include "title-data.h"
 #include "title-serialization-schema.h"
 #include "extensions/effect-extension-catalog.h"
+#include "effects/effect-preset-catalog.h"
+#include "effects/effect-runtime.h"
 #include "title-logger.h"
 #include "ticker-runtime.h"
 #include "asset-runtime.h"
@@ -1181,15 +1183,53 @@ void Title::add_layer(std::shared_ptr<Layer> l)
         .arg(static_cast<int>(layers.size())));
 }
 
+
+void synchronize_video_audio_streams(Title &title,
+                                     const std::string &video_layer_id)
+{
+    for (const auto &audio : title.layers) {
+        if (!audio || audio->type != LayerType::Audio ||
+            !audio->linked_media_stream || audio->linked_media_layer_id.empty())
+            continue;
+        if (!video_layer_id.empty() &&
+            audio->linked_media_layer_id != video_layer_id)
+            continue;
+        const auto video = title.find_layer(audio->linked_media_layer_id);
+        if (!video || video->type != LayerType::Video)
+            continue;
+        normalize_layer_media_range_to_timeline_span(*video, false);
+        video->use_as_scene_mask = false;
+        audio->parent_id = video->id;
+        audio->audio_source = video->video_source;
+        audio->audio_in_point = video->video_in_point;
+        audio->audio_out_point = video->video_out_point;
+        audio->audio_media_duration = video->video_media_duration;
+        audio->audio_loop = video->video_loop;
+        audio->audio_playback_mode = video->video_loop
+            ? AudioPlaybackMode::Loop : AudioPlaybackMode::PlayOnce;
+        audio->audio_independent = false;
+        audio->in_time = video->in_time;
+        audio->out_time = video->out_time;
+    }
+}
 void Title::remove_layer(const std::string &lid)
 {
     const auto protected_layer = find_layer(lid);
-    if (protected_layer && stinger_transition_input_layer_is_protected(*protected_layer))
+    if (protected_layer &&
+        (stinger_transition_input_layer_is_protected(*protected_layer) ||
+         protected_layer->linked_media_stream))
         return;
     const std::size_t previous_count = layers.size();
+    const bool removing_video = protected_layer &&
+        protected_layer->type == LayerType::Video;
     layers.erase(
         std::remove_if(layers.begin(), layers.end(),
-                       [&](auto &l){ return !l || l->id == lid; }),
+                       [&](auto &l){
+                           return !l || l->id == lid ||
+                               (removing_video && l->type == LayerType::Audio &&
+                                l->linked_media_stream &&
+                                l->linked_media_layer_id == lid);
+                       }),
         layers.end());
     for (auto &layer : layers) {
         if (!layer) continue;
@@ -2812,6 +2852,22 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["audio_channels"] = l.audio_channels;
     j["audio_waveform"] = l.audio_waveform;
     j["audio_waveform_duration"] = l.audio_waveform_duration;
+    j["audio_waveform_progress_percent"] = l.audio_waveform_progress_percent;
+    j["audio_waveform_generating"] = l.audio_waveform_generating;
+    j["audio_waveform_progress_label"] = l.audio_waveform_progress_label;
+    j["linked_media_layer_id"] = l.linked_media_layer_id;
+    j["linked_media_stream"] = l.linked_media_stream;
+    j["media_stream_label"] = l.media_stream_label;
+    j["video_source"] = l.video_source;
+    j["video_stream_index"] = l.video_stream_index;
+    j["video_in_point"] = l.video_in_point;
+    j["video_out_point"] = l.video_out_point;
+    j["video_loop"] = l.video_loop;
+    j["video_media_duration"] = l.video_media_duration;
+    j["video_frame_rate"] = l.video_frame_rate;
+    j["video_pixel_width"] = l.video_pixel_width;
+    j["video_pixel_height"] = l.video_pixel_height;
+    j["video_has_alpha"] = l.video_has_alpha;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     j["matte_visibility_mode"] = (int)l.matte_visibility_mode;
@@ -2856,6 +2912,13 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_outside_hard_alpha_invert", effect.effect_outside_hard_alpha_invert},
                            {"affect_layers_behind", effect.affect_layers_behind},
                            {"affect_layers_behind_invert", effect.affect_layers_behind_invert},
+                           {"effect_source_layer_id", effect.effect_source_layer_id},
+                           {"effect_source_mode", effect.effect_source_mode},
+                           {"effect_x_channel", effect.effect_x_channel},
+                           {"effect_y_channel", effect.effect_y_channel},
+                           {"effect_wrap_mode", effect.effect_wrap_mode},
+                           {"effect_mapping_space", effect.effect_mapping_space},
+                           {"effect_alpha_aware", effect.effect_alpha_aware},
                            {"effect_profile", effect.effect_profile},
                            {"effect_animated", effect.effect_animated},
                            {"effect_monochrome", effect.effect_monochrome},
@@ -2870,6 +2933,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_center_y", effect.effect_center_y},
                            {"effect_complexity", effect.effect_complexity},
                            {"effect_evolution", effect.effect_evolution},
+                           {"effect_affect_alpha", effect.effect_affect_alpha},
+                           {"effect_clamp_output", effect.effect_clamp_output},
+                           {"effect_temporal_stability", effect.effect_temporal_stability},
                            {"effect_secondary_color", effect.effect_secondary_color},
                            {"blend_mode", (int)effect.blend_mode},
                            {"effect_fill_type", effect.effect_fill_type},
@@ -3342,34 +3408,50 @@ static void migrate_and_validate_extension_state(
 
     const uint32_t stored_version = std::max<uint32_t>(1u, effect.extension_schema_version);
     if (stored_version < definition->schemaVersion && definition->migrateState) {
-        const char *migrated = definition->migrateState(
-            effect.extension_id.c_str(), stored_version,
-            effect.extension_parameters_json.c_str());
-        if (migrated) {
-            const size_t length = std::char_traits<char>::length(migrated);
-            if (length <= 1024u * 1024u) {
-                const std::string candidate(migrated, length);
-                const json parsed = json::parse(candidate, nullptr, false);
-                if (parsed.is_object()) {
-                    effect.extension_parameters_json = candidate;
-                    effect.extension_schema_version = definition->schemaVersion;
+        try {
+            const char *migrated = definition->migrateState(
+                effect.extension_id.c_str(), stored_version,
+                effect.extension_parameters_json.c_str());
+            if (migrated) {
+                const size_t length = std::char_traits<char>::length(migrated);
+                if (length <= 1024u * 1024u) {
+                    const std::string candidate(migrated, length);
+                    const json parsed = json::parse(candidate, nullptr, false);
+                    if (parsed.is_object()) {
+                        effect.extension_parameters_json = candidate;
+                        effect.extension_schema_version = definition->schemaVersion;
+                    }
                 }
+                if (definition->releaseString)
+                    definition->releaseString(migrated);
             }
-            if (definition->releaseString)
-                definition->releaseString(migrated);
+        } catch (...) {
+            if (diagnostics) {
+                append_unique_import_diagnostic(
+                    diagnostics->missing_effects,
+                    layer_name + ": " + effect.extension_id + " (plugin migration threw an exception)");
+            }
         }
     }
 
     if (definition->validateState) {
-        char error_buffer[1024] = {};
-        const int valid = definition->validateState(
-            effect.extension_id.c_str(), effect.extension_parameters_json.c_str(),
-            error_buffer, static_cast<uint32_t>(sizeof(error_buffer)));
-        if (!valid && diagnostics) {
-            const std::string detail = error_buffer[0] ? error_buffer : "invalid extension state";
-            append_unique_import_diagnostic(
-                diagnostics->missing_effects,
-                layer_name + ": " + effect.extension_id + " (" + detail + ")");
+        try {
+            char error_buffer[1024] = {};
+            const int valid = definition->validateState(
+                effect.extension_id.c_str(), effect.extension_parameters_json.c_str(),
+                error_buffer, static_cast<uint32_t>(sizeof(error_buffer)));
+            if (!valid && diagnostics) {
+                const std::string detail = error_buffer[0] ? error_buffer : "invalid extension state";
+                append_unique_import_diagnostic(
+                    diagnostics->missing_effects,
+                    layer_name + ": " + effect.extension_id + " (" + detail + ")");
+            }
+        } catch (...) {
+            if (diagnostics) {
+                append_unique_import_diagnostic(
+                    diagnostics->missing_effects,
+                    layer_name + ": " + effect.extension_id + " (plugin validation threw an exception)");
+            }
         }
     }
 }
@@ -3389,7 +3471,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::TransitionInput);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Video);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
@@ -3485,6 +3567,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->audio_sample_rate = std::clamp(json_int(j, "audio_sample_rate", 0), 0, 768000);
     l->audio_channels = std::clamp(json_int(j, "audio_channels", 0), 0, 64);
     l->audio_waveform_duration = std::max(0.0, json_double(j, "audio_waveform_duration", 0.0));
+    l->audio_waveform_progress_percent = std::clamp(json_int(j, "audio_waveform_progress_percent", 0), 0, 100);
+    l->audio_waveform_generating = json_bool(j, "audio_waveform_generating", false);
+    l->audio_waveform_progress_label = bounded_string(j, "audio_waveform_progress_label", "", kMaxNameLength);
     if (j.contains("audio_waveform") && j["audio_waveform"].is_array()) {
         const size_t count = std::min<size_t>(j["audio_waveform"].size(), 8192);
         l->audio_waveform.reserve(count);
@@ -3493,6 +3578,19 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                 l->audio_waveform.push_back((float)std::clamp(j["audio_waveform"][i].get<double>(), -1.0, 1.0));
         }
     }
+    l->linked_media_layer_id = bounded_string(j, "linked_media_layer_id", "", kMaxNameLength);
+    l->linked_media_stream = json_bool(j, "linked_media_stream", false);
+    l->media_stream_label = bounded_string(j, "media_stream_label", "", kMaxNameLength);
+    l->video_source = bounded_string(j, "video_source", "", kMaxPathLength);
+    l->video_stream_index = json_int(j, "video_stream_index", -1);
+    l->video_in_point = std::clamp(finite_or(json_double(j, "video_in_point", 0.0), 0.0), 0.0, kMaxDuration);
+    l->video_out_point = std::clamp(finite_or(json_double(j, "video_out_point", 0.0), 0.0), 0.0, kMaxDuration);
+    l->video_loop = json_bool(j, "video_loop", false);
+    l->video_media_duration = std::clamp(finite_or(json_double(j, "video_media_duration", 0.0), 0.0), 0.0, kMaxDuration);
+    l->video_frame_rate = std::clamp(finite_or(json_double(j, "video_frame_rate", 0.0), 0.0), 0.0, 1000.0);
+    l->video_pixel_width = std::clamp(json_int(j, "video_pixel_width", 0), 0, 32768);
+    l->video_pixel_height = std::clamp(json_int(j, "video_pixel_height", 0), 0, 32768);
+    l->video_has_alpha = json_bool(j, "video_has_alpha", false);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedClipping);
     if (j.contains("matte_visibility_mode")) {
@@ -3509,7 +3607,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
     l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
-    l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
+    l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false) &&
+                           l->type != LayerType::Video;
     l->effect_stack_respects_masks = json_bool(j, "effect_stack_respects_masks", false);
     if (j.contains("external_bindings") && j["external_bindings"].is_array()) {
         const size_t count = std::min(j["external_bindings"].size(),
@@ -3535,7 +3634,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const bool extension_is_builtin = BglEffectExtensionCatalog::builtInTypeForId(
                 QString::fromStdString(loaded_extension_id), &resolved_type);
             const bool valid_legacy_type = raw_effect_type >= 0 &&
-                raw_effect_type <= (int)LayerEffectType::FourColorGradient;
+                raw_effect_type <= (int)LayerEffectType::DigitalDistortion;
             if (!valid_legacy_type && loaded_extension_id.empty()) {
                 if (diagnostics) {
                     append_unique_import_diagnostic(
@@ -3592,7 +3691,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_color = json_color(effect_json, "effect_color", effect.tint_color);
             effect.effect_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_opacity", effect.tint_amount), effect.tint_amount), 0.0, 1.0);
             effect.effect_size = (float)std::clamp(finite_or(json_double(effect_json, "effect_size", 16.0), 16.0), 0.0, 512.0);
-            effect.effect_distance = (float)std::clamp(finite_or(json_double(effect_json, "effect_distance", 8.0), 8.0), 0.0, 4096.0);
+            const double effect_distance_min = effect.type == LayerEffectType::DisplacementMap ? -4096.0 : 0.0;
+            effect.effect_distance = (float)std::clamp(finite_or(json_double(effect_json, "effect_distance", 8.0), 8.0), effect_distance_min, 4096.0);
             const double default_effect_angle = effect.type == LayerEffectType::MotionBlur ? 0.0 : 135.0;
             effect.effect_angle = (float)finite_or(json_double(effect_json, "effect_angle", default_effect_angle), default_effect_angle);
             effect.effect_spread = (float)std::clamp(finite_or(json_double(effect_json, "effect_spread", 0.0), 0.0), 0.0, 512.0);
@@ -3604,20 +3704,83 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_outside_hard_alpha_invert = json_bool(effect_json, "effect_outside_hard_alpha_invert", false);
             effect.affect_layers_behind = json_bool(effect_json, "affect_layers_behind", false);
             effect.affect_layers_behind_invert = json_bool(effect_json, "affect_layers_behind_invert", false);
+            effect.effect_source_layer_id = bounded_string(effect_json, "effect_source_layer_id", "", kMaxNameLength);
+            effect.effect_source_mode = std::clamp(json_int(effect_json, "effect_source_mode", 0), 0, 1);
+            effect.effect_x_channel = std::clamp(json_int(effect_json, "effect_x_channel", 0), 0, 4);
+            effect.effect_y_channel = std::clamp(json_int(effect_json, "effect_y_channel", 0), 0, 4);
+            effect.effect_wrap_mode = std::clamp(json_int(effect_json, "effect_wrap_mode", 0), 0, 3);
+            effect.effect_mapping_space = std::clamp(json_int(effect_json, "effect_mapping_space", 0), 0, 1);
+            effect.effect_alpha_aware = json_bool(effect_json, "effect_alpha_aware", true);
             effect.effect_profile = std::clamp(json_int(effect_json, "effect_profile", 0), 0, 32);
             effect.effect_animated = json_bool(effect_json, "effect_animated", false);
             effect.effect_monochrome = json_bool(effect_json, "effect_monochrome", true);
             effect.effect_invert = json_bool(effect_json, "effect_invert", false);
             effect.effect_seed = std::clamp(json_int(effect_json, "effect_seed", 1), 0, 999999);
-            effect.effect_amount = (float)std::clamp(finite_or(json_double(effect_json, "effect_amount", 1.0), 1.0), 0.0, 10.0);
+            double effect_amount_min = 0.0;
+            if (effect.type == LayerEffectType::Ripple ||
+                effect.type == LayerEffectType::WaveWarp ||
+                effect.type == LayerEffectType::DisplacementMap) {
+                effect_amount_min = -4096.0;
+            } else if (effect.type == LayerEffectType::MatteChoker) {
+                effect_amount_min = -1.0;
+            }
+            double effect_amount_max = 10.0;
+            if (effect.type == LayerEffectType::Ripple ||
+                effect.type == LayerEffectType::WaveWarp ||
+                effect.type == LayerEffectType::DisplacementMap) {
+                effect_amount_max = 4096.0;
+            } else if (effect.type == LayerEffectType::MatteChoker ||
+                       effect.type == LayerEffectType::ChromaKey ||
+                       effect.type == LayerEffectType::LumaKey ||
+                       effect.type == LayerEffectType::ColorRange ||
+                       effect.type == LayerEffectType::SpillSuppression) {
+                effect_amount_max = 1.0;
+            }
+            effect.effect_amount = (float)std::clamp(
+                finite_or(json_double(effect_json, "effect_amount", 1.0), 1.0),
+                effect_amount_min, effect_amount_max);
             effect.effect_scale = (float)std::clamp(finite_or(json_double(effect_json, "effect_scale", 1.0), 1.0), 0.001, 100.0);
             effect.effect_softness = (float)std::clamp(finite_or(json_double(effect_json, "effect_softness", 0.25), 0.25), 0.0, 1.0);
+            if (effect.type == LayerEffectType::ChromaKey ||
+                effect.type == LayerEffectType::LumaKey ||
+                effect.type == LayerEffectType::ColorRange ||
+                effect.type == LayerEffectType::SpillSuppression ||
+                effect.type == LayerEffectType::MatteChoker) {
+                effect.effect_spread = std::clamp(effect.effect_spread, 0.0f, 1.0f);
+                effect.effect_falloff = std::clamp(effect.effect_falloff, 0.0f, 1.0f);
+                if (effect.type == LayerEffectType::MatteChoker)
+                    effect.effect_size = std::clamp(effect.effect_size, 0.0f, 64.0f);
+            }
             effect.effect_roundness = (float)std::clamp(finite_or(json_double(effect_json, "effect_roundness", 0.0), 0.0), -1.0, 1.0);
             effect.effect_speed = (float)std::clamp(finite_or(json_double(effect_json, "effect_speed", 1.0), 1.0), -100.0, 100.0);
             effect.effect_center_x = (float)std::clamp(finite_or(json_double(effect_json, "effect_center_x", 0.5), 0.5), -10.0, 10.0);
             effect.effect_center_y = (float)std::clamp(finite_or(json_double(effect_json, "effect_center_y", 0.5), 0.5), -10.0, 10.0);
             effect.effect_complexity = (float)std::clamp(finite_or(json_double(effect_json, "effect_complexity", 4.0), 4.0), 1.0, 12.0);
             effect.effect_evolution = (float)finite_or(json_double(effect_json, "effect_evolution", 0.0), 0.0);
+            /* Current Noise uses pixel-space offsets, anisotropic scale and up
+             * to eight octaves. Older schemas are reset to current defaults
+             * below, so there is no legacy validation branch. */
+            if (effect.type == LayerEffectType::Noise || effect.type == LayerEffectType::Grain ||
+                effect.type == LayerEffectType::FilmDistortion || effect.type == LayerEffectType::AnalogDistortion ||
+                effect.type == LayerEffectType::DigitalDistortion) {
+                effect.effect_scale = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_scale", 1.0), 1.0), 0.001, 4096.0);
+                effect.effect_roundness = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_roundness", 0.0), 0.0), -3.0, 3.0);
+                effect.effect_center_x = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_center_x", 0.0), 0.0), -100000.0, 100000.0);
+                effect.effect_center_y = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_center_y", 0.0), 0.0), -100000.0, 100000.0);
+                effect.effect_complexity = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_complexity", 5.0), 5.0), 1.0, 8.0);
+                effect.effect_spread = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_spread", 2.0), 2.0), 1.01, 8.0);
+                effect.effect_falloff = (float)std::clamp(finite_or(
+                    json_double(effect_json, "effect_falloff", 0.5), 0.5), 0.0, 1.0);
+            }
+            effect.effect_affect_alpha = json_bool(effect_json, "effect_affect_alpha", false);
+            effect.effect_clamp_output = json_bool(effect_json, "effect_clamp_output", true);
+            effect.effect_temporal_stability = json_bool(effect_json, "effect_temporal_stability", true);
             effect.effect_secondary_color = json_color(effect_json, "effect_secondary_color", 0xFF4EA3FFu);
             if (effect_json.contains("blend_mode"))
                 effect.blend_mode = (EffectBlendMode)std::clamp(json_int(effect_json, "blend_mode", (int)effect.blend_mode), 0, (int)EffectBlendMode::Color);
@@ -3770,6 +3933,16 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             if (effect.type == LayerEffectType::ColorOverlay) {
                 effect.tint_color = effect.effect_color;
                 effect.tint_amount = effect.effect_opacity;
+            }
+            /* Built-in effects have no legacy UI/runtime modes. When their
+             * schema changes, reopen them as a fresh current instance with the
+             * current defaults. This intentionally discards obsolete values,
+             * keyframes and passthrough payloads while preserving stack order. */
+            const bool loaded_builtin_effect = loaded_extension_id.empty() || extension_is_builtin;
+            if (const EffectDescriptor *descriptor = effect_descriptor(effect.type);
+                loaded_builtin_effect && descriptor &&
+                effect.extension_schema_version < descriptor->schema_version) {
+                effect = bgs::effects::make_default_layer_effect(effect.type);
             }
             l->effects.push_back(effect);
         }
@@ -4439,11 +4612,17 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
-    if (diagnostics && l->type == LayerType::Image && !l->image_path.empty() &&
+    if (diagnostics && layer_type_is_image_like(l->type) && !l->image_path.empty() &&
         !QFileInfo::exists(QString::fromStdString(l->image_path))) {
         append_unique_import_diagnostic(
             diagnostics->missing_images,
             l->name + ": " + l->image_path);
+    }
+    if (diagnostics && l->type == LayerType::Video && !l->video_source.empty() &&
+        !QFileInfo::exists(QString::fromStdString(l->video_source))) {
+        append_unique_import_diagnostic(
+            diagnostics->missing_images,
+            l->name + ": " + l->video_source);
     }
     if (diagnostics && l->type == LayerType::Audio && !l->audio_source.empty() &&
         !QFileInfo::exists(QString::fromStdString(l->audio_source))) {
@@ -4451,7 +4630,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             diagnostics->missing_audio,
             l->name + ": " + l->audio_source);
     }
-    l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", l->type == LayerType::Image);
+    l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", layer_type_is_image_like(l->type));
     l->image_box_lock_aspect_ratio = json_bool(j, "image_box_lock_aspect_ratio", false);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
                                                    0, (int)ImageScaleFilter::Area);
@@ -4491,6 +4670,53 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->origin_prop.static_value.z = std::clamp(
         l->origin_prop.static_value.z, -1000000.0, 1000000.0);
     return l;
+}
+
+std::string serialize_layer_effect_stack_json(
+    const std::vector<LayerEffect> &effects)
+{
+    Layer carrier;
+    carrier.effects = effects;
+    const json serialized_layer = layer_to_json(
+        carrier, false, false, nullptr, nullptr, false);
+    json root = {
+        {"format", "broadcast-graphics-live-effect-stack"},
+        {"version", 1},
+        {"effects", serialized_layer.value("effects", json::array())}
+    };
+    return root.dump();
+}
+
+bool deserialize_layer_effect_stack_json(
+    const std::string &payload, std::vector<LayerEffect> *effects,
+    std::string *error)
+{
+    if (!effects) {
+        if (error) *error = "No destination effect stack was supplied.";
+        return false;
+    }
+    const json root = json::parse(payload, nullptr, false);
+    if (!root.is_object() ||
+        root.value("format", std::string()) !=
+            "broadcast-graphics-live-effect-stack" ||
+        root.value("version", 0) != 1 ||
+        !root.contains("effects") || !root["effects"].is_array()) {
+        if (error) *error = "The effect stack payload is not valid or uses an unsupported version.";
+        return false;
+    }
+    json carrier_json = {
+        {"id", "effect-stack-carrier"},
+        {"name", "Effect Stack"},
+        {"type", static_cast<int>(LayerType::Adjustment)},
+        {"effects", root["effects"]}
+    };
+    auto carrier = layer_from_json(carrier_json, false, error, nullptr);
+    if (!carrier) {
+        if (error && error->empty()) *error = "Could not deserialize the effect stack.";
+        return false;
+    }
+    *effects = std::move(carrier->effects);
+    return true;
 }
 
 static json camera_to_json(const TitleCamera &camera)
@@ -4991,6 +5217,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
             repair_link(layer->parent_id, layer->id);
             repair_link(layer->transform_parent_id, layer->id);
             repair_link(layer->mask_source_id, layer->id);
+            repair_link(layer->linked_media_layer_id, layer->id);
         }
         /* Break group/transform-parent cycles deterministically at the first
          * repeated node instead of allowing recursive evaluation to hang. */
@@ -5015,6 +5242,20 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         };
         break_cycles(false);
         break_cycles(true);
+        for (auto &layer : t->layers) {
+            if (!layer || !layer->linked_media_stream)
+                continue;
+            const auto owner = t->find_layer(layer->linked_media_layer_id);
+            if (!owner || owner->type != LayerType::Video ||
+                layer->type != LayerType::Audio) {
+                layer->linked_media_stream = false;
+                layer->linked_media_layer_id.clear();
+                layer->parent_id.clear();
+                ++repaired_links;
+            } else {
+                layer->parent_id = owner->id;
+            }
+        }
         if (repaired_ids > 0 || repaired_links > 0) {
             BGL_LOG_WARNING("Serialization", QStringLiteral(
                 "Repaired title references duplicateOrMissingIds=%1 danglingOrCyclicLinks=%2")
@@ -5050,7 +5291,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
                 continue;
             has_exposed_text = has_exposed_text ||
                                (layer->type == LayerType::Text && layer->expose_text);
-            has_scene_mask = has_scene_mask || layer->use_as_scene_mask;
+            has_scene_mask = has_scene_mask || (layer->use_as_scene_mask && layer->type != LayerType::Video);
         }
         t->graphic_type = has_exposed_text ? TitleGraphicType::Title
                           : has_scene_mask ? TitleGraphicType::Mask
@@ -5063,7 +5304,12 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         if (!layer || layer->parent_id.empty())
             continue;
         const auto legacy_parent = t->find_layer(layer->parent_id);
-        if (legacy_parent && !layer_type_is_container(legacy_parent->type)) {
+        const bool linked_video_stream_parent = legacy_parent &&
+            legacy_parent->type == LayerType::Video &&
+            layer->type == LayerType::Audio && layer->linked_media_stream &&
+            layer->linked_media_layer_id == legacy_parent->id;
+        if (legacy_parent && !layer_type_is_container(legacy_parent->type) &&
+            !linked_video_stream_parent) {
             if (layer->transform_parent_id.empty())
                 layer->transform_parent_id = layer->parent_id;
             layer->parent_id.clear();
@@ -5211,6 +5457,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
     if (t->is_asset)
         t->asset_animated = bgs::asset_runtime::title_has_timeline_animation(*t);
 
+    synchronize_video_audio_streams(*t);
     return t;
 }
 

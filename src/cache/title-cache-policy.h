@@ -16,7 +16,7 @@ struct TitleDynamicLayerAnalysis {
 
 /*
  * Runtime-dynamic layers cannot be baked into the frame cache.  Clock and
- * clocks and runtime-driven ticker layers are the direct dynamic sources. Custom-playback tickers are timeline-deterministic and cacheable.  Dynamic state also propagates
+ * clocks, video and runtime-driven ticker layers are the direct dynamic sources. Custom-playback tickers are timeline-deterministic and cacheable.  Dynamic state also propagates
  * to layers whose output depends on a dynamic parent transform/opacity or a
  * dynamic track matte.
  *
@@ -63,6 +63,7 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
                       title.stinger_switch_mode == StingerSwitchMode::ManualSceneAnimation &&
                       layer->type == LayerType::TransitionInput) ||
                      layer->type == LayerType::Clock ||
+                     layer->type == LayerType::Video ||
                      (layer->type == LayerType::Ticker &&
                       layer->ticker_playback_mode != static_cast<int>(TickerPlaybackMode::CustomPlayback));
     }

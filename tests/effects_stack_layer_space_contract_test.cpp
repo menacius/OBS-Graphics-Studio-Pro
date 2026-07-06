@@ -26,13 +26,13 @@ void require_layer_space_shader(const std::string &source)
     require(source, "uniform float2 layerUvOrigin;");
     require(source, "uniform float2 layerUvAxisX;");
     require(source, "uniform float2 layerUvAxisY;");
-    require(source, "float2 layer_space_uv(float2 surface_uv)");
+    require(source, "float2 layer_space_uv(float2");
 }
 } // namespace
 
 int main(int argc, char **argv)
 {
-    assert(argc == 11);
+    assert(argc == 17);
     const std::string gpu = read_file(argv[1]);
     const std::string compatibility = read_file(argv[2]);
     const std::string lifecycle = read_file(argv[3]);
@@ -43,14 +43,22 @@ int main(int argc, char **argv)
     const std::string vignette = read_file(argv[8]);
     const std::string noise = read_file(argv[9]);
     const std::string roughen = read_file(argv[10]);
+    const std::string detail = read_file(argv[11]);
+    const std::string glare = read_file(argv[12]);
+    const std::string halation = read_file(argv[13]);
+    const std::string finishing = read_file(argv[14]);
+    const std::string keying = read_file(argv[15]);
+    const std::string source_effects = read_file(argv[16]);
 
     /* An expanding effect may enlarge the retained local surface, but it must
      * never reroute the complete stack to a canvas-sized texture. */
     forbid(gpu, "layer_requires_full_canvas_effect_pass");
     require(gpu, "Ordinary artwork effects execute on the transform-neutral, padded layer");
-    require(gpu, "apply_gpu_layer_effect_stack(session, layer, resolved_time");
-    require(gpu, "entry.texture, entry.width, entry.height,\n                                       &entry)");
-    require(gpu, "gpu-effects-v8-lens-flare-dx11-keyword-fix-v9-effects-cleanup-4-color-gradient-v10-layer-space-stack");
+    require(gpu, "apply_gpu_layer_effect_stack(");
+    require(gpu, "source_height, &entry, false, composition_background, false,");
+    require(gpu, "static_cast<int>(LayerEffectSpace::LayerSpace)");
+    require(gpu, "static_cast<int>(LayerEffectSpace::ScreenSpace)");
+    require(gpu, "gpu-effects-v17-keying-matte-v18-source-effects");
 
     /* Full-canvas group/matte paths receive a complete affine layer basis so
      * procedural fields follow translation, scaling and rotation. */
@@ -72,6 +80,17 @@ int main(int argc, char **argv)
     require(compatibility, "layer_requires_preserved_effect_surface");
     require(compatibility, "case LayerEffectType::LensFlare");
     require(compatibility, "case LayerEffectType::RoughenEdges");
+    require(compatibility, "static bool is_modern_gpu_pixel_effect_type");
+    require(compatibility, "is_modern_gpu_pixel_effect_type(effect.type)");
+    require(compatibility, "case LayerEffectType::Sharpen:");
+    require(compatibility, "case LayerEffectType::UnsharpMask:");
+    require(compatibility, "case LayerEffectType::HighPass:");
+    require(compatibility, "case LayerEffectType::Clarity:");
+    require(compatibility, "case LayerEffectType::BilateralSharpen:");
+    require(compatibility, "case LayerEffectType::LensDistortion:");
+    require(compatibility, "case LayerEffectType::Scanlines:");
+    require(compatibility, "case LayerEffectType::ChromaKey:");
+    require(compatibility, "case LayerEffectType::MatteChoker:");
     require(lifecycle, "|gpu-effect-surface=");
     require(lifecycle, "preserve_effect_surface ? std::string(\"preserved\")");
     require(raster, "result.layer_box_rect.translate(-bounds.x(), -bounds.y());");
@@ -88,9 +107,28 @@ int main(int argc, char **argv)
     require_layer_space_shader(vignette);
     require(vignette, "float2 p = (effect_uv - center) * 2.0;");
     require_layer_space_shader(noise);
-    require(noise, "float2 p = effect_uv * max(scale");
+    require(noise, "float2 p=(px+noiseOffset)/max(scale");
     require_layer_space_shader(roughen);
     require(roughen, "float2 p = effect_uv * max(scale");
+    require(detail, "uniform texture2d blurredImage;");
+    require(detail, "technique BilateralSharpen");
+    require(glare, "uniform texture2d blurredImage;");
+    require(glare, "technique GlareComposite");
+    require(halation, "uniform texture2d blurredImage;");
+    require(halation, "technique HalationComposite");
+    require(finishing, "technique LensDistortion");
+    require(finishing, "technique Scanlines");
+    require(keying, "technique ChromaKey");
+    require(keying, "technique MatteChoker");
+    require(keying, "float4 PSChromaKey(VertDataOut v_in) : TARGET");
+    require(source_effects, "uniform float2 layerUvOrigin;");
+    require(source_effects, "uniform float2 layerUvAxisX;");
+    require(source_effects, "uniform float2 layerUvAxisY;");
+    require(source_effects, "uniform int inputIsComposition;");
+    require(source_effects, "float2 composition_uv(float2 local_uv)");
+    require(source_effects, "float2 source_space_uv(float2 input_uv)");
+    require(source_effects, "technique LightWrap");
+    require(source_effects, "technique DisplacementMap");
 
     std::cout << "effects stack layer-space/bounds contract: PASS\n";
     return 0;

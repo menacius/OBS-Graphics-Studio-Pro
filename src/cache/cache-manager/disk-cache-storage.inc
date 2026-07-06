@@ -599,6 +599,7 @@ QString CacheManager::contentHash(const Title &title) const
     };
     auto add_effect = [&](const LayerEffect &e) {
         add(QString::fromStdString(e.extension_id));
+        add(e.extension_schema_version);
         add(QString::fromStdString(e.extension_parameters_json));
         add(QString::fromStdString(e.extension_keyframes_json));
         add((int)e.type); add(e.enabled); add(e.brightness); add(e.contrast); add(e.saturation);
@@ -611,6 +612,8 @@ QString CacheManager::contentHash(const Title &title) const
         add(e.effect_scale); add(e.effect_softness); add(e.effect_roundness);
         add(e.effect_speed); add(e.effect_center_x); add(e.effect_center_y);
         add(e.effect_complexity); add(e.effect_evolution);
+        add(e.effect_affect_alpha); add(e.effect_clamp_output);
+        add(e.effect_temporal_stability);
         add((quint32)e.effect_secondary_color);
         add(e.effect_fill_type); add(e.effect_join_style);
         add(e.effect_on_front); add(e.effect_antialias); add(e.effect_owned_style_loaded);
@@ -1047,7 +1050,7 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
         add_anim(e.secondary_color_a); add_anim(e.secondary_color_r);
         add_anim(e.secondary_color_g); add_anim(e.secondary_color_b);
-        if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
+        if ((e.type == LayerEffectType::Noise || e.type == LayerEffectType::Grain || e.type == LayerEffectType::FilmDistortion || e.type == LayerEffectType::AnalogDistortion || e.type == LayerEffectType::DigitalDistortion) && e.effect_animated && e.enabled)
             add(sample_time);
     };
 
@@ -1187,7 +1190,7 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(e.secondary_color_r, 1.0 / 255.0);
         add_anim(e.secondary_color_g, 1.0 / 255.0);
         add_anim(e.secondary_color_b, 1.0 / 255.0);
-        if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
+        if ((e.type == LayerEffectType::Noise || e.type == LayerEffectType::Grain || e.type == LayerEffectType::FilmDistortion || e.type == LayerEffectType::AnalogDistortion || e.type == LayerEffectType::DigitalDistortion) && e.effect_animated && e.enabled)
             add(quant(sample_time, 1.0 / 240.0));
     };
 

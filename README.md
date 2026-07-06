@@ -4,11 +4,35 @@
 
 **Broadcast Graphics Live** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered 2D/3D motion-graphics editor, live text and image cueing, audio layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
 
-**Current build:** `v0.8.10-alpha` · `Development Version 219`
+**Current build:** `v0.8.11-alpha` · `Development Version 239`
 
-## What is new in v0.8.10-alpha
+Development Version 239 fixes Motion Blur image/video posterization by raising bitmap/video shutter sample density while keeping vector/text budgets controlled, and replaces the damage shader with more organic layered Film/Analog/Digital artifacts based on film scratches/dust/flicker/gate weave, VHS chroma bleed/scanlines/tracking/head-switching and digital macroblock/packet/ringing damage. All blur effects continue to use the existing fast Gaussian blur backend.
+
+## What is new in v0.8.11-alpha
 
 This release consolidates the work completed since `v0.8.9-alpha` Development Version 189.
+
+### Video layers and synchronized multistream audio
+
+Development Version 230 ensures different FPS is handled through deterministic source-frame duplicate/drop mapping, so mixed 23.976/25/30/50/60fps media stays frame-accurate without timeline drift.
+
+Development Version 228 fixes the first Video layer polish pass: Video no longer draws the empty Image placeholder hatch over decoded frames, visual/video effects and presets can be applied directly to the Video row, and the decoder/cache path now keys GPU uploads by the actually decoded media frame instead of the advancing requested playhead frame. This keeps the last decoded texture resident while the async decoder catches up, reduces redundant texture uploads, and avoids the poor playback performance caused by rebuilding the same frame under a new cache key every tick.
+
+Development Version 227 adds Video as a first-class visual layer that uses the complete Image layer geometry, crop, anchor, transforms, masks, effects and 2D/3D presentation path. Every embedded audio stream is discovered through FFmpeg and exposed as its own child track with an independent waveform, mute, gain, pan and audio-effect stack. The Video row keeps separate picture visibility and master mute controls, while all picture and audio streams resolve trim, seek, loop, reverse playback and timeline position from the same title transport clock so they cannot drift apart.
+
+The 227 playback hotfix makes Video layers time-varying GPU rasters, refreshes the canvas as soon as asynchronous video frames arrive, feeds the private editor monitor source from the current in-memory editor title, and keeps audio visibility separate from mute/solo so decoded streams start playing immediately instead of waiting for waveform completion or an unrelated mute/unmute UI change.
+
+### Effects UI, presets and source-aware animation
+
+Development Version 226 adds Light Wrap and Displacement Map with layer/composition source selection, hidden-source dependency rendering, alpha-aware edge extraction, independent displacement channels, signed X/Y amounts, wrap modes and source/composition mapping. The Effects panel now scales through categorized search, Favorites, Recently Used, generated thumbnails and GPU/CPU/HDR/plugin/screen-space/cache-breaking badges. Effects and complete stacks can be copied, pasted, replaced, reset, duplicated and saved/imported/exported as presets. The effect stack, Layer List and Timeline share one parent/parameter hierarchy, with meaningful numeric parameters exposed to keyframes and the Graph Editor, unified color controls, continuous angles and non-wrapping evolution.
+
+### Keying, matte and spill suppression
+
+Development Version 225 adds Chroma Key, Luma Key, Color Range, Spill Suppression and Matte Choker. The effects use a shared GPU keying core with premultiplied-alpha-safe output, key-color-aware spill removal, invertible mattes, feathering and bounded matte contraction/expansion. They are integrated with the editor, Timeline, serialization and frame cache and expose no legacy modes.
+
+### Unified effects runtime and render performance baseline
+
+All built-in effects now share one canonical descriptor and runtime evaluation layer across the editor, extension catalog, cache, compatibility compositor and 2D/3D GPU renderer. Stable effect IDs, schema versions, parameter metadata, execution space, HDR/color/alpha contracts, bounds expansion and dirty scope come from the same registry. Per-frame effect evaluation no longer copies strings or keyframe vectors, built-in shaders use constant-time cached lookup, GPU pass lists reuse session storage, and the compatibility compositor reuses dimension-aware upload, ping-pong and staging resources instead of allocating them for every call. Debug builds expose effect-resolution, shader-cache, pass-time, bounds and resource-pool counters while existing project serialization and visual output remain compatible.
 
 ### Complete planar 3D workflow and animated cameras
 
@@ -25,6 +49,14 @@ Grouping, ungrouping, transform-parent changes and parent deletion preserve auth
 ### Performance, migration and automated release gates
 
 Cache and Timeline inspection use indexed and batched state reads, projected gizmo geometry is reused between hit-testing and painting, editor frame pacing and selection synchronization are more deterministic, and render diagnostics expose queue, cache, readback, grouping and background-work costs. Title schema 6 adds a contiguous migration and recovery path that preserves unknown future fields throughout nested cameras, keyframes, effects, transitions, audio effects, proxy metadata and external providers. A single automated suite now provides source, smoke, full and stress profiles with manifest validation, bounded timeouts, CTest integration and JSON reports. The Development Version 218 render regression was removed by keeping opaque future-schema payloads in immutable shared storage and outside render-fingerprint parsing.
+
+### Procedural Noise and detail enhancement
+
+Noise now uses a single modern procedural engine with visually distinct grain, sensor, fractal, turbulence, ridged, cellular and blue-noise profiles. The effects stack also adds Sharpen, Unsharp Mask, High Pass, Clarity / Local Contrast and Bilateral Sharpen, with GPU processing, alpha protection and keyframeable controls. Effects whose internal schema changes reopen with the new defaults instead of exposing legacy modes.
+
+### Functional optical, lens, distortion and finishing effects
+
+The detail and optical paths now execute their required auxiliary passes instead of falling through the generic single-texture compositor: sharpening effects receive a Gaussian low-pass input, Halation receives thresholded warm highlight diffusion, and Real Glare uses its own source-driven streak and dispersion shader rather than reusing Lens Flare. Development Version 224 also adds Lens Distortion, Chromatic Aberration, Directional Blur, Zoom Blur, Radial Blur, Ripple, Wave Warp, Pixelate, Edge Detect, Posterize, Threshold and Scanlines, each with dedicated editor controls, current-schema defaults and fail-open GPU execution.
 
 ## Features
 
@@ -111,6 +143,8 @@ Cache and Timeline inspection use indexed and batched state reads, projected giz
 * On-canvas controls for position-based effect properties.
 * FX indicators in the layer list, including a struck-through state when the complete stack is disabled.
 * Stable layer-space, post-transform and screen-space execution in 2D and 3D.
+* Canonical versioned descriptors for IDs, parameters, backend, HDR, color, alpha, bounds, dirty scope and render-pass requirements.
+* Allocation-free evaluated effect snapshots and cached built-in shader lookup.
 * Built-in effects including:
   * Background and generated fills
   * Outlines and shadows
@@ -119,8 +153,12 @@ Cache and Timeline inspection use indexed and batched state reads, projected giz
   * Inner shadow
   * Brightness and contrast
   * Saturation and color overlays
-  * Noise and vignette
-  * Emboss and lens flare
+  * Procedural noise, grain and vignette
+  * Sharpen, Unsharp Mask, High Pass, Clarity and Bilateral Sharpen
+  * Emboss, Lens Flare, Real Glare and Halation
+  * Lens Distortion, Chromatic Aberration and optical warping
+  * Directional, Zoom and Radial Blur
+  * Ripple, Wave Warp, Pixelate, Edge Detect, Posterize, Threshold and Scanlines
   * Camera-aware motion blur
   * Generated and four-color gradients
 * Reusable effect and transition presets.
@@ -157,10 +195,14 @@ Cache and Timeline inspection use indexed and batched state reads, projected giz
 * Diagnostics and external-data logging.
 * Coalesced updates without blocking the UI or render thread.
 
-### Audio Layers
+### Video and Audio Layers
 
+* Video files as first-class visual layers with the same geometry, crop, transforms, masks and effects as Image layers.
+* Video picture and embedded audio streams share one timeline strip by default; each stream draws its waveform as an embedded lane.
+* One synchronized audio stream record and waveform for every embedded audio stream.
+* Independent picture visibility, Video master mute and per-stream mute controls.
 * Audio files as first-class timeline layers.
-* Asynchronous decoding and waveform generation.
+* Audio playback is published as soon as PCM decode is ready; waveform generation runs independently with realtime per-track progress.
 * Timeline range and trim controls.
 * Draggable fade-in and fade-out handles with visible curves.
 * Gain, pan, mute and solo controls.
@@ -215,6 +257,8 @@ Cache and Timeline inspection use indexed and batched state reads, projected giz
 ### Performance and Reliability
 
 * GPU-accelerated 2D/3D rendering with editor/OBS parity.
+* Reusable effect-pass storage and dimension-aware compatibility GPU resource pooling.
+* Debug counters for effect evaluation, shader-cache efficiency, bounds calculation, pass time and resource-pool reuse.
 * Monitor-refresh-rate editor presentation and project-frame-rate authored playback.
 * Optimized dense-text and group rendering.
 * Responsive editing during background prerendering.
@@ -245,7 +289,7 @@ powershell -ExecutionPolicy Bypass -File .\update-and-build.ps1
 A development source package follows this naming scheme:
 
 ```text
-Broadcast_Graphics_Live_v0.8.10-alpha_development-version-219.zip
+Broadcast_Graphics_Live_v0.8.11-alpha_development-version-239.zip
 ```
 
 ## Documentation
@@ -264,20 +308,6 @@ Documentation is consolidated into maintained thematic guides instead of per-dev
 ## Tests and audits
 
 Run `python tools/run_automated_test_suite.py --profile source` for source-only validation. Native `smoke`, `full`, and `stress` profiles require a configured build with `OBS_BGS_BUILD_TESTS=ON`. Architecture, packaging and regression audits live under `tools/`; C++ and Python contracts live under `tests/`.
-
-<p align="center">
-  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
-</p>
-
-<p align="center"><strong>Developed by: omniatv</strong></p>
-<p align="center">
-  <a href="https://omniatv.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
-      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
-    </picture>
-  </a>
-</p>
 
 <p align="center">
   <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />

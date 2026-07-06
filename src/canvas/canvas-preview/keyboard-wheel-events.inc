@@ -28,6 +28,8 @@ void CanvasPreview::render_to_frame()
             title_->graphic_type == TitleGraphicType::Stinger &&
                 title_->stinger_switch_mode ==
                     StingerSwitchMode::ManualSceneAnimation);
+        title_gpu_render_session_set_scene_mask_placeholder_preview(
+            gpu_render_session_, true);
 
         /* Timeline playback changes only the session time. Model snapshots are
          * replaced only after an actual edit, avoiding a deep copy of every
@@ -51,10 +53,22 @@ void CanvasPreview::render_to_frame()
             (drag_changed_ &&
              (drag_mode_ == DragMode::Move || drag_mode_ == DragMode::Rotate ||
               resize_drag));
-        /* Keyframe topology and other authoritative model edits must be cloned
-         * once before the lightweight transform snapshot path can resume. */
+        const bool selected_transform_requires_full_refresh = [&]() {
+            if (!title_) return false;
+            for (const std::string &id : selected_layer_ids_) {
+                const auto layer = title_->find_layer(id);
+                if (layer && layer->dimension_mode == LayerDimensionMode::ThreeD)
+                    return true;
+            }
+            return editor_camera_transform_only_pending_;
+        }();
+        /* 3D transforms affect projection, depth order, projected bounds and
+         * text atlas placement. Treat them as full preview updates during
+         * interaction; otherwise the 2D transform-only fast path can keep the
+         * previous projected texture until a later unrelated UI invalidation. */
         const bool transform_only_update = transform_only_requested &&
-            !full_gpu_model_refresh_pending_;
+            !full_gpu_model_refresh_pending_ &&
+            !selected_transform_requires_full_refresh;
 
         bool submitted_cached_frame = false;
         bool preserve_previous_cached_frame = false;
@@ -622,37 +636,11 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
         p.restore();
     }
 
-    p.save();
-    p.setClipRect(QRectF(ox, oy, dw, dh));
-    p.translate(origin);
-    p.scale(scale, scale);
-    for (const auto &layer : title_->layers) {
-        if (!layer || !layer->visible || !layer->use_as_scene_mask)
-            continue;
-
-        const QRectF local_rect = layer_local_rect(*layer);
-        if (!local_rect.isValid() || local_rect.isEmpty())
-            continue;
-
-        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
-                                             std::max(0.0, layer->out_time - layer->in_time));
-        QPainterPath path = editor_scene_mask_layer_path(*layer, local_rect, local_time,
-                                                          title_->id);
-        QPen border(TitlePreferences::scene_mask_color(), layer->type == LayerType::Shape && layer->shape_type == ShapeType::Line ? 3.0 : 2.0);
-        border.setCosmetic(true);
-
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setTransform(editor_layer_world_transform(projection_title(), *layer, playhead_), true);
-        p.setPen(border);
-        /* Scene masks remain matte controls in the editor. Preserve the
-         * familiar hatched fill while the live OBS scene is visible through
-         * the matte in the rendered artwork below. */
-        p.setBrush(scene_mask_hatch_brush());
-        p.drawPath(path);
-        p.restore();
-    }
-    p.restore();
+    /* Development Version 231: scene-mask layers are no longer painted as a
+     * post-frame magenta hatch overlay. The editor render pass now previews
+     * them as real A/B-style placeholder layers, so their own effect stack,
+     * opacity, blending and masks are visible in the same pipeline as ordinary
+     * artwork. */
 
     draw_empty_image_placeholders(p);
 
@@ -1219,7 +1207,8 @@ void CanvasPreview::draw_empty_image_placeholders(QPainter &p)
     p.setClipRect(canvas_view_rect());
     p.setRenderHint(QPainter::Antialiasing, true);
     for (const auto &layer : title_->layers) {
-        if (!layer || layer->type != LayerType::Image || !layer->visible ||
+        if (!layer || !layer_type_is_image_like(layer->type) ||
+            layer->type == LayerType::Video || !layer->visible ||
             !layer->image_path.empty() || playhead_ < layer->in_time || playhead_ > layer->out_time)
             continue;
 

@@ -43,7 +43,8 @@ assert "stinger_transition_input_layer_is_protected(*layer) ||" not in ops
 assert "return layer && stinger_transition_input_layer_is_protected(*layer);" in ops
 assert "name->setReadOnly(l->locked);" in stack
 assert "if (stinger_transition_input_layer_is_protected(*layer))" not in commands
-assert "group_layers->setEnabled(selection.size() >= 2);" in stack
+assert "structural_selection_count" in stack
+assert "group_layers->setEnabled(structural_selection_count >= 2);" in stack
 assert "is_transition_input ||" in properties
 assert "layer.type == LayerType::TransitionInput" in gpu
 
@@ -51,7 +52,7 @@ assert "layer.type == LayerType::TransitionInput" in gpu
 assert "layer.in_time = 0.0;" in core
 assert "layer.out_time = std::max(0.001, title.duration);" in core
 assert "layer.size.static_value = {canvas_width, canvas_height};" in core
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
 
 print("Full manual Stinger Scene A/B visual-layer contract passed")

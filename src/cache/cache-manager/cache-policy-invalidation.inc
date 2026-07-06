@@ -155,6 +155,7 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         if (layer->type == LayerType::Clock || layer->type == LayerType::Ticker ||
+            layer->type == LayerType::Video ||
             (layer->type == LayerType::Asset && layer->asset_animated &&
              layer->asset_playback_mode == 1))
             return true;
@@ -191,26 +192,8 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
             animated(layer->shadow_color_r) || animated(layer->shadow_color_g) ||
             animated(layer->shadow_color_b))
             return true;
-        for (const auto &effect : layer->effects) {
-            if (animated(effect.enabled_prop) || animated(effect.opacity_prop) || animated(effect.size_prop) ||
-                animated(effect.distance_prop) || animated(effect.angle_prop) || animated(effect.spread_prop) ||
-                animated(effect.falloff_prop) || animated(effect.stroke_width_prop) ||
-                animated(effect.stroke_opacity_prop) || animated(effect.padding_left_prop) ||
-                animated(effect.padding_right_prop) || animated(effect.padding_top_prop) ||
-                animated(effect.padding_bottom_prop) || animated(effect.corner_radius_tl_prop) ||
-                animated(effect.corner_radius_tr_prop) || animated(effect.corner_radius_br_prop) ||
-                animated(effect.corner_radius_bl_prop) || animated(effect.color_a) ||
-                animated(effect.color_r) || animated(effect.color_g) || animated(effect.color_b) ||
-                animated(effect.stroke_color_a) || animated(effect.stroke_color_r) ||
-                animated(effect.stroke_color_g) || animated(effect.stroke_color_b) ||
-                animated(effect.amount_prop) || animated(effect.scale_prop) ||
-                animated(effect.softness_prop) || animated(effect.roundness_prop) ||
-                animated(effect.speed_prop) || animated(effect.center_x_prop) ||
-                animated(effect.center_y_prop) || animated(effect.complexity_prop) ||
-                animated(effect.evolution_prop) || animated(effect.secondary_color_a) ||
-                animated(effect.secondary_color_r) || animated(effect.secondary_color_g) ||
-                animated(effect.secondary_color_b) ||
-                (effect.type == LayerEffectType::Noise && effect.effect_animated && effect.enabled))
+        for (const LayerEffect &effect : layer->effects) {
+            if (effect_is_time_variant(effect) && effect.enabled)
                 return true;
         }
         if (layer->in_time > 0.0 || layer->out_time < title.duration)
@@ -1088,7 +1071,7 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
                          std::max<size_t>(1, effective_text.size()) *
                          0.75 * sx);
         h = std::max(h, font_size * 1.6 * sy);
-    } else if (layer.type == LayerType::Image && w <= 1.0 && h <= 1.0) {
+    } else if (layer_type_is_image_like(layer.type) && w <= 1.0 && h <= 1.0) {
         w = frame_size.width();
         h = frame_size.height();
     }

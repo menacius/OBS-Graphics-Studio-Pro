@@ -1083,10 +1083,25 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                 (key_event->key() == Qt::Key_Space &&
                  shortcut_modifiers == Qt::NoModifier &&
                  QApplication::mouseButtons() == Qt::NoButton) ||
+                ((key_event->key() == Qt::Key_Left ||
+                  key_event->key() == Qt::Key_Right) &&
+                 shortcut_modifiers == Qt::NoModifier) ||
                 plain_tool_key;
             if (editor_command) {
                 key_event->accept();
                 return true;
             }
+        }
+
+        if (!shortcut_override && in_editor && !editing_value &&
+            shortcut_modifiers == Qt::NoModifier &&
+            (key_event->key() == Qt::Key_Left ||
+             key_event->key() == Qt::Key_Right)) {
+            if (key_event->key() == Qt::Key_Left)
+                step_backward();
+            else
+                step_forward();
+            key_event->accept();
+            return true;
         }
 

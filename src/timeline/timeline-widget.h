@@ -121,6 +121,7 @@ signals:
     void transition_preset_dropped(const QString &file_path, const std::string &layer_id, int edge);
     void transition_edit_requested(const std::string &layer_id, int edge);
     void transition_modified();
+    void layer_timing_changed(bool commit_undo);
     void audio_layer_property_changed(bool commit_undo);
 
 protected:
@@ -190,6 +191,8 @@ private:
         std::string layer_id;
         double start_in = 0.0;
         double start_out = 0.0;
+        double start_media_in = 0.0;
+        double start_media_out = 0.0;
         std::vector<KeyframeTime> keyframes;
     };
     enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, AudioFadeIn, AudioFadeOut, LoopStart, LoopEnd, PauseMarker, StingerTransitionPoint, GraphKeyframe, GraphIncomingHandle, GraphOutgoingHandle, GraphMarquee, GraphPan };

@@ -198,7 +198,7 @@ static bool present_gpu_session_texture_locked(
         return false;
     gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
     gs_eparam_t *image = effect
-        ? gs_effect_get_param_by_name(effect, "image")
+        ? bgl_effect_param(effect, "image")
         : nullptr;
     if (!effect || !image)
         return false;
@@ -481,7 +481,7 @@ static bool title_gpu_render_session_submit_async_readback(
             return false;
         }
         gs_eparam_t *image = session->blit_effect
-            ? gs_effect_get_param_by_name(session->blit_effect, "image")
+            ? bgl_effect_param(session->blit_effect, "image")
             : nullptr;
         if (!image) {
             gs_texrender_end(slot.crop_target);
@@ -897,6 +897,115 @@ static bool draw_gpu_layer_range_over_current_target(
         session, texture, output_width, output_height, true);
 }
 
+static bool scene_mask_layer_has_backdrop_effects(const Layer &layer,
+                                                  double layer_time)
+{
+    const double local_time = std::max(0.0, layer_time - layer.in_time);
+    return std::any_of(
+        layer.effects.begin(), layer.effects.end(),
+        [local_time](const LayerEffect &effect) {
+            return effect.affect_layers_behind &&
+                   eval_effect_enabled(effect, local_time);
+        });
+}
+
+/* Scene-mask layers are inserted after the ordinary GPU title pass, directly
+ * over the current OBS destination. Their affect-layers-behind effects must
+ * therefore process the framebuffer that already contains every lower title
+ * layer and every lower scene-mask scene. Treating those effects as ordinary
+ * foreground effects either skipped them or applied them only to the selected
+ * scene texture, so Blur/Color/Glow could no longer affect lower scenes.
+ *
+ * Snapshot and map the current destination into title-local coordinates, run
+ * each backdrop effect independently, bound it by the untouched scene mask,
+ * and replace the destination before the scene artwork itself is composited.
+ * This mirrors the root/group bounded-adjustment contract. Failure is
+ * deliberately fail-open: the scene remains visible even if an optional
+ * backdrop shader is unavailable. */
+static bool apply_scene_mask_backdrop_effects_over_current_target(
+    TitleSourceData *data, const Title &title, const Layer &layer,
+    double title_time, gs_texture_t *coverage,
+    uint32_t output_width, uint32_t output_height)
+{
+    if (!data || !data->gpu_render_session || !coverage)
+        return false;
+
+    TitleGpuRenderSession *session = data->gpu_render_session;
+    const double layer_time = gpu_layer_render_time(title, layer, title_time);
+    if (!scene_mask_layer_has_backdrop_effects(layer, layer_time))
+        return true;
+
+    gs_texture_t *current_target = gs_get_render_target();
+    if (!current_target)
+        return false;
+    const uint32_t background_width = gs_texture_get_width(current_target);
+    const uint32_t background_height = gs_texture_get_height(current_target);
+    const enum gs_color_format background_format =
+        gs_texture_get_color_format(current_target);
+    if (background_width == 0 || background_height == 0 ||
+        background_format == GS_UNKNOWN)
+        return false;
+
+    struct matrix4 local_to_background;
+    gs_matrix_get(&local_to_background);
+
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        !prepare_external_composite_dimensions_locked(session) ||
+        !ensure_external_background_snapshot(
+            session, background_width, background_height,
+            background_format))
+        return false;
+
+    gs_copy_texture(session->external_background_snapshot, current_target);
+    gs_texture_t *frame = nullptr;
+    {
+        ScopedGpuCompositorState state;
+        frame = render_external_background_local_locked(
+            session, session->external_background_snapshot,
+            background_width, background_height,
+            ExternalBackgroundMapping::CurrentTransform,
+            &local_to_background, 0.0f, 0.0f,
+            static_cast<float>(background_width),
+            static_cast<float>(background_height),
+            output_width, output_height);
+    }
+    if (!frame)
+        return false;
+
+    bool next_is_a = true;
+    bool changed = false;
+    const double local_time = std::max(0.0, layer_time - layer.in_time);
+    for (const LayerEffect &backdrop_effect : layer.effects) {
+        if (!backdrop_effect.affect_layers_behind ||
+            !eval_effect_enabled(backdrop_effect, local_time))
+            continue;
+
+        Layer adjustment_layer = layer;
+        adjustment_layer.effects.clear();
+        adjustment_layer.effects.push_back(backdrop_effect);
+        gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
+            session, adjustment_layer, layer_time, frame,
+            session->width, session->height, nullptr, true, frame, true);
+        if (!adjusted || adjusted == frame)
+            continue;
+
+        gs_texrender_t *target = next_is_a
+            ? session->frame_a : session->frame_b;
+        gs_texture_t *mixed = mix_gpu_adjustment_layer(
+            session, title, adjustment_layer, title_time,
+            frame, adjusted, coverage, target, true);
+        if (mixed && mixed != frame) {
+            frame = mixed;
+            next_is_a = !next_is_a;
+            changed = true;
+        }
+    }
+
+    return !changed || present_gpu_session_texture_locked(
+        session, frame, output_width, output_height, true);
+}
+
 static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, double title_time)
 {
     if (!data || data->scene_masks.empty() || data->active_scene_mask_scenes.empty())
@@ -913,7 +1022,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
     for (std::size_t layer_index = 0; layer_index < title.layers.size(); ++layer_index) {
         const auto &layer_ptr = title.layers[layer_index];
         const Layer *layer = layer_ptr.get();
-        if (!layer || !layer->use_as_scene_mask ||
+        if (!layer || !layer->use_as_scene_mask || layer->type == LayerType::Video ||
             !gpu_layer_chain_visible(title, *layer, title_time))
             continue;
         const auto *cfg = scene_mask_config_for_layer(*data, layer->id);
@@ -937,6 +1046,14 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                 data->gpu_render_session, layer->id, title_time);
         if (!mask_texture)
             continue;
+
+        /* Backdrop effects belong to the already-composited lower stack. Run
+         * them before drawing this scene's foreground, bounded by the original
+         * scene-mask silhouette. A failure intentionally leaves the lower
+         * stack unchanged and continues with the scene artwork. */
+        apply_scene_mask_backdrop_effects_over_current_target(
+            data, title, *layer, title_time, mask_texture,
+            data->tex_w, data->tex_h);
 
         gs_viewport_push();
         gs_projection_push();
@@ -977,8 +1094,8 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
         gs_texture_t *scene_texture = gs_texrender_get_texture(data->scene_mask_scene_texrender);
         gs_effect_t *effect = scene_mask_effect_for_data(data);
         if (scene_texture && effect) {
-            gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
-            gs_eparam_t *mask = gs_effect_get_param_by_name(effect, "mask");
+            gs_eparam_t *image = bgl_effect_param(effect, "image");
+            gs_eparam_t *mask = bgl_effect_param(effect, "mask");
             if (image && mask) {
                 gs_viewport_push();
                 gs_projection_push();
@@ -1009,13 +1126,13 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                 if (composited && !layer->effects.empty())
                     composited = apply_gpu_layer_effect_stack(
                         data->gpu_render_session, *layer, layer_time, composited,
-                        data->tex_w, data->tex_h);
+                        data->tex_w, data->tex_h, nullptr, false, nullptr, true);
                 if (!composited)
                     continue;
 
                 gs_effect_t *present = obs_get_base_effect(OBS_EFFECT_DEFAULT);
                 gs_eparam_t *present_image = present
-                    ? gs_effect_get_param_by_name(present, "image") : nullptr;
+                    ? bgl_effect_param(present, "image") : nullptr;
                 if (!present || !present_image)
                     continue;
                 gs_effect_set_texture(present_image, composited);
@@ -1026,7 +1143,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                     gpu_layer_chain_opacity(title, *layer, title_time), 0.0, 1.0));
                 struct vec4 tint;
                 vec4_set(&tint, opacity, opacity, opacity, opacity);
-                gs_eparam_t *color = gs_effect_get_param_by_name(present, "color");
+                gs_eparam_t *color = bgl_effect_param(present, "color");
                 if (color) gs_effect_set_vec4(color, &tint);
                 gs_matrix_push();
                 gs_matrix_identity();
@@ -1040,7 +1157,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                  * position without drawing upper layers repeatedly. */
                 std::size_t next_scene_mask = title.layers.size();
                 for (std::size_t next = layer_index + 1; next < title.layers.size(); ++next) {
-                    if (title.layers[next] && title.layers[next]->use_as_scene_mask &&
+                    if (title.layers[next] && title.layers[next]->use_as_scene_mask && title.layers[next]->type != LayerType::Video &&
                         gpu_layer_chain_visible(title, *title.layers[next], title_time)) {
                         next_scene_mask = next;
                         break;
@@ -1082,7 +1199,7 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
     bool rendered = false;
     std::size_t first_scene_mask = title->layers.size();
     for (std::size_t i = 0; i < title->layers.size(); ++i) {
-        if (title->layers[i] && title->layers[i]->use_as_scene_mask &&
+        if (title->layers[i] && title->layers[i]->use_as_scene_mask && title->layers[i]->type != LayerType::Video &&
             gpu_layer_chain_visible(*title, *title->layers[i], data->playhead)) {
             first_scene_mask = i;
             break;

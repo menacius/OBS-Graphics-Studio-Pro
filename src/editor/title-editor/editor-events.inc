@@ -206,6 +206,16 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         return;
     }
 
+    if (!editing_value && shortcut_modifiers == Qt::NoModifier &&
+        (ev->key() == Qt::Key_Left || ev->key() == Qt::Key_Right)) {
+        if (ev->key() == Qt::Key_Left)
+            step_backward();
+        else
+            step_forward();
+        ev->accept();
+        return;
+    }
+
     if (!editing_value && ev->key() == Qt::Key_Escape) {
         close();
         ev->accept();
@@ -776,7 +786,7 @@ void TitleEditor::apply_effect_preset_to_layer(const QString &file_path, const s
     const auto layer = title_->find_layer(layer_id);
     if (!layer || layer->locked || layer->type == LayerType::Audio)
         return;
-    if (layer_type_is_container(layer->type)) {
+    if (layer_type_can_have_children(layer->type) && layer->type != LayerType::Video) {
         std::function<std::pair<bool, bool>(const std::string &, std::set<std::string> &)> classify =
             [this, &classify](const std::string &parent_id, std::set<std::string> &visited) {
                 if (!visited.insert(parent_id).second) return std::pair<bool, bool>{false, false};
@@ -784,7 +794,7 @@ void TitleEditor::apply_effect_preset_to_layer(const QString &file_path, const s
                 for (const auto &child : title_->layers) {
                     if (!child || child->parent_id != parent_id) continue;
                     if (child->type == LayerType::Audio) audio = true;
-                    else if (layer_type_is_container(child->type)) {
+                    else if (layer_type_can_have_children(child->type)) {
                         auto nested = classify(child->id, visited); visual |= nested.first; audio |= nested.second;
                     } else visual = true;
                 }
@@ -808,7 +818,7 @@ void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
     auto layer = title_->find_layer(layer_id);
     if (!layer || layer->locked || layer->type == LayerType::Audio)
         return;
-    if (layer_type_is_container(layer->type)) {
+    if (layer_type_can_have_children(layer->type) && layer->type != LayerType::Video) {
         std::function<std::pair<bool, bool>(const std::string &, std::set<std::string> &)> classify =
             [this, &classify](const std::string &parent_id, std::set<std::string> &visited) {
                 if (!visited.insert(parent_id).second) return std::pair<bool, bool>{false, false};
@@ -816,7 +826,7 @@ void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
                 for (const auto &child : title_->layers) {
                     if (!child || child->parent_id != parent_id) continue;
                     if (child->type == LayerType::Audio) audio = true;
-                    else if (layer_type_is_container(child->type)) {
+                    else if (layer_type_can_have_children(child->type)) {
                         auto nested = classify(child->id, visited); visual |= nested.first; audio |= nested.second;
                     } else visual = true;
                 }
@@ -948,7 +958,10 @@ void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playh
     }
     if (props_) props_->set_layer(layer, playhead);
     update_sidebar_color_swatches(layer);
-    if (effects_panel_) effects_panel_->set_layer(layer, playhead);
+    if (effects_panel_) {
+        effects_panel_->set_title(title_);
+        effects_panel_->set_layer(layer, playhead);
+    }
     update_corner_toolbar();
     BGL_LOG_TRACE("Performance", QStringLiteral(
         "Editor panel refresh layer=%1 costUs=%2")

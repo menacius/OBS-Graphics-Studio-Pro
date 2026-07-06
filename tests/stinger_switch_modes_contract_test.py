@@ -75,7 +75,8 @@ assert "add(layer->transition_input_slot)" in cache_hash
 assert "render_transition_input_placeholder" in raster
 assert "input != entry.texture" in gpu
 assert "draw_logical_width = draw_base_box_width" in gpu
-assert "apply_gpu_layer_effect_stack(session, layer, resolved_time" in gpu
+assert "apply_gpu_layer_effect_stack(" in gpu
+assert "session, layer, resolved_time, source_texture" in gpu
 assert "transition_input_textures[layer.transition_input_slot]" in gpu
 assert "title_gpu_render_session_draw_transition_inputs" in session
 assert "output_width, output_height, true" in session
@@ -91,7 +92,7 @@ assert "title_gpu_render_session_draw_transition_inputs" in transition
 assert "point <= 1.0e-9" in model_cpp
 assert "OBSTitles.StingerSwitchMode=" in locale
 assert "OBSTitles.StingerTransitionInputProtected=" in locale
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
 
 print("Stinger switch modes and manual Scene A/B contract passed")

@@ -140,6 +140,8 @@
             this, &TitleEditor::flip_selected_layers);
     connect(canvas_, &CanvasPreview::rotate_layers_requested,
             this, &TitleEditor::rotate_selected_layers);
+    connect(canvas_, &CanvasPreview::fit_fill_layers_requested,
+            this, &TitleEditor::fit_fill_selected_layers);
     connect(canvas_, &CanvasPreview::layer_order_requested,
             this, &TitleEditor::reorder_selected_layers);
     connect(canvas_, &CanvasPreview::set_layers_locked_requested,
@@ -349,6 +351,66 @@ void TitleEditor::rotate_selected_layers(double degrees)
     }
 
     if (!last_layer) return;
+    on_title_modified();
+    update_layer_panels(last_layer, playhead_);
+}
+
+void TitleEditor::fit_fill_selected_layers(bool fill_screen)
+{
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.empty()) return;
+
+    std::shared_ptr<Layer> last_layer;
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer || layer->locked) continue;
+
+        const double canvas_w = std::max(1, title_->width);
+        const double canvas_h = std::max(1, title_->height);
+        double source_w = eval_box_width(*layer, std::max(0.0, playhead_ - layer->in_time));
+        double source_h = eval_box_height(*layer, std::max(0.0, playhead_ - layer->in_time));
+        if (layer->type == LayerType::Video &&
+            layer->video_pixel_width > 0 && layer->video_pixel_height > 0) {
+            source_w = layer->video_pixel_width;
+            source_h = layer->video_pixel_height;
+        } else if (layer->type == LayerType::Image &&
+                   layer->image_width > 0.0f && layer->image_height > 0.0f) {
+            source_w = layer->image_width;
+            source_h = layer->image_height;
+        }
+        source_w = std::max(1.0, source_w);
+        source_h = std::max(1.0, source_h);
+        const double scale = fill_screen
+            ? std::max(canvas_w / source_w, canvas_h / source_h)
+            : std::min(canvas_w / source_w, canvas_h / source_h);
+        const double next_w = std::max(1.0, source_w * scale);
+        const double next_h = std::max(1.0, source_h * scale);
+        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                     std::max(0.0, layer->out_time - layer->in_time));
+
+        layer->origin_x = 0.5f;
+        layer->origin_y = 0.5f;
+        layer->origin_prop.static_value = {0.5, 0.5};
+        layer->rect_width = static_cast<float>(next_w);
+        layer->rect_height = static_cast<float>(next_h);
+        set_animated_value(layer->size, lt, {next_w, next_h});
+        set_animated_value(layer->position, lt, {canvas_w * 0.5, canvas_h * 0.5});
+
+        if (layer_type_is_image_like(layer->type)) {
+            layer->image_anchor_x = 0.5f;
+            layer->image_anchor_y = 0.5f;
+            layer->image_crop_when_outside_box = fill_screen;
+            layer->image_box_mode = fill_screen
+                ? ImageBoxMode::FitToShortSide
+                : ImageBoxMode::FitImageToBox;
+            layer->image_size_auto_fit = true;
+        }
+        last_layer = layer;
+    }
+
+    if (!last_layer) return;
+    force_next_title_visual_update();
     on_title_modified();
     update_layer_panels(last_layer, playhead_);
 }

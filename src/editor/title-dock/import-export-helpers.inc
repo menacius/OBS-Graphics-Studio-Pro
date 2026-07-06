@@ -577,7 +577,7 @@ static bool title_has_scene_mask(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
     for (const auto &layer : title->layers) {
-        if (layer && layer->use_as_scene_mask)
+        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
             return true;
     }
     return false;

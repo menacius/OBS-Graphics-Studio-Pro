@@ -24,9 +24,9 @@ controls = text("src/editor/title-editor/commands-docks.inc")
 transform = text("src/rendering/layer-transform-3d.cpp")
 obs_refresh = text("src/obs/title-source/source-lifecycle-playback.inc")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build_info
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*219", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build_info
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
 
 # The editor camera override must remain runtime-only and outside project serialization.
 assert "render_camera_override_id" in title_header

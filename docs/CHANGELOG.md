@@ -1,6 +1,244 @@
-# v0.8.10-alpha — Development Version 219
+# v0.8.11-alpha — Development Version 239
 
-This release covers Development Versions 190–219 and introduces the complete planar 3D layer/camera workflow, animated camera and XYZ motion-path authoring, hardware depth and transparent compositing, keyframe-safe hierarchy changes, 3D masks/effects/motion blur, unified Vector3 Timeline/Graph Editor rows, performance/cache/threading audits, schema-6 migration recovery, and the automated source/smoke/full/stress test suite.
+## Development Version 239 — Motion Blur Posterization Fix and Organic Damage Effects
+
+- Fixed Motion Blur posterization on Image and Video layers by giving bitmap/video shutter accumulation a much denser temporal sample budget while keeping text/vector paths on the lower real-time budget. This keeps moving footage from breaking into separated ghost frames instead of a continuous exposure.
+- Rebuilt the Film/Analog/Digital Distortion shader as layered organic artifact logic rather than a simple noise-style overlay. Film now layers gate weave, flicker, vertical scratches, hair/fiber lines, dust blobs, emulsion grain and blotches.
+- Reworked Analog Distortion around VHS/TV-style YIQ chroma bleed, tracking drift, head-switching bottom warp, interlacing, scanlines, row dropouts and fine RF/static noise.
+- Reworked Digital Distortion around macroblock quantization, block/row packet jumps, ringing around block boundaries, corrupted packet coloring and sparse sparkle noise.
+- Added missing animatable metadata for damage direction/aspect and offset controls, keeping serialized effect IDs stable and preserving the existing fast Gaussian blur backend for all blur effects.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 239.
+
+## Development Version 238 — Effect Pipeline Audit and Unified Damage Effects
+
+- Audited the BGL effect path from descriptor/serialization through runtime parameter resolution, GPU shader compilation and compatibility surface rendering.
+- Removed the broken dedicated `DamageMap` / `DamageComposite` branches that could be skipped or alias ping-pong render targets, and moved Film Distortion, Analog Distortion and Digital Distortion into the shared GPU technique selector as real artifact-composite `Draw` passes.
+- Replaced the damage shader and embedded fallback with a single artifact shader that directly models film scratches/dust/weave/burn, analog scanlines/chroma tear/dropouts and digital macroblock/packet/quantization damage.
+- Preserved the existing fast Gaussian blur backend for Blur/Glow/Drop Shadow/Bloom/Halation/Glare and sharpen low-pass variants; no blur path was replaced by a slow generic multi-pass implementation.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 238.
+
+
+## Development Version 237 — Video Decode Look-Ahead and Damage Multi-Pass Effects
+
+- Improved Video layer playback performance by removing decode queue side effects from frame-cache-key generation and adding a bounded forward look-ahead decoded-frame cache that aborts as soon as scrubbing/reverse/jump requests supersede it.
+- Reworked Film Distortion, Analog Distortion and Digital Distortion from noise-style single-pass variants into a two-stage damage-map plus composite pipeline. Film now models weave/scratches/dust/burn, Analog models scanlines/chroma/tearing/dropouts, and Digital models macroblocks/packet glitches/quantization.
+- Extended the BGL effects engine and compatibility GPU surface path to execute damage effects as explicit `DamageMap` and `DamageComposite` passes, with a single-pass `Draw` fallback for fail-open compatibility.
+- Added dedicated damage-effect parameter metadata instead of reusing Noise/Grain metadata, and bumped the effect cache ABI for the new multi-pass output.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 237.
+
+
+## Development Version 236 — Video Playback Regression Fix and Real Damage Shaders
+
+- Fixed the remaining Video playback regression by restoring the safe forward-playback presentation fallback while keeping backwards scrubs/frame-step from showing future frames.
+- Made mouse-trim Range refresh lighter again: live strip drags update the selected Range controls immediately while deferring linked audio stream synchronization, audio preview rebuilds and cache invalidation until mouse release.
+- Split the previous Noise workflow into separate `Noise` and `Grain` built-in effects: Noise is now procedural/noise-map oriented, while Grain is film/sensor texture oriented.
+- Removed the duplicate cosmetic v234 effect-preset entries and replaced them with real built-in damage effects.
+- Replaced the first Film/Analog/Digital distortion implementation with a dedicated damage-distortion shader path instead of piggybacking on the Noise shader. Film damage now uses weave, scratches, dust, flicker and burn; Analog damage uses scanlines, horizontal tear, chroma offset and dropouts; Digital damage uses macroblocks, packet glitches, jumps and quantization.
+- Removed damage profiles from the Noise/Grain profile menu and exposed damage-specific controls such as Damage, Artifact Size, Blend/Smear, Density, Element Spread, Damage Falloff and damage colors.
+- Updated the GPU runtime, embedded shader fallback, cache invalidation, live-cue bounds, hierarchy rows and effect browser categories for the new Noise/Grain/Distortion types.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 236.
+
+## Development Version 234 — Range Inspector Cleanup, Reverse Video Stability and Effect Animation Presets
+
+- Simplified Video layer Range properties to one compact row with `In`/`Out` prefixes inside the numeric fields. Removed the visible Source row, Preview row, Set In/Out buttons and feedback line from the Video inspector.
+- Added realtime timeline strip timing notifications so Range In/Out updates immediately while trim handles are dragged, not only after mouse release.
+- Improved video reverse stepping and backwards scrubbing by expanding the decoded-frame LRU and preventing stale future frames from being presented while an older requested frame is still decoding.
+- Fixed Space playback start behavior in Pause/Loop playback zones so it respects the Playback and Cache start setting instead of always jumping back to the beginning.
+- Added new effect entries and animation presets: Animated Noise Drift, Glare Sweep, Ripple Loop, Wave Warp Loop, Chromatic Pulse, Soft Bloom Highlight, Cinematic Halation Warm and Micro Contrast Clarity.
+- Unified effect settings sizing and labels with the compact Transform-property control style.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 234.
+
+## Development Version 233 — Media Range Preview and Modular Visual Effects SDK
+
+- Added Preview In/Out labels above Video and Audio Range controls, keeping the selected source media range locked to the layer strip duration.
+- Editing Range In now pushes Range Out by the strip length; editing Range Out now pulls Range In by the strip length, with duration clamping for finite media.
+- Timeline strip trimming now updates the corresponding media range edge for Video and Audio layers: dragging the start changes source In, dragging the end changes source Out.
+- Added the public Modular Visual Effects SDK foundation: append-only ABI v4, manifest and native plugin descriptors, stable IDs, parameter metadata, custom host-owned widgets, GPU shader/multi-pass metadata, worker-only CPU declarations, color-space/alpha/input contracts, auxiliary input/layer-reference metadata and state serialization/migration hooks.
+- Added predefined plugin search roots, environment-path discovery, off-UI-thread scanning, quarantine/blacklist persistence, plugin crash-report JSON, scan diagnostics, safe unload callbacks and Effects-browser controls for Rescan plugins and Clear quarantine.
+- Added a developer guide and sample effects under `docs/visual-effects-sdk.md` and `sdk/visual-effects/`.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 233.
+
+# v0.8.11-alpha — Development Version 232
+
+## Development Version 232 — Scene-mask placeholder, FX-strip and media range polish
+
+- Scene-mask placeholders are always rendered in the editor, follow the actual layer content shape/corners instead of a rectangular overlay, and continue through the normal effect stack while OBS/source output keeps real mask artwork only.
+- Timeline FX strips now appear only for effects that have authored keyframes, and expose only keyframed properties/channels below the strip.
+- Added Properties-panel Video range controls with Set In/Set Out playhead buttons and live range feedback; Audio layer Range controls remain available for audio clips/streams.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 232.
+
+# v0.8.11-alpha — Development Version 231
+## Development Version 231 — Video Decode Efficiency, Frame Stepping and Scene-Mask Placeholders
+
+- Added a small decoded-frame LRU to the asynchronous Video runtime so frame stepping, scrubbing and duplicated timeline frames can reuse nearby decoded frames without waking FFmpeg or regenerating uploads.
+- Kept non-expanding Video effects such as color correction, keying, sharpen, pixelate and displacement on the direct image-like GPU base-raster path, avoiding the slow compatibility raster unless an effect needs expanded padding.
+- Added editor Left/Right shortcuts for exact one-frame stepping on the timeline.
+- Added Transform > Fit Screen and Transform > Fill Screen canvas context-menu actions.
+- Reworked scene-mask editor previews to behave like Stinger A/B placeholders: a layer-colored grid background rendered as real layer artwork, not a magenta overlay, so the layer effect stack applies to the placeholder.
+- Hotfix: limited the scene-mask grid placeholder to the editor preview session only; OBS/source scene-mask mattes now render the real mask artwork without leaking the grid into output.
+- Hotfix: pruned stale decoded audio clips immediately when embedded video audio streams are removed from the title/editor, so removed streams cannot keep playing in the source.
+- Hotfix: Video layers are no longer accepted as scene-mask layers through UI, serialization recovery or source scene-mask discovery.
+
+# v0.8.11-alpha — Development Version 230
+## Development Version 230 — Frame-Accurate Video Playback Audit
+
+- Locked Video frame selection to project/timeline frame numbers instead of raw sub-frame timestamps.
+- Added deterministic FPS mismatch handling: lower-FPS media duplicates frames and higher-FPS media drops frames by stable source-frame mapping, preventing drift in 23.976/25/30/50/60fps combinations.
+- Updated the asynchronous Video runtime so frame requests, pending generations and cache keys use the mapped media frame rather than continuously changing playhead seconds.
+- Kept decoded-frame presentation asynchronous while preserving the last valid frame only as a temporary preview until the requested mapped frame arrives.
+- Audited Video playback paths for editor preview, source render, GPU cache keys, direct image-like rastering, trimming, looping and missing-FPS fallback.
+- Fixed Dock cue toggling: clicking a yellow cue again finalizes the uncue and applies the configured end behavior without restarting playback from the beginning.
+
+# v0.8.11-alpha — Development Version 229
+## Development Version 229 — Video Performance, Stable Layer List Columns and 3D Refresh
+
+- Optimized Video decoding for slow files by decoding through intermediate frames without converting each one to BGRA; only the selected target frame is converted and uploaded.
+- Enabled FFmpeg frame/slice threading and fast seek flags for the asynchronous Video decoder.
+- Made layer-list picture visibility and audio mute permanent fixed-width switch columns so Video, Audio and Group rows no longer shift controls when audio availability changes.
+- Reduced the layer-list header to the user-facing data columns: Layer Name, Mode, Parent and Matte Source.
+- Forced full 3D editor preview invalidation for 3D layer/camera transforms, preventing the 2D transform-only fast path from hiding updates until an unrelated refresh.
+- Discarded stale GPU presentation targets when opening a title so existing 3D text layers render immediately.
+- Revalidated canvas overlay invalidation so bounding boxes/gizmos refresh on every edit.
+
+# v0.8.11-alpha — Development Version 228
+## Development Version 228 — Video Layer Visual Effects and Playback Performance
+
+- Removed the editor empty-image hatch overlay from Video layers.
+- Video rows now accept visual/video effects and visual effect presets directly, while embedded streams keep independent audio effects.
+- The asynchronous video runtime now quantizes requests to media frame numbers and exposes decoded-frame cache keys.
+- GPU preview/cache updates are keyed by the actually decoded frame, preventing redundant uploads of the same frame while the decoder catches up.
+- Image-like direct GPU rastering can now use decoded Video frames when no pixel effects force the full compatibility surface.
+
+## Development Version 228 — Video Layer and Multistream A/V Synchronization
+
+## Development Version 228 Hotfix — Video Playback, Embedded Audio and Waveform Progress
+
+- Fixed Video playback stalling on blank frames by allowing the renderer to keep presenting the last decoded frame while the async decoder catches up to the requested title-clock time.
+- Decoupled audio playback from waveform generation: decoded PCM clips are now published to the mixer immediately, and waveform analysis runs as a second phase.
+- Video timeline rows now draw embedded audio-stream waveform lanes directly inside the Video strip, keeping picture and sound in one timeline item by default while stream controls remain available from the expanded layer hierarchy.
+- Added realtime waveform progress state per audio stream, including the currently generating file/stream label in the footer and strip overlay.
+
+- Added a first-class **Video** layer whose picture uses the complete Image layer geometry, crop, anchor, transform, mask, effect and 2D/3D presentation paths.
+- Added FFmpeg media probing and asynchronous frame decoding outside the UI and OBS render threads. Video frames are requested from the absolute title transport and obsolete decode requests are dropped instead of allowing picture drift.
+- Added one structural Audio child track for every embedded audio stream, preserving stream index, language/title metadata, waveform, gain, pan, mute, solo and audio effects independently.
+- Added separate Video picture visibility and master audio mute controls, plus per-stream mute controls in the Layer List.
+- Added waveform rows for every embedded stream in the Timeline. Linked stream rows cannot be moved, trimmed, grouped, copied or deleted independently from their owner Video.
+- Synchronized Video moves, trims, media in/out, looping, seeks, reverse transport and duplication/paste with all linked streams through one title-clock contract.
+- Added paused-preview frame-ready invalidation, source replacement that atomically rebuilds stream tracks, current-schema serialization/migration and missing-media diagnostics.
+
+# v0.8.11-alpha — Development Version 226
+
+## Development Version 226 — Effects UI, Presets and Animation
+
+- Added source-aware **Light Wrap** with composition or layer background input, radius, intensity, edge width, spill color, foreground-luminance protection and alpha-aware edge extraction.
+- Added **Displacement Map** with hidden-layer-safe source dependencies, independent X/Y channel selection, signed horizontal/vertical displacement, clamp/repeat/mirror/transparent wrapping and source-space or composition-space mapping.
+- Rebuilt the Effects panel around searchable categories, Favorites, Recently Used, thumbnails, capability badges and a scalable effect browser.
+- Added effect and complete-stack clipboard operations, stack preset save/import/export, replace, duplicate, effect reset, parameter reset and individual/whole-stack enable controls.
+- Added a shared effect hierarchy for the Effects panel, Layer List and Timeline. Effect parent rows now own their parameter channels in exact stack order.
+- Exposed meaningful numeric effect parameters to keyframing and the Graph Editor, kept colors as unified controls with component channels, and removed artificial angle/evolution wrapping.
+- Marked source-aware and other time/composition-dependent effects as cache-breaking where required and preserved fail-open GPU rendering.
+
+# v0.8.11-alpha — Development Version 225
+
+## Development Version 225 — Keying, Matte and Spill Suppression
+
+- Added Chroma Key, Luma Key, Color Range, Spill Suppression and Matte Choker as append-only built-in GPU effects.
+- Added a shared OBS-compatible keying shader with luma/chroma color distance, premultiplied-alpha-safe output, key-color-neutral spill removal and bounded matte morphology.
+- Added keyframeable editor controls, catalog manifests, stable IDs, Timeline channel labels, cache routing and fail-open GPU execution.
+- Preserved the forward-only schema policy: no legacy modes are exposed, and changed effects reopen with current defaults.
+- Added a shader contract that verifies every technique against its declared pixel entry point.
+
+# v0.8.11-alpha — Development Version 224
+
+### Development Version 224 effects shader-entrypoint hotfix
+
+- Fixed OBS/D3D11 compilation of every shader introduced or rewritten in Development Versions 221–224. Noise, Detail, Real Glare, Halation and Finishing pixel entry points now use the OBS-compatible `VertDataOut v_in` signature expected by their technique invocations.
+- Synchronized the installed shader assets and embedded fallbacks byte-for-byte so fallback compilation cannot reintroduce the same no-op behavior.
+- Bumped both the live GPU-effect cache key and rendered-frame cache ABI to invalidate frames produced while the affected shaders failed to compile.
+- Added regression coverage that validates every pixel-shader declaration against every technique invocation instead of checking only that technique names exist.
+
+### Development Version 224 first-frame visibility hotfix
+
+- Fixed a regression where an optional GPU text or primitive raster failure deferred the complete frame transaction forever, leaving both the editor and OBS source transparent.
+- Optional accelerator failures now publish all ready layers immediately, retain the last valid layer texture when available, and force a complete compatibility-raster rebuild on the next update.
+- GPU text parameter lookup is null-safe and a failed GPU text backend is disabled for the session instead of retrying an incomplete raster every frame.
+- Added regression coverage for first-frame fail-open publication and compatibility fallback routing.
+
+### Development Version 224 crash hotfix
+
+- Fixed D3D11 compilation of the GPU text gradient shader by removing the reserved `point` identifier.
+- Fixed OBS-compatible Noise shader entry-point signatures and pass formatting.
+- Serialized GPU text effect render/reset lifetime and reject incomplete shader techniques.
+- Fixed Qt 6.8 effect-property stylesheet substitution that left `%4` unresolved.
+
+## Development Version 224 — Functional Effects Pipeline, Lens, Distortion and Finishing
+
+- Fixed the MSVC build failure in the GPU effect no-pass diagnostic by storing dynamic error text in session-owned storage before exposing its `const char *` view.
+
+- Repaired the complete built-in effects route from catalog discovery and parameter evaluation through auxiliary-texture generation, technique selection and GPU presentation.
+- Sharpen, Unsharp Mask, High Pass, Clarity / Local Contrast and Bilateral Sharpen now receive the Gaussian low-pass texture required by their detail kernels.
+- Real Glare now uses an independent source-driven optical shader with thresholded highlight extraction, streak shaping and chromatic dispersion instead of reusing Lens Flare.
+- Halation now receives its own thresholded blur input and warm inner/outer spectral composite.
+- Added fail-open technique execution: a shader or technique that produces no pass leaves the incoming layer intact instead of replacing it with an empty render target.
+- Added Lens Distortion, Chromatic Aberration, Directional Blur, Zoom Blur, Radial Blur, Ripple, Wave Warp, Pixelate, Edge Detect, Posterize, Threshold and Scanlines as built-in GPU effects.
+- Added catalog manifests, current-schema defaults, editor controls, serialization validation, cache ABI invalidation and embedded shader fallbacks for all Development Version 224 effects.
+- Retained the forward-only built-in schema policy: changed effects reopen with current defaults and never expose legacy controls or render branches.
+
+## Development Version 223 — Optical Bloom, Glare and Halation
+
+- Restored discovery of the Development Version 222 detail effects by shipping their built-in catalog manifests.
+- Fixed live Noise controls, profile switching, extended aspect range and stale GPU effect-cache invalidation.
+- Added Real Glare and Halation as built-in optical effect types with current-schema defaults only.
+- Development Version 224 replaces their initial incomplete routing with independent, functional optical passes.
+
+## Development Version 222 — Convolution, Blur and Detail Core
+
+- Fixed the standalone MSVC build of `effect-preset-catalog.cpp` by directly including `effect-runtime.h` before using `EffectDescriptor` and `effect_descriptor()`.
+- Added Sharpen, Unsharp Mask, High Pass, Clarity / Local Contrast and Bilateral Sharpen as native GPU effects.
+- Added the shared detail shader, low-pass auxiliary contract, alpha protection, luminance-only processing, thresholding, highlight/shadow protection and edge-aware sharpening.
+- Reworked Noise into schema 3 with clearly separated Fine Grain, Film Grain, Digital Sensor, Clouds, Turbulence, Ridged, Cellular and Blue-noise profiles.
+- Removed all legacy Noise options and fallback branches. Older Noise instances reopen with the current schema-3 defaults.
+- Established the generic built-in policy that a changed effect schema resets stored instances to current defaults instead of carrying legacy parameters forward.
+
+# Development Version 221 — Procedural Noise Engine
+
+- Introduced the first procedural Noise runtime with deterministic seed/evolution evaluation, expanded spatial controls and GPU/cache integration.
+- Added the initial grain, cellular, fractal and sensor-oriented profile families.
+- Strengthened shader portability by replacing dynamic and nested loops with statically unrolled cross-backend implementations.
+- Development Version 223 supersedes this implementation with schema 3, removes every compatibility mode and reopens older Noise instances with the current defaults.
+
+# v0.8.11-alpha — Development Version 220
+
+## Scene-mask backdrop compositing correction
+
+- Restored affect-layers-behind effects for OBS scenes inserted through scene-mask layers, so Blur and other backdrop effects process the already-composited lower scenes instead of being skipped or applied only to the foreground scene.
+- Snapshots the current OBS destination, maps it into title-local coordinates, evaluates each backdrop effect independently, and bounds the result with the untouched scene-mask silhouette before the scene artwork is drawn.
+- Keeps the correction fail-open: an unavailable optional effect shader leaves the lower composition unchanged but never hides the selected scene.
+
+## Startup crash correction
+
+- Fixed an OBS startup crash in `gs_effect_get_param_by_name()` when an effect shader was unavailable or its handle was replaced during nested/group/matte rendering.
+- Replaced session-owned mutable effect-pass scratch with a re-entrant invocation-local pass list using 16 inline slots and heap overflow only for unusually large stacks.
+- Routed all split `title-source` parameter lookups through a null-safe wrapper, turning shader initialization failure into a graceful render fallback instead of an access violation.
+- Serialized built-in and extension shader registry mutation so concurrent first-use compilation cannot publish or replace partially initialized cache entries.
+
+## Build correction
+
+- Added the required direct performance-counter include to the unified `title-source.cpp` translation unit, fixing MSVC lookup failures for `bgl::perf` in the compatibility and GPU effect modules.
+- Removed release-build clock reads and timer state from the debug-only `ScopedTimer` instrumentation.
+
+This release covers Development Versions 190–220 and introduces the complete planar 3D layer/camera workflow, animated camera and XYZ motion-path authoring, hardware depth and transparent compositing, keyframe-safe hierarchy changes, 3D masks/effects/motion blur, unified Vector3 Timeline/Graph Editor rows, performance/cache/threading audits, schema-6 migration recovery, the automated source/smoke/full/stress test suite, and a unified allocation-conscious effects runtime.
+
+# Development Version 220 — Unified Effects Runtime and Render Performance Baseline
+
+- Added one canonical `EffectDescriptor` registry for every built-in effect, including stable/legacy IDs, independent schema version, parameter metadata, execution space, GPU/CPU contract, HDR support, color and premultiplied-alpha behavior, minimum passes, cacheability and bounds expansion.
+- Replaced per-frame `LayerEffect` copies with allocation-free `ResolvedLayerEffect` snapshots shared by compatibility and GPU compositor paths.
+- Centralized time-variant detection, dirty scope and asymmetric effect-bounds expansion so cache, 2D and planar-3D paths no longer maintain conflicting rules.
+- Replaced linear built-in shader lookup with an indexed first-use cache and retained stable-ID caching for external effects.
+- Uses a re-entrant inline effect pass list and a dimension-aware compatibility surface pool containing the upload texture, ping-pong targets, staging surface and transfer buffers.
+- Added debug counters for effect resolution, shader-cache hits/misses, bounds evaluation, pass count/time, resource-pool reuse and empty-stack fast paths.
+- Exposed the canonical built-in capabilities and parameter schemas through the extension catalog.
+- Preserved title schema 6, existing stable effect IDs and authored project appearance; Development Version 220 migration is a validated no-op.
 
 # Development Version 219 — Automated Test Suite and Render Hot-Path Repair
 

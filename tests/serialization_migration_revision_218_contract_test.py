@@ -24,10 +24,10 @@ docks = read("src/editor/title-editor/commands-docks.inc")
 readme = read("README.md")
 changelog = read("docs/CHANGELOG.md")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
 assert 'kCurrentTitleSchemaVersion = 6' in schema
-assert 'kCurrentDevelopmentVersion = 219' in schema
+assert 'kCurrentDevelopmentVersion = 239' in schema
 assert 'case 218:' in schema
 assert 'migrate_serialization_audit_218' in schema
 assert 'disabled malformed parent bind matrix' in schema
@@ -56,7 +56,7 @@ assert '&CanvasPreview::show_selected_layers_context_menu' not in docks  # conne
 assert 'canvas_->show_selected_layers_context_menu(global_pos)' in docks
 
 assert 'Title schema 6' in readme
-assert changelog.startswith('# v0.8.10-alpha — Development Version 219')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
 assert 'Schema 6' in read('docs/ARCHITECTURE_AND_BUILD.md') or 'Schema 6' in read('docs/CHANGELOG.md')
 
 print('Development Version 218 serialization/migration contract passed')

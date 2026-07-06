@@ -19,7 +19,9 @@
     rect_box_->setTitle(QString());
     if (auto *shape_title = rect_box_->findChild<QLabel *>(QStringLiteral("OBSTitlesShapePanelTitle"))) {
         shape_title->setText(is_rect ? bgl_tr("OBSTitles.Shape")
-                            : is_image ? bgl_tr("OBSTitles.ImageSize")
+                            : is_image ? (layer_->type == LayerType::Video
+                                             ? bgl_tr("OBSTitles.VideoSize")
+                                             : bgl_tr("OBSTitles.ImageSize"))
                                        : (is_clock ? bgl_tr("OBSTitles.ClockBox")
                                                    : (is_ticker ? bgl_tr("OBSTitles.TickerBox")
                                                                 : bgl_tr("OBSTitles.TextBox"))));
@@ -313,8 +315,18 @@
             : QStringLiteral("Bind image path to external data"));
     }
 
-    edit_image_path_->setText(QString::fromStdString(layer_->image_path));
-    set_image_preview_label(lbl_image_preview_, QString::fromStdString(layer_->image_path));
+    const QString visual_media_path = QString::fromStdString(
+        layer_->type == LayerType::Video ? layer_->video_source : layer_->image_path);
+    edit_image_path_->setText(visual_media_path);
+    edit_image_path_->setReadOnly(layer_->type == LayerType::Video);
+    if (layer_->type == LayerType::Video) {
+        lbl_image_preview_->setPixmap(QPixmap());
+        lbl_image_preview_->setText(QFileInfo(visual_media_path).fileName());
+    } else {
+        set_image_preview_label(lbl_image_preview_, visual_media_path);
+    }
+    if (btn_image_external_binding_)
+        btn_image_external_binding_->setVisible(layer_->type == LayerType::Image);
     if (cmb_image_scale_filter_) {
         QSignalBlocker block(cmb_image_scale_filter_);
         int filter_index = cmb_image_scale_filter_->findData((int)layer_->scale_filter);
@@ -779,7 +791,8 @@
             ? bgl_tr("OBSTitles.IgnorePersistenceTooltip")
             : bgl_tr("OBSTitles.IgnorePersistenceDisabledTooltip"));
     }
-    if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_->use_as_scene_mask);
+    if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_->type != LayerType::Video &&
+                                                       layer_->use_as_scene_mask);
     RichTextParagraphFormat displayed_paragraph;
     RichTextParagraphFormatSummary paragraph_summary;
     if (is_text_like) {

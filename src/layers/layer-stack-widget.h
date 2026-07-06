@@ -111,6 +111,7 @@ private slots:
     void on_add_ticker();
     void on_add_rect();
     void on_add_image();
+    void on_add_video();
     void on_add_audio();
     void on_add_adjustment();
     void on_add_color_solid();

@@ -21,12 +21,19 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace bgs::gpu_text {
 namespace {
+
+static inline gs_eparam_t *gpu_text_effect_param(gs_effect_t *effect,
+                                                  const char *name) noexcept
+{
+    return effect && name ? gs_effect_get_param_by_name(effect, name) : nullptr;
+}
 
 /* OBS maps GS_DYNAMIC textures with discard semantics on supported backends,
  * so preserving an atlas requires rewriting the complete mapped page. Use
@@ -124,11 +131,11 @@ float spreadValue(float value, int mode)
     return clamp(value, 0.0, 1.0);
 }
 
-float gradientPosition(float2 point, int type, int spreadMode,
+float gradientPosition(float2 samplePoint, int type, int spreadMode,
                        float angleDegrees, float2 centerNormalized,
                        float2 focalNormalized, float scaleValue)
 {
-    point -= materialOrigin;
+    samplePoint -= materialOrigin;
     float2 size = max(materialSize, float2(1.0, 1.0));
     float2 center = centerNormalized * size;
     float2 focal = focalNormalized * size;
@@ -139,20 +146,20 @@ float gradientPosition(float2 point, int type, int spreadMode,
         float radius = max(size.x, size.y) * 0.5 * safeScale;
         float focalDistance = length(center - focal);
         float effectiveRadius = max(1.0, radius - min(focalDistance, radius * 0.95));
-        value = length(point - focal) / effectiveRadius;
+        value = length(samplePoint - focal) / effectiveRadius;
     } else if (type == 2) {
-        float a = atan2(point.y - center.y, point.x - center.x);
+        float a = atan2(samplePoint.y - center.y, samplePoint.x - center.x);
         value = (-a - angle) / 6.283185307179586 + 0.5;
     } else {
         float lengthValue = max(1.0, length(size) * 0.5 * safeScale);
         float2 direction = float2(cos(angle), sin(angle));
-        value = dot(point - (center - direction * lengthValue), direction) /
+        value = dot(samplePoint - (center - direction * lengthValue), direction) /
                 (lengthValue * 2.0);
     }
     return spreadValue(value, spreadMode);
 }
 
-float4 gradientColor(float2 point, int type, int gradientType,
+float4 gradientColor(float2 samplePoint, int type, int gradientType,
                      int spreadMode, float4 solidColor,
                      float4 startColor, float4 endColor,
                      float startPos, float endPos, float angle,
@@ -160,7 +167,7 @@ float4 gradientColor(float2 point, int type, int gradientType,
 {
     if (type == 0)
         return solidColor;
-    float position = gradientPosition(point, gradientType, spreadMode,
+    float position = gradientPosition(samplePoint, gradientType, spreadMode,
                                       angle, center, focal, scaleValue);
     float denominator = max(abs(endPos - startPos), 0.000001);
     float mixValue = clamp((position - startPos) / denominator, 0.0, 1.0);
@@ -881,7 +888,7 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
 
 static void set_vec2(gs_effect_t *effect, const char *name, float x, float y)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name)) {
+    if (gs_eparam_t *param = gpu_text_effect_param(effect, name)) {
         vec2 value;
         vec2_set(&value, x, y);
         gs_effect_set_vec2(param, &value);
@@ -890,7 +897,7 @@ static void set_vec2(gs_effect_t *effect, const char *name, float x, float y)
 
 static void set_color(gs_effect_t *effect, const char *name, uint32_t argb)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name)) {
+    if (gs_eparam_t *param = gpu_text_effect_param(effect, name)) {
         vec4 value;
         vec4_set(&value,
                  static_cast<float>((argb >> 16) & 0xFF) / 255.0f,
@@ -903,13 +910,13 @@ static void set_color(gs_effect_t *effect, const char *name, uint32_t argb)
 
 static void set_int(gs_effect_t *effect, const char *name, int value)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name))
+    if (gs_eparam_t *param = gpu_text_effect_param(effect, name))
         gs_effect_set_int(param, value);
 }
 
 static void set_float(gs_effect_t *effect, const char *name, float value)
 {
-    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, name))
+    if (gs_eparam_t *param = gpu_text_effect_param(effect, name))
         gs_effect_set_float(param, value);
 }
 
@@ -1000,6 +1007,7 @@ struct Renderer::Impl {
     gs_texture_t *white_texture = nullptr;
     bool backend_available = true;
     std::string last_error;
+    std::mutex effect_mutex;
 
     bool allocate_rect(int width, int height, AtlasGlyph &glyph)
     {
@@ -1510,6 +1518,7 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
 
 bool Renderer::render(Layer &layer)
 {
+    std::lock_guard<std::mutex> effect_lock(impl_->effect_mutex);
     Layer::Impl &state = *layer.impl_;
     if (!state.pending)
         return texture(layer) != nullptr;
@@ -1518,7 +1527,11 @@ bool Renderer::render(Layer &layer)
     if (!impl_->effect) {
         impl_->effect = gs_effect_create(kGpuTextEffect,
                                          "obs-bgs-gpu-text.effect", nullptr);
-        if (!impl_->effect) {
+        if (!impl_->effect || !gs_effect_get_technique(impl_->effect, "Draw")) {
+            if (impl_->effect) {
+                gs_effect_destroy(impl_->effect);
+                impl_->effect = nullptr;
+            }
             impl_->backend_available = false;
             impl_->last_error =
                 "Could not compile the Phase 12C GPU text shader.";
@@ -1572,7 +1585,7 @@ bool Renderer::render(Layer &layer)
             ? impl_->white_texture
             : impl_->pages[static_cast<size_t>(batch.page)].texture;
         if (gs_eparam_t *param =
-                gs_effect_get_param_by_name(impl_->effect, "glyphAtlas"))
+                gpu_text_effect_param(impl_->effect, "glyphAtlas"))
             gs_effect_set_texture(param, atlas);
         set_int(impl_->effect, "coverageMode",
                 batch.solid_geometry ? 1 : 0);
@@ -1650,6 +1663,7 @@ void Renderer::release_layer(Layer &layer)
 
 void Renderer::reset()
 {
+    std::lock_guard<std::mutex> effect_lock(impl_->effect_mutex);
     for (AtlasPage &page : impl_->pages) {
         if (page.texture)
             gs_texture_destroy(page.texture);

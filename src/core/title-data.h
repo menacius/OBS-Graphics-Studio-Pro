@@ -330,6 +330,11 @@ std::shared_ptr<Layer> stinger_transition_input_layer(const Title &title, int sl
 void ensure_stinger_transition_input_layers(Title &title);
 bool stinger_transition_input_layer_is_protected(const Layer &layer);
 
+/* Keep generated Video audio-stream tracks on the exact same clip/media clock
+ * as their owner. Per-stream gain, pan, mute, solo and effects remain local. */
+void synchronize_video_audio_streams(Title &title,
+                                     const std::string &video_layer_id = std::string());
+
 struct LiveCueRuntimeSnapshot {
     int row = -1;
     double playhead = 0.0;
@@ -396,6 +401,15 @@ inline bool title_default_camera_has_authored_keyframes(const Title &title)
                                  });
     return it != title.cameras.end() && title_camera_has_authored_keyframes(*it);
 }
+
+/* Clipboard/preset serialization uses the exact project effect schema so
+ * copies preserve animation tracks, extension payloads and future passthrough
+ * fields without maintaining a second serializer. */
+std::string serialize_layer_effect_stack_json(
+    const std::vector<LayerEffect> &effects);
+bool deserialize_layer_effect_stack_json(
+    const std::string &payload, std::vector<LayerEffect> *effects,
+    std::string *error = nullptr);
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleDataStore  (singleton)

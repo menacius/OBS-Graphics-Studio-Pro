@@ -1,22 +1,17 @@
 #pragma once
 
-#include "layer-effects.h"
+#include "effects/effect-runtime.h"
 
-#include <vector>
+#include <array>
 #include <string>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 struct gs_effect;
 typedef struct gs_effect gs_effect_t;
 
-struct TitleEffectDefinition {
-    LayerEffectType type;
-    const char *stable_id;
-    const char *legacy_id;
-    const char *display_name;
-    const char *category;
-    const char *relative_path;
-    bool has_embedded_fallback = false;
-};
+using TitleEffectDefinition = EffectDescriptor;
 
 class TitleEffectRegistry {
 public:
@@ -35,12 +30,10 @@ public:
     static const TitleEffectDefinition *definition(LayerEffectType type);
 
 private:
-    struct CompiledEffect {
-        LayerEffectType type;
-        std::string stable_id;
-        gs_effect_t *effect = nullptr;
-    };
-
-    std::vector<CompiledEffect> compiled_;
+    static constexpr std::size_t kBuiltInEffectCount =
+        static_cast<std::size_t>(LayerEffectType::DigitalDistortion) + 1;
+    std::array<gs_effect_t *, kBuiltInEffectCount> builtins_{};
+    std::unordered_map<std::string, gs_effect_t *> extensions_;
+    mutable std::recursive_mutex mutex_;
     const char *last_error_ = nullptr;
 };

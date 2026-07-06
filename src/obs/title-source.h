@@ -12,6 +12,7 @@
 #include <string>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
 #include <QImage>
 #include <QRect>
 
@@ -33,6 +34,11 @@ void title_source_end_scene_collection_transition();
  * the source video/audio path consumes the atomic snapshot. */
 void title_source_set_editor_transport(obs_source_t *source, double time,
                                        bool reverse);
+/* Supplies the private editor monitor source with the current in-memory
+ * editor title. This avoids waiting for Save/Live Edit before newly added
+ * audio/video layers become audible in the editor preview. */
+void title_source_set_editor_title_snapshot(obs_source_t *source,
+                                            const std::shared_ptr<Title> &title);
 
 struct TitleGpuRenderSession;
 
@@ -59,6 +65,8 @@ void title_gpu_render_session_update(TitleGpuRenderSession *session, const Title
 void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session,
                                                    double scale, bool editor_draft);
 void title_gpu_render_session_set_transition_input_preview(
+    TitleGpuRenderSession *session, bool enabled);
+void title_gpu_render_session_set_scene_mask_placeholder_preview(
     TitleGpuRenderSession *session, bool enabled);
 void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                                            const Title &title, double time,

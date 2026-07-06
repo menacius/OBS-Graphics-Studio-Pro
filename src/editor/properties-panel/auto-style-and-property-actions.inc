@@ -97,7 +97,7 @@
             this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
-                if (layer_->type == LayerType::Image) {
+                if (layer_type_is_image_like(layer_->type)) {
                     double raw_w = eval_image_width(*layer_, t);
                     double raw_h = eval_image_height(*layer_, t);
                     const bgs::ImageDisplaySize current = bgs::calculate_image_display_size(
@@ -129,7 +129,7 @@
                     spn_transform_size_w_->setValue(v);
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
-                                       (layer_->type == LayerType::Image ||
+                                       (layer_type_is_image_like(layer_->type) ||
                                         layer_type_uses_shape_geometry(layer_->type));
                 if (lock_size && old_w > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
@@ -148,7 +148,7 @@
             this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
-                if (layer_->type == LayerType::Image) {
+                if (layer_type_is_image_like(layer_->type)) {
                     double raw_w = eval_image_width(*layer_, t);
                     double raw_h = eval_image_height(*layer_, t);
                     const bgs::ImageDisplaySize current = bgs::calculate_image_display_size(
@@ -180,7 +180,7 @@
                     spn_transform_size_h_->setValue(v);
                 }
                 const bool lock_size = layer_->lock_aspect_ratio &&
-                                       (layer_->type == LayerType::Image ||
+                                       (layer_type_is_image_like(layer_->type) ||
                                         layer_type_uses_shape_geometry(layer_->type));
                 if (lock_size && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
@@ -255,7 +255,7 @@
             });
     connect(spn_image_box_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change, refresh_image_size_controls](double v) {
-                if (!can_edit() || layer_->type != LayerType::Image) return;
+                if (!can_edit() || !layer_type_is_image_like(layer_->type)) return;
                 const double t = local_time();
                 const double old_w = eval_box_width(*layer_, t);
                 const double old_h = eval_box_height(*layer_, t);
@@ -272,7 +272,7 @@
             });
     connect(spn_image_box_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change, refresh_image_size_controls](double v) {
-                if (!can_edit() || layer_->type != LayerType::Image) return;
+                if (!can_edit() || !layer_type_is_image_like(layer_->type)) return;
                 const double t = local_time();
                 const double old_w = eval_box_width(*layer_, t);
                 const double old_h = eval_box_height(*layer_, t);
@@ -407,7 +407,7 @@
             });
     connect(chk_image_box_size_lock_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool locked) {
-                if (can_edit() && layer_->type == LayerType::Image) {
+                if (can_edit() && layer_type_is_image_like(layer_->type)) {
                     layer_->image_box_lock_aspect_ratio = locked;
                     emit_change();
                 }
@@ -448,7 +448,7 @@
                     emit_change();
                     return;
                 }
-                if (layer_->type == LayerType::Image) {
+                if (layer_type_is_image_like(layer_->type)) {
                     QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
                     if (!intrinsic.isValid() || intrinsic.isEmpty())
                         intrinsic = QSize(std::max(1, (int)std::lround(layer_->image_width)),
@@ -616,7 +616,7 @@
         emit_change();
     });
     connect(btn_image_external_binding_, &QToolButton::clicked, this, [this, can_edit, emit_change]() {
-        if (!can_edit() || !title_ || !layer_) return;
+        if (!can_edit() || !title_ || !layer_ || layer_->type != LayerType::Image) return;
         const auto *existing = external_binding_for_property(
             *layer_, ExternalPropertyPaths::ImagePath);
         ExternalDataBindingDialog dialog(
@@ -637,8 +637,90 @@
         emit_change();
     });
 
+    auto apply_video_media = [this, fit_image_size_to_current_image](const QString &path,
+                                                                        bool show_error) -> bool {
+        if (!title_ || !layer_ || layer_->type != LayerType::Video || path.isEmpty())
+            return false;
+        const bgl::video::MediaInfo media = bgl::video::probe_media(path.toStdString());
+        if (!media.valid) {
+            if (show_error) {
+                QMessageBox::warning(this, bgl_tr("OBSTitles.ImportVideo"),
+                    media.error.empty() ? bgl_tr("OBSTitles.VideoOpenFailed")
+                                        : QString::fromStdString(media.error));
+            }
+            return false;
+        }
+
+        const std::string video_id = layer_->id;
+        title_->layers.erase(std::remove_if(title_->layers.begin(), title_->layers.end(),
+            [&video_id](const std::shared_ptr<Layer> &candidate) {
+                return candidate && candidate->type == LayerType::Audio &&
+                       candidate->linked_media_stream &&
+                       candidate->linked_media_layer_id == video_id;
+            }), title_->layers.end());
+
+        layer_->video_source = path.toStdString();
+        layer_->video_stream_index = media.video_stream_index;
+        layer_->video_media_duration = media.duration;
+        layer_->video_in_point = 0.0;
+        layer_->video_out_point = media.duration > 0.0
+            ? media.duration : std::max(0.0, layer_->out_time - layer_->in_time);
+        layer_->video_frame_rate = media.frame_rate;
+        layer_->video_pixel_width = media.width;
+        layer_->video_pixel_height = media.height;
+        layer_->video_has_alpha = media.has_alpha;
+        layer_->image_width = static_cast<float>(std::max(1, media.width));
+        layer_->image_height = static_cast<float>(std::max(1, media.height));
+        if (media.duration > 0.0)
+            layer_->out_time = std::min(title_->duration, layer_->in_time + media.duration);
+        layer_->video_out_point = std::min(
+            media.duration > 0.0 ? media.duration
+                                 : std::max(0.0, layer_->out_time - layer_->in_time),
+            std::max(0.0, layer_->out_time - layer_->in_time));
+        fit_image_size_to_current_image();
+        bgl::video::FrameRuntime::instance().forget_layer(video_id);
+
+        int ordinal = 1;
+        for (const auto &stream : media.audio_streams) {
+            auto audio = std::make_shared<Layer>();
+            audio->id = TitleDataStore::make_uuid();
+            audio->type = LayerType::Audio;
+            QString stream_name = stream.title.empty()
+                ? bgl_tr("OBSTitles.VideoAudioStream").arg(ordinal)
+                : QString::fromStdString(stream.title);
+            if (!stream.language.empty())
+                stream_name += QStringLiteral(" [%1]").arg(QString::fromStdString(stream.language));
+            audio->name = stream_name.toStdString();
+            audio->parent_id = video_id;
+            audio->linked_media_layer_id = video_id;
+            audio->linked_media_stream = true;
+            audio->media_stream_label = audio->name;
+            audio->audio_source = layer_->video_source;
+            audio->audio_stream_index = stream.stream_index;
+            audio->audio_sample_rate = stream.sample_rate;
+            audio->audio_channels = stream.channels;
+            audio->audio_media_duration = layer_->video_media_duration;
+            audio->audio_in_point = layer_->video_in_point;
+            audio->audio_out_point = layer_->video_out_point;
+            audio->audio_independent = false;
+            audio->in_time = layer_->in_time;
+            audio->out_time = layer_->out_time;
+            title_->add_layer(audio);
+            ++ordinal;
+        }
+        synchronize_video_audio_streams(*title_, video_id);
+        return true;
+    };
+
     connect(edit_image_path_, &QLineEdit::textChanged,
             this, [this, can_edit, emit_change, fit_image_size_to_current_image](const QString &path){
+                if (layer_ && layer_->type == LayerType::Video) {
+                    /* Video replacement must always pass through probe_media(),
+                     * which atomically rebuilds every linked audio stream. */
+                    lbl_image_preview_->setPixmap(QPixmap());
+                    lbl_image_preview_->setText(QFileInfo(path).fileName());
+                    return;
+                }
                 set_image_preview_label(lbl_image_preview_, path);
                 if (can_edit()) {
                     layer_->image_path = path.toStdString();
@@ -667,7 +749,7 @@
             });
     connect(chk_image_crop_when_outside_box_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool enabled) {
-                if (!can_edit() || layer_->type != LayerType::Image) return;
+                if (!can_edit() || !layer_type_is_image_like(layer_->type)) return;
                 layer_->image_crop_when_outside_box = enabled;
                 emit_change();
             });
@@ -681,15 +763,23 @@
         };
     }
     connect(btn_pick_image_, &QPushButton::clicked,
-            this, [this, can_edit, fit_image_size_to_current_image, emit_change]() {
+            this, [this, can_edit, fit_image_size_to_current_image,
+                   apply_video_media, emit_change]() {
                 if (!can_edit()) return;
+                const bool video = layer_->type == LayerType::Video;
                 QString path = QFileDialog::getOpenFileName(
-                    this, bgl_tr("OBSTitles.ChooseImage"),
-                    QString::fromStdString(layer_->image_path),
-                    bgl_tr("OBSTitles.ImageFileFilter"));
+                    this, video ? bgl_tr("OBSTitles.ImportVideo")
+                                : bgl_tr("OBSTitles.ChooseImage"),
+                    QString::fromStdString(video ? layer_->video_source : layer_->image_path),
+                    video ? bgl_tr("OBSTitles.VideoFilesFilter")
+                          : bgl_tr("OBSTitles.ImageFileFilter"));
                 if (path.isEmpty()) return;
-                layer_->image_path = path.toStdString();
-                fit_image_size_to_current_image();
+                if (video) {
+                    if (!apply_video_media(path, true)) return;
+                } else {
+                    layer_->image_path = path.toStdString();
+                    fit_image_size_to_current_image();
+                }
                 load_values();
                 emit_change();
             });
@@ -962,7 +1052,7 @@
     });
     connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        if (layer_->type == LayerType::Image) {
+        if (layer_type_is_image_like(layer_->type)) {
             layer_->image_size_auto_fit = false;
             toggle_vec2_keyframe(layer_->image_size, local_time(),
                                  spn_layer_w_->value(), spn_layer_h_->value());
@@ -974,7 +1064,7 @@
         emit_change();
     });
     connect(btn_kf_image_box_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
-        if (!can_edit() || layer_->type != LayerType::Image) return;
+        if (!can_edit() || !layer_type_is_image_like(layer_->type)) return;
         toggle_vec2_keyframe(layer_->size, local_time(),
                              spn_image_box_w_->value(), spn_image_box_h_->value());
         load_values();

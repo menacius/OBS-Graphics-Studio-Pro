@@ -31,6 +31,7 @@ enum class LayerType {
     Asset = 9,       /* reusable nested title composition */
     Audio = 10,       /* timeline audio clip; no visual transform */
     TransitionInput = 11, /* runtime Scene A/B texture supplied by OBS transitions */
+    Video = 12,           /* decoded video picture with linked audio-stream child tracks */
 };
 
 inline bool layer_type_is_asset(LayerType type)
@@ -43,9 +44,26 @@ inline bool layer_type_is_container(LayerType type)
     return type == LayerType::Group || type == LayerType::Asset;
 }
 
+/* Video is a visual layer, not an off-screen compositing group. It may still
+ * own synchronized audio-stream child rows in the editor hierarchy. */
+inline bool layer_type_can_have_children(LayerType type)
+{
+    return layer_type_is_container(type) || type == LayerType::Video;
+}
+
 inline bool layer_type_is_audio(LayerType type)
 {
     return type == LayerType::Audio;
+}
+
+inline bool layer_type_is_video(LayerType type)
+{
+    return type == LayerType::Video;
+}
+
+inline bool layer_type_is_image_like(LayerType type)
+{
+    return type == LayerType::Image || type == LayerType::Video;
 }
 
 inline bool layer_type_is_transition_input(LayerType type)
@@ -340,6 +358,30 @@ struct Layer {
     int         audio_channels = 0;
     std::vector<float> audio_waveform; /* normalized min/max peak pairs for the full decoded asset */
     double audio_waveform_duration = 0.0; /* decoded asset duration represented by audio_waveform */
+    int audio_waveform_progress_percent = 0; /* runtime/UI progress while waveform generation is running */
+    bool audio_waveform_generating = false;
+    std::string audio_waveform_progress_label;
+    /* Non-empty for audio tracks generated from a Video layer.  The stream
+     * remains an ordinary editable/mutable Audio layer, but its clip timing
+     * is slaved to the owner video so picture and sound cannot drift. */
+    std::string linked_media_layer_id;
+    bool linked_media_stream = false;
+    std::string media_stream_label;
+
+    /* ----- Video-specific -----
+     * Video is a visual layer and therefore uses the complete Image box,
+     * transform, mask and effect contract below.  Its picture and linked
+     * audio tracks are evaluated from the same title clock. */
+    std::string video_source;
+    int         video_stream_index = -1;
+    double      video_in_point = 0.0;
+    double      video_out_point = 0.0;
+    bool        video_loop = false;
+    double      video_media_duration = 0.0;
+    double      video_frame_rate = 0.0;
+    int         video_pixel_width = 0;
+    int         video_pixel_height = 0;
+    bool        video_has_alpha = false;
 
     /* ----- Animated properties ----- */
     AnimatedVectorProperty position { "position", {0.0, 0.0} };
@@ -814,6 +856,77 @@ inline void set_layer_dimension_mode_preserving_position_track(
         layer.position_3d_path_enabled = false;
     }
     layer.dimension_mode = mode;
+}
+
+
+inline double layer_timeline_span_seconds(const Layer &layer)
+{
+    return std::max(0.0, layer.out_time - layer.in_time);
+}
+
+inline double layer_media_duration_limit(const Layer &layer)
+{
+    if (layer.type == LayerType::Video)
+        return std::max(0.0, layer.video_media_duration);
+    if (layer.type == LayerType::Audio)
+        return std::max(0.0, layer.audio_media_duration);
+    return 0.0;
+}
+
+inline void normalize_layer_media_range_to_timeline_span(Layer &layer, bool anchor_out)
+{
+    if (layer.type != LayerType::Audio && layer.type != LayerType::Video)
+        return;
+    const double span = layer_timeline_span_seconds(layer);
+    double *media_in = layer.type == LayerType::Video ? &layer.video_in_point : &layer.audio_in_point;
+    double *media_out = layer.type == LayerType::Video ? &layer.video_out_point : &layer.audio_out_point;
+    const double duration = layer_media_duration_limit(layer);
+
+    double in_value = std::max(0.0, *media_in);
+    double out_value = std::max(0.0, *media_out);
+    if (span <= 0.0) {
+        *media_in = in_value;
+        *media_out = in_value;
+        return;
+    }
+
+    if (anchor_out) {
+        if (out_value <= 0.0)
+            out_value = in_value + span;
+        in_value = std::max(0.0, out_value - span);
+        out_value = in_value + span;
+    } else {
+        out_value = in_value + span;
+    }
+
+    if (duration > 0.0 && out_value > duration) {
+        out_value = duration;
+        in_value = std::max(0.0, out_value - span);
+        out_value = in_value + span;
+        if (out_value > duration)
+            out_value = duration;
+    }
+
+    *media_in = std::max(0.0, in_value);
+    *media_out = std::max(*media_in, out_value);
+}
+
+inline void set_layer_media_range_in_point(Layer &layer, double media_in)
+{
+    if (layer.type == LayerType::Video)
+        layer.video_in_point = std::max(0.0, media_in);
+    else if (layer.type == LayerType::Audio)
+        layer.audio_in_point = std::max(0.0, media_in);
+    normalize_layer_media_range_to_timeline_span(layer, false);
+}
+
+inline void set_layer_media_range_out_point(Layer &layer, double media_out)
+{
+    if (layer.type == LayerType::Video)
+        layer.video_out_point = std::max(0.0, media_out);
+    else if (layer.type == LayerType::Audio)
+        layer.audio_out_point = std::max(0.0, media_out);
+    normalize_layer_media_range_to_timeline_span(layer, true);
 }
 
 inline LayerVector3Value evaluated_layer_scale_3d(const Layer &layer, double time)

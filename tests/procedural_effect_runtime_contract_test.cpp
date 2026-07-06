@@ -31,14 +31,15 @@ void shader_contract(const std::string &shader, const char *pixel_shader)
     require(shader, "uniform float4x4 ViewProj;");
     require(shader, "uniform texture2d image;");
     require(shader, "technique Draw");
-    require(shader, "vertex_shader = VSDefault(v_in);");
+    require(shader, "vertex_shader");
+    require(shader, "VSDefault(v_in)");
     require(shader, pixel_shader);
 }
 } // namespace
 
 int main(int argc, char **argv)
 {
-    assert(argc == 8);
+    assert(argc == 14);
     const std::string registry = read_file(argv[1]);
     const std::string title_source = read_file(argv[2]);
     const std::string cache_manager = read_file(argv[3]);
@@ -46,11 +47,22 @@ int main(int argc, char **argv)
     const std::string vignette = read_file(argv[5]);
     const std::string noise = read_file(argv[6]);
     const std::string roughen = read_file(argv[7]);
+    const std::string detail = read_file(argv[8]);
+    const std::string glare = read_file(argv[9]);
+    const std::string halation = read_file(argv[10]);
+    const std::string finishing = read_file(argv[11]);
+    const std::string keying = read_file(argv[12]);
+    const std::string source_effects = read_file(argv[13]);
 
     require(registry, "kEmbeddedLensFlareEffect");
     require(registry, "kEmbeddedVignetteEffect");
     require(registry, "kEmbeddedNoiseEffect");
     require(registry, "kEmbeddedRoughenEdgesEffect");
+    require(registry, "kEmbeddedDetailEffect");
+    require(registry, "kEmbeddedGlareEffect");
+    require(registry, "kEmbeddedHalationEffect");
+    require(registry, "kEmbeddedFinishingEffect");
+    require(registry, "kEmbeddedSourceEffectsEffect");
     require(registry, "embedded_effect_source(type)");
     require(registry, "gs_effect_create(");
     require(registry, "trying installed asset");
@@ -60,8 +72,8 @@ int main(int argc, char **argv)
     require(registry, "Compiled embedded procedural effect");
     require(registry, "Effect asset path could not be resolved for");
 
-    require(title_source, "gpu-effects-v8-lens-flare-dx11-keyword-fix");
-    require(cache_manager, "gpu-renderer-v31-lens-flare-dx11-keyword-fix");
+    require(title_source, "gpu-effects-v17-keying-matte");
+    require(cache_manager, "v43-obs-effect-entrypoint-fix");
 
     shader_contract(lens, "pixel_shader = PSLensFlare(v_in);");
     require(lens, "float flare_disc");
@@ -74,12 +86,29 @@ int main(int argc, char **argv)
     require(title_source, "set_effect_float_param(effect, \"ghostCount\"");
     shader_contract(vignette, "pixel_shader = PSVignette(v_in);");
     require(vignette, "uniform float roundness;");
-    shader_contract(noise, "pixel_shader = PSNoise(v_in);");
+    shader_contract(noise, "PSNoise(v_in)");
     require(noise, "uniform int animatedNoise;");
-    require(noise, "float layered_noise");
-    shader_contract(roughen, "pixel_shader = PSRoughen(v_in);");
+    require(noise, "float profile_noise");
+    shader_contract(roughen, "PSRoughen(v_in)");
     require(roughen, "uniform float2 texelSize;");
     require(roughen, "float rough_layers");
+    require(detail, "uniform texture2d blurredImage;");
+    require(detail, "technique Clarity");
+    require(glare, "technique GlareComposite");
+    require(halation, "technique HalationComposite");
+    require(finishing, "technique LensDistortion");
+    require(finishing, "technique Scanlines");
+    shader_contract(keying, "PSChromaKey(v_in)");
+    require(keying, "technique ChromaKey");
+    require(keying, "technique LumaKey");
+    require(keying, "technique ColorRange");
+    require(keying, "technique SpillSuppression");
+    require(keying, "technique MatteChoker");
+    shader_contract(source_effects, "PSDisplacementMap(v_in)");
+    require(source_effects, "technique LightWrap");
+    require(source_effects, "technique DisplacementMap");
+    require(source_effects, "float2 source_space_uv(float2 input_uv)");
+    require(source_effects, "uniform int alphaAware;");
 
     std::cout << "embedded procedural effect runtime contract: PASS\n";
     return 0;

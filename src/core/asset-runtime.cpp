@@ -100,7 +100,7 @@ static bool effect_has_animation(const LayerEffect &effect)
            effect.secondary_color_b.is_animated() ||
            (!effect.extension_keyframes_json.empty() &&
             effect.extension_keyframes_json != "{}") ||
-           (effect.type == LayerEffectType::Noise && effect.effect_animated);
+           ((effect.type == LayerEffectType::Noise || effect.type == LayerEffectType::Grain || effect.type == LayerEffectType::FilmDistortion || effect.type == LayerEffectType::AnalogDistortion || effect.type == LayerEffectType::DigitalDistortion) && effect.effect_animated);
 }
 
 static bool legacy_background_has_animation(const Layer &layer)

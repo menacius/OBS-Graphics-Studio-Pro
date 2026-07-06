@@ -11,6 +11,7 @@ static QColor layer_type_color(LayerType type)
     case LayerType::Shape:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
     case LayerType::Image:
+    case LayerType::Video:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer);
     case LayerType::Adjustment:
     case LayerType::ColorSolid:
@@ -39,6 +40,7 @@ static QString layer_type_short(LayerType type)
     case LayerType::Ticker: return "↔";
     case LayerType::SolidRect: return "■";
     case LayerType::Image: return "▧";
+    case LayerType::Video: return "▶";
     case LayerType::Shape: return "◆";
     case LayerType::Adjustment: return "FX";
     case LayerType::ColorSolid: return "■";

@@ -1688,7 +1688,8 @@ std::vector<std::shared_ptr<Layer>> editor_top_level_selected_layers(
         return result;
     const std::set<std::string> selected(ids.begin(), ids.end());
     for (const auto &layer : title->layers) {
-        if (!layer || selected.find(layer->id) == selected.end())
+        if (!layer || selected.find(layer->id) == selected.end() ||
+            layer->linked_media_stream)
             continue;
         bool has_selected_ancestor = false;
         std::string cursor = layer->parent_id;
@@ -1716,6 +1717,17 @@ std::vector<std::string> editor_selection_with_group_descendants(
     if (!title)
         return {};
     std::set<std::string> expanded(ids.begin(), ids.end());
+    /* Linked audio-stream rows are structural children of their Video layer.
+     * They cannot be copied, deleted, grouped, or moved independently.  A
+     * selected Video, however, always carries all of its streams. */
+    for (auto it = expanded.begin(); it != expanded.end();) {
+        const auto layer = title->find_layer(*it);
+        if (layer && layer->linked_media_stream &&
+            expanded.find(layer->linked_media_layer_id) == expanded.end())
+            it = expanded.erase(it);
+        else
+            ++it;
+    }
     bool changed = true;
     while (changed) {
         changed = false;
@@ -1724,7 +1736,12 @@ std::vector<std::string> editor_selection_with_group_descendants(
                 expanded.find(layer->id) != expanded.end())
                 continue;
             auto parent = title->find_layer(layer->parent_id);
-            if (parent && layer_type_is_container(parent->type) &&
+            const bool regular_child = parent && layer_type_is_container(parent->type);
+            const bool linked_video_stream =
+                parent && parent->type == LayerType::Video &&
+                layer->type == LayerType::Audio && layer->linked_media_stream &&
+                layer->linked_media_layer_id == parent->id;
+            if ((regular_child || linked_video_stream) &&
                 expanded.find(parent->id) != expanded.end()) {
                 expanded.insert(layer->id);
                 changed = true;
@@ -1746,8 +1763,12 @@ std::string editor_group_order_scope(const std::shared_ptr<Title> &title,
 {
     if (!title || layer.parent_id.empty()) return {};
     const auto parent = title->find_layer(layer.parent_id);
-    return parent && layer_type_is_container(parent->type) ? layer.parent_id
-                                                       : std::string();
+    if (!parent) return {};
+    if (layer_type_is_container(parent->type)) return layer.parent_id;
+    if (parent->type == LayerType::Video && layer.type == LayerType::Audio &&
+        layer.linked_media_stream && layer.linked_media_layer_id == parent->id)
+        return layer.parent_id;
+    return {};
 }
 
 std::vector<std::shared_ptr<Layer>> editor_canonical_group_order(
@@ -2286,6 +2307,7 @@ void TitleEditor::begin_shutdown()
 QWidget *TitleEditor::create_effects_panel()
 {
     effects_panel_ = new EffectsPanel(this);
+    effects_panel_->set_title(title_);
     connect(effects_panel_, &EffectsPanel::property_changed,
             this, [this](bool push_undo_snapshot) {
                 if (updating_layer_panels_)

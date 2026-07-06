@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.10)
+project(broadcast-graphics-live VERSION 0.8.11)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "219")
+set(OBS_BGS_DEVELOPMENT_VERSION "239")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -437,12 +437,14 @@ set(OBS_BGS_EXTENSION_SOURCES
 
 set(OBS_BGS_EFFECT_HEADERS
     src/effects/layer-effects.h
+    src/effects/effect-runtime.h
     src/effects/effect-preset-catalog.h
     src/effects/effects-panel.h
     src/effects/effects-presets-panel.h
 )
 
 set(OBS_BGS_EFFECT_SOURCES
+    src/effects/effect-runtime.cpp
     src/effects/effect-preset-catalog.cpp
     src/effects/effects-panel.cpp
     src/effects/effects-presets-panel.cpp
@@ -528,12 +530,14 @@ set(OBS_BGS_OBS_SOURCES
     src/obs/plugin-main.cpp
     src/obs/title-source.cpp
     src/obs/title-audio-runtime.cpp
+    src/obs/title-video-runtime.cpp
     src/obs/stinger-transition.cpp
 )
 set(OBS_BGS_OBS_HEADERS
     src/obs/plugin-main.h
     src/obs/title-source.h
     src/obs/title-audio-runtime.h
+    src/obs/title-video-runtime.h
     src/obs/audio-output-scheduler.h
     src/obs/stinger-transition.h
 )
@@ -696,7 +700,7 @@ target_link_libraries(broadcast-graphics-live PRIVATE
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(BGL_FFMPEG QUIET IMPORTED_TARGET
-    libavformat libavcodec libavutil libswresample)
+    libavformat libavcodec libavutil libswresample libswscale)
 endif()
 if(TARGET PkgConfig::BGL_FFMPEG)
   target_link_libraries(broadcast-graphics-live PRIVATE PkgConfig::BGL_FFMPEG)
@@ -708,15 +712,16 @@ else()
   find_library(BGL_AVCODEC_LIBRARY NAMES avcodec)
   find_library(BGL_AVUTIL_LIBRARY NAMES avutil)
   find_library(BGL_SWRESAMPLE_LIBRARY NAMES swresample)
+  find_library(BGL_SWSCALE_LIBRARY NAMES swscale)
   if(BGL_AVFORMAT_INCLUDE_DIR AND BGL_AVFORMAT_LIBRARY AND BGL_AVCODEC_LIBRARY
-     AND BGL_AVUTIL_LIBRARY AND BGL_SWRESAMPLE_LIBRARY)
+     AND BGL_AVUTIL_LIBRARY AND BGL_SWRESAMPLE_LIBRARY AND BGL_SWSCALE_LIBRARY)
     target_include_directories(broadcast-graphics-live PRIVATE ${BGL_AVFORMAT_INCLUDE_DIR})
     target_link_libraries(broadcast-graphics-live PRIVATE
       ${BGL_AVFORMAT_LIBRARY} ${BGL_AVCODEC_LIBRARY}
-      ${BGL_AVUTIL_LIBRARY} ${BGL_SWRESAMPLE_LIBRARY})
+      ${BGL_AVUTIL_LIBRARY} ${BGL_SWRESAMPLE_LIBRARY} ${BGL_SWSCALE_LIBRARY})
     target_compile_definitions(broadcast-graphics-live PRIVATE BGL_HAVE_FFMPEG=1)
   else()
-    message(WARNING "FFmpeg development libraries were not found; only PCM WAV audio will decode")
+    message(WARNING "FFmpeg development libraries were not found; only PCM WAV audio will decode and Video layers are unavailable")
   endif()
 endif()
 
@@ -1310,7 +1315,13 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
-      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect)
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/detail/detail.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/glare/glare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/halation/halation.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/finishing/finishing.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/keying/keying.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/source-effects/source-effects.effect)
 
   add_executable(effect_keyframe_timeline_canvas_contract_test
       tests/effect_keyframe_timeline_canvas_contract_test.cpp)
@@ -1371,6 +1382,12 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/detail/detail.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/glare/glare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/halation/halation.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/finishing/finishing.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/keying/keying.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/source-effects/source-effects.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp)
 
   add_executable(procedural_effect_runtime_contract_test
@@ -1383,7 +1400,13 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
       ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
-      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect)
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/detail/detail.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/glare/glare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/halation/halation.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/finishing/finishing.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/keying/keying.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/source-effects/source-effects.effect)
 
   add_executable(lens_flare_runtime_contract_test
       tests/lens_flare_runtime_contract_test.cpp)

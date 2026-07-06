@@ -48,7 +48,9 @@ static void source_video_tick(void *priv, float seconds)
         return;
     }
 
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
     if (!title) {
         sync_source_audio_active(data, nullptr, "title-missing");
         clear_live_cue_runtime_for_source(data, data->title_id);
@@ -159,6 +161,34 @@ static void source_video_tick(void *priv, float seconds)
             bool has_current = title->current_cue_row >= 0 &&
                                title->current_cue_row < cue_row_count;
             bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
+            const bool finalize_uncue_without_restart = !has_pending && !has_current &&
+                (data->manual_uncue || data->active_cue_row >= 0 ||
+                 data->cue_phase == TitleSourceData::CuePhase::OutroOnly);
+            if (finalize_uncue_without_restart) {
+                /* A second click on a yellow cue finalizes the pending uncue.
+                 * Consume the revision as a terminal state instead of falling
+                 * through to the ordinary cue-start branch, which would reset
+                 * playhead to 0 and replay the title. */
+                data->force_cue_state_sync = false;
+                data->seen_cue_revision = title->cue_revision;
+                data->playing = false;
+                data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+                data->active_cue_row = -1;
+                data->waiting_for_cue = true;
+                data->manual_uncue = false;
+                data->manual_uncue_floor = -1.0;
+                release_active_scene_mask_scenes(data);
+                if (title->cue_end_behavior == 1) {
+                    set_source_output_visible(data, false,
+                                              "cue-finalized-show-nothing");
+                } else {
+                    set_source_output_visible(data, true,
+                                              "cue-finalized-hold-frame");
+                    if (title->cue_end_behavior == 2)
+                        data->playhead = 0.0;
+                }
+                data->dirty = true;
+            } else {
             data->manual_uncue = is_uncue;
             if (is_uncue)
                 data->manual_uncue_floor = std::clamp(data->playhead, 0.0, title->duration);
@@ -256,6 +286,7 @@ static void source_video_tick(void *priv, float seconds)
             if (!data->manual_uncue)
                 set_source_output_visible(data, true, "cue-started");
             data->dirty = true;
+            }
         }
     }
 

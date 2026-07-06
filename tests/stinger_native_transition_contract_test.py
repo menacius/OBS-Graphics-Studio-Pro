@@ -114,6 +114,6 @@ for key in (
 assert 'OBS_TEXT_INFO' in transition
 assert 'OBS_PROPERTIES_DEFER_UPDATE' in transition
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
 print("Native BGL Stinger transition contract passed")

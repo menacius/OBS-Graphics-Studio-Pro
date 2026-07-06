@@ -239,6 +239,7 @@ signals:
     void remove_layers_from_group_requested();
     void flip_layers_requested(bool horizontal);
     void rotate_layers_requested(double degrees);
+    void fit_fill_layers_requested(bool fill_screen);
     void layer_order_requested(int action);
     void set_layers_locked_requested(bool locked);
     void set_layers_visible_requested(bool visible);

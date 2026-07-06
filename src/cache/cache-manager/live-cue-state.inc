@@ -104,6 +104,10 @@
         case LayerEffectType::LensFlare:
         case LayerEffectType::Vignette:
         case LayerEffectType::Noise:
+        case LayerEffectType::Grain:
+        case LayerEffectType::FilmDistortion:
+        case LayerEffectType::AnalogDistortion:
+        case LayerEffectType::DigitalDistortion:
         case LayerEffectType::RoughenEdges:
             return frame_rect;
         case LayerEffectType::InnerGlow:
@@ -112,6 +116,32 @@
         case LayerEffectType::Saturation:
         case LayerEffectType::ColorOverlay:
         case LayerEffectType::FourColorGradient:
+        case LayerEffectType::Sharpen:
+        case LayerEffectType::UnsharpMask:
+        case LayerEffectType::HighPass:
+        case LayerEffectType::Clarity:
+        case LayerEffectType::BilateralSharpen:
+        case LayerEffectType::Glare:
+        case LayerEffectType::Halation:
+        case LayerEffectType::LensDistortion:
+        case LayerEffectType::ChromaticAberration:
+        case LayerEffectType::DirectionalBlur:
+        case LayerEffectType::ZoomBlur:
+        case LayerEffectType::RadialBlur:
+        case LayerEffectType::Ripple:
+        case LayerEffectType::WaveWarp:
+        case LayerEffectType::Pixelate:
+        case LayerEffectType::EdgeDetect:
+        case LayerEffectType::Posterize:
+        case LayerEffectType::Threshold:
+        case LayerEffectType::Scanlines:
+        case LayerEffectType::ChromaKey:
+        case LayerEffectType::LumaKey:
+        case LayerEffectType::ColorRange:
+        case LayerEffectType::SpillSuppression:
+        case LayerEffectType::MatteChoker:
+        case LayerEffectType::LightWrap:
+        case LayerEffectType::DisplacementMap:
             break;
         }
     }
@@ -229,8 +259,38 @@ static bool effect_requires_full_gpu_cache_frame(LayerEffectType type)
     case LayerEffectType::LensFlare:
     case LayerEffectType::Vignette:
     case LayerEffectType::Noise:
+        case LayerEffectType::Grain:
+        case LayerEffectType::FilmDistortion:
+        case LayerEffectType::AnalogDistortion:
+        case LayerEffectType::DigitalDistortion:
     case LayerEffectType::RoughenEdges:
     case LayerEffectType::FourColorGradient:
+    case LayerEffectType::Sharpen:
+    case LayerEffectType::UnsharpMask:
+    case LayerEffectType::HighPass:
+    case LayerEffectType::Clarity:
+    case LayerEffectType::BilateralSharpen:
+        case LayerEffectType::Glare:
+        case LayerEffectType::Halation:
+        case LayerEffectType::LensDistortion:
+        case LayerEffectType::ChromaticAberration:
+        case LayerEffectType::DirectionalBlur:
+        case LayerEffectType::ZoomBlur:
+        case LayerEffectType::RadialBlur:
+        case LayerEffectType::Ripple:
+        case LayerEffectType::WaveWarp:
+        case LayerEffectType::Pixelate:
+        case LayerEffectType::EdgeDetect:
+        case LayerEffectType::Posterize:
+        case LayerEffectType::Threshold:
+        case LayerEffectType::Scanlines:
+        case LayerEffectType::ChromaKey:
+        case LayerEffectType::LumaKey:
+        case LayerEffectType::ColorRange:
+        case LayerEffectType::SpillSuppression:
+        case LayerEffectType::MatteChoker:
+        case LayerEffectType::LightWrap:
+        case LayerEffectType::DisplacementMap:
         return true;
     default:
         return false;

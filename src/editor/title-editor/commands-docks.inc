@@ -912,6 +912,19 @@
                 if (!title_id.isEmpty() && title_ && title_id != QString::fromStdString(title_->id)) return;
                 if (timeline_) timeline_->update();
             });
+    connect(&bgl::video::FrameRuntime::instance(),
+            &bgl::video::FrameRuntime::frameReady, this,
+            [this](const QString &layer_id) {
+                if (!title_) return;
+                const auto layer = title_->find_layer(layer_id.toStdString());
+                if (!layer || layer->type != LayerType::Video) return;
+                /* Video decode is asynchronous. A decoded frame may arrive after
+                 * the current paint transaction both while paused and during
+                 * realtime playback, so the canvas must be invalidated whenever
+                 * the frame for the current Video layer is published. */
+                if (canvas_)
+                    canvas_->refresh_preview();
+            }, Qt::QueuedConnection);
 
     load_editor_layout();
 
@@ -935,17 +948,36 @@
                         canvas_->set_image_tool_active();
                     return;
                 }
-                QString audio_path;
+                QString media_path;
                 if (type == LayerType::Audio) {
-                    audio_path = QFileDialog::getOpenFileName(
+                    media_path = QFileDialog::getOpenFileName(
                         this, bgl_tr("OBSTitles.ImportAudio"), QString(),
                         bgl_tr("OBSTitles.AudioFilesFilter"));
-                    if (audio_path.isEmpty()) return;
+                    if (media_path.isEmpty()) return;
+                } else if (type == LayerType::Video) {
+                    media_path = QFileDialog::getOpenFileName(
+                        this, bgl_tr("OBSTitles.ImportVideo"), QString(),
+                        bgl_tr("OBSTitles.VideoFilesFilter"));
+                    if (media_path.isEmpty()) return;
                 }
-                auto l = create_basic_layer(type, type == LayerType::Audio
-                    ? QFileInfo(audio_path).completeBaseName() : QString());
+                bgl::video::MediaInfo video_media;
+                if (type == LayerType::Video) {
+                    video_media = bgl::video::probe_media(media_path.toStdString());
+                    if (!video_media.valid) {
+                        QMessageBox::warning(
+                            this, bgl_tr("OBSTitles.ImportVideo"),
+                            video_media.error.empty()
+                                ? bgl_tr("OBSTitles.VideoOpenFailed")
+                                : QString::fromStdString(video_media.error));
+                        return;
+                    }
+                }
+                auto l = create_basic_layer(
+                    type, (type == LayerType::Audio || type == LayerType::Video)
+                        ? QFileInfo(media_path).completeBaseName() : QString());
                 if (!l) return;
                 if (type == LayerType::Audio) {
+                    const QString audio_path = media_path;
                     l->audio_source = audio_path.toStdString();
                     l->audio_out_point = std::max(0.0, l->out_time - l->in_time);
                     QFile media(audio_path);
@@ -966,8 +998,70 @@
                             l->audio_waveform.push_back(hi);
                         }
                     }
+                } else if (type == LayerType::Video) {
+                    const bgl::video::MediaInfo &media = video_media;
+                    l->group_collapsed = true;
+                    l->video_source = media_path.toStdString();
+                    l->video_stream_index = media.video_stream_index;
+                    l->video_media_duration = media.duration;
+                    l->video_out_point = media.duration;
+                    l->video_frame_rate = media.frame_rate;
+                    l->video_pixel_width = media.width;
+                    l->video_pixel_height = media.height;
+                    l->video_has_alpha = media.has_alpha;
+                    l->image_width = std::max(1, media.width);
+                    l->image_height = std::max(1, media.height);
+                    l->image_size.static_value.x = l->image_width;
+                    l->image_size.static_value.y = l->image_height;
+                    const double aspect = static_cast<double>(l->image_width) /
+                        std::max(1.0f, l->image_height);
+                    l->rect_width = std::min<double>(title_->width * 0.6,
+                                                     l->image_width);
+                    l->rect_height = l->rect_width / std::max(0.0001, aspect);
+                    if (l->rect_height > title_->height * 0.6) {
+                        l->rect_height = title_->height * 0.6;
+                        l->rect_width = l->rect_height * aspect;
+                    }
+                    l->size.static_value.x = l->rect_width;
+                    l->size.static_value.y = l->rect_height;
+                    if (media.duration > 0.0)
+                        l->out_time = std::min(title_->duration, media.duration);
+                    l->video_out_point = std::min(
+                        media.duration > 0.0 ? media.duration
+                                             : std::max(0.0, l->out_time - l->in_time),
+                        std::max(0.0, l->out_time - l->in_time));
                 }
                 title_->add_layer(l);
+                if (type == LayerType::Video) {
+                    int ordinal = 1;
+                    for (const auto &stream : video_media.audio_streams) {
+                        QString stream_name = stream.title.empty()
+                            ? bgl_tr("OBSTitles.VideoAudioStream").arg(ordinal)
+                            : QString::fromStdString(stream.title);
+                        if (!stream.language.empty())
+                            stream_name += QStringLiteral(" [%1]").arg(
+                                QString::fromStdString(stream.language));
+                        auto audio = create_basic_layer(LayerType::Audio, stream_name);
+                        if (!audio) continue;
+                        audio->parent_id = l->id;
+                        audio->linked_media_layer_id = l->id;
+                        audio->linked_media_stream = true;
+                        audio->media_stream_label = stream_name.toStdString();
+                        audio->audio_source = media_path.toStdString();
+                        audio->audio_stream_index = stream.stream_index;
+                        audio->audio_sample_rate = stream.sample_rate;
+                        audio->audio_channels = stream.channels;
+                        audio->audio_media_duration = l->video_media_duration;
+                        audio->audio_in_point = l->video_in_point;
+                        audio->audio_out_point = l->video_out_point;
+                        audio->audio_independent = false;
+                        audio->in_time = l->in_time;
+                        audio->out_time = l->out_time;
+                        title_->add_layer(audio);
+                        ++ordinal;
+                    }
+                    synchronize_video_audio_streams(*title_, l->id);
+                }
                 if (type == LayerType::Text)
                     pending_text_layer_auto_names_.insert(l->id);
                 layers_->refresh();
@@ -1278,7 +1372,8 @@
             this, [this](const std::string &lid, int state) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid);
-                    layer && layer->type == LayerType::Group) {
+                    layer && (layer->type == LayerType::Group ||
+                              layer->type == LayerType::Video)) {
                     state = std::clamp(state, 0, 2);
                     layer->properties_expanded = state >= 1;
                     layer->group_collapsed = state < 2;
@@ -1428,8 +1523,10 @@
                         set_animated_value(effect.enabled_prop, local_time,
                                            enabled ? 1.0 : 0.0);
                     }
-                    if (effects_panel_ && sel_layer_id_ == lid)
+                    if (effects_panel_ && sel_layer_id_ == lid) {
+                        effects_panel_->set_title(title_);
                         effects_panel_->set_layer(layer, playhead_);
+                    }
                     force_next_title_visual_update();
                     on_title_modified();
                 }
@@ -1493,6 +1590,7 @@
                 if (!title_ || !effects_panel_) return;
                 auto layer = title_->find_layer(layer_id);
                 if (!layer || layer->locked) return;
+                effects_panel_->set_title(title_);
                 effects_panel_->set_layer(layer, playhead_);
                 if (effects_panel_->add_audio_effect(static_cast<AudioEffectType>(type))) {
                     synchronize_layer_selection({layer_id});
@@ -1535,6 +1633,41 @@
                 }
                 if (timeline_) timeline_->update();
             });
+    connect(timeline_, &TimelineWidget::layer_timing_changed,
+            this, [this](bool commit_undo) {
+                if (!title_) return;
+                force_next_title_visual_update();
+                if (commit_undo) {
+                    on_title_modified(true);
+                    publish_editor_audio_runtime_state();
+                    sync_editor_audio_preview(false);
+                } else {
+                    /* Live strip trim should feel instantaneous. Avoid full cache
+                     * invalidation/audio runtime rebuild on every mouse move; the
+                     * commit path above performs the authoritative sync. */
+                    set_dirty(true);
+                    if (canvas_)
+                        canvas_->refresh_preview();
+                }
+                if (props_) {
+                    const auto selected_ids = selected_layer_ids_for_operation();
+                    auto selected = selected_ids.empty() ? nullptr : title_->find_layer(selected_ids.front());
+                    if (selected) {
+                        if (commit_undo)
+                            props_->set_layer(selected, playhead_);
+                        else
+                            props_->refresh_media_range_controls();
+                    }
+                }
+                if (layers_) {
+                    if (commit_undo)
+                        layers_->refresh();
+                    else
+                        layers_->update();
+                    layers_->set_playhead(playhead_);
+                }
+            });
+
     connect(timeline_, &TimelineWidget::audio_layer_property_changed,
             this, [this](bool commit_undo) {
                 if (!title_) return;

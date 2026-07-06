@@ -30,9 +30,9 @@ changelog = read("docs/CHANGELOG.md")
 note = read("docs/EDITOR_WORKFLOW.md")
 
 # Package build advances, authored data does not.
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*219", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
 
 # The precise monitor timer is interaction-only and dynamic text is bounded.
 assert "gui_refresh_timer_->setInterval(16);" in window

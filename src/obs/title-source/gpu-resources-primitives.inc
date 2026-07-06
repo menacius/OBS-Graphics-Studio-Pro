@@ -185,8 +185,8 @@ static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
             gs_enable_blending(true);
             gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
 
-            gs_eparam_t *image_param = gs_effect_get_param_by_name(effect, "image");
-            gs_eparam_t *weight_param = gs_effect_get_param_by_name(effect, "weight");
+            gs_eparam_t *image_param = bgl_effect_param(effect, "image");
+            gs_eparam_t *weight_param = bgl_effect_param(effect, "weight");
             if (!image_param || !weight_param) {
                 ok = false;
             } else {
@@ -398,9 +398,14 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
          * Roughly two samples
          * per travelled pixel gives a continuous trail while retaining the
          * user setting as the minimum quality level. */
-        const bool sharp_image_layer = layer.type == LayerType::Image;
-        const double samples_per_pixel = sharp_image_layer ? 1.5 : 1.0;
-        const int max_temporal_samples = sharp_image_layer ? 64 : 48;
+        const bool sharp_image_layer = layer_type_is_image_like(layer.type);
+        /* Bitmap and video layers need a much denser exposure than vector/text
+         * layers.  Low temporal sample counts look like a posterized stack of
+         * separate images, especially on high-contrast alpha edges and video
+         * frames.  Keep the existing temporal accumulation model but make the
+         * image/video path effectively continuous within the shutter. */
+        const double samples_per_pixel = sharp_image_layer ? 2.25 : 1.0;
+        const int max_temporal_samples = sharp_image_layer ? 96 : 48;
         const int adaptive_samples = (int)std::ceil(travel_px * samples_per_pixel) + 1;
         const int samples = std::clamp(std::max(configured_samples, adaptive_samples), 2, max_temporal_samples);
 
@@ -598,7 +603,7 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
     // path disabled the cache for every transition and reran the full CPU
     // effect stack on every frame.
     if (transition_state.active && !transition_requires_dynamic_surface && data &&
-        layer_has_stackable_pixel_effects(render_layer) && render_layer.type != LayerType::Clock) {
+        layer_has_any_gpu_pixel_effects(render_layer) && render_layer.type != LayerType::Clock) {
         // Do not deep-copy the complete layer graph on every transition frame.
         // The cache helper strips general transitions only when a cache miss
         // actually requires a base raster to be rendered.
@@ -609,7 +614,7 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
             return;
     }
 
-    if (!layer_has_stackable_pixel_effects(render_layer)) {
+    if (!layer_has_any_gpu_pixel_effects(render_layer)) {
         render_layer_unmasked(cr, title, render_layer, title_time, canvas_w, canvas_h);
         return;
     }
@@ -877,6 +882,7 @@ void release_title_gpu_render_resources()
         std::lock_guard<std::mutex> surfaceLock(g_surface_effect_registry_mutex);
         obs_enter_graphics();
         g_surface_effect_registry.reset();
+        reset_compatibility_effect_surface_pool_locked();
         clear_extension_image_textures();
         obs_leave_graphics();
     }

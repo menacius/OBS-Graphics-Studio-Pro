@@ -17,6 +17,7 @@
 #include "title-cache-policy.h"
 #include "title-source.h"
 #include "title-audio-runtime.h"
+#include "title-video-runtime.h"
 #include "style-presets.h"
 #include "title-data.h"
 #include "external-data.h"
@@ -28,6 +29,8 @@
 #include "title-effect-registry.h"
 #include "extensions/effect-extension-catalog.h"
 #include "effects/effect-animation-utils.h"
+#include "effects/effect-runtime.h"
+#include "performance-counters.h"
 #include "title-gpu-text-renderer.h"
 #include "layer-transform-3d.h"
 #include "title-preferences.h"
@@ -110,6 +113,17 @@
 #include "path-geometry.h"
 
 using bgs::live_text::exposed_text_layers;
+
+/* OBS graphics helpers do not accept a null effect handle. Shader creation can
+ * legitimately fail while the frontend/graphics subsystem is still settling
+ * during startup, so every split title-source module uses this checked lookup.
+ * The wrapper is intentionally inline and disappears to the same single API
+ * call in the normal non-null path. */
+static inline gs_eparam_t *bgl_effect_param(gs_effect_t *effect,
+                                             const char *name) noexcept
+{
+    return effect && name ? gs_effect_get_param_by_name(effect, name) : nullptr;
+}
 
 /* Implemented after all split title-source function continuations have closed.
  * The declaration must remain visible to the cache API in

@@ -1204,12 +1204,16 @@ void TimelineWidget::begin_layer_strip_drag(const std::string &layer_id, DragMod
     ids.insert(layer_id);
 
     for (const auto &layer : title_->layers) {
-        if (!layer || layer->locked ||
+        if (!layer || layer->locked || layer->linked_media_stream ||
             ids.find(layer->id) == ids.end()) continue;
         DraggedLayerStrip dragged;
         dragged.layer_id = layer->id;
         dragged.start_in = layer->in_time;
         dragged.start_out = layer->out_time;
+        dragged.start_media_in = layer->type == LayerType::Audio
+            ? layer->audio_in_point : layer->video_in_point;
+        dragged.start_media_out = layer->type == LayerType::Audio
+            ? layer->audio_out_point : layer->video_out_point;
         for (auto prop : timeline_properties(*layer)) {
             if (!prop) continue;
             for (int i = 0; i < (int)prop.keyframe_count(); ++i)
@@ -1344,6 +1348,118 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     const QColor pause_color = TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::Pause);
     const QColor loop_color = TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::Loop);
     const QColor handle_color = with_alpha(text, 150);
+
+    auto refresh_audio_waveform_from_store = [&](const std::shared_ptr<Layer> &audio_layer) {
+        if (!audio_layer || audio_layer->type != LayerType::Audio || !title_)
+            return;
+        auto stored = TitleDataStore::instance().get_title(title_->id);
+        if (!stored)
+            return;
+        auto runtime_layer = stored->find_layer(audio_layer->id);
+        if (!runtime_layer)
+            return;
+        if (!runtime_layer->audio_waveform.empty()) {
+            audio_layer->audio_waveform = runtime_layer->audio_waveform;
+            audio_layer->audio_waveform_duration = runtime_layer->audio_waveform_duration;
+        }
+        audio_layer->audio_waveform_progress_percent =
+            runtime_layer->audio_waveform_progress_percent;
+        audio_layer->audio_waveform_generating =
+            runtime_layer->audio_waveform_generating;
+        audio_layer->audio_waveform_progress_label =
+            runtime_layer->audio_waveform_progress_label;
+    };
+
+    auto draw_audio_waveform_lane = [&](const std::shared_ptr<Layer> &audio_layer,
+                                        const QRect &lane_rect,
+                                        bool master_muted) {
+        if (!audio_layer || audio_layer->type != LayerType::Audio ||
+            lane_rect.width() <= 2 || lane_rect.height() <= 2)
+            return;
+        refresh_audio_waveform_from_store(audio_layer);
+        const bool muted = master_muted || audio_layer->audio_muted;
+        if (audio_layer->audio_waveform.size() >= 2) {
+            p.save();
+            p.setClipRect(lane_rect.adjusted(1, 1, -1, -1));
+            p.setPen(QPen(with_alpha(text, muted ? 65 : 190), 1));
+            const int center_y = lane_rect.center().y();
+            const int half_h = std::max(1, lane_rect.height() / 2 - 1);
+            const int pairs = static_cast<int>(audio_layer->audio_waveform.size() / 2);
+            const double asset_duration = audio_layer->audio_waveform_duration > 0.0
+                ? audio_layer->audio_waveform_duration
+                : std::max(audio_layer->audio_out_point,
+                           audio_layer->audio_in_point +
+                               std::max(0.0, audio_layer->out_time - audio_layer->in_time));
+            const double media_begin = std::clamp(audio_layer->audio_in_point, 0.0,
+                                                  std::max(0.0, asset_duration));
+            const double available_end = audio_layer->audio_out_point > media_begin
+                ? std::min(audio_layer->audio_out_point, asset_duration)
+                : asset_duration;
+            const double available_span = std::max(0.0, available_end - media_begin);
+            const double timeline_span = std::max(0.0, audio_layer->out_time - audio_layer->in_time);
+            const bool repeats = audio_layer->audio_loop ||
+                audio_layer->audio_playback_mode == AudioPlaybackMode::Loop;
+            for (int px = 0; px < lane_rect.width(); ++px) {
+                const double timeline_offset = timeline_span * (double(px) + 0.5) /
+                    std::max(1, lane_rect.width());
+                double media_time = media_begin + timeline_offset;
+                if (repeats && available_span > 0.0)
+                    media_time = media_begin + std::fmod(timeline_offset, available_span);
+                else
+                    media_time = std::min(media_time, available_end);
+                const double normalized = asset_duration > 0.0
+                    ? std::clamp(media_time / asset_duration, 0.0, 1.0)
+                    : 0.0;
+                const int pair = std::clamp(static_cast<int>(normalized * (pairs - 1)),
+                                            0, pairs - 1);
+                const float lo = audio_layer->audio_waveform[static_cast<size_t>(pair * 2)];
+                const float hi = audio_layer->audio_waveform[static_cast<size_t>(pair * 2 + 1)];
+                p.drawLine(lane_rect.left() + px, center_y - qRound(hi * half_h),
+                           lane_rect.left() + px, center_y - qRound(lo * half_h));
+            }
+            p.restore();
+            return;
+        }
+        if (audio_layer->audio_waveform_generating) {
+            const int percent = std::clamp(audio_layer->audio_waveform_progress_percent, 0, 99);
+            QRect progress_rect = lane_rect.adjusted(2, lane_rect.height() - 4, -2, -1);
+            p.fillRect(progress_rect, with_alpha(text, 45));
+            QRect fill_rect = progress_rect;
+            fill_rect.setWidth(std::max(1, progress_rect.width() * percent / 100));
+            p.fillRect(fill_rect, with_alpha(text, 150));
+            if (lane_rect.height() >= 10) {
+                QString label = audio_layer->audio_waveform_progress_label.empty()
+                    ? QString::fromStdString(audio_layer->name)
+                    : QString::fromStdString(audio_layer->audio_waveform_progress_label);
+                label = QStringLiteral("%1% · %2").arg(percent).arg(label);
+                p.setPen(with_alpha(text, 160));
+                p.drawText(lane_rect.adjusted(4, 0, -4, -4),
+                           Qt::AlignVCenter | Qt::AlignLeft,
+                           QFontMetrics(p.font()).elidedText(label, Qt::ElideRight,
+                                                             lane_rect.width() - 8));
+            }
+        }
+    };
+
+    auto linked_audio_stream_layers = [&](const std::string &video_id) {
+        std::vector<std::shared_ptr<Layer>> streams;
+        if (!title_)
+            return streams;
+        for (const auto &candidate : title_->layers) {
+            if (!candidate || candidate->type != LayerType::Audio ||
+                !candidate->linked_media_stream ||
+                candidate->linked_media_layer_id != video_id)
+                continue;
+            streams.push_back(candidate);
+        }
+        std::sort(streams.begin(), streams.end(), [](const auto &a, const auto &b) {
+            if (!a || !b) return bool(a) > bool(b);
+            if (a->audio_stream_index != b->audio_stream_index)
+                return a->audio_stream_index < b->audio_stream_index;
+            return a->name < b->name;
+        });
+        return streams;
+    };
 
     /* Background */
     p.fillRect(dirty, window);
@@ -1656,14 +1772,26 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                     ? graph_channel_component() == entry.property_channel
                     : graph_channel_mode_ == GraphChannelMode::All);
             p.fillRect(0, y, W, rowh,
-                       entry.is_property
-                           ? (graph_target_row ? selected_row : property_bg)
-                           : sel ? selected_row : window);
+                       entry.is_effect_group
+                           ? property_bg
+                           : entry.is_property
+                               ? (graph_target_row ? selected_row : property_bg)
+                               : sel ? selected_row : window);
             p.setPen(border);
             p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
 
             int x0 = time_to_x(layer->in_time);
             int x1 = time_to_x(layer->out_time);
+            if (entry.is_effect_group) {
+                QRect effect_band(std::min(x0, x1), y + 6,
+                                  std::max(1, std::abs(x1 - x0)), rowh - 12);
+                p.fillRect(effect_band, with_alpha(highlight, 34));
+                p.setPen(with_alpha(text, 150));
+                p.drawText(effect_band.adjusted(6, 0, -4, 0),
+                           Qt::AlignVCenter | Qt::AlignLeft,
+                           QStringLiteral("FX  %1").arg(entry.owner_label));
+                continue;
+            }
             if (!entry.is_property) {
                 QRect strip_rect(std::min(x0, x1), y + 3, std::abs(x1 - x0), rowh - 6);
                 QColor bar_col = layer_color(*layer, row);
@@ -1673,13 +1801,26 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 }
                 if (sel) bar_col = bar_col.lighter(125);
                 p.fillRect(strip_rect, bar_col);
-                if (layer->type == LayerType::Audio && layer->audio_waveform.empty() && title_) {
-                    if (auto stored = TitleDataStore::instance().get_title(title_->id)) {
-                        if (auto runtime_layer = stored->find_layer(layer->id)) {
-                            layer->audio_waveform = runtime_layer->audio_waveform;
-                            layer->audio_waveform_duration = runtime_layer->audio_waveform_duration;
+                if (layer->type == LayerType::Video) {
+                    const auto streams = linked_audio_stream_layers(layer->id);
+                    if (!streams.empty() && strip_rect.width() > 4) {
+                        const int usable_h = std::max(1, strip_rect.height() - 4);
+                        const int lane_count = std::max(1, static_cast<int>(streams.size()));
+                        const int lane_h = std::max(3, usable_h / lane_count);
+                        for (int stream_i = 0; stream_i < lane_count; ++stream_i) {
+                            const int lane_top = strip_rect.top() + 2 + stream_i * lane_h;
+                            QRect lane_rect(strip_rect.left() + 2, lane_top,
+                                            std::max(1, strip_rect.width() - 4),
+                                            std::max(1, std::min(lane_h, strip_rect.bottom() - lane_top)));
+                            draw_audio_waveform_lane(streams[static_cast<size_t>(stream_i)],
+                                                     lane_rect, layer->audio_muted);
                         }
                     }
+                }
+                if (layer->type == LayerType::Audio && layer->audio_waveform.empty() && title_) {
+                    refresh_audio_waveform_from_store(layer);
+                    if (layer->audio_waveform.empty())
+                        draw_audio_waveform_lane(layer, strip_rect, false);
                 }
                 if (layer->type == LayerType::Audio && layer->audio_waveform.size() >= 2 && strip_rect.width() > 2) {
                     p.save();
@@ -2097,8 +2238,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
             (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
         if (row_index >= 0 && row_index < static_cast<int>(rows.size())) {
             const auto &row = rows[static_cast<size_t>(row_index)];
-            if (!row.is_property && !row.is_camera &&
-                !row.is_camera_switch && row.layer) {
+            if (!row.is_property && !row.is_effect_group &&
+                !row.is_camera && !row.is_camera_switch && row.layer) {
                 /* The row itself is the target, not only the visible clip
                  * rectangle. This also makes the menu available from the
                  * layer-name/empty-time area while retaining multi-selection. */
@@ -2676,7 +2817,7 @@ void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
         const QPoint pos = ev->pos();
 #endif
         const auto layer = layer_strip_at_pos(pos);
-        if (layer && (layer->type == LayerType::Audio || layer_type_is_container(layer->type))) {
+        if (layer && (layer->type == LayerType::Audio || layer_type_can_have_children(layer->type))) {
             ev->setDropAction(Qt::CopyAction);
             ev->accept();
         } else {
@@ -2734,7 +2875,7 @@ void TimelineWidget::dropEvent(QDropEvent *ev)
 #endif
         const auto layer = layer_strip_at_pos(pos);
         bool audio_capable = layer && layer->type == LayerType::Audio;
-        if (layer && layer_type_is_container(layer->type) && title_) {
+        if (layer && layer_type_can_have_children(layer->type) && title_) {
             std::set<std::string> pending{layer->id}, visited;
             while (!pending.empty() && !audio_capable) {
                 const std::string parent = *pending.begin();
@@ -2743,7 +2884,7 @@ void TimelineWidget::dropEvent(QDropEvent *ev)
                 for (const auto &child : title_->layers) {
                     if (!child || child->parent_id != parent) continue;
                     if (child->type == LayerType::Audio) { audio_capable = true; break; }
-                    if (layer_type_is_container(child->type)) pending.insert(child->id);
+                    if (layer_type_can_have_children(child->type)) pending.insert(child->id);
                 }
             }
         }
@@ -2832,8 +2973,9 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         const int row = (ev->pos().y() - ruler_height() + scroll_y_) /
                         row_height();
         if (row >= 0 && row < static_cast<int>(rows.size()) &&
-            !rows[row].is_property && !rows[row].is_camera &&
-            !rows[row].is_camera_switch && rows[row].layer) {
+            !rows[row].is_property && !rows[row].is_effect_group &&
+            !rows[row].is_camera && !rows[row].is_camera_switch &&
+            rows[row].layer) {
             const auto &layer = rows[row].layer;
             const int x0 = time_to_x(layer->in_time);
             const int x1 = time_to_x(layer->out_time);
@@ -3003,7 +3145,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         return;
     }
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
-        if (rows[row].is_camera || rows[row].is_camera_switch) {
+        if (rows[row].is_camera || rows[row].is_camera_switch ||
+            rows[row].is_effect_group) {
             ev->accept();
             return;
         }
@@ -3186,10 +3329,15 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         const double delta = t - drag_start_time_;
         if (dragged_layer_strips_.empty()) {
             if (auto layer = title_->find_layer(drag_layer_id_)) {
+                if (layer->linked_media_stream) return;
                 DraggedLayerStrip dragged;
                 dragged.layer_id = layer->id;
                 dragged.start_in = layer->in_time;
                 dragged.start_out = layer->out_time;
+                dragged.start_media_in = layer->type == LayerType::Audio
+                    ? layer->audio_in_point : layer->video_in_point;
+                dragged.start_media_out = layer->type == LayerType::Audio
+                    ? layer->audio_out_point : layer->video_out_point;
                 for (auto prop : timeline_properties(*layer)) {
                     if (!prop) continue;
                     for (int i = 0; i < (int)prop.keyframe_count(); ++i)
@@ -3202,12 +3350,24 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
             auto layer = title_->find_layer(dragged.layer_id);
             if (!layer || layer->locked) continue;
             if (drag_mode_ == DragMode::TrimIn) {
+                const bool media_layer = layer->type == LayerType::Video || layer->type == LayerType::Audio;
+                const bool media_loops = layer->type == LayerType::Video
+                    ? layer->video_loop
+                    : (layer->type == LayerType::Audio &&
+                       (layer->audio_loop || layer->audio_playback_mode == AudioPlaybackMode::Loop));
+                const double minimum_in = media_layer && !media_loops
+                    ? std::max(0.0, dragged.start_in - dragged.start_media_in)
+                    : 0.0;
                 const double new_in = std::clamp(dragged.start_in + delta,
-                                                 0.0,
-                                                 std::max(0.0, dragged.start_out - obs_frame_duration()));
+                                                 minimum_in,
+                                                 std::max(minimum_in, dragged.start_out - obs_frame_duration()));
                 const double keyframe_offset = dragged.start_in - new_in;
                 layer->in_time = new_in;
                 layer->out_time = dragged.start_out;
+                if (layer->type == LayerType::Video || layer->type == LayerType::Audio) {
+                    const double media_delta = new_in - dragged.start_in;
+                    set_layer_media_range_in_point(*layer, dragged.start_media_in + media_delta);
+                }
                 for (const auto &keyframe : dragged.keyframes) {
                     auto prop = find_timeline_property(*layer, keyframe.prop_name);
                     if (!prop || keyframe.index < 0 || keyframe.index >= (int)prop.keyframe_count()) continue;
@@ -3220,11 +3380,29 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
                 synchronize_text_transition_animators(
                     layer->transitions, layer->text_animators,
                     layer->in_time, layer->out_time, nullptr, true);
+                /* Keep live trim cheap: linked audio-stream rows are resynchronised
+                 * once on mouse release instead of on every pointer move. */
             } else {
                 layer->in_time = dragged.start_in;
+                double maximum_out = title_->duration;
+                const bool media_layer = layer->type == LayerType::Video || layer->type == LayerType::Audio;
+                const bool media_loops = layer->type == LayerType::Video
+                    ? layer->video_loop
+                    : (layer->type == LayerType::Audio &&
+                       (layer->audio_loop || layer->audio_playback_mode == AudioPlaybackMode::Loop));
+                const double media_duration = layer_media_duration_limit(*layer);
+                if (media_layer && !media_loops && media_duration > 0.0) {
+                    maximum_out = std::min(maximum_out,
+                        dragged.start_out + std::max(
+                            0.0, media_duration - dragged.start_media_out));
+                }
                 layer->out_time = std::clamp(dragged.start_out + delta,
                                              dragged.start_in + obs_frame_duration(),
-                                             title_->duration);
+                                             maximum_out);
+                if (layer->type == LayerType::Video || layer->type == LayerType::Audio) {
+                    const double media_delta = layer->out_time - dragged.start_out;
+                    set_layer_media_range_out_point(*layer, dragged.start_media_out + media_delta);
+                }
                 normalize_transition_durations(*layer);
                 synchronize_text_transition_animators(
                     layer->transitions, layer->text_animators,
@@ -3232,6 +3410,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
             }
         }
         update();
+        emit layer_timing_changed(false);
         return;
     }
 
@@ -3239,10 +3418,15 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         double delta = t - drag_start_time_;
         if (dragged_layer_strips_.empty()) {
             if (auto layer = title_->find_layer(drag_layer_id_)) {
+                if (layer->linked_media_stream) return;
                 DraggedLayerStrip dragged;
                 dragged.layer_id = layer->id;
                 dragged.start_in = layer->in_time;
                 dragged.start_out = layer->out_time;
+                dragged.start_media_in = layer->type == LayerType::Audio
+                    ? layer->audio_in_point : layer->video_in_point;
+                dragged.start_media_out = layer->type == LayerType::Audio
+                    ? layer->audio_out_point : layer->video_out_point;
                 dragged_layer_strips_.push_back(std::move(dragged));
             }
         }
@@ -3266,13 +3450,15 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
             layer->out_time = std::min(title_->duration, new_in + duration);
         }
         update();
+        emit layer_timing_changed(false);
         return;
     }
 
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
-        if (rows[row].is_camera || rows[row].is_camera_switch) {
+        if (rows[row].is_camera || rows[row].is_camera_switch ||
+            rows[row].is_effect_group) {
             unsetCursor();
             return;
         }
@@ -3399,7 +3585,17 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
     }
 
     const bool transition_changed = drag_mode_ == DragMode::TransitionDuration;
+    const bool strip_timing_changed = drag_mode_ == DragMode::TrimIn ||
+                                      drag_mode_ == DragMode::TrimOut ||
+                                      drag_mode_ == DragMode::Layer;
     const bool audio_fade_changed = drag_mode_ == DragMode::AudioFadeIn || drag_mode_ == DragMode::AudioFadeOut;
+    if (strip_timing_changed) {
+        for (const auto &dragged : dragged_layer_strips_) {
+            auto layer = title_->find_layer(dragged.layer_id);
+            if (layer && layer->type == LayerType::Video)
+                synchronize_video_audio_streams(*title_, layer->id);
+        }
+    }
     drag_mode_ = DragMode::None;
     drag_layer_id_.clear();
     drag_prop_name_.clear();
@@ -3415,6 +3611,8 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
     update();
     if (transition_changed)
         emit transition_modified();
+    else if (strip_timing_changed)
+        emit layer_timing_changed(true);
     else if (audio_fade_changed)
         emit audio_layer_property_changed(true);
     else if (changed)

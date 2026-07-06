@@ -45,11 +45,15 @@ Use the **Graph Editor** button in the timeline footer for AE-style temporal cur
 
 For animated Position, select the layer to edit its motion path directly on the canvas. Diamond points are Position keyframes, round points are Bezier handles, the white marker is the current position, and the arrow shows travel direction. Drag vertices or handles, Shift-drag a handle to constrain its angle, Alt-drag to break its pair, double-click a segment to add a keyframe, and right-click the path for spatial interpolation, roving, and tangent commands. Motion-path edits remain correct through parents and groups because displayed final-space points are written back as layer-local values.
 
-## 7. Audio layers
+## 7. Video and audio layers
 
-Audio layers provide source selection, range/trim, gain, pan, mute, solo, loop, independent playback, fade-in/out curves, keyframeable mix controls, waveform display, and audio effects. Editor monitoring follows the exact editor playhead. Forward, reverse, and ping-pong transport play the audio in the same direction as the picture.
+Video layers use the same visual box, crop, anchor, transforms, masks and effects as Image layers. Importing a video creates one child Audio track for every embedded audio stream. Expand the Video row to see each stream and its waveform in the Timeline. The eye controls only the picture, the Video speaker control is a master mute, and every stream also has its own mute, gain, pan and audio-effect controls.
 
-Only title sources containing at least one Audio layer are exposed as devices in the OBS Audio Mixer. Adding or removing the final Audio layer updates mixer visibility without recreating the source.
+The Video picture and all linked streams use the same title transport. Moving or trimming the Video, changing its media range, seeking, looping, playing in reverse or duplicating it keeps every stream attached and synchronized. Linked stream rows are structural and cannot be moved or trimmed independently; use their audio controls to change the mix without breaking sync.
+
+Standalone Audio layers provide source selection, range/trim, gain, pan, mute, solo, loop, independent playback, fade-in/out curves, keyframeable mix controls, waveform display, and audio effects. Editor monitoring follows the exact editor playhead. Forward, reverse, and ping-pong transport play the audio in the same direction as the picture.
+
+Only title sources containing at least one Audio layer—including a Video layer with embedded audio—are exposed as devices in the OBS Audio Mixer. Adding or removing the final audio-bearing layer updates mixer visibility without recreating the source.
 
 ## 8. Effects
 

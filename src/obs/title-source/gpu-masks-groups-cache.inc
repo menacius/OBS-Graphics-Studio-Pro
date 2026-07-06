@@ -9,6 +9,9 @@
      * instead of leaving the first frame blank or retrying forever. */
     bool primitive_backend_unavailable = false;
     bool text_backend_unavailable = false;
+    /* Optional GPU raster failures must schedule a compatibility rebuild
+     * instead of blocking first-frame publication forever. */
+    bool force_compatibility_raster_rebuild = false;
     Title title;
     bool has_title = false;
     double time = 0.0;
@@ -17,6 +20,9 @@
     std::size_t last_layer = std::numeric_limits<std::size_t>::max();
     bool frame_dirty = true;
     std::unordered_map<std::string, LayerRaster> layers;
+    /* Prevent source-aware effects from recursively evaluating dependency
+     * cycles (for example A displaces B while B displaces A). */
+    std::unordered_set<std::string> source_effect_visiting;
 
     gs_texrender_t *frame_a = nullptr;
     gs_texrender_t *frame_b = nullptr;
@@ -117,6 +123,11 @@
     uint32_t transition_input_height = 0;
     uint64_t transition_input_generation = 0;
     bool transition_input_preview_enabled = false;
+    /* Editor-only affordance. When enabled, scene-mask layers are rasterized
+     * as A/B-style colored grid placeholders so their effect stack can be
+     * previewed. Runtime/source scene-mask matte rasters keep this disabled
+     * and render the real layer artwork only. */
+    bool scene_mask_placeholder_preview_enabled = false;
     gs_texture_t *final_texture = nullptr;
     /* A published texture is valid only for the exact model that produced it.
      * Keeping this identity beside the pointer makes cross-title/project
@@ -130,6 +141,7 @@
     uint32_t stage_height = 0;
     float preview_quality_scale = 1.0f;
     bool editor_draft = false;
+    std::string last_error_storage;
     const char *last_error = nullptr;
 };
 
@@ -177,133 +189,77 @@ static std::string gpu_session_layer_id(const Layer &layer)
         : layer.id;
 }
 
-static LayerEffect resolve_gpu_layer_effect(const LayerEffect &effect, double t)
+static ResolvedLayerEffect resolve_gpu_layer_effect(const LayerEffect &effect, double t)
 {
-    LayerEffect resolved = effect;
-    resolved.brightness = static_cast<float>(std::clamp(
-        effect.brightness_prop.is_animated() ? effect.brightness_prop.evaluate(t)
-                                              : static_cast<double>(effect.brightness),
-        -1.0, 1.0));
-    resolved.contrast = static_cast<float>(std::clamp(
-        effect.contrast_prop.is_animated() ? effect.contrast_prop.evaluate(t)
-                                            : static_cast<double>(effect.contrast),
-        0.0, 4.0));
-    resolved.saturation = static_cast<float>(std::clamp(
-        effect.saturation_prop.is_animated() ? effect.saturation_prop.evaluate(t)
-                                              : static_cast<double>(effect.saturation),
-        0.0, 4.0));
-    resolved.effect_color = eval_effect_color(effect, t);
-    resolved.effect_opacity = (float)std::clamp(
-        effect.opacity_prop.is_animated() ? effect.opacity_prop.evaluate(t)
-                                          : (double)effect.effect_opacity,
-        0.0, 1.0);
-    resolved.effect_size = (float)std::max(
-        0.0, effect.size_prop.is_animated() ? effect.size_prop.evaluate(t)
-                                            : (double)effect.effect_size);
-    resolved.effect_distance = (float)std::max(
-        0.0, effect.distance_prop.is_animated() ? effect.distance_prop.evaluate(t)
-                                                : (double)effect.effect_distance);
-    resolved.effect_angle = (float)(effect.angle_prop.is_animated()
-        ? effect.angle_prop.evaluate(t) : (double)effect.effect_angle);
-    resolved.effect_spread = (float)std::max(
-        0.0, effect.spread_prop.is_animated() ? effect.spread_prop.evaluate(t)
-                                              : (double)effect.effect_spread);
-    resolved.effect_falloff = (float)std::max(
-        0.0, effect.falloff_prop.is_animated() ? effect.falloff_prop.evaluate(t)
-                                               : (double)effect.effect_falloff);
-    resolved.effect_stroke_width = (float)std::max(0.0,
-        effect.stroke_width_prop.is_animated() ? effect.stroke_width_prop.evaluate(t)
-                                                : (double)effect.effect_stroke_width);
-    resolved.effect_stroke_opacity = (float)std::clamp(
-        effect.stroke_opacity_prop.is_animated() ? effect.stroke_opacity_prop.evaluate(t)
-                                                  : (double)effect.effect_stroke_opacity,
-        0.0, 1.0);
-    resolved.effect_padding_left = static_cast<float>(
-        effect.padding_left_prop.is_animated() ? effect.padding_left_prop.evaluate(t)
-                                                : static_cast<double>(effect.effect_padding_left));
-    resolved.effect_padding_right = static_cast<float>(
-        effect.padding_right_prop.is_animated() ? effect.padding_right_prop.evaluate(t)
-                                                 : static_cast<double>(effect.effect_padding_right));
-    resolved.effect_padding_top = static_cast<float>(
-        effect.padding_top_prop.is_animated() ? effect.padding_top_prop.evaluate(t)
-                                               : static_cast<double>(effect.effect_padding_top));
-    resolved.effect_padding_bottom = static_cast<float>(
-        effect.padding_bottom_prop.is_animated() ? effect.padding_bottom_prop.evaluate(t)
-                                                  : static_cast<double>(effect.effect_padding_bottom));
-    resolved.effect_corner_radius_tl = (float)std::max(0.0,
-        effect.corner_radius_tl_prop.is_animated() ? effect.corner_radius_tl_prop.evaluate(t)
-                                                    : (double)effect.effect_corner_radius_tl);
-    resolved.effect_corner_radius_tr = (float)std::max(0.0,
-        effect.corner_radius_tr_prop.is_animated() ? effect.corner_radius_tr_prop.evaluate(t)
-                                                    : (double)effect.effect_corner_radius_tr);
-    resolved.effect_corner_radius_br = (float)std::max(0.0,
-        effect.corner_radius_br_prop.is_animated() ? effect.corner_radius_br_prop.evaluate(t)
-                                                    : (double)effect.effect_corner_radius_br);
-    resolved.effect_corner_radius_bl = (float)std::max(0.0,
-        effect.corner_radius_bl_prop.is_animated() ? effect.corner_radius_bl_prop.evaluate(t)
-                                                    : (double)effect.effect_corner_radius_bl);
-    resolved.effect_stroke_color = eval_effect_stroke_color(effect, t);
-    resolved.effect_secondary_color = eval_effect_secondary_color(effect, t);
-    resolved.effect_amount = (float)std::max(0.0, effect.amount_prop.is_animated() ? effect.amount_prop.evaluate(t) : (double)effect.effect_amount);
-    resolved.effect_scale = (float)std::max(0.001, effect.scale_prop.is_animated() ? effect.scale_prop.evaluate(t) : (double)effect.effect_scale);
-    resolved.effect_softness = (float)std::clamp(effect.softness_prop.is_animated() ? effect.softness_prop.evaluate(t) : (double)effect.effect_softness, 0.0, 1.0);
-    resolved.effect_roundness = (float)std::clamp(effect.roundness_prop.is_animated() ? effect.roundness_prop.evaluate(t) : (double)effect.effect_roundness, -1.0, 1.0);
-    resolved.effect_speed = (float)(effect.speed_prop.is_animated() ? effect.speed_prop.evaluate(t) : (double)effect.effect_speed);
-    resolved.effect_center_x = (float)(effect.center_x_prop.is_animated() ? effect.center_x_prop.evaluate(t) : (double)effect.effect_center_x);
-    resolved.effect_center_y = (float)(effect.center_y_prop.is_animated() ? effect.center_y_prop.evaluate(t) : (double)effect.effect_center_y);
-    resolved.effect_complexity = (float)std::clamp(effect.complexity_prop.is_animated() ? effect.complexity_prop.evaluate(t) : (double)effect.effect_complexity, 1.0, 12.0);
-    resolved.effect_evolution = (float)(effect.evolution_prop.is_animated() ? effect.evolution_prop.evaluate(t) : (double)effect.effect_evolution);
-    resolved.effect_gradient_start_pos = static_cast<float>(std::clamp(
-        effect.gradient_start_pos_prop.is_animated() ? effect.gradient_start_pos_prop.evaluate(t)
-                                                     : static_cast<double>(effect.effect_gradient_start_pos),
-        0.0, 1.0));
-    resolved.effect_gradient_end_pos = static_cast<float>(std::clamp(
-        effect.gradient_end_pos_prop.is_animated() ? effect.gradient_end_pos_prop.evaluate(t)
-                                                   : static_cast<double>(effect.effect_gradient_end_pos),
-        0.0, 1.0));
-    resolved.effect_gradient_start_opacity = static_cast<float>(std::clamp(
-        effect.gradient_start_opacity_prop.is_animated() ? effect.gradient_start_opacity_prop.evaluate(t)
-                                                         : static_cast<double>(effect.effect_gradient_start_opacity),
-        0.0, 1.0));
-    resolved.effect_gradient_end_opacity = static_cast<float>(std::clamp(
-        effect.gradient_end_opacity_prop.is_animated() ? effect.gradient_end_opacity_prop.evaluate(t)
-                                                       : static_cast<double>(effect.effect_gradient_end_opacity),
-        0.0, 1.0));
-    resolved.effect_gradient_angle = static_cast<float>(
-        effect.gradient_angle_prop.is_animated() ? effect.gradient_angle_prop.evaluate(t)
-                                                  : static_cast<double>(effect.effect_gradient_angle));
-    resolved.effect_gradient_center_x = static_cast<float>(
-        effect.gradient_center_x_prop.is_animated() ? effect.gradient_center_x_prop.evaluate(t)
-                                                     : static_cast<double>(effect.effect_gradient_center_x));
-    resolved.effect_gradient_center_y = static_cast<float>(
-        effect.gradient_center_y_prop.is_animated() ? effect.gradient_center_y_prop.evaluate(t)
-                                                     : static_cast<double>(effect.effect_gradient_center_y));
-    resolved.effect_gradient_scale = static_cast<float>(std::max(
-        0.001, effect.gradient_scale_prop.is_animated() ? effect.gradient_scale_prop.evaluate(t)
-                                                         : static_cast<double>(effect.effect_gradient_scale)));
-    resolved.effect_gradient_focal_x = static_cast<float>(
-        effect.gradient_focal_x_prop.is_animated() ? effect.gradient_focal_x_prop.evaluate(t)
-                                                    : static_cast<double>(effect.effect_gradient_focal_x));
-    resolved.effect_gradient_focal_y = static_cast<float>(
-        effect.gradient_focal_y_prop.is_animated() ? effect.gradient_focal_y_prop.evaluate(t)
-                                                    : static_cast<double>(effect.effect_gradient_focal_y));
-    resolved.effect_gradient_opacity = static_cast<float>(std::clamp(
-        effect.gradient_opacity_prop.is_animated() ? effect.gradient_opacity_prop.evaluate(t)
-                                                    : static_cast<double>(effect.effect_gradient_opacity),
-        0.0, 1.0));
-    resolved.effect_gradient_start_color = eval_effect_gradient_start_color(effect, t);
-    resolved.effect_gradient_end_color = eval_effect_gradient_end_color(effect, t);
-    return resolved;
+    return resolve_layer_effect(effect, t);
+}
+
+static bool video_effects_can_use_direct_gpu_base_raster(const Layer &layer, double title_time)
+{
+    if (layer.type != LayerType::Video)
+        return false;
+    const double t = std::max(0.0, title_time - layer.in_time);
+    for (const LayerEffect &effect : layer.effects) {
+        if (!eval_effect_enabled(effect, t))
+            continue;
+        switch (effect.type) {
+        case LayerEffectType::BrightnessContrast:
+        case LayerEffectType::Saturation:
+        case LayerEffectType::ColorOverlay:
+        case LayerEffectType::Vignette:
+        case LayerEffectType::Noise:
+        case LayerEffectType::Grain:
+        case LayerEffectType::FilmDistortion:
+        case LayerEffectType::AnalogDistortion:
+        case LayerEffectType::DigitalDistortion:
+        case LayerEffectType::Sharpen:
+        case LayerEffectType::UnsharpMask:
+        case LayerEffectType::HighPass:
+        case LayerEffectType::Clarity:
+        case LayerEffectType::BilateralSharpen:
+        case LayerEffectType::LensDistortion:
+        case LayerEffectType::ChromaticAberration:
+        case LayerEffectType::Ripple:
+        case LayerEffectType::WaveWarp:
+        case LayerEffectType::Pixelate:
+        case LayerEffectType::EdgeDetect:
+        case LayerEffectType::Posterize:
+        case LayerEffectType::Threshold:
+        case LayerEffectType::Scanlines:
+        case LayerEffectType::ChromaKey:
+        case LayerEffectType::LumaKey:
+        case LayerEffectType::ColorRange:
+        case LayerEffectType::SpillSuppression:
+        case LayerEffectType::MatteChoker:
+        case LayerEffectType::DisplacementMap:
+            break;
+        default:
+            /* Expanding effects such as Blur/Glow/Drop Shadow/Light Wrap still
+             * need the padded compatibility surface so their tails are not
+             * clipped. */
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool layer_can_use_direct_gpu_image_raster(const Layer &layer,
                                                    double title_time,
                                                    int transition_blur_padding)
 {
-    if (layer.type != LayerType::Image ||
-        effective_external_string(layer, ExternalPropertyPaths::ImagePath, layer.image_path).empty())
+    if (layer.type == LayerType::Image) {
+        if (effective_external_string(layer, ExternalPropertyPaths::ImagePath, layer.image_path).empty())
+            return false;
+    } else if (layer.type == LayerType::Video) {
+        if (layer.video_source.empty())
+            return false;
+    } else {
         return false;
-    if (transition_blur_padding > 0 || layer_has_stackable_pixel_effects(layer))
+    }
+    if (transition_blur_padding > 0)
+        return false;
+    if (layer_has_any_gpu_pixel_effects(layer) &&
+        !video_effects_can_use_direct_gpu_base_raster(layer, title_time))
         return false;
 
     const double t = std::max(0.0, title_time - layer.in_time);
@@ -368,7 +324,7 @@ static bool layer_can_use_gpu_primitive_raster(const Layer &layer,
     const ShadowRenderParams shadow = evaluated_shadow_params(layer, local_time);
     if (shadow.drop_enabled || shadow.long_enabled ||
         eval_background_enabled(layer, local_time) ||
-        layer_has_stackable_pixel_effects(layer))
+        layer_has_any_gpu_pixel_effects(layer))
         return false;
 
     const bool has_stroke = layer_has_visible_outline(layer, local_time);
@@ -427,11 +383,17 @@ static bool direct_gpu_image_geometry(const Layer &layer, double title_time,
     double image_w = eval_image_width(layer, t);
     double image_h = eval_image_height(layer, t);
     if (image_w <= 0.0 || image_h <= 0.0) {
-        const QSize intrinsic_size = image_intrinsic_size(image_path);
-        if (!intrinsic_size.isValid() || intrinsic_size.isEmpty())
-            return false;
-        image_w = intrinsic_size.width();
-        image_h = intrinsic_size.height();
+        if (layer.type == LayerType::Video &&
+            layer.video_pixel_width > 0 && layer.video_pixel_height > 0) {
+            image_w = layer.video_pixel_width;
+            image_h = layer.video_pixel_height;
+        } else {
+            const QSize intrinsic_size = image_intrinsic_size(image_path);
+            if (!intrinsic_size.isValid() || intrinsic_size.isEmpty())
+                return false;
+            image_w = intrinsic_size.width();
+            image_h = intrinsic_size.height();
+        }
     }
 
     const ImageBoxLayout layout = image_box_layout_for_layer(
@@ -471,13 +433,27 @@ static MotionBaseRaster render_gpu_image_layer_base_raster_direct(
     const QSize sample_size(
         std::clamp(static_cast<int>(std::ceil(logical_width * resolved_scale)), 1, max_sample_dim),
         std::clamp(static_cast<int>(std::ceil(logical_height * resolved_scale)), 1, max_sample_dim));
-    QImage raster = load_cached_layer_image(image_path, sample_size);
+    QImage raster;
+    if (layer.type == LayerType::Video) {
+        const bgl::video::VideoFrame frame =
+            bgl::video::FrameRuntime::instance().frame_for_layer(
+                layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()));
+        raster = frame.image;
+    } else {
+        raster = load_cached_layer_image(image_path, sample_size);
+    }
     if (raster.isNull() || raster.width() <= 0 || raster.height() <= 0)
         return result;
 
     if (raster.format() != QImage::Format_ARGB32_Premultiplied)
         raster = raster.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    if (!image_path_is_svg(image_path) && resolved_scale < 0.999) {
+    if (layer.type == LayerType::Video) {
+        if (resolved_scale < 0.999 && sample_size.isValid() && !sample_size.isEmpty() &&
+            sample_size != raster.size()) {
+            raster = raster.scaled(sample_size, Qt::IgnoreAspectRatio,
+                                   Qt::FastTransformation);
+        }
+    } else if (!image_path_is_svg(image_path) && resolved_scale < 0.999) {
         raster = raster.scaled(sample_size, Qt::IgnoreAspectRatio,
                                Qt::FastTransformation);
     }
@@ -499,14 +475,16 @@ static MotionBaseRaster render_gpu_image_layer_base_raster_direct(
 static MotionBaseRaster render_gpu_layer_base_raster(const Title &title,
                                                        const Layer &layer,
                                                        double title_time,
-                                                       double raster_scale = 1.0)
+                                                       double raster_scale = 1.0,
+                                                       bool scene_mask_placeholder_preview = false)
 {
     MotionBaseRaster result;
     const int canvas_w = std::max(1, title.width);
     const int canvas_h = std::max(1, title.height);
     const double local_time = std::max(0.0, title_time - layer.in_time);
     const int transition_blur_padding = general_transition_blur_padding(layer);
-    if (layer_can_use_direct_gpu_image_raster(layer, title_time,
+    if (!(layer.use_as_scene_mask && scene_mask_placeholder_preview) &&
+        layer_can_use_direct_gpu_image_raster(layer, title_time,
                                               transition_blur_padding)) {
         return render_gpu_image_layer_base_raster_direct(title, layer,
                                                          title_time, raster_scale);
@@ -547,6 +525,8 @@ static MotionBaseRaster render_gpu_layer_base_raster(const Title &title,
         base_layer.transitions.end());
     neutralize_layer_transform_for_effect_cache(base_layer, 1.0, 0.0, 0.0);
     ScopedGpuReadbackContract no_intermediate_readback(GpuReadbackContract::FinalFrameOnly);
+    ScopedSceneMaskPlaceholderPreview scene_mask_preview_scope(
+        base_layer.use_as_scene_mask && scene_mask_placeholder_preview);
     render_layer_unmasked(layer_cr.get(), title, base_layer, title_time,
                           canvas_w, canvas_h);
     layer_cr.reset();
@@ -910,7 +890,7 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
 
 static void set_gpu_effect_argb(gs_effect_t *effect, const char *name, uint32_t argb)
 {
-    gs_eparam_t *param = effect ? gs_effect_get_param_by_name(effect, name) : nullptr;
+    gs_eparam_t *param = effect ? bgl_effect_param(effect, name) : nullptr;
     if (!param) return;
     struct vec4 color;
     vec4_set(&color, ((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
@@ -944,8 +924,11 @@ static bool render_gpu_text_raster(
     if (!session || !session->text_renderer || !entry.text_layer)
         return false;
     if (session->text_backend_unavailable) {
+        entry.gpu_text = false;
+        entry.pending_upload = false;
         entry.key.clear();
-        return false;
+        session->force_compatibility_raster_rebuild = true;
+        return entry.texture != nullptr;
     }
 
     gs_texture_t *old_texture = entry.texture;
@@ -954,19 +937,40 @@ static bool render_gpu_text_raster(
     const bool old_primitive_targets =
         entry.primitive_targets[0] || entry.primitive_targets[1];
     if (!session->text_renderer->render(*entry.text_layer)) {
-        if (!session->text_renderer->backend_available())
-            session->text_backend_unavailable = true;
+        /* Any Phase 12C draw failure is optional. Route the session back to
+         * the stable CPU text raster on the next model refresh and retain the
+         * last valid texture, if one exists. Most importantly, do not leave a
+         * pending GPU raster that blocks transactional first-frame
+         * publication indefinitely. */
+        session->text_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_text = false;
+        entry.pending_upload = false;
         entry.key.clear();
         entry.effect_cache_key.clear();
         if (const char *error = session->text_renderer->last_error())
             session->last_error = error;
-        return false;
+        BGL_LOG_WARNING("GpuText", QStringLiteral(
+            "stage=runtime-fallback reason=%1 retainedTexture=%2")
+            .arg(session->last_error
+                     ? QString::fromUtf8(session->last_error)
+                     : QStringLiteral("unknown GPU text failure"))
+            .arg(entry.texture ? 1 : 0));
+        return entry.texture != nullptr;
     }
 
     gs_texture_t *rendered =
         session->text_renderer->texture(*entry.text_layer);
-    if (!rendered)
-        return false;
+    if (!rendered) {
+        session->text_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_text = false;
+        entry.pending_upload = false;
+        entry.key.clear();
+        entry.effect_cache_key.clear();
+        session->last_error = "GPU text rendering returned no texture; falling back to the compatibility raster.";
+        return entry.texture != nullptr;
+    }
 
     if (old_primitive_targets) {
         for (gs_texrender_t *&target : entry.primitive_targets) {
@@ -996,8 +1000,11 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
     if (!session)
         return false;
     if (session->primitive_backend_unavailable) {
+        entry.gpu_primitive = false;
+        entry.pending_upload = false;
         entry.key.clear();
-        return false;
+        session->force_compatibility_raster_rebuild = true;
+        return entry.texture != nullptr;
     }
     if (entry.text_layer)
         release_gpu_text_layer(session, entry);
@@ -1010,10 +1017,13 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
             "obs-bgs-gpu-primitive-shape.effect", nullptr);
     if (!session->primitive_shape_effect) {
         session->primitive_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_primitive = false;
+        entry.pending_upload = false;
         entry.key.clear();
         entry.effect_cache_key.clear();
         session->last_error = "Could not compile optional GPU primitive-shape shader; falling back to the stable base raster.";
-        return false;
+        return entry.texture != nullptr;
     }
     const bool replacing_owned_cpu_texture = entry.texture &&
         !entry.primitive_targets[0] && !entry.primitive_targets[1];
@@ -1034,25 +1044,37 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
     gs_texrender_t *&render_target = entry.primitive_targets[render_index];
     if (!render_target)
         render_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-    if (!render_target)
-        return false;
+    if (!render_target) {
+        session->primitive_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_primitive = false;
+        entry.pending_upload = false;
+        entry.key.clear();
+        return entry.texture != nullptr;
+    }
 
     struct vec4 clear;
     vec4_zero(&clear);
-    if (!begin_gpu_target(render_target, width, height, clear))
-        return false;
+    if (!begin_gpu_target(render_target, width, height, clear)) {
+        session->primitive_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_primitive = false;
+        entry.pending_upload = false;
+        entry.key.clear();
+        return entry.texture != nullptr;
+    }
     gs_effect_t *effect = session->primitive_shape_effect;
-    if (auto *p = gs_effect_get_param_by_name(effect, "shapeType")) gs_effect_set_int(p, entry.primitive_shape_type);
-    if (auto *p = gs_effect_get_param_by_name(effect, "vertexCount")) gs_effect_set_int(p, entry.primitive_vertex_count);
-    if (auto *p = gs_effect_get_param_by_name(effect, "starInnerRadius")) gs_effect_set_float(p, entry.primitive_inner_radius);
-    if (auto *p = gs_effect_get_param_by_name(effect, "starOuterRadius")) gs_effect_set_float(p, entry.primitive_outer_radius);
-    if (auto *p = gs_effect_get_param_by_name(effect, "strokeWidth")) gs_effect_set_float(p, entry.primitive_stroke_width);
-    if (auto *p = gs_effect_get_param_by_name(effect, "strokeAlignment")) gs_effect_set_int(p, entry.primitive_stroke_alignment);
-    if (auto *p = gs_effect_get_param_by_name(effect, "strokeOnFront")) gs_effect_set_int(p, entry.primitive_stroke_on_front ? 1 : 0);
-    if (auto *p = gs_effect_get_param_by_name(effect, "surfaceSize")) { struct vec2 v; vec2_set(&v,(float)entry.logical_width,(float)entry.logical_height); gs_effect_set_vec2(p,&v); }
-    if (auto *p = gs_effect_get_param_by_name(effect, "shapeSize")) { struct vec2 v; vec2_set(&v,(float)entry.primitive_shape_width,(float)entry.primitive_shape_height); gs_effect_set_vec2(p,&v); }
-    if (auto *p = gs_effect_get_param_by_name(effect, "shapeOffset")) { struct vec2 v; vec2_set(&v,(float)entry.primitive_padding,(float)entry.primitive_padding); gs_effect_set_vec2(p,&v); }
-    if (auto *p = gs_effect_get_param_by_name(effect, "cornerRadii")) { struct vec4 v; vec4_set(&v,entry.primitive_corner_radii[0],entry.primitive_corner_radii[1],entry.primitive_corner_radii[2],entry.primitive_corner_radii[3]); gs_effect_set_vec4(p,&v); }
+    if (auto *p = bgl_effect_param(effect, "shapeType")) gs_effect_set_int(p, entry.primitive_shape_type);
+    if (auto *p = bgl_effect_param(effect, "vertexCount")) gs_effect_set_int(p, entry.primitive_vertex_count);
+    if (auto *p = bgl_effect_param(effect, "starInnerRadius")) gs_effect_set_float(p, entry.primitive_inner_radius);
+    if (auto *p = bgl_effect_param(effect, "starOuterRadius")) gs_effect_set_float(p, entry.primitive_outer_radius);
+    if (auto *p = bgl_effect_param(effect, "strokeWidth")) gs_effect_set_float(p, entry.primitive_stroke_width);
+    if (auto *p = bgl_effect_param(effect, "strokeAlignment")) gs_effect_set_int(p, entry.primitive_stroke_alignment);
+    if (auto *p = bgl_effect_param(effect, "strokeOnFront")) gs_effect_set_int(p, entry.primitive_stroke_on_front ? 1 : 0);
+    if (auto *p = bgl_effect_param(effect, "surfaceSize")) { struct vec2 v; vec2_set(&v,(float)entry.logical_width,(float)entry.logical_height); gs_effect_set_vec2(p,&v); }
+    if (auto *p = bgl_effect_param(effect, "shapeSize")) { struct vec2 v; vec2_set(&v,(float)entry.primitive_shape_width,(float)entry.primitive_shape_height); gs_effect_set_vec2(p,&v); }
+    if (auto *p = bgl_effect_param(effect, "shapeOffset")) { struct vec2 v; vec2_set(&v,(float)entry.primitive_padding,(float)entry.primitive_padding); gs_effect_set_vec2(p,&v); }
+    if (auto *p = bgl_effect_param(effect, "cornerRadii")) { struct vec4 v; vec4_set(&v,entry.primitive_corner_radii[0],entry.primitive_corner_radii[1],entry.primitive_corner_radii[2],entry.primitive_corner_radii[3]); gs_effect_set_vec4(p,&v); }
     set_gpu_effect_argb(effect, "fillColor", entry.primitive_fill_color);
     set_gpu_effect_argb(effect, "strokeColor", entry.primitive_stroke_color);
     gs_enable_blending(false);
@@ -1061,8 +1083,14 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
     gs_texrender_end(render_target);
 
     gs_texture_t *rendered = gs_texrender_get_texture(render_target);
-    if (!rendered)
-        return false;
+    if (!rendered) {
+        session->primitive_backend_unavailable = true;
+        session->force_compatibility_raster_rebuild = true;
+        entry.gpu_primitive = false;
+        entry.pending_upload = false;
+        entry.key.clear();
+        return entry.texture != nullptr;
+    }
     entry.primitive_active_target = render_index;
     entry.texture = rendered;
     if (owned_cpu_texture)
@@ -1196,13 +1224,20 @@ static bool effect_uses_separable_gaussian(LayerEffectType type)
     case LayerEffectType::InnerShadow:
     case LayerEffectType::Blur:
     case LayerEffectType::Bloom:
+    case LayerEffectType::Halation:
+    case LayerEffectType::Glare:
+    case LayerEffectType::Sharpen:
+    case LayerEffectType::UnsharpMask:
+    case LayerEffectType::HighPass:
+    case LayerEffectType::Clarity:
+    case LayerEffectType::BilateralSharpen:
         return true;
     default:
         return false;
     }
 }
 
-static double effect_gaussian_radius(const LayerEffect &effect)
+static double effect_gaussian_radius(const ResolvedLayerEffect &effect)
 {
     switch (effect.type) {
     case LayerEffectType::DropShadow:
@@ -1253,7 +1288,7 @@ static gs_texture_t *render_separable_gaussian(
         gs_texrender_t *target = next_is_a ? session->blur_a : session->blur_b;
         if (!begin_gpu_target(target, next_width, next_height, clear))
             return source;
-        if (gs_eparam_t *image = gs_effect_get_param_by_name(blur, "image"))
+        if (gs_eparam_t *image = bgl_effect_param(blur, "image"))
             gs_effect_set_texture(image, current);
         set_effect_vec2_param(blur, "texelSize",
                               1.0f / static_cast<float>(current_width),
@@ -1276,7 +1311,7 @@ static gs_texture_t *render_separable_gaussian(
 
     auto configure_gaussian = [&](gs_texture_t *input, float dx, float dy,
                                   int active_prefilter) {
-        if (gs_eparam_t *image = gs_effect_get_param_by_name(blur, "image"))
+        if (gs_eparam_t *image = bgl_effect_param(blur, "image"))
             gs_effect_set_texture(image, input);
         set_effect_vec2_param(blur, "texelSize",
                               1.0f / static_cast<float>(current_width),
@@ -1321,7 +1356,7 @@ static gs_texture_t *render_separable_gaussian(
 
 static gs_texture_t *render_long_shadow_mask(
     TitleGpuRenderSession *session, gs_effect_t *effect,
-    const LayerEffect &resolved, gs_texture_t *source,
+    const ResolvedLayerEffect &resolved, gs_texture_t *source,
     uint32_t width, uint32_t height)
 {
     if (!session || !effect || !source)
@@ -1330,7 +1365,7 @@ static gs_texture_t *render_long_shadow_mask(
     vec4_zero(&clear);
     if (!begin_gpu_target(session->blur_a, width, height, clear))
         return source;
-    if (gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image"))
+    if (gs_eparam_t *image = bgl_effect_param(effect, "image"))
         gs_effect_set_texture(image, source);
     set_gpu_surface_effect_params(effect, resolved,
                                   static_cast<int>(width),

@@ -689,6 +689,51 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
     emit gradient_model_refresh_requested();
 }
 
+
+void PropertiesPanel::refresh_media_range_controls()
+{
+    if (!layer_ || loading_values_)
+        return;
+
+    QScopedValueRollback<bool> loading_guard(loading_values_, true);
+    auto set_double = [](QDoubleSpinBox *spin, double value) {
+        if (!spin || !std::isfinite(value))
+            return;
+        if (std::abs(spin->value() - value) < 0.000001)
+            return;
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+    };
+
+    if (layer_->type == LayerType::Video) {
+        set_double(spn_video_in_, layer_->video_in_point);
+        set_double(spn_video_out_, layer_->video_out_point);
+        return;
+    }
+
+    if (layer_->type == LayerType::Audio) {
+        set_double(spn_audio_in_, layer_->audio_in_point);
+        set_double(spn_audio_out_, layer_->audio_out_point);
+        const double clip_span = std::max(0.0, layer_->out_time - layer_->in_time);
+        const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0, clip_span);
+        const double media_at_playhead = layer_->audio_in_point + clip_local;
+        const bool inside = playhead_ >= layer_->in_time && playhead_ <= layer_->out_time;
+        if (lbl_audio_range_preview_) {
+            lbl_audio_range_preview_->setText(QStringLiteral(
+                "Preview In %1 s  |  Out %2 s  |  Strip %3 s")
+                .arg(layer_->audio_in_point, 0, 'f', 2)
+                .arg(layer_->audio_out_point, 0, 'f', 2)
+                .arg(clip_span, 0, 'f', 2));
+        }
+        if (lbl_audio_range_feedback_) {
+            lbl_audio_range_feedback_->setText(QStringLiteral("%1 · range length follows strip · media %2 s")
+                .arg(inside ? QStringLiteral("Inside") : QStringLiteral("Outside"))
+                .arg(media_at_playhead, 0, 'f', 2));
+            lbl_audio_range_feedback_->setProperty("insideRange", inside);
+        }
+    }
+}
+
 void PropertiesPanel::update_playhead(double t)
 {
     playhead_ = t;
@@ -702,7 +747,7 @@ void PropertiesPanel::update_playhead(double t)
     const bool is_clock = layer_->type == LayerType::Clock;
     const bool is_ticker = layer_->type == LayerType::Ticker;
     const bool is_text_like = is_text || is_clock || is_ticker;
-    const bool is_image = layer_->type == LayerType::Image;
+    const bool is_image = layer_type_is_image_like(layer_->type);
     const bool is_rect = layer_type_uses_shape_geometry(layer_->type);
 
     auto set_double = [](QDoubleSpinBox *spin, double value) {
@@ -820,10 +865,15 @@ void PropertiesPanel::update_playhead(double t)
         double raw_w = eval_image_width(*layer_, lt);
         double raw_h = eval_image_height(*layer_, lt);
         if (raw_w <= 0.0 || raw_h <= 0.0) {
-            const QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
-            if (intrinsic.isValid() && !intrinsic.isEmpty()) {
-                raw_w = intrinsic.width();
-                raw_h = intrinsic.height();
+            if (layer_->type == LayerType::Video) {
+                raw_w = layer_->video_pixel_width;
+                raw_h = layer_->video_pixel_height;
+            } else {
+                const QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
+                if (intrinsic.isValid() && !intrinsic.isEmpty()) {
+                    raw_w = intrinsic.width();
+                    raw_h = intrinsic.height();
+                }
             }
         }
         const bgs::ImageDisplaySize display = bgs::calculate_image_display_size(
@@ -950,6 +1000,7 @@ void PropertiesPanel::load_values()
     loading_values_ = true;
     if (!layer_) {
         if (transform_box_) transform_box_->setVisible(false);
+        if (video_box_) video_box_->setVisible(false);
         if (audio_box_) audio_box_->setVisible(false);
         if (asset_box_) asset_box_->setVisible(false);
         if (appearance_box_) appearance_box_->setVisible(false);
@@ -1137,18 +1188,45 @@ void PropertiesPanel::load_values()
     const bool is_rect = layer_->type == LayerType::SolidRect ||
                          layer_->type == LayerType::Shape ||
                          is_transition_input || is_color_solid;
-    const bool is_image = layer_->type == LayerType::Image;
+    const bool is_image = layer_type_is_image_like(layer_->type);
     const bool is_asset = layer_->type == LayerType::Asset;
     const bool is_audio = layer_->type == LayerType::Audio;
+    const bool is_video = layer_->type == LayerType::Video;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
     const bool supports_outline = is_text_like || is_rect || is_image;
     if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer && !is_audio);
+    if (video_box_) video_box_->setVisible(is_video);
     if (audio_box_) audio_box_->setVisible(is_audio);
     if (asset_box_) asset_box_->setVisible(is_asset);
+    if (is_video) {
+        normalize_layer_media_range_to_timeline_span(*layer_, false);
+        if (spn_video_in_) spn_video_in_->setValue(layer_->video_in_point);
+        if (spn_video_out_) spn_video_out_->setValue(layer_->video_out_point);
+    }
     if (is_audio) {
+        normalize_layer_media_range_to_timeline_span(*layer_, false);
         if (edt_audio_source_) edt_audio_source_->setText(QString::fromStdString(layer_->audio_source));
         if (spn_audio_in_) spn_audio_in_->setValue(layer_->audio_in_point);
         if (spn_audio_out_) spn_audio_out_->setValue(layer_->audio_out_point);
+        const double clip_span = std::max(0.0, layer_->out_time - layer_->in_time);
+        const double media_out = layer_->audio_out_point;
+        const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0, clip_span);
+        const double media_at_playhead = layer_->audio_in_point + clip_local;
+        const bool inside = playhead_ >= layer_->in_time && playhead_ <= layer_->out_time;
+        if (lbl_audio_range_preview_) {
+            lbl_audio_range_preview_->setText(QStringLiteral(
+                "Preview In %1 s  |  Out %2 s  |  Strip %3 s")
+                .arg(layer_->audio_in_point, 0, 'f', 2)
+                .arg(media_out, 0, 'f', 2)
+                .arg(clip_span, 0, 'f', 2));
+        }
+        if (lbl_audio_range_feedback_) {
+            lbl_audio_range_feedback_->setText(QStringLiteral(
+                "%1 · range length follows strip · media %2 s")
+                .arg(inside ? QStringLiteral("Inside") : QStringLiteral("Outside"))
+                .arg(media_at_playhead, 0, 'f', 2));
+            lbl_audio_range_feedback_->setProperty("insideRange", inside);
+        }
         const double audio_local_time = std::clamp(playhead_ - layer_->in_time, 0.0,
             std::max(0.0, layer_->out_time - layer_->in_time));
         const double volume_value = layer_->audio_volume_prop.evaluate(audio_local_time) * 100.0;
@@ -1370,7 +1448,7 @@ void PropertiesPanel::load_values()
     }
     if (auto *live_form = qobject_cast<QFormLayout *>(live_edit_box_ ? live_edit_box_->layout() : nullptr)) {
         const bool show_scene_mask = is_rect || is_text_like;
-        const bool show_expose_to_dock = is_text || is_ticker || is_image;
+        const bool show_expose_to_dock = is_text || is_ticker || layer_->type == LayerType::Image;
         const bool show_exposed_options = show_expose_to_dock && layer_->expose_text;
         const bool show_ignore_persistence = true;
         if (chk_scene_mask_) {

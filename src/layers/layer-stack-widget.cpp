@@ -16,6 +16,7 @@ using LayerPtr = std::shared_ptr<Layer>;
 constexpr int kLayerListMargin = 4;
 constexpr int kLayerListSpacing = 4;
 constexpr int kLayerVisibilityWidth = 20;
+constexpr int kLayerAudioMuteWidth = 20;
 constexpr int kLayerLockWidth = 20;
 constexpr int kLayerExpandWidth = 18;
 constexpr int kLayerIndexWidth = 24;
@@ -32,7 +33,7 @@ constexpr int kLayerDimensionWidth = 54;
 /* Fixed columns + minimum usable layer-name area + layout gaps.  Include
  * extra room for the vertical scrollbar so the splitter can never compress
  * the layer list until controls paint over one another. */
-constexpr int kLayerStackMinimumWidth = 894;
+constexpr int kLayerStackMinimumWidth = 918;
 
 class FxIndicatorButton final : public QToolButton {
 public:
@@ -75,7 +76,8 @@ static LayerMediaKinds layer_media_kinds(const std::shared_ptr<Title> &title,
                                          std::set<std::string> *visiting = nullptr)
 {
     if (layer.type == LayerType::Audio) return {false, true};
-    if (!layer_type_is_container(layer.type)) return {true, false};
+    if (layer.type == LayerType::Video) return {true, true};
+    if (!layer_type_can_have_children(layer.type)) return {true, false};
     std::set<std::string> local;
     if (!visiting) visiting = &local;
     if (!visiting->insert(layer.id).second) return {};
@@ -133,19 +135,20 @@ static QString property_channel_summary(const TimelinePropertyRef &prop,
     return values.join(QStringLiteral("   "));
 }
 
-static bool valid_group_parent(const std::shared_ptr<Title> &title,
-                               const std::string &parent_id)
-{
-    if (!title || parent_id.empty()) return false;
-    const auto parent = title->find_layer(parent_id);
-    return parent && layer_type_is_container(parent->type);
-}
-
 static std::string hierarchy_scope_id(const std::shared_ptr<Title> &title,
                                       const Layer &layer)
 {
-    return valid_group_parent(title, layer.parent_id) ? layer.parent_id
-                                                       : std::string();
+    if (!title || layer.parent_id.empty())
+        return {};
+    const auto parent = title->find_layer(layer.parent_id);
+    if (!parent)
+        return {};
+    if (layer_type_is_container(parent->type))
+        return parent->id;
+    if (parent->type == LayerType::Video && layer.type == LayerType::Audio &&
+        layer.linked_media_stream && layer.linked_media_layer_id == parent->id)
+        return parent->id;
+    return {};
 }
 
 static bool has_group_ancestor(const std::shared_ptr<Title> &title,
@@ -158,7 +161,7 @@ static bool has_group_ancestor(const std::shared_ptr<Title> &title,
     while (!parent_id.empty() && visited.insert(parent_id).second) {
         if (parent_id == candidate_group_id) return true;
         const auto parent = title->find_layer(parent_id);
-        if (!parent || !layer_type_is_container(parent->type)) break;
+        if (!parent || !layer_type_can_have_children(parent->type)) break;
         parent_id = parent->parent_id;
     }
     return false;
@@ -233,7 +236,7 @@ static bool move_layer_within_hierarchy(const std::shared_ptr<Title> &title,
 {
     if (!title || layer_id.empty() || visual_direction == 0) return false;
     const auto layer = title->find_layer(layer_id);
-    if (!layer) return false;
+    if (!layer || layer->linked_media_stream) return false;
 
     std::map<std::string, std::vector<std::string>> visual_orders;
     for (const auto &row : visible_layer_hierarchy_rows(title)) {
@@ -310,18 +313,19 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                                 .arg(disabled_text.name(QColor::HexRgb)));
         ch->addWidget(icon);
     };
-    add_header_icon("visibility-normal.svg", kLayerVisibilityWidth,
-                    bgl_tr("OBSTitles.LayerVisibilityTooltip"));
-    add_header_icon("layer-lock.svg", kLayerLockWidth, bgl_tr("OBSTitles.LockLayerTooltip"));
+    /* Keep switch columns permanent but visually quiet: the layer-list header
+     * should only advertise the editable data columns requested by the user.
+     * Visibility, audio mute, lock, expand, type, FX and matte role remain
+     * fixed-width columns so rows never shift when a Video/Audio/Group row
+     * gains or loses an audio switch. */
+    add_header("", kLayerVisibilityWidth);
+    add_header("", kLayerAudioMuteWidth);
+    add_header("", kLayerLockWidth);
     add_header("", kLayerExpandWidth);
-    add_header("#", kLayerIndexWidth);
-    add_header("T", kLayerTypeWidth);
-    add_header("", kLayerFxWidth); // FX indicator column
-    /* A single role column mirrors AE's track-matte switch area.  The
-     * destination glyph is the column header; rows show source or destination
-     * according to the role of that layer. */
-    add_header_icon("matte-destination.svg", kLayerMatteIndicatorWidth,
-                    bgl_tr("OBSTitles.MatteRoleColumnTooltip"));
+    add_header("", kLayerIndexWidth);
+    add_header("", kLayerTypeWidth);
+    add_header("", kLayerFxWidth);
+    add_header("", kLayerMatteIndicatorWidth);
     QLabel *name = new QLabel(bgl_tr("OBSTitles.LayerNameHeader"), columns);
     name->setMinimumWidth(kLayerNameMinimumWidth);
     name->setStyleSheet(QStringLiteral("color:%1;font-size:10px;font-weight:bold;")
@@ -329,7 +333,7 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     ch->addWidget(name, 1);
     add_header(bgl_tr("OBSTitles.ModeHeader"), kLayerModeWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header(bgl_tr("OBSTitles.ParentHeader"), kLayerParentWidth, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.MaskHeader"), kLayerMaskWidth, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.MatteSourceHeader"), kLayerMaskWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header_icon("matte-alpha.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
     add_header_icon("matte-normal.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
     add_header(QStringLiteral("2D/3D"), kLayerDimensionWidth);
@@ -400,6 +404,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                         bgl_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
     add_menu->addAction(obs_icon("image.svg"),
                         bgl_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
+    add_menu->addAction(obs_icon("video.svg"),
+                        bgl_tr("OBSTitles.Video"), this, &LayerStack::on_add_video);
     add_menu->addAction(obs_icon("audio.svg"),
                         bgl_tr("OBSTitles.Audio"), this, &LayerStack::on_add_audio);
     add_menu->addSeparator();
@@ -855,8 +861,12 @@ void LayerStack::populate()
         auto *item = new QListWidgetItem();
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
         item->setData(Qt::UserRole + 1, "layer");
-        item->setFlags((item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-                        Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled) & ~Qt::ItemIsUserCheckable);
+        Qt::ItemFlags row_flags = item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled;
+        if (!l->linked_media_stream)
+            row_flags |= Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled;
+        else
+            row_flags &= ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+        item->setFlags(row_flags & ~Qt::ItemIsUserCheckable);
         item->setSizeHint(QSize(0, 28));
         list_->addItem(item);
 
@@ -869,13 +879,13 @@ void LayerStack::populate()
         const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
         auto make_toggle = [&](const char *on_icon, const char *off_icon, bool checked,
-                               const QString &tip) {
+                               const QString &tip, int fixed_width = kLayerVisibilityWidth) {
             auto *btn = new QToolButton(row_widget);
             btn->setCheckable(true);
             btn->setChecked(checked);
             btn->setIcon(obs_icon(checked ? on_icon : off_icon));
             btn->setToolTip(tip);
-            btn->setFixedSize(kLayerVisibilityWidth, 20);
+            btn->setFixedSize(fixed_width, 20);
             btn->setIconSize(QSize(14, 14));
             btn->setAutoRaise(true);
             btn->setStyleSheet(button_style);
@@ -885,19 +895,25 @@ void LayerStack::populate()
             hl->addWidget(btn);
             return btn;
         };
+        auto add_empty_switch_column = [&](int fixed_width) {
+            auto *btn = new QToolButton(row_widget);
+            btn->setFixedSize(fixed_width, 20);
+            btn->setIconSize(QSize(14, 14));
+            btn->setAutoRaise(true);
+            btn->setEnabled(false);
+            btn->setStyleSheet(button_style);
+            hl->addWidget(btn);
+            return btn;
+        };
 
         const LayerMediaKinds media_kinds = layer_media_kinds(title_, *l);
         const bool is_audio_layer = l->type == LayerType::Audio;
-        const bool is_group_layer = layer_type_is_container(l->type);
+        const bool is_group_layer = layer_type_can_have_children(l->type);
 
         QToolButton *vis = nullptr;
         if (is_audio_layer) {
-            vis = make_toggle("sound.svg", "sound-mute.svg", !l->audio_muted,
-                              bgl_tr("OBSTitles.AudioMuteTooltip"));
-            connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool audible) {
-                list_->setCurrentItem(item);
-                emit layer_audio_mute_changed(id, !audible);
-            });
+            vis = add_empty_switch_column(kLayerVisibilityWidth);
+            vis->setToolTip(bgl_tr("OBSTitles.AudioHasNoPictureTooltip"));
         } else if (is_mask_object) {
             vis = new QToolButton(row_widget);
             vis->setCheckable(false);
@@ -942,14 +958,17 @@ void LayerStack::populate()
             });
         }
 
-        if (is_group_layer && media_kinds.audio) {
+        if (media_kinds.audio) {
             auto *audio_toggle = make_toggle("sound.svg", "sound-mute.svg", !l->audio_muted,
-                                             bgl_tr("OBSTitles.AudioMuteTooltip"));
+                                             bgl_tr("OBSTitles.AudioMuteTooltip"),
+                                             kLayerAudioMuteWidth);
             connect(audio_toggle, &QToolButton::toggled, this,
                     [this, id = l->id, item](bool audible) {
                 list_->setCurrentItem(item);
                 emit layer_audio_mute_changed(id, !audible);
             });
+        } else {
+            add_empty_switch_column(kLayerAudioMuteWidth);
         }
 
         QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, bgl_tr("OBSTitles.LockLayerTooltip"));
@@ -959,10 +978,12 @@ void LayerStack::populate()
         });
 
         const bool is_group = l->type == LayerType::Group;
+        const bool is_video = l->type == LayerType::Video;
+        const bool is_expandable_container = is_group || is_video;
         const bool is_asset = l->type == LayerType::Asset;
-        const int group_state = !is_group ? -1
+        const int group_state = !is_expandable_container ? -1
             : (!l->group_collapsed ? 2 : (l->properties_expanded ? 1 : 0));
-        const bool expanded = !is_group && layer_keyframe_sections_expanded(*l);
+        const bool expanded = !is_expandable_container && layer_keyframe_sections_expanded(*l);
         QToolButton *expand = nullptr;
         if (is_asset) {
             expand = new QToolButton(row_widget);
@@ -975,9 +996,9 @@ void LayerStack::populate()
             expand->setStyleSheet(button_style);
         } else {
             auto *caret = new BglCaretButton(row_widget);
-            caret->setCaretState(is_group ? group_state : (expanded ? 2 : 0));
+            caret->setCaretState(is_expandable_container ? group_state : (expanded ? 2 : 0));
             expand = caret;
-            if (is_group) {
+            if (is_expandable_container) {
                 caret->setToolTip(group_state == 0
                     ? bgl_tr("OBSTitles.GroupExpansionClosedTooltip")
                     : group_state == 1
@@ -1354,9 +1375,45 @@ void LayerStack::populate()
         if (!layer_keyframe_sections_expanded(*l)) continue;
 
         for (const auto &timeline_row : shared_timeline_rows) {
-            if (!timeline_row.is_property || timeline_row.owner_id != l->id ||
+            if ((!timeline_row.is_property && !timeline_row.is_effect_group) ||
+                timeline_row.owner_id != l->id ||
                 timeline_row.layer.get() != l.get())
                 continue;
+
+            if (timeline_row.is_effect_group) {
+                auto *effect_item = new QListWidgetItem();
+                effect_item->setData(Qt::UserRole, QString::fromStdString(l->id));
+                effect_item->setData(Qt::UserRole + 1, QStringLiteral("effect_group"));
+                effect_item->setData(Qt::UserRole + 2, timeline_row.owner_label);
+                effect_item->setData(Qt::UserRole + 5, timeline_row.effect_index);
+                effect_item->setFlags(Qt::ItemIsEnabled);
+                effect_item->setSizeHint(QSize(0, 28));
+                list_->addItem(effect_item);
+
+                auto *effect_widget = new QWidget(list_);
+                effect_widget->setObjectName(QStringLiteral("layerEffectGroupRow"));
+                effect_widget->setStyleSheet(QStringLiteral(
+                    "QWidget{background:transparent;color:%1;}")
+                    .arg(text.name(QColor::HexRgb)));
+                auto *effect_layout = new QHBoxLayout(effect_widget);
+                effect_layout->setContentsMargins(44, 0, 4, 0);
+                effect_layout->setSpacing(6);
+                auto *fx = new QLabel(QStringLiteral("FX"), effect_widget);
+                fx->setFixedWidth(24);
+                fx->setAlignment(Qt::AlignCenter);
+                fx->setStyleSheet(QStringLiteral(
+                    "font-size:9px;font-weight:700;color:%1;border:1px solid %2;"
+                    "border-radius:2px;")
+                    .arg(highlight.name(QColor::HexRgb),
+                         border.name(QColor::HexRgb)));
+                effect_layout->addWidget(fx);
+                auto *effect_name = new QLabel(timeline_row.owner_label,
+                                               effect_widget);
+                effect_name->setStyleSheet(QStringLiteral("font-weight:600;"));
+                effect_layout->addWidget(effect_name, 1);
+                list_->setItemWidget(effect_item, effect_widget);
+                continue;
+            }
 
             const TimelinePropertyRef prop = timeline_row.prop;
             const QString label = timeline_row.owner_label;
@@ -1421,7 +1478,9 @@ void LayerStack::populate()
                 "QWidget{background:transparent;color:%1;}")
                 .arg(text.name(QColor::HexRgb)));
             auto *ph = new QHBoxLayout(prop_widget);
-            ph->setContentsMargins(is_channel ? 88 : 44, 0, 4, 0);
+            const int effect_indent = timeline_row.effect_index >= 0 ? 26 : 0;
+            ph->setContentsMargins((is_channel ? 88 : 44) + effect_indent,
+                                   0, 4, 0);
             ph->setSpacing(4);
 
             if (is_channel) {
@@ -1658,7 +1717,8 @@ void LayerStack::on_selection_changed()
     if (title_) {
         for (const auto &selected_id : selected_ids()) {
             const auto layer = title_->find_layer(selected_id);
-            if (layer && !stinger_transition_input_layer_is_protected(*layer)) {
+            if (layer && !layer->linked_media_stream &&
+                !stinger_transition_input_layer_is_protected(*layer)) {
                 has_deletable_layer = true;
                 break;
             }
@@ -1704,6 +1764,7 @@ void LayerStack::on_add_clock() { emit add_layer_requested(LayerType::Clock); }
 void LayerStack::on_add_ticker() { emit add_layer_requested(LayerType::Ticker); }
 void LayerStack::on_add_rect() { emit add_layer_requested(LayerType::Shape); }
 void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
+void LayerStack::on_add_video() { emit add_layer_requested(LayerType::Video); }
 void LayerStack::on_add_audio() { emit add_layer_requested(LayerType::Audio); }
 void LayerStack::on_add_adjustment() { emit add_layer_requested(LayerType::Adjustment); }
 void LayerStack::on_add_color_solid() { emit add_layer_requested(LayerType::ColorSolid); }
@@ -1733,7 +1794,8 @@ void LayerStack::on_delete()
         return;
     for (const auto &id : selected_ids()) {
         const auto layer = title_->find_layer(id);
-        if (layer && !stinger_transition_input_layer_is_protected(*layer)) {
+        if (layer && !layer->linked_media_stream &&
+            !stinger_transition_input_layer_is_protected(*layer)) {
             /* The editor command consumes the complete selection. Emit any
              * editable anchor so a mixed A/B + artwork selection still deletes
              * only the user-owned layers and never the protected inputs. */
@@ -1851,17 +1913,19 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
         list_->setCurrentItem(item);
 
     const std::vector<std::string> selection = selected_ids();
-    const auto selection_has_layer = [this, &selection]() {
+    const auto selection_has_copyable_layer = [this, &selection]() {
         return std::any_of(selection.begin(), selection.end(),
             [this](const std::string &layer_id) {
-                return title_ && title_->find_layer(layer_id) != nullptr;
+                const auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+                return layer && !layer->linked_media_stream;
             });
     };
     const auto selection_has_deletable_layer = [this, &selection]() {
         return std::any_of(selection.begin(), selection.end(),
             [this](const std::string &layer_id) {
                 const auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
-                return layer && !stinger_transition_input_layer_is_protected(*layer);
+                return layer && !layer->linked_media_stream &&
+                       !stinger_transition_input_layer_is_protected(*layer);
             });
     };
     auto selected_layer_is_group = [this](const std::string &layer_id) {
@@ -1891,10 +1955,15 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
 
     QMenu menu(this);
     style_menu(&menu);
-    const bool has_selected_layer = selection_has_layer();
+    const bool has_copyable_layer = selection_has_copyable_layer();
     const bool has_deletable_layer = selection_has_deletable_layer();
+    const int structural_selection_count = static_cast<int>(std::count_if(
+        selection.begin(), selection.end(), [this](const std::string &layer_id) {
+            const auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+            return layer && !layer->linked_media_stream;
+        }));
     QAction *group_layers = menu.addAction(bgl_tr("OBSTitles.GroupLayers"));
-    group_layers->setEnabled(selection.size() >= 2);
+    group_layers->setEnabled(structural_selection_count >= 2);
     QAction *ungroup_layers = menu.addAction(bgl_tr("OBSTitles.UngroupLayers"));
     ungroup_layers->setEnabled(std::any_of(selection.begin(), selection.end(), selected_layer_is_group));
 
@@ -1909,6 +1978,7 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
         for (const auto &selected_id : selection) {
             const auto selected_layer = title_->find_layer(selected_id);
             if (!selected_layer || selected_layer->locked ||
+                selected_layer->linked_media_stream ||
                 selected_id == candidate->id ||
                 selected_layer->parent_id == candidate->id ||
                 would_cycle(selected_id, candidate->id))
@@ -1931,9 +2001,9 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
 
     menu.addSeparator();
     QAction *clone = menu.addAction(bgl_tr("OBSTitles.CloneLayer"));
-    clone->setEnabled(has_selected_layer);
+    clone->setEnabled(has_copyable_layer);
     QAction *copy = menu.addAction(bgl_tr("OBSTitles.CopyLayer"));
-    copy->setEnabled(has_selected_layer);
+    copy->setEnabled(has_copyable_layer);
     QAction *paste = menu.addAction(bgl_tr("OBSTitles.PasteLayer"));
     paste->setEnabled(layer_clipboard_available_);
     menu.addSeparator();

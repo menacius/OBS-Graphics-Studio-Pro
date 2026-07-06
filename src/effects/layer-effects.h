@@ -46,6 +46,36 @@ enum class LayerEffectType {
     Noise = 16,
     RoughenEdges = 17,
     FourColorGradient = 18,
+    Sharpen = 19,
+    UnsharpMask = 20,
+    HighPass = 21,
+    Clarity = 22,
+    BilateralSharpen = 23,
+    Glare = 24,
+    Halation = 25,
+    LensDistortion = 26,
+    ChromaticAberration = 27,
+    DirectionalBlur = 28,
+    ZoomBlur = 29,
+    RadialBlur = 30,
+    Ripple = 31,
+    WaveWarp = 32,
+    Pixelate = 33,
+    EdgeDetect = 34,
+    Posterize = 35,
+    Threshold = 36,
+    Scanlines = 37,
+    ChromaKey = 38,
+    LumaKey = 39,
+    ColorRange = 40,
+    SpillSuppression = 41,
+    MatteChoker = 42,
+    LightWrap = 43,
+    DisplacementMap = 44,
+    Grain = 45,
+    FilmDistortion = 46,
+    AnalogDistortion = 47,
+    DigitalDistortion = 48,
 };
 
 enum class EffectBlendMode {
@@ -113,9 +143,20 @@ struct LayerEffect {
     bool affect_layers_behind_invert = false;
     EffectBlendMode blend_mode = EffectBlendMode::Normal;
 
+    /* Cross-layer effect source contract (Development Version 226).
+     * Source IDs stay independent from visibility: hidden layers can remain
+     * render dependencies without being composited into the final frame. */
+    std::string effect_source_layer_id;
+    int effect_source_mode = 0;       /* 0=composition, 1=layer */
+    int effect_x_channel = 0;         /* 0=luma, 1=red, 2=green, 3=blue, 4=alpha */
+    int effect_y_channel = 0;
+    int effect_wrap_mode = 0;         /* 0=clamp, 1=repeat, 2=mirror, 3=transparent */
+    int effect_mapping_space = 0;     /* 0=source-space, 1=composition-space */
+    bool effect_alpha_aware = true;
+
     /* Procedural effect controls. These fields are shared by Lens Flare,
-     * Vignette, Noise and Roughen Edges; unused values are ignored by each
-     * effect's GPU shader. */
+     * Vignette, Grain, Noise, damage/distortion effects and Roughen Edges;
+     * unused values are ignored by each effect's GPU shader. */
     int effect_profile = 0;
     bool effect_animated = false;
     bool effect_monochrome = true;
@@ -130,6 +171,12 @@ struct LayerEffect {
     float effect_center_y = 0.5f;
     float effect_complexity = 4.0f;
     float effect_evolution = 0.0f;
+    /* Current procedural controls. Generic fields remain the keyframeable
+     * carriers: spread=lacunarity, falloff=gain, roundness=log2 aspect,
+     * center=offset and brightness/contrast=tonal shaping. */
+    bool effect_affect_alpha = false;
+    bool effect_clamp_output = true;
+    bool effect_temporal_stability = true;
     uint32_t effect_secondary_color = 0xFF4EA3FF;
 
     /* Effect-owned style data. Legacy layer fields may still be read while
@@ -230,22 +277,8 @@ struct LayerEffect {
     AnimatedProperty secondary_color_b { "effect_secondary_color_b", 255.0 };
 };
 
-inline LayerEffectSpace layer_effect_execution_space(const LayerEffect &effect)
-{
-    if (effect.affect_layers_behind)
-        return LayerEffectSpace::ScreenSpace;
-    if (effect.type == LayerEffectType::MotionBlur)
-        return LayerEffectSpace::PostTransform;
-    return LayerEffectSpace::LayerSpace;
-}
-
-inline bool layer_effect_stack_has_space(const std::vector<LayerEffect> &effects,
-                                         LayerEffectSpace space)
-{
-    for (const LayerEffect &effect : effects) {
-        if (effect.enabled && layer_effect_execution_space(effect) == space)
-            return true;
-    }
-    return false;
-}
+/* Compatibility entry points backed by the canonical effect runtime. */
+LayerEffectSpace layer_effect_execution_space(const LayerEffect &effect);
+bool layer_effect_stack_has_space(const std::vector<LayerEffect> &effects,
+                                  LayerEffectSpace space);
 

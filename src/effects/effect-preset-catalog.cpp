@@ -1,4 +1,5 @@
 #include "effect-preset-catalog.h"
+#include "effect-runtime.h"
 #include "preset-category-path.h"
 #include "extensions/effect-extension-catalog.h"
 
@@ -179,6 +180,9 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_center_y = static_cast<float>(number("centerY", effect.effect_center_y));
     effect.effect_complexity = static_cast<float>(number("complexity", effect.effect_complexity));
     effect.effect_evolution = static_cast<float>(number("evolution", effect.effect_evolution));
+    effect.effect_affect_alpha = boolean("affectAlpha", effect.effect_affect_alpha);
+    effect.effect_clamp_output = boolean("clampOutput", effect.effect_clamp_output);
+    effect.effect_temporal_stability = boolean("temporalStability", effect.effect_temporal_stability);
     effect.effect_secondary_color = json_color(p, "secondaryColor", effect.effect_secondary_color);
 
     auto finite_clamp = [](float value, float minimum, float maximum, float fallback) {
@@ -216,6 +220,16 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_center_x = finite_clamp(effect.effect_center_x, -4.0f, 4.0f, 0.5f);
     effect.effect_center_y = finite_clamp(effect.effect_center_y, -4.0f, 4.0f, 0.5f);
     effect.effect_complexity = finite_clamp(effect.effect_complexity, 1.0f, 12.0f, 4.0f);
+    if ((effect.type == LayerEffectType::Noise || effect.type == LayerEffectType::Grain ||
+        effect.type == LayerEffectType::FilmDistortion || effect.type == LayerEffectType::AnalogDistortion ||
+        effect.type == LayerEffectType::DigitalDistortion) && effect.extension_schema_version >= 1) {
+        effect.effect_roundness = finite_clamp(effect.effect_roundness, -3.0f, 3.0f, 0.0f);
+        effect.effect_center_x = finite_clamp(effect.effect_center_x, -100000.0f, 100000.0f, 0.0f);
+        effect.effect_center_y = finite_clamp(effect.effect_center_y, -100000.0f, 100000.0f, 0.0f);
+        effect.effect_complexity = finite_clamp(effect.effect_complexity, 1.0f, 8.0f, 5.0f);
+        effect.effect_spread = finite_clamp(effect.effect_spread, 1.01f, 8.0f, 2.0f);
+        effect.effect_falloff = finite_clamp(effect.effect_falloff, 0.0f, 1.0f, 0.5f);
+    }
     effect.effect_evolution = finite_clamp(effect.effect_evolution, -100000.0f, 100000.0f, 0.0f);
 
     switch (effect.type) {
@@ -239,6 +253,10 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
         break;
     case LayerEffectType::Vignette:
     case LayerEffectType::Noise:
+    case LayerEffectType::Grain:
+    case LayerEffectType::FilmDistortion:
+    case LayerEffectType::AnalogDistortion:
+    case LayerEffectType::DigitalDistortion:
     case LayerEffectType::RoughenEdges:
         effect.effect_size = finite_clamp(effect.effect_size, 0.0f, 4096.0f, 16.0f);
         break;
@@ -331,6 +349,8 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
     LayerEffect effect;
     effect.type = type;
     effect.extension_id = BglEffectExtensionCatalog::builtInId(type).toStdString();
+    if (const EffectDescriptor *descriptor = effect_descriptor(type))
+        effect.extension_schema_version = descriptor->schema_version;
     effect.enabled = true;
     effect.enabled_prop.static_value = 1.0;
 
@@ -426,15 +446,102 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
         effect.effect_roundness = 0.0f;
         break;
     case LayerEffectType::Noise:
-        effect.effect_profile = 3;
-        effect.effect_amount = 0.12f;
-        effect.effect_scale = 1.0f;
-        effect.effect_softness = 0.15f;
+        /* Noise is the procedural/noise-map generator. Grain is now separate. */
+        effect.effect_profile = 3; /* Clouds / fBM */
+        effect.effect_amount = 0.18f;
+        effect.effect_scale = 96.0f;
+        effect.effect_softness = 0.12f;
         effect.effect_speed = 1.0f;
-        effect.effect_complexity = 4.0f;
+        effect.effect_complexity = 5.0f;
+        effect.effect_spread = 2.0f;
+        effect.effect_falloff = 0.52f;
+        effect.effect_roundness = 0.0f;
+        effect.effect_center_x = 0.0f;
+        effect.effect_center_y = 0.0f;
         effect.effect_animated = false;
         effect.effect_monochrome = true;
         effect.effect_seed = 1;
+        effect.effect_color = 0xFFFFFFFF;
+        effect.effect_affect_alpha = false;
+        effect.effect_clamp_output = true;
+        effect.effect_temporal_stability = true;
+        break;
+    case LayerEffectType::Grain:
+        effect.effect_profile = 1; /* Film Grain */
+        effect.effect_amount = 0.22f;
+        effect.effect_scale = 2.0f;
+        effect.effect_softness = 0.08f;
+        effect.effect_speed = 1.0f;
+        effect.effect_complexity = 5.0f;
+        effect.effect_spread = 2.0f;
+        effect.effect_falloff = 0.52f;
+        effect.effect_roundness = 0.0f;
+        effect.effect_center_x = 0.0f;
+        effect.effect_center_y = 0.0f;
+        effect.effect_animated = false;
+        effect.effect_monochrome = true;
+        effect.effect_seed = 1;
+        effect.effect_color = 0xFFFFFFFF;
+        effect.effect_affect_alpha = false;
+        effect.effect_clamp_output = true;
+        effect.effect_temporal_stability = true;
+        break;
+    case LayerEffectType::FilmDistortion:
+        effect.effect_profile = 8;
+        effect.effect_amount = 0.62f;
+        effect.effect_scale = 1.8f;
+        effect.effect_softness = 0.22f;
+        effect.effect_speed = 1.0f;
+        effect.effect_complexity = 7.5f;
+        effect.effect_spread = 2.4f;
+        effect.effect_falloff = 0.70f;
+        effect.effect_roundness = 0.0f;
+        effect.effect_center_x = 0.0f;
+        effect.effect_center_y = 0.0f;
+        effect.effect_animated = true;
+        effect.effect_monochrome = false;
+        effect.effect_seed = 17;
+        effect.effect_color = 0xFFFFF1C4;
+        effect.effect_secondary_color = 0xFF1B120A;
+        effect.effect_temporal_stability = true;
+        break;
+    case LayerEffectType::AnalogDistortion:
+        effect.effect_profile = 9;
+        effect.effect_amount = 0.56f;
+        effect.effect_scale = 8.0f;
+        effect.effect_softness = 0.18f;
+        effect.effect_speed = 1.0f;
+        effect.effect_complexity = 6.0f;
+        effect.effect_spread = 2.2f;
+        effect.effect_falloff = 0.65f;
+        effect.effect_roundness = 0.0f;
+        effect.effect_center_x = 0.0f;
+        effect.effect_center_y = 0.0f;
+        effect.effect_animated = true;
+        effect.effect_monochrome = false;
+        effect.effect_seed = 29;
+        effect.effect_color = 0xFFFFFFFF;
+        effect.effect_secondary_color = 0xFF73A8FF;
+        effect.effect_temporal_stability = true;
+        break;
+    case LayerEffectType::DigitalDistortion:
+        effect.effect_profile = 10;
+        effect.effect_amount = 0.52f;
+        effect.effect_scale = 20.0f;
+        effect.effect_softness = 0.09f;
+        effect.effect_speed = 1.0f;
+        effect.effect_complexity = 5.0f;
+        effect.effect_spread = 2.0f;
+        effect.effect_falloff = 0.62f;
+        effect.effect_roundness = 0.0f;
+        effect.effect_center_x = 0.0f;
+        effect.effect_center_y = 0.0f;
+        effect.effect_animated = true;
+        effect.effect_monochrome = false;
+        effect.effect_seed = 43;
+        effect.effect_color = 0xFFFFFFFF;
+        effect.effect_secondary_color = 0xFF8DFFEC;
+        effect.effect_temporal_stability = true;
         break;
     case LayerEffectType::RoughenEdges:
         effect.effect_amount = 0.18f;
@@ -442,6 +549,188 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
         effect.effect_softness = 0.2f;
         effect.effect_complexity = 4.0f;
         effect.effect_seed = 1;
+        break;
+    case LayerEffectType::Sharpen:
+        effect.effect_amount = 1.0f;
+        effect.effect_size = 1.75f;
+        effect.effect_softness = 0.005f;
+        effect.effect_monochrome = true;
+        effect.effect_affect_alpha = true;
+        break;
+    case LayerEffectType::UnsharpMask:
+        effect.effect_amount = 1.35f;
+        effect.effect_size = 3.0f;
+        effect.effect_softness = 0.01f;
+        effect.effect_spread = 0.15f;
+        effect.effect_falloff = 0.15f;
+        effect.effect_monochrome = true;
+        effect.effect_affect_alpha = true;
+        break;
+    case LayerEffectType::HighPass:
+        effect.effect_amount = 1.8f;
+        effect.effect_size = 5.0f;
+        effect.effect_monochrome = true;
+        effect.effect_invert = false; /* overlay preview */
+        effect.effect_affect_alpha = true;
+        break;
+    case LayerEffectType::Clarity:
+        effect.effect_amount = 0.85f;
+        effect.effect_size = 18.0f;
+        effect.effect_softness = 0.005f;
+        effect.brightness = 0.0f; /* midtone bias */
+        effect.effect_spread = 0.35f;
+        effect.effect_falloff = 0.35f;
+        effect.effect_monochrome = true;
+        effect.effect_affect_alpha = true;
+        break;
+    case LayerEffectType::BilateralSharpen:
+        effect.effect_amount = 1.0f;
+        effect.effect_size = 3.0f;
+        effect.effect_softness = 0.045f; /* range threshold */
+        effect.effect_spread = 0.75f; /* edge protection */
+        effect.effect_monochrome = true;
+        effect.effect_affect_alpha = true;
+        break;
+    case LayerEffectType::Glare:
+        effect.blend_mode = EffectBlendMode::Screen;
+        effect.effect_color = 0xFFFFE6C0;
+        effect.effect_secondary_color = 0xFF78AFFF;
+        effect.effect_opacity = 0.85f;
+        effect.effect_amount = 1.25f;
+        effect.effect_scale = 1.0f;
+        effect.effect_size = 22.0f;
+        effect.effect_distance = 220.0f;
+        effect.effect_angle = 0.0f;
+        effect.effect_spread = 0.72f;
+        effect.effect_falloff = 1.35f;
+        effect.effect_softness = 0.28f;
+        break;
+    case LayerEffectType::Halation:
+        effect.blend_mode = EffectBlendMode::Screen;
+        effect.effect_color = 0xFFFF5A30;
+        effect.effect_secondary_color = 0xFFFF9A52;
+        effect.effect_opacity = 0.58f;
+        effect.effect_amount = 1.0f;
+        effect.effect_size = 22.0f;
+        effect.effect_spread = 0.68f;
+        effect.effect_falloff = 1.25f;
+        effect.effect_softness = 0.35f;
+        effect.effect_blur_type = static_cast<int>(ShadowBlurType::DualKawase);
+        break;
+    case LayerEffectType::LensDistortion:
+        effect.effect_roundness = -0.35f;
+        effect.effect_opacity = 1.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        break;
+    case LayerEffectType::ChromaticAberration:
+        effect.effect_amount = 8.0f;
+        effect.effect_opacity = 1.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        break;
+    case LayerEffectType::DirectionalBlur:
+        effect.effect_size = 18.0f;
+        effect.effect_angle = 0.0f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::ZoomBlur:
+        effect.effect_size = 28.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::RadialBlur:
+        effect.effect_size = 35.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::Ripple:
+        effect.effect_amount = 2.5f;
+        effect.effect_scale = 12.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        break;
+    case LayerEffectType::WaveWarp:
+        effect.effect_amount = 3.0f;
+        effect.effect_scale = 8.0f;
+        effect.effect_angle = 0.0f;
+        break;
+    case LayerEffectType::Pixelate:
+        effect.effect_size = 12.0f;
+        break;
+    case LayerEffectType::EdgeDetect:
+        effect.effect_size = 1.0f;
+        effect.effect_amount = 2.0f;
+        effect.effect_spread = 0.08f;
+        effect.effect_color = 0xFFFFFFFF;
+        break;
+    case LayerEffectType::Posterize:
+        effect.effect_complexity = 6.0f;
+        break;
+    case LayerEffectType::Threshold:
+        effect.effect_spread = 0.5f;
+        effect.effect_softness = 0.08f;
+        effect.effect_color = 0xFFFFFFFF;
+        break;
+    case LayerEffectType::Scanlines:
+        effect.effect_amount = 0.45f;
+        effect.effect_scale = 4.0f;
+        effect.effect_softness = 0.45f;
+        effect.effect_angle = 90.0f;
+        break;
+    case LayerEffectType::ChromaKey:
+        effect.effect_color = 0xFF00FF00;
+        effect.effect_amount = 0.28f;
+        effect.effect_softness = 0.12f;
+        effect.effect_spread = 0.70f;
+        effect.effect_falloff = 0.20f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::LumaKey:
+        effect.effect_amount = 0.50f;
+        effect.effect_softness = 0.10f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::ColorRange:
+        effect.effect_color = 0xFF00FF00;
+        effect.effect_amount = 0.22f;
+        effect.effect_softness = 0.10f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::SpillSuppression:
+        effect.effect_color = 0xFF00FF00;
+        effect.effect_amount = 0.80f;
+        effect.effect_softness = 0.35f;
+        effect.effect_monochrome = true;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::MatteChoker:
+        effect.effect_amount = 0.35f;
+        effect.effect_size = 2.0f;
+        effect.effect_softness = 0.15f;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::LightWrap:
+        effect.effect_source_mode = 0;
+        effect.effect_size = 24.0f;
+        effect.effect_amount = 1.0f;
+        effect.effect_spread = 12.0f;
+        effect.effect_falloff = 0.5f;
+        effect.effect_color = 0xFFFFFFFFu;
+        effect.effect_alpha_aware = true;
+        effect.effect_opacity = 1.0f;
+        break;
+    case LayerEffectType::DisplacementMap:
+        effect.effect_source_mode = 1;
+        effect.effect_amount = 20.0f;
+        effect.effect_distance = 20.0f;
+        effect.effect_x_channel = 0;
+        effect.effect_y_channel = 0;
+        effect.effect_wrap_mode = 0;
+        effect.effect_mapping_space = 0;
+        effect.effect_opacity = 1.0f;
         break;
     case LayerEffectType::FourColorGradient: {
         auto &catalog = BglEffectExtensionCatalog::instance();
@@ -500,8 +789,38 @@ QString effect_type_id(LayerEffectType type)
     case LayerEffectType::LensFlare: return QStringLiteral("lens-flare");
     case LayerEffectType::Vignette: return QStringLiteral("vignette");
     case LayerEffectType::Noise: return QStringLiteral("noise");
+    case LayerEffectType::Grain: return QStringLiteral("grain");
     case LayerEffectType::RoughenEdges: return QStringLiteral("roughen-edges");
     case LayerEffectType::FourColorGradient: return QStringLiteral("4-color-gradient");
+    case LayerEffectType::Sharpen: return QStringLiteral("sharpen");
+    case LayerEffectType::UnsharpMask: return QStringLiteral("unsharp-mask");
+    case LayerEffectType::HighPass: return QStringLiteral("high-pass");
+    case LayerEffectType::Clarity: return QStringLiteral("clarity");
+    case LayerEffectType::BilateralSharpen: return QStringLiteral("bilateral-sharpen");
+    case LayerEffectType::Glare: return QStringLiteral("glare");
+    case LayerEffectType::Halation: return QStringLiteral("halation");
+    case LayerEffectType::LensDistortion: return QStringLiteral("lens-distortion");
+    case LayerEffectType::ChromaticAberration: return QStringLiteral("chromatic-aberration");
+    case LayerEffectType::DirectionalBlur: return QStringLiteral("directional-blur");
+    case LayerEffectType::ZoomBlur: return QStringLiteral("zoom-blur");
+    case LayerEffectType::RadialBlur: return QStringLiteral("radial-blur");
+    case LayerEffectType::Ripple: return QStringLiteral("ripple");
+    case LayerEffectType::WaveWarp: return QStringLiteral("wave-warp");
+    case LayerEffectType::Pixelate: return QStringLiteral("pixelate");
+    case LayerEffectType::EdgeDetect: return QStringLiteral("edge-detect");
+    case LayerEffectType::Posterize: return QStringLiteral("posterize");
+    case LayerEffectType::Threshold: return QStringLiteral("threshold");
+    case LayerEffectType::Scanlines: return QStringLiteral("scanlines");
+    case LayerEffectType::ChromaKey: return QStringLiteral("chroma-key");
+    case LayerEffectType::LumaKey: return QStringLiteral("luma-key");
+    case LayerEffectType::ColorRange: return QStringLiteral("color-range");
+    case LayerEffectType::SpillSuppression: return QStringLiteral("spill-suppression");
+    case LayerEffectType::MatteChoker: return QStringLiteral("matte-choker");
+    case LayerEffectType::LightWrap: return QStringLiteral("light-wrap");
+    case LayerEffectType::DisplacementMap: return QStringLiteral("displacement-map");
+    case LayerEffectType::FilmDistortion: return QStringLiteral("film-distortion");
+    case LayerEffectType::AnalogDistortion: return QStringLiteral("analog-distortion");
+    case LayerEffectType::DigitalDistortion: return QStringLiteral("digital-distortion");
     }
     return {};
 }
@@ -514,7 +833,7 @@ bool effect_type_from_id(const QString &id, LayerEffectType *type)
     normalized.replace(QLatin1Char('_'), QLatin1Char('-'));
     normalized.replace(QLatin1Char(' '), QLatin1Char('-'));
     for (int value = static_cast<int>(LayerEffectType::BackgroundColor);
-         value <= static_cast<int>(LayerEffectType::FourColorGradient); ++value) {
+         value <= static_cast<int>(LayerEffectType::DigitalDistortion); ++value) {
         const auto candidate = static_cast<LayerEffectType>(value);
         if (effect_type_id(candidate) == normalized) {
             *type = candidate;

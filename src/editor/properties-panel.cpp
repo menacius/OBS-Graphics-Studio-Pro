@@ -6,6 +6,7 @@
 #include "bgl-modern-controls.h"
 #include "title-logger.h"
 #include "title-serialization-schema.h"
+#include "title-video-runtime.h"
 
 #include <memory>
 #include <algorithm>

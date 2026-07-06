@@ -587,35 +587,30 @@ static void stroke_image_visible_outline(cairo_t *cr, const Layer &layer, const 
 }
 
 
-static void render_layer_image(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
+static void render_layer_image_pixels(cairo_t *cr, const Title &title,
+                                      const Layer &layer, double title_time,
+                                      const QImage &source_image,
+                                      const QString &shadow_identity)
 {
-    const std::string effective_image_path = effective_external_string(
-        layer, ExternalPropertyPaths::ImagePath, layer.image_path);
-    if (effective_image_path.empty()) return;
+    if (source_image.isNull() || source_image.width() <= 0 || source_image.height() <= 0)
+        return;
     const double t = std::max(0.0, title_time - layer.in_time);
-    double alpha = layer_chain_opacity(title, layer, title_time);
-    double w = eval_box_width(layer, t);
-    double h = eval_box_height(layer, t);
+    const double alpha = layer_chain_opacity(title, layer, title_time);
+    const double w = eval_box_width(layer, t);
+    const double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
 
-    const QString image_path = QString::fromStdString(effective_image_path);
     double image_w = eval_image_width(layer, t);
     double image_h = eval_image_height(layer, t);
     if (image_w <= 0.0 || image_h <= 0.0) {
-        QSize intrinsic_size = image_intrinsic_size(image_path);
-        if (!intrinsic_size.isValid() || intrinsic_size.isEmpty())
-            intrinsic_size = QSize(std::max(1, (int)std::ceil(w)), std::max(1, (int)std::ceil(h)));
-        image_w = intrinsic_size.width();
-        image_h = intrinsic_size.height();
+        image_w = source_image.width();
+        image_h = source_image.height();
     }
-    ImageBoxLayout image_layout = image_box_layout_for_layer(layer, w, h,
-                                                             image_w, image_h);
-    const int max_sample_dim = std::clamp(std::max(title.width, title.height) * 2, 512, 4096);
-    const QSize sample_size(std::clamp((int)std::ceil(image_layout.w), 1, max_sample_dim),
-                            std::clamp((int)std::ceil(image_layout.h), 1, max_sample_dim));
-    QImage argb = load_cached_layer_image(image_path, sample_size);
-    if (argb.isNull() || argb.width() <= 0 || argb.height() <= 0) return;
-
+    const ImageBoxLayout image_layout = image_box_layout_for_layer(
+        layer, w, h, image_w, image_h);
+    QImage argb = source_image.format() == QImage::Format_ARGB32_Premultiplied
+        ? source_image
+        : source_image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     auto img_surface = make_image_surface_for_const_qimage(argb);
     if (!img_surface) return;
 
@@ -626,41 +621,50 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     const double box_x = -origin_x * w;
     const double box_y = -origin_y * h;
     apply_layer_transition_clip(cr, layer, title_time, box_x, box_y, w, h);
-    ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+    const ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         QImage mask = image_box_shadow_mask(argb, layer, w, h, image_layout);
-        QFileInfo shadow_image_info(image_path);
-        const QString shape_key = QStringLiteral("image|%1|%2x%3|%4|%5")
-            .arg(image_path).arg(mask.width()).arg(mask.height())
-            .arg(shadow_image_info.exists() ? shadow_image_info.lastModified().toMSecsSinceEpoch() : 0)
-            .arg(shadow_image_info.exists() ? shadow_image_info.size() : -1);
-        CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
-        paint_qimage(cr, shadow.image, box_x + shadow.origin.x(), box_y + shadow.origin.y(), alpha);
+        const QString shape_key = QStringLiteral("image-like|%1|%2x%3")
+            .arg(shadow_identity).arg(mask.width()).arg(mask.height());
+        const CachedShadowImage shadow = build_shadow_image(
+            layer, shadow_params, shape_key, mask);
+        paint_qimage(cr, shadow.image, box_x + shadow.origin.x(),
+                     box_y + shadow.origin.y(), alpha);
     }
     if (eval_background_enabled(layer, t)) {
-        const auto *background_effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
-        const bool background_gradient = background_effect && background_effect->effect_fill_type == 1;
+        const auto *background_effect = find_layer_effect(
+            layer, LayerEffectType::BackgroundColor);
+        const bool background_gradient = background_effect &&
+            background_effect->effect_fill_type == 1;
         const double bg_left = eval_background_padding_left(layer, t);
         const double bg_right = eval_background_padding_right(layer, t);
         const double bg_top = eval_background_padding_top(layer, t);
         const double bg_bottom = eval_background_padding_bottom(layer, t);
-        QColor bg = evaluated_background_color(layer, t);
-        double br, bgc, bb, ba;
-        br = bg.redF(); bgc = bg.greenF(); bb = bg.blueF(); ba = bg.alphaF();
+        const QColor bg = evaluated_background_color(layer, t);
+        const double br = bg.redF();
+        const double bgc = bg.greenF();
+        const double bb = bg.blueF();
+        const double ba = bg.alphaF();
         const double stroke_w = eval_background_stroke_width(layer, t);
         if (ba > 0.0 || background_gradient || stroke_w > 0.0) {
             const double x = box_x - bg_left;
             const double y = box_y - bg_top;
             const double bw = std::max(1.0, w + bg_left + bg_right);
             const double bh = std::max(1.0, h + bg_top + bg_bottom);
-            cairo_add_rounded_rect_corners(cr, x, y, bw, bh,
-                eval_background_corner_radius_tl(layer, t), eval_background_corner_radius_tr(layer, t),
-                eval_background_corner_radius_br(layer, t), eval_background_corner_radius_bl(layer, t),
-                legacy_corner_type_roundness((CornerType)(background_effect ? background_effect->effect_corner_type : 0)));
+            cairo_add_rounded_rect_corners(
+                cr, x, y, bw, bh,
+                eval_background_corner_radius_tl(layer, t),
+                eval_background_corner_radius_tr(layer, t),
+                eval_background_corner_radius_br(layer, t),
+                eval_background_corner_radius_bl(layer, t),
+                legacy_corner_type_roundness((CornerType)(
+                    background_effect ? background_effect->effect_corner_type : 0)));
             cairo_pattern_t *gradient_pattern = nullptr;
             if (ba > 0.0 || background_gradient) {
                 if (background_gradient) {
-                    gradient_pattern = create_background_gradient_pattern(layer, x, y, bw, bh, alpha * eval_background_opacity(layer, t));
+                    gradient_pattern = create_background_gradient_pattern(
+                        layer, x, y, bw, bh,
+                        alpha * eval_background_opacity(layer, t));
                     cairo_set_source(cr, gradient_pattern);
                 } else {
                     cairo_set_source_rgba(cr, br, bgc, bb, ba * alpha);
@@ -669,16 +673,21 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
                 if (gradient_pattern) cairo_pattern_destroy(gradient_pattern);
             }
             if (stroke_w > 0.0) {
-                QColor stroke = color_from_argb(eval_background_stroke_color(layer, t));
+                const QColor stroke = color_from_argb(
+                    eval_background_stroke_color(layer, t));
                 cairo_set_line_width(cr, stroke_w);
-                cairo_set_source_rgba(cr, stroke.redF(), stroke.greenF(), stroke.blueF(), stroke.alphaF() * alpha * eval_background_stroke_opacity(layer, t));
+                cairo_set_source_rgba(
+                    cr, stroke.redF(), stroke.greenF(), stroke.blueF(),
+                    stroke.alphaF() * alpha *
+                        eval_background_stroke_opacity(layer, t));
                 cairo_stroke(cr);
             } else {
                 cairo_new_path(cr);
             }
         }
     }
-    const QRectF visible = image_visible_rect_for_layout(image_layout, w, h, layer.image_crop_when_outside_box);
+    const QRectF visible = image_visible_rect_for_layout(
+        image_layout, w, h, layer.image_crop_when_outside_box);
     if (visible.isEmpty()) {
         cairo_restore(cr);
         return;
@@ -687,19 +696,18 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     if (has_outline && !eval_outline_on_front(layer, t))
         stroke_image_visible_outline(cr, layer, visible, box_x, box_y, alpha, t);
     cairo_save(cr);
-    cairo_add_rounded_rect_corners(cr, box_x + visible.x(), box_y + visible.y(),
-                                   visible.width(), visible.height(),
-                                   layer.corner_radius_tl, layer.corner_radius_tr,
-                                   layer.corner_radius_br, layer.corner_radius_bl,
-                                   layer.corner_bevel_roundness);
+    cairo_add_rounded_rect_corners(
+        cr, box_x + visible.x(), box_y + visible.y(),
+        visible.width(), visible.height(),
+        layer.corner_radius_tl, layer.corner_radius_tr,
+        layer.corner_radius_br, layer.corner_radius_bl,
+        layer.corner_bevel_roundness);
     cairo_clip(cr);
     cairo_translate(cr, box_x + image_layout.x, box_y + image_layout.y);
     cairo_scale(cr, image_layout.w / argb.width(), image_layout.h / argb.height());
-    cairo_set_source_surface(cr, img_surface.get(),
-                             0.0,
-                             0.0);
+    cairo_set_source_surface(cr, img_surface.get(), 0.0, 0.0);
     cairo_pattern_set_filter(cairo_get_source(cr),
-                             cairo_filter_for_image_scale_filter(layer.scale_filter));
+        cairo_filter_for_image_scale_filter(layer.scale_filter));
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
     if (has_outline && eval_outline_on_front(layer, t))
@@ -707,6 +715,156 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     cairo_restore(cr);
 }
 
+static void render_layer_image(cairo_t *cr, const Title &title,
+                               const Layer &layer, double title_time)
+{
+    const std::string effective_image_path = effective_external_string(
+        layer, ExternalPropertyPaths::ImagePath, layer.image_path);
+    if (effective_image_path.empty()) return;
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const double w = eval_box_width(layer, t);
+    const double h = eval_box_height(layer, t);
+    if (w <= 0.0 || h <= 0.0) return;
+    const QString image_path = QString::fromStdString(effective_image_path);
+    double image_w = eval_image_width(layer, t);
+    double image_h = eval_image_height(layer, t);
+    if (image_w <= 0.0 || image_h <= 0.0) {
+        QSize intrinsic_size = image_intrinsic_size(image_path);
+        if (!intrinsic_size.isValid() || intrinsic_size.isEmpty())
+            intrinsic_size = QSize(std::max(1, (int)std::ceil(w)),
+                                   std::max(1, (int)std::ceil(h)));
+        image_w = intrinsic_size.width();
+        image_h = intrinsic_size.height();
+    }
+    const ImageBoxLayout layout = image_box_layout_for_layer(
+        layer, w, h, image_w, image_h);
+    const int max_sample_dim = std::clamp(
+        std::max(title.width, title.height) * 2, 512, 4096);
+    const QSize sample_size(
+        std::clamp((int)std::ceil(layout.w), 1, max_sample_dim),
+        std::clamp((int)std::ceil(layout.h), 1, max_sample_dim));
+    const QImage image = load_cached_layer_image(image_path, sample_size);
+    const QFileInfo info(image_path);
+    const QString identity = QStringLiteral("%1|%2|%3")
+        .arg(image_path)
+        .arg(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0)
+        .arg(info.exists() ? info.size() : -1);
+    render_layer_image_pixels(cr, title, layer, title_time, image, identity);
+}
+
+static void render_layer_video(cairo_t *cr, const Title &title,
+                               const Layer &layer, double title_time)
+{
+    const bgl::video::VideoFrame frame =
+        bgl::video::FrameRuntime::instance().frame_for_layer(
+            layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()));
+    if (frame.image.isNull()) return;
+    const QString identity = QStringLiteral("video|%1|decoded=%2")
+        .arg(QString::fromStdString(layer.id)).arg(frame.frame_number);
+    render_layer_image_pixels(cr, title, layer, title_time, frame.image, identity);
+}
+
+
+static thread_local bool g_scene_mask_placeholder_preview_enabled = false;
+
+struct ScopedSceneMaskPlaceholderPreview {
+    bool previous = false;
+    explicit ScopedSceneMaskPlaceholderPreview(bool enabled)
+        : previous(g_scene_mask_placeholder_preview_enabled)
+    {
+        g_scene_mask_placeholder_preview_enabled = enabled;
+    }
+    ~ScopedSceneMaskPlaceholderPreview()
+    {
+        g_scene_mask_placeholder_preview_enabled = previous;
+    }
+};
+
+static uint32_t scene_mask_placeholder_color(const Layer &layer, double local_time)
+{
+    switch (layer.type) {
+    case LayerType::Text:
+    case LayerType::Clock:
+    case LayerType::Ticker:
+        return eval_text_color(layer, local_time);
+    case LayerType::Image:
+    case LayerType::Video:
+        return 0xFF4B6EA8u;
+    default:
+        return eval_fill_color(layer, local_time);
+    }
+}
+
+static void add_scene_mask_placeholder_path(cairo_t *cr, const Layer &layer,
+                                                double width, double height)
+{
+    if (layer_type_uses_shape_geometry(layer.type)) {
+        cairo_add_layer_shape(cr, layer, width, height);
+        return;
+    }
+
+    cairo_add_rounded_rect_corners(cr, 0.0, 0.0, width, height,
+                                   layer.corner_radius_tl,
+                                   layer.corner_radius_tr,
+                                   layer.corner_radius_br,
+                                   layer.corner_radius_bl,
+                                   layer.corner_bevel_roundness);
+}
+
+static void render_scene_mask_placeholder(cairo_t *cr, const Layer &layer,
+                                          double title_time)
+{
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    const double width = std::max(1.0, eval_box_width(layer, local_time));
+    const double height = std::max(1.0, eval_box_height(layer, local_time));
+    const double x = -eval_origin_x(layer, local_time) * width;
+    const double y = -eval_origin_y(layer, local_time) * height;
+    double r = 0.0, g = 0.0, b = 0.0, a = 1.0;
+    unpack_color(scene_mask_placeholder_color(layer, local_time), r, g, b, a);
+
+    cairo_save(cr);
+    cairo_translate(cr, x, y);
+
+    /* Editor-only scene-mask placeholders intentionally follow the actual
+     * layer content silhouette instead of drawing an overlay rectangle.  Shape
+     * masks preserve corners/path/star/polygon geometry; image/text-like masks
+     * preserve the editable box and rounded-corner crop.  The normal effect
+     * stack is applied after this base raster, exactly like Stinger A/B
+     * placeholders. */
+    add_scene_mask_placeholder_path(cr, layer, width, height);
+    cairo_set_source_rgba(cr, r, g, b, std::max(0.20, a * 0.38));
+    cairo_fill_preserve(cr);
+    cairo_clip(cr);
+
+    const double grid = std::max(24.0, std::min(width, height) / 12.0);
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.16);
+    for (double px = 0.0; px <= width; px += grid) {
+        cairo_move_to(cr, px, 0.0); cairo_line_to(cr, px, height);
+    }
+    for (double py = 0.0; py <= height; py += grid) {
+        cairo_move_to(cr, 0.0, py); cairo_line_to(cr, width, py);
+    }
+    cairo_stroke(cr);
+
+    cairo_reset_clip(cr);
+    add_scene_mask_placeholder_path(cr, layer, width, height);
+    cairo_set_source_rgba(cr, r, g, b, 0.92);
+    cairo_set_line_width(cr, 2.0);
+    cairo_stroke(cr);
+
+    const char *label = "MASK";
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, std::max(32.0, std::min(width, height) * 0.16));
+    cairo_text_extents_t extents{};
+    cairo_text_extents(cr, label, &extents);
+    cairo_move_to(cr, (width - extents.width) * 0.5 - extents.x_bearing,
+                  (height - extents.height) * 0.5 - extents.y_bearing);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.78);
+    cairo_show_text(cr, label);
+    cairo_restore(cr);
+}
 
 static void render_transition_input_placeholder(cairo_t *cr, const Layer &layer,
                                                 double title_time)
@@ -750,6 +908,13 @@ static void render_transition_input_placeholder(cairo_t *cr, const Layer &layer,
 static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Layer &layer,
                                       double title_time, int canvas_w, int canvas_h)
 {
+    if (layer.use_as_scene_mask && g_scene_mask_placeholder_preview_enabled) {
+        (void)title;
+        (void)canvas_w;
+        (void)canvas_h;
+        render_scene_mask_placeholder(cr, layer, title_time);
+        return;
+    }
     switch (layer.type) {
     case LayerType::Text:
     case LayerType::Clock:
@@ -763,6 +928,9 @@ static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Lay
         break;
     case LayerType::Image:
         render_layer_image(cr, title, layer, title_time);
+        break;
+    case LayerType::Video:
+        render_layer_video(cr, title, layer, title_time);
         break;
     case LayerType::TransitionInput:
         render_transition_input_placeholder(cr, layer, title_time);
@@ -888,6 +1056,10 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
     case LayerEffectType::LensFlare:
     case LayerEffectType::Vignette:
     case LayerEffectType::Noise:
+        case LayerEffectType::Grain:
+        case LayerEffectType::FilmDistortion:
+        case LayerEffectType::AnalogDistortion:
+        case LayerEffectType::DigitalDistortion:
     case LayerEffectType::RoughenEdges:
     case LayerEffectType::FourColorGradient:
         return true;

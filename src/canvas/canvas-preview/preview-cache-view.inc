@@ -898,6 +898,14 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
         .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
         .arg(preserve_view ? 1 : 0));
     gpu_model_dirty_ = true;
+    if (gpu_render_session_) {
+        /* Opening a title that already contains 3D text must not reuse a stale
+         * 2D presentation target from the previously edited title. Force a
+         * presentation discard before the first queued paint so the initial
+         * 3D text/content pass is visible without waiting for an unrelated
+         * selection or property change. */
+        title_gpu_render_session_invalidate_presentation(gpu_render_session_, true);
+    }
     playback_frame_pending_ = false;
     prefetched_cache_frame_ = QImage();
     prefetched_cache_time_ = -1.0;

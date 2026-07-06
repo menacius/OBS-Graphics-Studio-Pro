@@ -1473,6 +1473,10 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
                 &effect.color_g, &effect.color_b});
             break;
         case LayerEffectType::Noise:
+        case LayerEffectType::Grain:
+        case LayerEffectType::FilmDistortion:
+        case LayerEffectType::AnalogDistortion:
+        case LayerEffectType::DigitalDistortion:
             name(effect.opacity_prop, "opacity");
             name(effect.amount_prop, "amount");
             name(effect.scale_prop, "scale");
@@ -1480,6 +1484,15 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             name(effect.complexity_prop, "complexity");
             name(effect.evolution_prop, "evolution");
             name(effect.speed_prop, "speed");
+            name(effect.roundness_prop, "aspect");
+            name(effect.center_x_prop, "offset_x");
+            name(effect.center_y_prop, "offset_y");
+            name(effect.spread_prop, "lacunarity");
+            name(effect.falloff_prop, "gain");
+            name(effect.brightness_prop, "brightness");
+            name(effect.contrast_prop, "contrast");
+            name_group("channel_intensity", {&effect.color_a, &effect.color_r,
+                &effect.color_g, &effect.color_b});
             break;
         case LayerEffectType::RoughenEdges:
             name(effect.opacity_prop, "opacity");
@@ -1520,6 +1533,135 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             name(effect.distance_prop, "height");
             name(effect.angle_prop, "angle");
             name(effect.spread_prop, "softness");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Sharpen:
+        case LayerEffectType::UnsharpMask:
+        case LayerEffectType::HighPass:
+        case LayerEffectType::Clarity:
+        case LayerEffectType::BilateralSharpen:
+        case LayerEffectType::Glare:
+        case LayerEffectType::Halation:
+            name(effect.amount_prop, "amount");
+            name(effect.size_prop, "radius");
+            name(effect.softness_prop, "threshold");
+            name(effect.spread_prop, "highlight_or_edge_protection");
+            name(effect.falloff_prop, "shadow_protection");
+            name(effect.brightness_prop, "midtone_bias");
+            break;
+        case LayerEffectType::LensDistortion:
+            name(effect.roundness_prop, "distortion");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::ChromaticAberration:
+            name(effect.amount_prop, "separation");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::DirectionalBlur:
+            name(effect.size_prop, "radius");
+            name(effect.angle_prop, "angle");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::ZoomBlur:
+        case LayerEffectType::RadialBlur:
+            name(effect.size_prop, "amount");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Ripple:
+        case LayerEffectType::WaveWarp:
+            name(effect.amount_prop, "amplitude");
+            name(effect.scale_prop, "frequency");
+            name(effect.evolution_prop, "evolution");
+            name(effect.angle_prop, "angle");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Pixelate:
+            name(effect.size_prop, "block_size");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::EdgeDetect:
+            name(effect.amount_prop, "strength");
+            name(effect.size_prop, "radius");
+            name(effect.spread_prop, "threshold");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Posterize:
+            name(effect.complexity_prop, "levels");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Threshold:
+            name(effect.spread_prop, "threshold");
+            name(effect.softness_prop, "feather");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::Scanlines:
+            name(effect.amount_prop, "strength");
+            name(effect.scale_prop, "spacing");
+            name(effect.softness_prop, "softness");
+            name(effect.angle_prop, "angle");
+            name(effect.evolution_prop, "evolution");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::ChromaKey:
+            name(effect.amount_prop, "similarity");
+            name(effect.softness_prop, "smoothness");
+            name(effect.spread_prop, "spill_suppression");
+            name(effect.falloff_prop, "edge_recovery");
+            name(effect.opacity_prop, "opacity");
+            name(effect.color_a, "key_color.a");
+            name(effect.color_r, "key_color.r");
+            name(effect.color_g, "key_color.g");
+            name(effect.color_b, "key_color.b");
+            break;
+        case LayerEffectType::LumaKey:
+            name(effect.amount_prop, "threshold");
+            name(effect.softness_prop, "feather");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::ColorRange:
+            name(effect.amount_prop, "tolerance");
+            name(effect.softness_prop, "feather");
+            name(effect.opacity_prop, "opacity");
+            name(effect.color_a, "key_color.a");
+            name(effect.color_r, "key_color.r");
+            name(effect.color_g, "key_color.g");
+            name(effect.color_b, "key_color.b");
+            break;
+        case LayerEffectType::SpillSuppression:
+            name(effect.amount_prop, "strength");
+            name(effect.softness_prop, "range");
+            name(effect.opacity_prop, "opacity");
+            name(effect.color_a, "spill_color.a");
+            name(effect.color_r, "spill_color.r");
+            name(effect.color_g, "spill_color.g");
+            name(effect.color_b, "spill_color.b");
+            break;
+        case LayerEffectType::MatteChoker:
+            name(effect.amount_prop, "choke");
+            name(effect.size_prop, "radius");
+            name(effect.softness_prop, "feather");
+            name(effect.opacity_prop, "opacity");
+            break;
+        case LayerEffectType::LightWrap:
+            name(effect.size_prop, "radius");
+            name(effect.amount_prop, "intensity");
+            name(effect.spread_prop, "edge_width");
+            name(effect.falloff_prop, "foreground_luminance_protection");
+            name(effect.opacity_prop, "opacity");
+            name_group("spill_color", {&effect.color_a, &effect.color_r,
+                &effect.color_g, &effect.color_b});
+            break;
+        case LayerEffectType::DisplacementMap:
+            name(effect.amount_prop, "horizontal_amount");
+            name(effect.distance_prop, "vertical_amount");
             name(effect.opacity_prop, "opacity");
             break;
         case LayerEffectType::FourColorGradient:
@@ -2008,7 +2150,7 @@ static bool layer_has_collapsed_group_ancestor(const std::shared_ptr<Title> &tit
     std::set<std::string> visited;
     while (!parent_id.empty() && visited.insert(parent_id).second) {
         auto parent = title->find_layer(parent_id);
-        if (!parent || !layer_type_is_container(parent->type))
+        if (!parent || !layer_type_can_have_children(parent->type))
             break;
         if (parent->group_collapsed)
             return true;
@@ -2034,13 +2176,19 @@ static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
     };
 
     std::map<std::string, std::vector<std::shared_ptr<Layer>>> children;
-    auto valid_group_parent = [&](const std::string &parent_id) {
-        auto parent = title->find_layer(parent_id);
-        return parent && layer_type_is_container(parent->type);
+    auto valid_hierarchy_parent = [&](const std::shared_ptr<Layer> &layer) {
+        if (!layer || layer->parent_id.empty()) return false;
+        const auto parent = title->find_layer(layer->parent_id);
+        if (!parent) return false;
+        if (layer_type_is_container(parent->type)) return true;
+        return parent->type == LayerType::Video &&
+               layer->type == LayerType::Audio &&
+               layer->linked_media_stream &&
+               layer->linked_media_layer_id == parent->id;
     };
     for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
         const auto &layer = *it;
-        if (layer_is_editor_visible(layer) && !layer->parent_id.empty() && valid_group_parent(layer->parent_id))
+        if (layer_is_editor_visible(layer) && valid_hierarchy_parent(layer))
             children[layer->parent_id].push_back(layer);
     }
 
@@ -2051,7 +2199,7 @@ static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
             return;
         rows.push_back({layer, depth});
         if (layer->type == LayerType::Asset ||
-            layer->type != LayerType::Group || layer->group_collapsed)
+            !layer_type_can_have_children(layer->type) || layer->group_collapsed)
             return;
         const auto found = children.find(layer->id);
         if (found == children.end())
@@ -2063,7 +2211,7 @@ static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
     for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
         const auto &layer = *it;
         if (!layer) continue;
-        if (layer->parent_id.empty() || !valid_group_parent(layer->parent_id))
+        if (!valid_hierarchy_parent(layer))
             append(layer, 0);
     }
 
@@ -2084,7 +2232,7 @@ static int group_descendant_object_count(const std::shared_ptr<Title> &title,
     if (!title || group_id.empty()) return 0;
     int count = 0;
     for (const auto &layer : title->layers) {
-        if (!layer || layer_type_is_container(layer->type))
+        if (!layer || layer_type_can_have_children(layer->type))
             continue;
         std::string parent_id = layer->parent_id;
         std::set<std::string> visited;
@@ -2094,7 +2242,7 @@ static int group_descendant_object_count(const std::shared_ptr<Title> &title,
                 break;
             }
             auto parent = title->find_layer(parent_id);
-            if (!parent || !layer_type_is_container(parent->type))
+            if (!parent || !layer_type_can_have_children(parent->type))
                 break;
             parent_id = parent->parent_id;
         }
@@ -2128,6 +2276,8 @@ struct TimelineRow {
      * and timeline consume these exact rows. */
     bool is_property_channel = false;
     int property_channel = -1;
+    bool is_effect_group = false;
+    int effect_index = -1;
 };
 
 static QString timeline_property_channel_label(
@@ -2166,10 +2316,12 @@ static void append_timeline_property_rows(
     std::vector<TimelineRow> &rows, const Title &title,
     const std::shared_ptr<Layer> &owner, const TimelinePropertyRef &property,
     const std::string &owner_id, const QString &label, double in_time,
-    double out_time, bool locked, bool is_camera, bool is_camera_switch)
+    double out_time, bool locked, bool is_camera, bool is_camera_switch,
+    int effect_index = -1)
 {
     rows.push_back({owner, property, true, owner_id, label, in_time, out_time,
-                    locked, is_camera, is_camera_switch, false, -1});
+                    locked, is_camera, is_camera_switch, false, -1, false,
+                    effect_index});
     if (!timeline_property_channels_expanded(title, owner_id, property))
         return;
 
@@ -2180,7 +2332,7 @@ static void append_timeline_property_rows(
                             .arg(label, timeline_property_channel_label(property,
                                                                         channel)),
                         in_time, out_time, locked, is_camera, is_camera_switch,
-                        true, channel});
+                        true, channel, false, effect_index});
     }
 }
 
@@ -2248,24 +2400,69 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         if (!show_properties)
             continue;
         std::set<std::string> seen;
+        std::map<int, std::vector<TimelinePropertyRef>> effect_properties;
         for (auto prop : timeline_properties(*layer)) {
             const bool authorable_camera_assignment =
                 prop.name() == "camera_assignment" &&
                 layer->dimension_mode == LayerDimensionMode::ThreeD;
-            if (!prop.is_animated() && !authorable_camera_assignment) continue;
-            QString label = property_label(prop.name());
-            QString identity = label;
             const QString encoded = QString::fromStdString(prop.name());
             if (encoded.startsWith(QStringLiteral("__effect__"))) {
                 const QStringList parts = encoded.split(QStringLiteral("__"));
-                if (parts.size() >= 3)
-                    identity.prepend(QStringLiteral("effect-%1:").arg(parts.at(2)));
+                bool valid_index = false;
+                const int effect_index = parts.size() >= 3
+                    ? parts.at(2).toInt(&valid_index) : -1;
+                /* FX strips are a keyframe navigation surface, not a mirror of
+                 * the full Effects panel.  Emit an effect strip only when that
+                 * effect owns at least one authored keyframe, and expose only
+                 * the keyframed properties/channels below it. */
+                if (prop.is_animated() && valid_index && effect_index >= 0 &&
+                    effect_index < static_cast<int>(layer->effects.size()))
+                    effect_properties[effect_index].push_back(prop);
+                continue;
             }
-            if (seen.insert(identity.toStdString()).second)
+            if (!prop.is_animated() && !authorable_camera_assignment) continue;
+            const QString label = property_label(prop.name());
+            if (seen.insert(label.toStdString()).second)
                 append_timeline_property_rows(
                     rows, *title, layer, prop, layer->id, label,
                     layer->in_time, layer->out_time, layer->locked,
                     false, false);
+        }
+
+        /* The stack is the hierarchy authority. Effect parent rows are emitted
+         * in exact stack order, and their keyframeable parameters follow
+         * immediately below them in both the Layer List and Timeline. */
+        for (int effect_index = 0;
+             effect_index < static_cast<int>(layer->effects.size());
+             ++effect_index) {
+            auto found = effect_properties.find(effect_index);
+            if (found == effect_properties.end() || found->second.empty())
+                continue;
+            const LayerEffect &effect = layer->effects[static_cast<size_t>(effect_index)];
+            QString effect_label = effect_type_name(effect.type);
+            if (!effect.extension_id.empty()) {
+                auto &catalog = BglEffectExtensionCatalog::instance();
+                if (catalog.effects().empty()) catalog.reload();
+                if (const auto *definition = catalog.find(
+                        QString::fromStdString(effect.extension_id)))
+                    effect_label = definition->displayName;
+            }
+            rows.push_back({layer, {}, false, layer->id, effect_label,
+                            layer->in_time, layer->out_time, layer->locked,
+                            false, false, false, -1, true, effect_index});
+            std::set<std::string> effect_seen;
+            for (const TimelinePropertyRef &prop : found->second) {
+                QString label = property_label(prop.name());
+                const QString redundant_prefix = effect_label + QLatin1Char(' ');
+                if (label.startsWith(redundant_prefix, Qt::CaseInsensitive))
+                    label = label.mid(redundant_prefix.size());
+                if (!effect_seen.insert(label.toStdString()).second)
+                    continue;
+                append_timeline_property_rows(
+                    rows, *title, layer, prop, layer->id, label,
+                    layer->in_time, layer->out_time, layer->locked,
+                    false, false, effect_index);
+            }
         }
     }
     return rows;

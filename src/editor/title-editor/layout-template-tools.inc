@@ -127,6 +127,16 @@ std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const s
                    (!title_ || !title_->find_layer(clone->asset_owner_id))) {
             clone->asset_owner_id.clear();
         }
+
+        auto media_owner_clone = cloned_ids_by_original.find(clone->linked_media_layer_id);
+        if (media_owner_clone != cloned_ids_by_original.end()) {
+            clone->linked_media_layer_id = media_owner_clone->second;
+        } else if (clone->linked_media_stream) {
+            /* A stream is never allowed to become an independent copied layer. */
+            clone->linked_media_layer_id.clear();
+            clone->linked_media_stream = false;
+            clone->parent_id.clear();
+        }
     }
 
     return clones;
@@ -230,6 +240,7 @@ void TitleEditor::duplicate_selected_layers()
             next_layers.push_back(clone->second);
     }
     title_->layers = std::move(next_layers);
+    synchronize_video_audio_streams(*title_);
 
     std::vector<std::string> clone_ids;
     clone_ids.reserve(requested_ids.size());
@@ -715,6 +726,7 @@ void TitleEditor::paste_layer_from_clipboard()
         if (anchor != title_->layers.end()) insert_pos = anchor + 1;
     }
     title_->layers.insert(insert_pos, pasted_layers.begin(), pasted_layers.end());
+    synchronize_video_audio_streams(*title_);
 
     std::set<std::string> clipboard_ids;
     for (const auto &layer : clipboard_layers)
@@ -1046,12 +1058,21 @@ void TitleEditor::play_pause()
     if (canvas_) canvas_->set_playback_active(playing_);
     if (playing_) {
         const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
-        if (cache_settings.from_beginning)
+        if (cache_settings.from_beginning) {
+            const bool follow_title_mode = cache_settings.follow_title_playback_mode;
+            if (follow_title_mode && title_->playback_mode == 1) {
+                const double loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
+                const double loop_end = std::clamp(title_->loop_end, loop_start, title_->duration);
+                on_playhead_changed(loop_end > loop_start + 0.0001 ? loop_start : 0.0);
+            } else {
+                on_playhead_changed(0.0);
+            }
+        } else if (playhead_ >= title_->duration) {
+            /* Restart only at the physical end of the title. Being after a
+             * Pause/Loop zone is a valid current-playhead start when Playback
+             * and Cache is set to start from the current frame. */
             on_playhead_changed(0.0);
-        if (title_->playback_mode != 2 && playhead_ >= title_->duration)
-            on_playhead_changed(0.0);
-        if (title_->playback_mode == 2 && playhead_ >= std::clamp(title_->pause_time, 0.0, title_->duration))
-            on_playhead_changed(0.0);
+        }
         act_play_->setText("⏸");
         act_play_->setIcon(obs_icon("pause.svg"));
         playback_clock_.restart();
@@ -1214,6 +1235,13 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
         const auto parent_it = id_map.find(source->parent_id);
         clone->parent_id = parent_it != id_map.end()
             ? parent_it->second : asset_layer->id;
+        const auto media_owner_it = id_map.find(source->linked_media_layer_id);
+        if (media_owner_it != id_map.end()) {
+            clone->linked_media_layer_id = media_owner_it->second;
+        } else if (clone->linked_media_stream) {
+            clone->linked_media_layer_id.clear();
+            clone->linked_media_stream = false;
+        }
         const auto transform_it = id_map.find(source->transform_parent_id);
         clone->transform_parent_id = transform_it != id_map.end()
             ? transform_it->second : std::string();
@@ -1236,6 +1264,7 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
     for (auto &clone : clones)
         title_->layers.push_back(std::move(clone));
     title_->layers.push_back(asset_layer);
+    synchronize_video_audio_streams(*title_);
 
     layers_->refresh();
     timeline_->set_title(title_);

@@ -83,6 +83,7 @@ void TitleEditor::sync_editor_audio_preview(bool discontinuity)
     if (!editor_audio_preview_source_)
         return;
 
+    title_source_set_editor_title_snapshot(editor_audio_preview_source_, title_);
     title_source_set_editor_transport(editor_audio_preview_source_, playhead_,
                                       playback_reverse_);
 
@@ -130,7 +131,7 @@ void TitleEditor::publish_editor_audio_runtime_state()
         if (!src) continue;
         auto dst = stored->find_layer(src->id);
         if (!dst) continue;
-        if (src->type == LayerType::Audio || layer_type_is_container(src->type)) {
+        if (src->type == LayerType::Audio || src->type == LayerType::Video || layer_type_is_container(src->type)) {
             dst->audio_volume = src->audio_volume;
             dst->audio_pan = src->audio_pan;
             dst->audio_volume_prop = src->audio_volume_prop;
@@ -155,24 +156,44 @@ void TitleEditor::update_footer_diagnostics()
 {
     if (!status_diagnostics_label_) return;
     int total = 0, ready = 0;
+    int active_waveform_percent = 100;
+    QString active_waveform_label;
     if (title_) {
         auto stored = TitleDataStore::instance().get_title(title_->id);
         for (const auto &layer : title_->layers) {
             if (!layer || layer->type != LayerType::Audio) continue;
             ++total;
             bool has = !layer->audio_waveform.empty();
-            if (!has && stored) {
+            if (stored) {
                 auto runtime_layer = stored->find_layer(layer->id);
-                if (runtime_layer && !runtime_layer->audio_waveform.empty()) {
-                    layer->audio_waveform = runtime_layer->audio_waveform;
-                    layer->audio_waveform_duration = runtime_layer->audio_waveform_duration;
-                    has = true;
+                if (runtime_layer) {
+                    if (!runtime_layer->audio_waveform.empty()) {
+                        layer->audio_waveform = runtime_layer->audio_waveform;
+                        layer->audio_waveform_duration = runtime_layer->audio_waveform_duration;
+                        has = true;
+                    }
+                    layer->audio_waveform_progress_percent =
+                        runtime_layer->audio_waveform_progress_percent;
+                    layer->audio_waveform_generating =
+                        runtime_layer->audio_waveform_generating;
+                    layer->audio_waveform_progress_label =
+                        runtime_layer->audio_waveform_progress_label;
                 }
             }
-            if (has) ++ready;
+            if (has) {
+                ++ready;
+            } else if (layer->audio_waveform_generating) {
+                active_waveform_percent = std::clamp(
+                    layer->audio_waveform_progress_percent, 0, 99);
+                active_waveform_label = layer->audio_waveform_progress_label.empty()
+                    ? QString::fromStdString(layer->name)
+                    : QString::fromStdString(layer->audio_waveform_progress_label);
+            }
         }
     }
-    const int waveform_percent = total == 0 ? 100 : (ready * 100 / total);
+    const int waveform_percent = total == 0 ? 100 :
+        std::max(0, std::min(100, (ready * 100 + active_waveform_percent) /
+                                  std::max(1, total)));
     const CanvasPreview::DiagnosticsSample diagnostics = canvas_
         ? canvas_->take_diagnostics_sample()
         : CanvasPreview::DiagnosticsSample{};
@@ -190,11 +211,19 @@ void TitleEditor::update_footer_diagnostics()
         ? QStringLiteral("#e53935") : normal_color;
 
     QStringList parts;
-    if (waveform_percent < 100)
-        parts << QStringLiteral("Waveform %1%").arg(waveform_percent);
+    if (waveform_percent < 100) {
+        if (!active_waveform_label.isEmpty())
+            parts << QStringLiteral("Waveform %1% — %2")
+                         .arg(waveform_percent)
+                         .arg(active_waveform_label.toHtmlEscaped());
+        else
+            parts << QStringLiteral("Waveform %1%").arg(waveform_percent);
+    }
     parts << QStringLiteral("Average time to render frame: <span style=\"color:%1\">%2 ms</span>")
                  .arg(render_color).arg(render_ms, 0, 'f', 1);
     parts << QStringLiteral("FPS: <span style=\"color:%1\">%2</span>")
                  .arg(fps_color).arg(live_fps, 0, 'f', 1);
     status_diagnostics_label_->setText(parts.join(QStringLiteral("   |   ")));
+    if (waveform_percent < 100 && timeline_)
+        timeline_->update();
 }

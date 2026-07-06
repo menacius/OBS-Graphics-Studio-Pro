@@ -103,7 +103,7 @@ A changed value publishes a runtime-only revision, editor callback, and coalesce
 
 ## Serialization and migration
 
-The title store remains a top-level JSON array. Schema 6 and the development migration ledger are contiguous from Development Version 144 through 219, including deliberate no-op steps. Migrations and validation are idempotent. Malformed nested cameras, keyframes, effects, transitions, audio effects, bindings, proxy data and provider entries are isolated rather than rejecting the complete title.
+The title store remains a top-level JSON array. Schema 6 and the development migration ledger are contiguous from Development Version 144 through 220, including deliberate no-op steps. Migrations and validation are idempotent. Malformed nested cameras, keyframes, effects, transitions, audio effects, bindings, proxy data and provider entries are isolated rather than rejecting the complete title.
 
 Unknown/newer fields survive real load-edit-save round trips at title, layer, camera, animated-property, keyframe, effect, transition, audio-effect, proxy and external-provider levels. Opaque future-schema payloads use immutable shared storage with copy-on-write replacement; render fingerprints explicitly disable passthrough parsing and merging so preservation does not add per-frame copies.
 
@@ -112,6 +112,7 @@ Duplicate/missing layer IDs, dangling/self links and hierarchy cycles are repair
 ## Regression coverage
 
 The automated profiles cover editor GUI ownership, Timeline/Graph Editor parity, serialization round trips, 2D/3D rendering, masks/effects, cache/proxy/threading, audio transport, cue persistence, external data, shutdown lifetime and platform builds. The Development Version 219 hot-path test copies snapshots containing multi-megabyte unknown-field payloads and verifies shared immutable storage.
+The Development Version 220 effects-runtime contract additionally verifies canonical descriptors, allocation-free resolved state, shader caching, shared bounds policy, reusable compositor resources, effect diagnostics and the no-op schema-6 migration ledger entry.
 
 Manual host validation remains required for GPU output, OBS mixer timing, proxy playback and lifecycle behavior. Repeat the matrix with cache disabled, RAM cache enabled and RAM+disk enabled:
 
@@ -129,3 +130,5 @@ Manual host validation remains required for GPU output, OBS mixer timing, proxy 
 ## Manual release checklist vocabulary
 
 The maintained host checklist explicitly covers Undo/redo, Copy/paste, Group/ungroup, Save/reopen, External JSON, Audio layer pause/resume/seek, Stinger scene transition, Corrupt proxy cache recovery, Dock layout restoration, Windows and Linux parity, and OBS startup/shutdown.
+
+The Development Version 222 procedural-noise contract verifies versioned schema reset behavior, deterministic shader inputs, schema-3 controls, cache-key coverage and editor exposure.

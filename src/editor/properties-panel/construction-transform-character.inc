@@ -209,8 +209,14 @@
                                    std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
     };
     auto fit_image_size_to_current_image = [this, local_time]() {
-        if (!layer_ || layer_->image_path.empty()) return;
-        const QSize image_size = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
+        if (!layer_ || !layer_type_is_image_like(layer_->type)) return;
+        QSize image_size;
+        if (layer_->type == LayerType::Video) {
+            image_size = QSize(layer_->video_pixel_width, layer_->video_pixel_height);
+        } else if (!layer_->image_path.empty()) {
+            image_size = editor_image_intrinsic_size(
+                QString::fromStdString(layer_->image_path));
+        }
         if (!image_size.isValid() || image_size.isEmpty()) return;
         const double t = local_time();
         layer_->image_width = (float)image_size.width();
@@ -221,12 +227,14 @@
         layer_->lock_aspect_ratio = layer_->image_box_mode != ImageBoxMode::StretchToFill;
     };
     auto refresh_image_size_controls = [this, local_time]() {
-        if (!layer_ || layer_->type != LayerType::Image) return;
+        if (!layer_ || !layer_type_is_image_like(layer_->type)) return;
         const double t = local_time();
         double raw_w = eval_image_width(*layer_, t);
         double raw_h = eval_image_height(*layer_, t);
         if (raw_w <= 0.0 || raw_h <= 0.0) {
-            const QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
+            const QSize intrinsic = layer_->type == LayerType::Video
+                ? QSize(layer_->video_pixel_width, layer_->video_pixel_height)
+                : editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
             if (intrinsic.isValid() && !intrinsic.isEmpty()) {
                 raw_w = intrinsic.width();
                 raw_h = intrinsic.height();
@@ -402,7 +410,7 @@
     install_prop_delete_all(btn_kf_paragraph_space_after_, &Layer::paragraph_space_after_prop);
     install_vec_delete_all_resolved(btn_kf_width_, [this]() -> AnimatedVec2Property * {
         if (!layer_) return nullptr;
-        return layer_->type == LayerType::Image ? &layer_->image_size : &layer_->size;
+        return layer_type_is_image_like(layer_->type) ? &layer_->image_size : &layer_->size;
     });
     install_vec_delete_all(btn_kf_image_box_size_, &Layer::size);
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
@@ -978,7 +986,11 @@
             });
     connect(chk_scene_mask_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
-                if (can_edit()) { layer_->use_as_scene_mask = v; load_values(); emit_change(); }
+                if (can_edit()) {
+                    layer_->use_as_scene_mask = v && layer_->type != LayerType::Video;
+                    load_values();
+                    emit_change();
+                }
             });
     auto connect_alignment_group = [this, can_edit, emit_change, current_text_paragraph_format, apply_text_paragraph_format](QButtonGroup *group, bool horizontal) {
         if (!group) return;

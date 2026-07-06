@@ -17,8 +17,8 @@ set_title_definition = sync.index("void PropertiesPanel::set_title")
 assert constructor_end < anchor_definition < set_title_definition
 assert '#include "properties-panel/auto-style-and-property-actions.inc"' in cpp
 assert '#include "properties-panel/property-synchronization.inc"' in cpp
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert "kCurrentDevelopmentVersion = 219" in schema
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert "kCurrentDevelopmentVersion = 239" in schema
 assert "case 206:" in schema
 print("Development Version 206 MSVC anchor-preset scope contract passed")

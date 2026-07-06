@@ -22,9 +22,9 @@ readme = read("README.md")
 changelog = read("docs/CHANGELOG.md")
 
 # Version identity and migration ledger.
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in read("CMakeLists.txt")
-assert 'BGL_DEVELOPMENT_VERSION "219"' in read("src/core/build-info.h")
-assert 'kCurrentDevelopmentVersion = 219' in schema
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in read("CMakeLists.txt")
+assert 'BGL_DEVELOPMENT_VERSION "239"' in read("src/core/build-info.h")
+assert 'kCurrentDevelopmentVersion = 239' in schema
 assert 'case 212:' in schema
 
 # Legacy vector names remain, but every payload carries Z and old XY is promoted.
@@ -94,6 +94,6 @@ assert 'if (!prop.is_animated() && !authorable_camera_assignment) continue;' in 
 assert 'const auto shared_timeline_rows = timeline_rows(title_);' in layer_stack_cpp
 
 assert 'Layer List, Timeline and Graph Editor share one expanded Vector3 row model' in readme
-assert changelog.startswith('# v0.8.10-alpha — Development Version 219')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
 
 print('Development Version 212 unified Vector3/camera/timeline contract passed')

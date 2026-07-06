@@ -51,6 +51,16 @@ enum class Counter : std::size_t {
     RenderQueuePeak,
     GizmoGeometryCacheHits,
     GizmoGeometryCacheMisses,
+    EffectParameterResolutions,
+    EffectParameterResolutionNanoseconds,
+    EffectShaderCacheHits,
+    EffectShaderCacheMisses,
+    EffectBoundsEvaluations,
+    EffectPasses,
+    EffectPassNanoseconds,
+    EffectSurfacePoolHits,
+    EffectSurfacePoolMisses,
+    EffectEmptyStackFastPaths,
     BackgroundJobsActive,
     Count
 };
@@ -112,6 +122,16 @@ inline const char *counter_name(Counter counter)
     case Counter::RenderQueuePeak: return "render_queue_peak";
     case Counter::GizmoGeometryCacheHits: return "gizmo_geometry_cache_hits";
     case Counter::GizmoGeometryCacheMisses: return "gizmo_geometry_cache_misses";
+    case Counter::EffectParameterResolutions: return "effect_parameter_resolutions";
+    case Counter::EffectParameterResolutionNanoseconds: return "effect_parameter_resolution_ns";
+    case Counter::EffectShaderCacheHits: return "effect_shader_cache_hits";
+    case Counter::EffectShaderCacheMisses: return "effect_shader_cache_misses";
+    case Counter::EffectBoundsEvaluations: return "effect_bounds_evaluations";
+    case Counter::EffectPasses: return "effect_passes";
+    case Counter::EffectPassNanoseconds: return "effect_pass_ns";
+    case Counter::EffectSurfacePoolHits: return "effect_surface_pool_hits";
+    case Counter::EffectSurfacePoolMisses: return "effect_surface_pool_misses";
+    case Counter::EffectEmptyStackFastPaths: return "effect_empty_stack_fast_paths";
     case Counter::BackgroundJobsActive: return "background_jobs_active";
     case Counter::Count: break;
     }
@@ -200,8 +220,13 @@ inline std::string snapshot_text()
 class ScopedTimer {
 public:
     explicit ScopedTimer(Counter destination)
+#ifndef NDEBUG
         : destination_(destination), start_(std::chrono::steady_clock::now())
+#endif
     {
+#ifdef NDEBUG
+        (void)destination;
+#endif
     }
 
     ~ScopedTimer()
@@ -215,8 +240,10 @@ public:
     }
 
 private:
+#ifndef NDEBUG
     Counter destination_;
     std::chrono::steady_clock::time_point start_;
+#endif
 };
 
 class BackgroundJobScope {

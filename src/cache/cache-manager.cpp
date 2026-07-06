@@ -14,6 +14,7 @@
 #include "live-text-cue-utils.h"
 #include "layer-transform-3d.h"
 #include "performance-counters.h"
+#include "effects/effect-runtime.h"
 
 #include <QCryptographicHash>
 #include <QDir>

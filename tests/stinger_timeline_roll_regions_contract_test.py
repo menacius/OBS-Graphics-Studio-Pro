@@ -51,7 +51,7 @@ assert "const double new_offset = timeline_pre_roll();" in graph
 
 assert "OBSTitles.StingerPreRoll=" in locale
 assert "OBSTitles.StingerPostRoll=" in locale
-assert 'OBS_BGS_DEVELOPMENT_VERSION "219"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "219"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
 
 print("Stinger timeline roll-regions contract passed")

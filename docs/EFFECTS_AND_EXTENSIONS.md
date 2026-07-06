@@ -8,9 +8,17 @@ The bottom toolbar contains **Add Effect** and **Respect Masks**. Effect setting
 
 The layer list keeps the **FX** badge visible whenever a stack exists. An enabled stack uses the active badge state; disabling the whole stack draws a diagonal strike-through over the badge so the user can distinguish “effects present but bypassed” from “no effects”. External-data binding dots remain independent from this visual state.
 
+## Unified effect runtime
+
+Development Version 220 establishes `EffectDescriptor` as the canonical built-in effect contract. The editor catalog, shader registry, cache policy, compatibility compositor and planar-3D renderer consume the same stable ID, legacy adapter, schema version, parameter metadata, execution space, backend, color-space contract, premultiplied-alpha contract, minimum pass count, HDR support, bounds behavior and static-cache eligibility. Built-in metadata is also exposed through the extension catalog so future external effects can follow the same vocabulary.
+
+Render-time parameter evaluation produces an allocation-free `ResolvedLayerEffect` snapshot. It stores only evaluated scalar/color state and a non-owning pointer to optional extension JSON; it never copies effect strings, keyframe vectors or opaque serialization payloads. Static descriptors remain independent from title schema 6, allowing a future effect-specific migration without rewriting unrelated title data.
+
+Dirty propagation has three scopes: effect-output-only, layer-raster and whole-composition. Screen-space/affect-layers-behind effects require composition invalidation; geometry-generating Background Color and Outline require a layer-raster refresh; ordinary pixel effects invalidate only their effected output. The same runtime computes asymmetric left/top/right/bottom expansion for shadow and other padded effects, replacing parallel compositor-specific padding rules.
+
 ## Built-in effects and presets
 
-Built-in effects use stable namespaced IDs (`bgl.builtin.*`) while retaining legacy numeric adapters for older project files. Presets and Add Effect menus are generated from the shared catalog. Built-ins include color/generate effects, blur families, shadows, glow, outline, grading, noise, vignette, emboss, lens flare, motion blur, and generated gradients.
+Built-in effects use stable namespaced IDs (`bgl.builtin.*`) while retaining numeric serialization adapters for older project files. Presets and Add Effect menus are generated from the shared catalog. Built-ins include color/generate effects, blur and detail families, shadows, glow, outline, grading, procedural noise, vignette, Lens Flare, Real Glare, Halation, lens distortion, chromatic aberration, warps, finishing effects, motion blur and generated gradients.
 
 Effect parameters may be static or animated. Position-like parameters can expose canvas handles, and keyframe diamonds use the same animation model as ordinary layer properties.
 
@@ -69,3 +77,39 @@ Depth Test and Write Depth are independent for compatible planar layers:
 - **Test disabled, Write disabled:** remain an authored-order compositing layer.
 
 Backface classification uses final projected winding so negative scale, mirrored parents and perspective remain predictable. Transparent compatible planes are ordered far-to-near with authored order as the coplanar tie-break. Masks, destination-aware blend modes and groups retain their required compatibility/offscreen boundaries.
+
+## Procedural Noise Engine
+
+Development Version 222 replaces the compatibility split with a single Noise schema 3. Fine Grain, Film Grain, Digital Sensor, Clouds/fBM, Turbulence, Ridged, Cellular and Blue-noise Dither use deliberately different spatial models and scales. Stored Noise instances from an older schema are reset to the current defaults when loaded; no legacy engine or legacy parameter mode is exposed. Static Noise remains cacheable, while animated or keyframed Noise is time-variant.
+
+## Detail, optical and auxiliary-pass effects
+
+Sharpen, Unsharp Mask, High Pass, Clarity / Local Contrast and Bilateral Sharpen share the GPU detail core. The host first creates a Gaussian low-pass texture and binds it as `blurredImage`; the selected detail technique then compares that texture with the original source. Controls include radius, amount, threshold, luminance-only processing and alpha protection, with effect-specific highlight/shadow, midtone and edge-preservation controls.
+
+Real Glare and Halation no longer share Lens Flare rendering. Glare extracts source highlights and builds directional streaks with dispersion, while Halation composites a thresholded warm diffusion field. Their auxiliary passes are generated before the final optical technique and both paths fail open if an optional shader technique cannot execute.
+
+## Lens, distortion and finishing effects
+
+Development Version 224 adds dedicated GPU techniques and editor controls for:
+
+- Lens Distortion and Chromatic Aberration;
+- Directional Blur, Zoom Blur and Radial Blur;
+- Ripple and Wave Warp;
+- Pixelate and Edge Detect;
+- Posterize, Threshold and Scanlines.
+
+These effects use the same canonical descriptors, cache fingerprints, serialization validation, padded-bounds calculation and embedded-shader fallback mechanism as the rest of the built-in stack.
+
+Built-in effect schemas are intentionally forward-only. When a built-in effect implementation changes schema, existing instances reopen as fresh instances using the new defaults. Legacy controls and compatibility render branches are not retained.
+
+## Development Version 225 — Keying and matte effects
+
+The built-in keying family contains Chroma Key, Luma Key, Color Range, Spill Suppression and Matte Choker. All five use current-schema defaults only, are routable through the standard GPU effect compositor, and remain keyframeable and cache-aware.
+
+## Development Version 226 — Source effects, presets and shared animation hierarchy
+
+Light Wrap can sample either the already composited background or a selected layer. Its GPU path uses alpha-aware foreground-edge extraction, configurable radius, intensity and edge width, spill tinting and foreground-luminance protection. Displacement Map samples a selected layer even when that layer is hidden from the final composite, supports independent luminance/R/G/B/alpha channels, signed horizontal and vertical amounts, four wrap modes and source-space or composition-space mapping. Cyclic source dependencies fail open rather than recursing indefinitely.
+
+The Effects panel now provides a searchable categorized browser, Favorites, Recently Used, generated thumbnails and GPU/CPU/HDR/external-plugin/screen-space/cache-breaking badges. Individual effects and complete stacks can be copied and pasted; complete stacks can also be saved, imported and exported as `.obgstack` presets. Replace, reset parameter, reset effect, duplicate and stack-wide enable operations are available from the effect and stack menus.
+
+The effect stack is the hierarchy authority for both the Layer List and Timeline. Each effect has a parent row and its keyframeable parameters appear directly below it in the same order. Numeric controls use ordinary animation tracks and Graph Editor channels, color controls remain unified while exposing component channels, angle values support continuous rotation and evolution values are not wrapped.

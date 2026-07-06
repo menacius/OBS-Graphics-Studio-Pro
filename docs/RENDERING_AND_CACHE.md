@@ -6,6 +6,12 @@ The editor preview and OBS source are intended to use the same title model, effe
 
 Ordinary layer effects run in layer space on a padded raster. Full-canvas passes are reserved for effects or adjustment behavior that genuinely requires scene-space access. Background Color, Outline, Shadow, Glow, blur families, generated gradients, and masks must preserve transparent bounds and avoid accidental full-canvas expansion.
 
+## Effect hot-path and resource lifetime
+
+Effect shaders are compiled on first use and retained in an indexed built-in cache; extension shaders use a stable-ID map. Rendering an effect stack reuses session-owned evaluated-state and shader-pointer arrays after their initial capacity growth. The compatibility GPU bridge retains a dimension-aware dynamic upload texture, two ping-pong render targets, one staging surface and reusable CPU transfer buffers. Resources are recreated only when dimensions change and are released with the OBS graphics subsystem. An empty or bypassed stack takes a direct fast path and creates no pass resources.
+
+Debug counters record parameter-resolution count/time, shader-cache hits/misses, bounds evaluations, executed effect passes/pass time, compatibility resource-pool hits/misses and empty-stack fast paths. No file access or shader compilation occurs after a shader has entered the runtime cache. Native host/reference-frame testing remains the release gate for pixel parity and real GPU timing.
+
 ## Editor presentation
 
 During normal editing and scrubbing the editor can refresh up to the active monitor rate. During authored playback, frame advancement follows the project frame rate. Interactive quality can be reduced temporarily during high-frequency manipulation, then restored for the settled frame.
@@ -23,7 +29,9 @@ While an authoritative editor model refresh is pending, cached final-frame submi
 
 Audio media is decoded and waveform data is generated outside the UI and OBS render threads. The source runtime mixes fixed-size sample blocks with continuous timestamps, bounded buffering, transport-discontinuity resets, and separate low-latency editor monitoring. Mix, trim, fade, pan, gain, mute/solo, loop, keyframes, and DSP changes do not rebuild unrelated visual cache frames.
 
-Editor transport publishes an exact playhead and direction to its private monitor source. Reverse playback reads decoded samples in descending order while OBS packet timestamps remain monotonic. Only titles containing an Audio layer activate an OBS mixer device.
+Video frames are also decoded asynchronously. The renderer requests a frame for the absolute title time instead of advancing a private video clock; stale decode generations are discarded. Every embedded audio stream remains a normal Audio mixer clip, but its effective source, media range, loop and timeline range are resolved from its owner Video at mix time. This keeps picture and all streams on one transport without mutating the authoring model from playback threads.
+
+Editor transport publishes an exact playhead and direction to its private monitor source. Reverse playback reads decoded samples in descending order while OBS packet timestamps remain monotonic. Titles containing standalone Audio or Video with embedded audio activate an OBS mixer device.
 
 ## RAM and disk cache
 

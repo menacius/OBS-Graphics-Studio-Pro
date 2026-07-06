@@ -20,9 +20,9 @@ gpu_key = read("src/obs/title-source/gpu-presentation-readback.inc")
 doc = read("docs/EDITOR_WORKFLOW.md")
 changelog = read("docs/CHANGELOG.md")
 readme = read("README.md")
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "219")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "219"' in build
-assert 'kCurrentDevelopmentVersion = 219' in schema
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert 'kCurrentDevelopmentVersion = 239' in schema
 assert 'bool parent_bind_enabled = false' in model
 assert 'std::array<double, 16> parent_bind_matrix' in model
 assert 'j["parent_bind_enabled"]' in data and 'j["parent_bind_matrix"]' in data
@@ -49,13 +49,13 @@ assert 'editor_layer_parent_bind_transform(layer) * parent_basis' in canvas
 assert 'layer_parent_bind_qt(layer) * parent_basis' in compositor
 assert 'add(layer->parent_bind_enabled)' in hash_source
 assert 'v39-parent-bind-matrix-3d-pipeline-completion' in cache_abi
-assert 'v11-parent-bind-matrix' in gpu_key
+assert 'gpu-effects-v17-keying-matte' in gpu_key
 # Existing 3D composition contracts remain present.
 assert 'hardware_depth_candidate' in transform
 assert 'LayerEffectSpace::PostTransform' in transform
 assert 'LayerEffectSpace::ScreenSpace' in transform
 assert 'ordered_group_children' in transform
 assert 'Keyframe-safe hierarchy' in readme
-assert changelog.startswith('# v0.8.10-alpha — Development Version 219')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
 assert 'parent-bind matrix' in doc
 print('Development Version 216 3D pipeline completion contract passed')

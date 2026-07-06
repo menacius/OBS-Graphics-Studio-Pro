@@ -10,6 +10,6 @@ assert "required_padding = std::clamp" in renderer
 assert "extents.outside + 2.5f" in renderer
 assert "cluster_animation->blur" in renderer
 assert "cluster_animation->stroke_width_delta" in renderer
-assert "OBS_BGS_DEVELOPMENT_VERSION \"219\"" in cmake
-assert "BGL_DEVELOPMENT_VERSION \"219\"" in build
+assert "OBS_BGS_DEVELOPMENT_VERSION \"231\"" in cmake
+assert "BGL_DEVELOPMENT_VERSION \"231\"" in build
 print("gpu text glyph overdraw contract: ok")

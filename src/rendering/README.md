@@ -37,3 +37,8 @@ Phase 13 moves masks and track mattes into a recursive GPU mask graph:
 - transformed mattes are retained in a double-buffered GPU texture cache;
 - scene masks consume the same GPU matte textures; and
 - no Cairo/QPainter alpha-mask compositor remains.
+
+Development Version 220 routes built-in effects through an indexed first-use
+shader cache. GPU effect stacks reuse session-owned evaluated-state/pass arrays;
+the compatibility bridge reuses a dimension-aware upload texture, ping-pong
+render targets, staging surface and transfer buffers until dimensions change.

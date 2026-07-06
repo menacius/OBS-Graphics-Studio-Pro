@@ -1,5 +1,6 @@
 #include "layer-transform-3d.h"
 #include "asset-runtime.h"
+#include "effects/effect-runtime.h"
 
 #include <QPolygonF>
 #include <QQuaternion>
@@ -429,7 +430,7 @@ bool effect_stack_has_active_space(const Layer &layer, double local_time,
     return std::any_of(layer.effects.begin(), layer.effects.end(),
         [&](const LayerEffect &effect) {
             return evaluated_effect_enabled_3d(effect, local_time) &&
-                   layer_effect_execution_space(effect) == space;
+                   effect_execution_space(effect) == space;
         });
 }
 

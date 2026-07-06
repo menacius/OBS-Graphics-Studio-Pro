@@ -1185,6 +1185,11 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
     menu.addSeparator();
     QMenu *transform = menu.addMenu(bgl_tr("OBSTitles.Transform"));
     transform->setStyleSheet(menu_style);
+    QAction *fit_screen = transform->addAction(
+        bgl_tr("OBSTitles.FitScreen"));
+    QAction *fill_screen = transform->addAction(
+        bgl_tr("OBSTitles.FillScreen"));
+    transform->addSeparator();
     QAction *flip_horizontal = transform->addAction(
         bgl_tr("OBSTitles.FlipHorizontal"));
     QAction *flip_vertical = transform->addAction(
@@ -1234,6 +1239,10 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
         emit remove_layers_from_group_requested();
     else if (chosen && group_targets.find(chosen) != group_targets.end())
         emit add_layers_to_group_requested(group_targets.at(chosen));
+    else if (chosen == fit_screen)
+        emit fit_fill_layers_requested(false);
+    else if (chosen == fill_screen)
+        emit fit_fill_layers_requested(true);
     else if (chosen == flip_horizontal)
         emit flip_layers_requested(true);
     else if (chosen == flip_vertical)

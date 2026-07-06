@@ -11,7 +11,7 @@ QWidget *TitleEditor::create_effects_presets_panel()
                 auto layer = title_->find_layer(sel_layer_id_);
                 if (!layer || layer->locked) return;
                 bool audio_capable = layer->type == LayerType::Audio;
-                if (layer_type_is_container(layer->type)) {
+                if (layer_type_can_have_children(layer->type)) {
                     std::set<std::string> pending{layer->id}, visited;
                     while (!pending.empty() && !audio_capable) {
                         const std::string parent_id = *pending.begin(); pending.erase(pending.begin());
@@ -19,11 +19,12 @@ QWidget *TitleEditor::create_effects_presets_panel()
                         for (const auto &child : title_->layers) {
                             if (!child || child->parent_id != parent_id) continue;
                             if (child->type == LayerType::Audio) { audio_capable = true; break; }
-                            if (layer_type_is_container(child->type)) pending.insert(child->id);
+                            if (layer_type_can_have_children(child->type)) pending.insert(child->id);
                         }
                     }
                 }
                 if (!audio_capable) return;
+                effects_panel_->set_title(title_);
                 effects_panel_->set_layer(layer, playhead_);
                 if (effects_panel_->add_audio_effect(static_cast<AudioEffectType>(type))) on_title_modified();
             });
