@@ -458,12 +458,33 @@ std::vector<TextLayoutPaintSlice> text_layout_cluster_paint_slices(
         return cluster.x + cluster.width * logical;
     };
 
-    for (size_t i = 0; i < paint_runs.size(); ++i) {
-        const TextLayoutPaintRun &run = paint_runs[i];
-        const size_t run_start = std::min(run.byte_start, text_size);
-        const size_t run_end = run.byte_length > text_size - run_start
-                                 ? text_size
-                                 : run_start + run.byte_length;
+    /* Paint runs are canonical and ordered by byte start. Begin at the first
+     * possible overlap instead of scanning every range for every cluster. */
+    auto first = std::upper_bound(
+        paint_runs.begin(), paint_runs.end(), cluster_start,
+        [](size_t offset, const TextLayoutPaintRun &run) {
+            return offset < run.byte_start;
+        });
+    if (first != paint_runs.begin())
+        --first;
+    while (first != paint_runs.end()) {
+        const size_t run_start = std::min(first->byte_start, text_size);
+        const size_t run_end = first->byte_length > text_size - run_start
+                                   ? text_size
+                                   : run_start + first->byte_length;
+        if (run_end > cluster_start)
+            break;
+        ++first;
+    }
+
+    for (auto it = first; it != paint_runs.end(); ++it) {
+        const size_t i = static_cast<size_t>(it - paint_runs.begin());
+        const size_t run_start = std::min(it->byte_start, text_size);
+        if (run_start >= cluster_end)
+            break;
+        const size_t run_end = it->byte_length > text_size - run_start
+                                   ? text_size
+                                   : run_start + it->byte_length;
         const size_t begin = std::max(cluster_start, run_start);
         const size_t end = std::min(cluster_end, run_end);
         if (end <= begin)
@@ -479,18 +500,13 @@ std::vector<TextLayoutPaintSlice> text_layout_cluster_paint_slices(
 
     if (slices.empty()) {
         size_t index = paint_runs.size() - 1;
-        for (size_t i = 0; i < paint_runs.size(); ++i) {
-            const size_t run_start =
-                std::min(paint_runs[i].byte_start, text_size);
-            const size_t run_end =
-                paint_runs[i].byte_length > text_size - run_start
-                    ? text_size
-                    : run_start + paint_runs[i].byte_length;
-            if (cluster_start >= run_start && cluster_start < run_end) {
-                index = i;
-                break;
-            }
-        }
+        const auto upper = std::upper_bound(
+            paint_runs.begin(), paint_runs.end(), cluster_start,
+            [](size_t offset, const TextLayoutPaintRun &run) {
+                return offset < run.byte_start;
+            });
+        if (upper != paint_runs.begin())
+            index = static_cast<size_t>(std::prev(upper) - paint_runs.begin());
         slices.push_back({index, cluster.x, cluster.x + cluster.width});
         return slices;
     }

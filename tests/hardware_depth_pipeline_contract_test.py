@@ -23,9 +23,9 @@ compositor = text("src/obs/title-source/gpu-session-lifecycle.inc")
 destroy = text("src/obs/title-source/source-lifecycle-playback.inc")
 serialization = text("src/core/title-data.cpp")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build_info
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build_info
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*243", schema)
 assert "case 202:" in schema and "case 203:" in schema
 
 # A real color + depth/stencil attachment is owned by the GPU session.

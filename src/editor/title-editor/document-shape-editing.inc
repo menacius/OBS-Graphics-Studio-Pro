@@ -26,6 +26,13 @@
                  * invalidation, panel reflection and live publication are
                  * independently coalesced below. */
                 set_dirty(true);
+                inline_text_changed_since_undo_snapshot_ = true;
+                /* Typing starts a new canonical transaction. A property popup
+                 * can be dismissed without emitting its final commit signal;
+                 * never let that abandoned drag transaction absorb the next
+                 * text edit or suppress its history checkpoint. */
+                text_property_transaction_active_ = false;
+                text_property_transaction_layer_id_.clear();
                 schedule_cache_invalidation();
                 pending_inline_text_refresh_layer_id_ = layer_id;
                 if (inline_text_panel_refresh_timer_)
@@ -38,6 +45,11 @@
                 if (!title_) return;
                 active_text_edit_layer_id_ = layer_id;
                 if (props_) props_->set_active_text_edit_layer(layer_id);
+                /* A cursor/selection move terminates any uncommitted numeric
+                 * property drag. The next property edit must establish a fresh
+                 * undo boundary against the new canonical selection. */
+                text_property_transaction_active_ = false;
+                text_property_transaction_layer_id_.clear();
                 if (pending_inline_text_refresh_layer_id_ == layer_id) {
                     pending_inline_text_refresh_layer_id_.clear();
                     if (inline_text_panel_refresh_timer_)
@@ -45,6 +57,24 @@
                 }
                 if (auto layer = title_->find_layer(layer_id))
                     update_layer_panels(layer, playhead_);
+            });
+    connect(canvas_, &CanvasPreview::text_property_change_started,
+            this, [this](const std::string &layer_id) {
+                begin_text_property_transaction(layer_id);
+            });
+    connect(canvas_, &CanvasPreview::text_property_change_committed,
+            this, [this](const std::string &layer_id) {
+                commit_text_property_transaction(layer_id);
+            });
+    connect(canvas_, &CanvasPreview::title_undo_requested,
+            this, [this]() {
+                if (undo_index_ > 0)
+                    restore_undo_snapshot(undo_index_ - 1);
+            });
+    connect(canvas_, &CanvasPreview::title_redo_requested,
+            this, [this]() {
+                if (undo_index_ + 1 < (int)undo_stack_.size())
+                    restore_undo_snapshot(undo_index_ + 1);
             });
     connect(canvas_, &CanvasPreview::text_edit_committed,
             this, [this](const std::string &layer_id) {
@@ -74,6 +104,9 @@
                     }
                 }
                 on_title_modified();
+                inline_text_changed_since_undo_snapshot_ = false;
+                text_property_transaction_active_ = false;
+                text_property_transaction_layer_id_.clear();
                 if (renamed_layer && layers_)
                     layers_->refresh();
                 if (auto layer = title_->find_layer(layer_id))

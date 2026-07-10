@@ -10,7 +10,7 @@ loader=text("src/core/title-data.cpp")
 shader=text("data/effect-transitions/shaders/detail/detail.effect")
 noise=text("data/effect-transitions/shaders/noise/noise.effect")
 registry=text("src/rendering/title-effect-registry.cpp")
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
 for name in ("Sharpen","UnsharpMask","HighPass","Clarity","BilateralSharpen"):
     assert f"LayerEffectType::{name}" in runtime
     assert name in enum

@@ -266,6 +266,25 @@ static std::string bounded_string(const json &j, const char *key,
     return value;
 }
 
+static std::string bounded_json_payload(const json &j, const char *key,
+                                        const std::string &fallback,
+                                        size_t max_len)
+{
+    if (!j.is_object() || !j.contains(key))
+        return fallback;
+    std::string value;
+    if (j[key].is_string()) {
+        value = j[key].get<std::string>();
+    } else if (j[key].is_object() || j[key].is_array()) {
+        value = j[key].dump(-1, ' ', false, json::error_handler_t::replace);
+    } else {
+        return fallback;
+    }
+    if (value.size() > max_len)
+        value.resize(max_len);
+    return value;
+}
+
 static const json *object_member(const json &j, const char *key)
 {
     if (!j.is_object())
@@ -1204,10 +1223,21 @@ void synchronize_video_audio_streams(Title &title,
         audio->audio_in_point = video->video_in_point;
         audio->audio_out_point = video->video_out_point;
         audio->audio_media_duration = video->video_media_duration;
-        audio->audio_loop = video->video_loop;
-        audio->audio_playback_mode = video->video_loop
-            ? AudioPlaybackMode::Loop : AudioPlaybackMode::PlayOnce;
-        audio->audio_independent = false;
+        audio->audio_volume = video->audio_volume;
+        audio->audio_pan = video->audio_pan;
+        audio->audio_volume_prop = video->audio_volume_prop;
+        audio->audio_pan_prop = video->audio_pan_prop;
+        audio->audio_muted = video->audio_muted;
+        audio->audio_solo = video->audio_solo;
+        audio->audio_fade_in = video->audio_fade_in;
+        audio->audio_fade_out = video->audio_fade_out;
+        audio->audio_fade_curve = video->audio_fade_curve;
+        audio->audio_effects = video->audio_effects;
+        audio->audio_loop = video->video_loop || video->audio_loop ||
+            video->audio_playback_mode == AudioPlaybackMode::Loop;
+        audio->audio_playback_mode = audio->audio_loop
+            ? AudioPlaybackMode::Loop : video->audio_playback_mode;
+        audio->audio_independent = video->video_playback_mode == 1 || video->audio_independent;
         audio->in_time = video->in_time;
         audio->out_time = video->out_time;
     }
@@ -1353,6 +1383,169 @@ std::string live_text_row_id(const Title &title, int row)
         !title.live_text_row_ids[static_cast<size_t>(row)].empty())
         return title.live_text_row_ids[static_cast<size_t>(row)];
     return std::string("legacy-row-") + std::to_string(row);
+}
+
+static bool live_text_layer_supports_fill_cue(const Layer &layer)
+{
+    return (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+            layer.type == LayerType::Ticker || layer.type == LayerType::SolidRect ||
+            layer.type == LayerType::Shape || layer.type == LayerType::ColorSolid ||
+            layer.type == LayerType::TransitionInput) && !layer.use_as_scene_mask;
+}
+
+static bool live_text_layer_is_text_like(const Layer &layer)
+{
+    return layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+           layer.type == LayerType::Ticker;
+}
+
+static uint32_t live_text_layer_authored_fill_color(const Layer &layer)
+{
+    return live_text_layer_is_text_like(layer) ? layer.text_color : layer.fill_color;
+}
+
+void prune_live_text_cue_style_overrides(Title &title)
+{
+    ensure_live_text_row_ids(title);
+    std::set<std::string> valid_rows(title.live_text_row_ids.begin(), title.live_text_row_ids.end());
+    std::set<std::string> valid_layers;
+    for (const auto &layer : title.layers) {
+        if (!layer)
+            continue;
+        if (layer->expose_stroke_color ||
+            (layer->expose_fill_color && live_text_layer_supports_fill_cue(*layer)))
+            valid_layers.insert(layer->id);
+    }
+    title.live_text_cue_style_overrides.erase(
+        std::remove_if(title.live_text_cue_style_overrides.begin(),
+                       title.live_text_cue_style_overrides.end(),
+                       [&](const LiveTextCueStyleOverride &entry) {
+                           return entry.row_id.empty() || entry.layer_id.empty() ||
+                                  valid_rows.find(entry.row_id) == valid_rows.end() ||
+                                  valid_layers.find(entry.layer_id) == valid_layers.end() ||
+                                  (!entry.fill_color_set && !entry.stroke_color_set);
+                       }),
+        title.live_text_cue_style_overrides.end());
+}
+
+static std::string live_text_cue_style_row_id(const Title &title, const Layer &layer, int row, bool stroke)
+{
+    const bool single_value = stroke ? layer.exposed_stroke_single_value
+                                     : layer.exposed_fill_single_value;
+    return live_text_row_id(title, single_value ? 0 : row);
+}
+
+static LiveTextCueStyleOverride *mutable_live_text_cue_style_entry(
+    Title &title, const std::string &row_id, const std::string &layer_id, bool create)
+{
+    if (row_id.empty() || layer_id.empty())
+        return nullptr;
+    auto it = std::find_if(title.live_text_cue_style_overrides.begin(),
+                           title.live_text_cue_style_overrides.end(),
+                           [&](const LiveTextCueStyleOverride &entry) {
+                               return entry.row_id == row_id && entry.layer_id == layer_id;
+                           });
+    if (it != title.live_text_cue_style_overrides.end())
+        return &*it;
+    if (!create)
+        return nullptr;
+    LiveTextCueStyleOverride entry;
+    entry.row_id = row_id;
+    entry.layer_id = layer_id;
+    title.live_text_cue_style_overrides.push_back(std::move(entry));
+    return &title.live_text_cue_style_overrides.back();
+}
+
+static const LiveTextCueStyleOverride *live_text_cue_style_entry(
+    const Title &title, const std::string &row_id, const std::string &layer_id)
+{
+    if (row_id.empty() || layer_id.empty())
+        return nullptr;
+    auto it = std::find_if(title.live_text_cue_style_overrides.begin(),
+                           title.live_text_cue_style_overrides.end(),
+                           [&](const LiveTextCueStyleOverride &entry) {
+                               return entry.row_id == row_id && entry.layer_id == layer_id;
+                           });
+    return it == title.live_text_cue_style_overrides.end() ? nullptr : &*it;
+}
+
+bool live_text_cue_color_override(const Title &title, const Layer &layer, int row, bool stroke, uint32_t *out_argb)
+{
+    if (stroke && !layer.expose_stroke_color)
+        return false;
+    if (!stroke && (!layer.expose_fill_color || !live_text_layer_supports_fill_cue(layer)))
+        return false;
+    const std::string row_id = live_text_cue_style_row_id(title, layer, row, stroke);
+    const auto *entry = live_text_cue_style_entry(title, row_id, layer.id);
+    if (!entry)
+        return false;
+    if (stroke) {
+        if (!entry->stroke_color_set)
+            return false;
+        if (out_argb) *out_argb = entry->stroke_color;
+        return true;
+    }
+    if (!entry->fill_color_set)
+        return false;
+    if (out_argb) *out_argb = entry->fill_color;
+    return true;
+}
+
+uint32_t live_text_cue_effective_color(const Title &title, const Layer &layer, int row, bool stroke)
+{
+    uint32_t argb = 0;
+    if (live_text_cue_color_override(title, layer, row, stroke, &argb))
+        return argb;
+    return stroke ? layer.stroke_color : live_text_layer_authored_fill_color(layer);
+}
+
+void set_live_text_cue_color_override(Title &title, const Layer &layer, int row, bool stroke, uint32_t argb)
+{
+    ensure_live_text_row_ids(title);
+    const std::string row_id = live_text_cue_style_row_id(title, layer, row, stroke);
+    auto *entry = mutable_live_text_cue_style_entry(title, row_id, layer.id, true);
+    if (!entry)
+        return;
+    if (stroke) {
+        entry->stroke_color_set = true;
+        entry->stroke_color = argb;
+    } else {
+        entry->fill_color_set = true;
+        entry->fill_color = argb;
+    }
+    prune_live_text_cue_style_overrides(title);
+}
+
+void clear_live_text_cue_color_override(Title &title, const Layer &layer, int row, bool stroke)
+{
+    ensure_live_text_row_ids(title);
+    const std::string row_id = live_text_cue_style_row_id(title, layer, row, stroke);
+    auto *entry = mutable_live_text_cue_style_entry(title, row_id, layer.id, false);
+    if (!entry)
+        return;
+    if (stroke)
+        entry->stroke_color_set = false;
+    else
+        entry->fill_color_set = false;
+    prune_live_text_cue_style_overrides(title);
+}
+
+void apply_live_text_cue_style_to_layer(Title &title, Layer &layer, int row)
+{
+    uint32_t argb = 0;
+    if (layer.expose_fill_color && live_text_layer_supports_fill_cue(layer) &&
+        live_text_cue_color_override(title, layer, row, false, &argb)) {
+        if (live_text_layer_is_text_like(layer)) {
+            layer.text_color = argb;
+            set_color_channels(layer, true, argb);
+        } else {
+            layer.fill_color = argb;
+            set_color_channels(layer, false, argb);
+        }
+    }
+    if (layer.expose_stroke_color && live_text_cue_color_override(title, layer, row, true, &argb)) {
+        layer.stroke_color = argb;
+    }
 }
 
 double stinger_transition_point_seconds(const Title &title)
@@ -2859,15 +3052,60 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["linked_media_stream"] = l.linked_media_stream;
     j["media_stream_label"] = l.media_stream_label;
     j["video_source"] = l.video_source;
+    j["video_source_relative"] = l.video_source_relative;
+    j["video_source_absolute"] = l.video_source_absolute;
+    j["video_media_root"] = l.video_media_root;
     j["video_stream_index"] = l.video_stream_index;
+    j["video_audio_stream_index"] = l.video_audio_stream_index;
+    j["video_selected_streams"] = l.video_selected_streams_json;
     j["video_in_point"] = l.video_in_point;
     j["video_out_point"] = l.video_out_point;
     j["video_loop"] = l.video_loop;
+    j["video_playback_mode"] = l.video_playback_mode;
     j["video_media_duration"] = l.video_media_duration;
     j["video_frame_rate"] = l.video_frame_rate;
     j["video_pixel_width"] = l.video_pixel_width;
     j["video_pixel_height"] = l.video_pixel_height;
     j["video_has_alpha"] = l.video_has_alpha;
+    j["video_has_hdr"] = l.video_has_hdr;
+    j["video_color_primaries"] = l.video_color_primaries;
+    j["video_color_transfer"] = l.video_color_transfer;
+    j["video_color_matrix"] = l.video_color_matrix;
+    j["video_color_range"] = l.video_color_range;
+    j["video_decode_settings"] = l.video_decode_settings_json;
+    j["video_prefer_hardware_decode"] = l.video_prefer_hardware_decode;
+    j["video_allow_hardware_fallback"] = l.video_allow_hardware_fallback;
+    j["video_decode_cache_policy"] = l.video_decode_cache_policy;
+    j["video_source_fingerprint"] = l.video_source_fingerprint;
+    j["video_proxy_path"] = l.video_proxy_path;
+    j["video_proxy_fingerprint"] = l.video_proxy_fingerprint;
+    j["video_proxy_profile"] = l.video_proxy_profile;
+    j["video_proxy_complete"] = l.video_proxy_complete;
+    j["video_proxy_alpha"] = l.video_proxy_alpha;
+    j["video_proxy_hdr"] = l.video_proxy_hdr;
+    j["video_proxy_audio_preserved"] = l.video_proxy_audio_preserved;
+    j["video_proxy_progress_percent"] = l.video_proxy_progress_percent;
+    j["video_proxy_generating"] = l.video_proxy_generating;
+    j["video_time_remap_enabled"] = l.video_time_remap_enabled;
+    j["video_source_time"] = aprop_to_json(l.video_source_time);
+    json video_loops = json::array();
+    for (const auto &segment : l.video_time_remap_loop_segments) {
+        video_loops.push_back({
+            {"timeline_start", segment.timeline_start},
+            {"timeline_end", segment.timeline_end},
+            {"source_start", segment.source_start},
+            {"source_end", segment.source_end},
+            {"enabled", segment.enabled}
+        });
+    }
+    j["video_time_remap_loop_segments"] = std::move(video_loops);
+    j["video_time_remap_audio_mode"] = (int)l.video_time_remap_audio_mode;
+    j["video_frame_interpolation"] = (int)l.video_frame_interpolation;
+    j["video_optical_flow_enabled"] = l.video_optical_flow_enabled;
+    j["video_optical_flow_analysis_running"] = l.video_optical_flow_analysis_running;
+    j["video_optical_flow_progress_percent"] = l.video_optical_flow_progress_percent;
+    j["video_time_remap_curve_fingerprint"] = l.video_time_remap_curve_fingerprint;
+    j["video_optical_flow_cache_fingerprint"] = l.video_optical_flow_cache_fingerprint;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     j["matte_visibility_mode"] = (int)l.matte_visibility_mode;
@@ -2888,10 +3126,22 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
             ? BglEffectExtensionCatalog::builtInId(effect.type).toStdString()
             : effect.extension_id;
         effects.push_back({{"type", (int)effect.type},
+                           {"effect_id", stable_effect_id},
                            {"extension_id", stable_effect_id},
+                           {"external_plugin_id", effect.extension_provider_id},
+                           {"external_plugin_version", effect.extension_provider_version},
+                           {"external_plugin_binary_id", effect.extension_plugin_binary_id},
                            {"extension_parameters", effect.extension_parameters_json},
                            {"extension_schema_version", effect.extension_schema_version},
+                           {"extension_loaded_schema_version", effect.extension_loaded_schema_version},
+                           {"extension_runtime_schema_version", effect.extension_runtime_schema_version},
+                           {"extension_explicit_migration", effect.extension_explicit_migration},
                            {"extension_keyframes", effect.extension_keyframes_json},
+                           {"extension_binary_state", effect.extension_binary_state_json},
+                           {"extension_binary_state_base64", effect.extension_binary_state_base64},
+                           {"missing_plugin_placeholder", effect.missing_plugin_placeholder},
+                           {"effect_preset_id", effect.effect_preset_id},
+                           {"effect_preset_schema_version", effect.effect_preset_schema_version},
                            {"enabled", effect.enabled},
                            {"brightness", effect.brightness},
                            {"contrast", effect.contrast},
@@ -3119,6 +3369,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["expose_text"]   = l.expose_text;
     j["exposed_hide_if_empty"] = l.exposed_hide_if_empty;
     j["exposed_single_value"] = l.exposed_single_value;
+    j["expose_fill_color"] = l.expose_fill_color;
+    j["exposed_fill_single_value"] = l.exposed_fill_single_value;
+    j["expose_stroke_color"] = l.expose_stroke_color;
+    j["exposed_stroke_single_value"] = l.exposed_stroke_single_value;
     j["ignore_persistence"] = l.ignore_persistence;
     j["font_family"]   = l.font_family;
     j["font_style"]    = l.font_style;
@@ -3371,7 +3625,8 @@ std::string layer_render_fingerprint(const Layer &layer)
         "use_as_scene_mask", "effect_stack_respects_masks",
         "in_time", "out_time", "position", "scale", "scale_lock",
         "rotation", "opacity", "expose_text", "exposed_hide_if_empty",
-        "exposed_single_value", "ignore_persistence"
+        "exposed_single_value", "expose_fill_color", "exposed_fill_single_value",
+        "expose_stroke_color", "exposed_stroke_single_value", "ignore_persistence"
     };
     for (const char *key : kCompositorOnlyKeys)
         j.erase(key);
@@ -3403,8 +3658,31 @@ static void migrate_and_validate_extension_state(
     if (catalog.effects().empty())
         catalog.reload();
     const auto *definition = catalog.find(QString::fromStdString(effect.extension_id));
-    if (!definition || definition->builtIn)
+    if (!definition) {
+        /* Development Version 244: a missing external plugin is represented as
+         * an inert placeholder. The effect id, parameters, keyframes, preset id
+         * and binary state remain serialized so reinstalling the plugin can
+         * restore the effect without data loss. */
+        const bool builtin_id = BglEffectExtensionCatalog::builtInTypeForId(
+            QString::fromStdString(effect.extension_id), nullptr);
+        if (!builtin_id) {
+            effect.missing_plugin_placeholder = true;
+            if (diagnostics) {
+                append_unique_import_diagnostic(
+                    diagnostics->missing_effects,
+                    layer_name + ": " + effect.extension_id + " (plugin missing; state preserved)");
+            }
+        }
         return;
+    }
+    if (definition->builtIn)
+        return;
+
+    effect.missing_plugin_placeholder = false;
+    if (effect.extension_provider_id.empty())
+        effect.extension_provider_id = definition->providerId.toStdString();
+    if (effect.extension_provider_version.empty())
+        effect.extension_provider_version = definition->providerVersion.toStdString();
 
     const uint32_t stored_version = std::max<uint32_t>(1u, effect.extension_schema_version);
     if (stored_version < definition->schemaVersion && definition->migrateState) {
@@ -3582,15 +3860,80 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->linked_media_stream = json_bool(j, "linked_media_stream", false);
     l->media_stream_label = bounded_string(j, "media_stream_label", "", kMaxNameLength);
     l->video_source = bounded_string(j, "video_source", "", kMaxPathLength);
+    l->video_source_relative = bounded_string(j, "video_source_relative", "", kMaxPathLength);
+    l->video_source_absolute = bounded_string(j, "video_source_absolute", "", kMaxPathLength);
+    l->video_media_root = bounded_string(j, "video_media_root", "", kMaxPathLength);
+    if (l->video_source_relative.empty() && !l->video_source.empty()) {
+        QFileInfo source_info(QString::fromStdString(l->video_source));
+        if (source_info.isRelative())
+            l->video_source_relative = l->video_source;
+        else
+            l->video_source_absolute = l->video_source;
+    }
+    if (l->video_source.empty())
+        l->video_source = !l->video_source_absolute.empty() ? l->video_source_absolute : l->video_source_relative;
     l->video_stream_index = json_int(j, "video_stream_index", -1);
+    l->video_audio_stream_index = std::clamp(json_int(j, "video_audio_stream_index", -1), -1, 1024);
+    l->video_selected_streams_json = bounded_json_payload(j, "video_selected_streams", "{}", 1048576);
     l->video_in_point = std::clamp(finite_or(json_double(j, "video_in_point", 0.0), 0.0), 0.0, kMaxDuration);
     l->video_out_point = std::clamp(finite_or(json_double(j, "video_out_point", 0.0), 0.0), 0.0, kMaxDuration);
     l->video_loop = json_bool(j, "video_loop", false);
+    l->video_playback_mode = std::clamp(json_int(j, "video_playback_mode", 0), 0, 1);
     l->video_media_duration = std::clamp(finite_or(json_double(j, "video_media_duration", 0.0), 0.0), 0.0, kMaxDuration);
     l->video_frame_rate = std::clamp(finite_or(json_double(j, "video_frame_rate", 0.0), 0.0), 0.0, 1000.0);
     l->video_pixel_width = std::clamp(json_int(j, "video_pixel_width", 0), 0, 32768);
     l->video_pixel_height = std::clamp(json_int(j, "video_pixel_height", 0), 0, 32768);
     l->video_has_alpha = json_bool(j, "video_has_alpha", false);
+    l->video_has_hdr = json_bool(j, "video_has_hdr", false);
+    l->video_color_primaries = bounded_string(j, "video_color_primaries", "", 64);
+    l->video_color_transfer = bounded_string(j, "video_color_transfer", "", 64);
+    l->video_color_matrix = bounded_string(j, "video_color_matrix", "", 64);
+    l->video_color_range = bounded_string(j, "video_color_range", "", 64);
+    l->video_decode_settings_json = bounded_json_payload(j, "video_decode_settings", "{}", 1048576);
+    l->video_prefer_hardware_decode = json_bool(j, "video_prefer_hardware_decode", true);
+    l->video_allow_hardware_fallback = json_bool(j, "video_allow_hardware_fallback", true);
+    l->video_decode_cache_policy = bounded_string(j, "video_decode_cache_policy", "auto", 64);
+    l->video_source_fingerprint = bounded_string(j, "video_source_fingerprint", "", 512);
+    l->video_proxy_path = bounded_string(j, "video_proxy_path", "", kMaxPathLength);
+    l->video_proxy_fingerprint = bounded_string(j, "video_proxy_fingerprint", "", 512);
+    l->video_proxy_profile = bounded_string(j, "video_proxy_profile", "", kMaxNameLength);
+    l->video_proxy_complete = json_bool(j, "video_proxy_complete", false);
+    l->video_proxy_alpha = json_bool(j, "video_proxy_alpha", false);
+    l->video_proxy_hdr = json_bool(j, "video_proxy_hdr", false);
+    l->video_proxy_audio_preserved = json_bool(j, "video_proxy_audio_preserved", false);
+    l->video_proxy_progress_percent = std::clamp(json_int(j, "video_proxy_progress_percent", 0), 0, 100);
+    l->video_proxy_generating = json_bool(j, "video_proxy_generating", false);
+    l->video_time_remap_enabled = json_bool(j, "video_time_remap_enabled", false);
+    l->video_source_time = j.contains("video_source_time")
+        ? aprop_from_json(j["video_source_time"], "video_source_time")
+        : AnimatedProperty{"video_source_time", l->video_in_point};
+    if (!l->video_source_time.is_animated() && !j.contains("video_source_time"))
+        l->video_source_time.static_value = l->video_in_point;
+    if (j.contains("video_time_remap_loop_segments") &&
+        j["video_time_remap_loop_segments"].is_array()) {
+        const size_t count = std::min<size_t>(j["video_time_remap_loop_segments"].size(), 128);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &item = j["video_time_remap_loop_segments"][i];
+            if (!item.is_object()) continue;
+            VideoTimeRemapLoopSegment segment;
+            segment.timeline_start = std::clamp(finite_or(json_double(item, "timeline_start", 0.0), 0.0), 0.0, kMaxDuration);
+            segment.timeline_end = std::clamp(finite_or(json_double(item, "timeline_end", 0.0), 0.0), segment.timeline_start, kMaxDuration);
+            segment.source_start = std::clamp(finite_or(json_double(item, "source_start", 0.0), 0.0), 0.0, kMaxDuration);
+            segment.source_end = std::clamp(finite_or(json_double(item, "source_end", 0.0), 0.0), 0.0, kMaxDuration);
+            segment.enabled = json_bool(item, "enabled", true);
+            if (segment.timeline_end > segment.timeline_start && segment.source_end != segment.source_start)
+                l->video_time_remap_loop_segments.push_back(segment);
+        }
+    }
+    l->video_time_remap_audio_mode = (VideoTimeRemapAudioMode)std::clamp(
+        json_int(j, "video_time_remap_audio_mode", (int)VideoTimeRemapAudioMode::FollowSourceTime), 0, 2);
+    l->video_frame_interpolation = (VideoFrameInterpolationMode)std::clamp(
+        json_int(j, "video_frame_interpolation", (int)VideoFrameInterpolationMode::NearestFrame), 0, 2);
+    l->video_optical_flow_enabled = json_bool(j, "video_optical_flow_enabled", false);
+    l->video_optical_flow_analysis_running = json_bool(j, "video_optical_flow_analysis_running", false);
+    l->video_optical_flow_progress_percent = std::clamp(json_int(j, "video_optical_flow_progress_percent", 0), 0, 100);
+    l->video_time_remap_curve_fingerprint = bounded_string(j, "video_time_remap_curve_fingerprint", "", 512);
+    l->video_optical_flow_cache_fingerprint = bounded_string(j, "video_optical_flow_cache_fingerprint", "", 512);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedClipping);
     if (j.contains("matte_visibility_mode")) {
@@ -3608,7 +3951,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
     l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
     l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false) &&
-                           l->type != LayerType::Video;
+                           layer_type_can_be_scene_mask(l->type);
     l->effect_stack_respects_masks = json_bool(j, "effect_stack_respects_masks", false);
     if (j.contains("external_bindings") && j["external_bindings"].is_array()) {
         const size_t count = std::min(j["external_bindings"].size(),
@@ -3629,7 +3972,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             const int raw_effect_type = json_int(effect_json, "type", 0);
-            const std::string loaded_extension_id = bounded_string(effect_json, "extension_id", "", 256);
+            std::string loaded_extension_id = bounded_string(effect_json, "extension_id", "", 256);
+            if (loaded_extension_id.empty())
+                loaded_extension_id = bounded_string(effect_json, "effect_id", "", 256);
             LayerEffectType resolved_type = LayerEffectType::BackgroundColor;
             const bool extension_is_builtin = BglEffectExtensionCatalog::builtInTypeForId(
                 QString::fromStdString(loaded_extension_id), &resolved_type);
@@ -3652,10 +3997,25 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                 ? BglEffectExtensionCatalog::builtInId(effect.type).toStdString()
                 : (extension_is_builtin ? BglEffectExtensionCatalog::builtInId(resolved_type).toStdString()
                                         : loaded_extension_id);
-            effect.extension_parameters_json = bounded_string(effect_json, "extension_parameters", "{}", 1048576);
+            effect.extension_parameters_json = bounded_json_payload(effect_json, "extension_parameters", "{}", 1048576);
             effect.extension_schema_version = static_cast<uint32_t>(std::clamp(
                 json_int(effect_json, "extension_schema_version", 1), 1, 65535));
-            effect.extension_keyframes_json = bounded_string(effect_json, "extension_keyframes", "{}", 1048576);
+            effect.extension_loaded_schema_version = static_cast<uint32_t>(std::clamp(
+                json_int(effect_json, "extension_loaded_schema_version", static_cast<int>(effect.extension_schema_version)), 1, 65535));
+            effect.extension_runtime_schema_version = static_cast<uint32_t>(std::clamp(
+                json_int(effect_json, "extension_runtime_schema_version", static_cast<int>(effect.extension_schema_version)), 1, 65535));
+            effect.extension_explicit_migration = json_bool(effect_json, "extension_explicit_migration", false) ||
+                json_bool(effect_json, "explicit_migration", false);
+            effect.extension_keyframes_json = bounded_json_payload(effect_json, "extension_keyframes", "{}", 1048576);
+            effect.extension_provider_id = bounded_string(effect_json, "external_plugin_id", "", 256);
+            effect.extension_provider_version = bounded_string(effect_json, "external_plugin_version", "", 256);
+            effect.extension_plugin_binary_id = bounded_string(effect_json, "external_plugin_binary_id", "", 512);
+            effect.extension_binary_state_json = bounded_json_payload(effect_json, "extension_binary_state", "{}", 1048576);
+            effect.extension_binary_state_base64 = bounded_string(effect_json, "extension_binary_state_base64", "", 4 * 1048576);
+            effect.missing_plugin_placeholder = json_bool(effect_json, "missing_plugin_placeholder", false);
+            effect.effect_preset_id = bounded_string(effect_json, "effect_preset_id", "", 256);
+            effect.effect_preset_schema_version = static_cast<uint32_t>(std::clamp(
+                json_int(effect_json, "effect_preset_schema_version", 0), 0, 65535));
             migrate_and_validate_extension_state(effect, l->name, diagnostics);
             effect.enabled = json_bool(effect_json, "enabled", true);
             switch (effect.type) {
@@ -3934,15 +4294,20 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                 effect.tint_color = effect.effect_color;
                 effect.tint_amount = effect.effect_opacity;
             }
-            /* Built-in effects have no legacy UI/runtime modes. When their
-             * schema changes, reopen them as a fresh current instance with the
-             * current defaults. This intentionally discards obsolete values,
-             * keyframes and passthrough payloads while preserving stack order. */
+            /* Development Version 244 migration audit: built-in effect schema
+             * upgrades are preserve-by-default. Older Glow/Noise/etc. instances
+             * keep their authored parameter/keyframe envelope and are rendered
+             * through the compatibility contract unless an explicit migration
+             * flag was saved by a successful user-initiated migration. */
             const bool loaded_builtin_effect = loaded_extension_id.empty() || extension_is_builtin;
             if (const EffectDescriptor *descriptor = effect_descriptor(effect.type);
-                loaded_builtin_effect && descriptor &&
-                effect.extension_schema_version < descriptor->schema_version) {
-                effect = bgs::effects::make_default_layer_effect(effect.type);
+                loaded_builtin_effect && descriptor) {
+                effect.extension_runtime_schema_version = descriptor->schema_version;
+                if (effect.extension_schema_version < descriptor->schema_version &&
+                    effect.extension_explicit_migration) {
+                    effect.extension_loaded_schema_version = effect.extension_schema_version;
+                    effect.extension_schema_version = descriptor->schema_version;
+                }
             }
             l->effects.push_back(effect);
         }
@@ -4101,6 +4466,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->expose_text   = json_bool(j, "expose_text", false);
     l->exposed_hide_if_empty = json_bool(j, "exposed_hide_if_empty", false);
     l->exposed_single_value = json_bool(j, "exposed_single_value", false);
+    l->expose_fill_color = json_bool(j, "expose_fill_color", false);
+    l->exposed_fill_single_value = json_bool(j, "exposed_fill_single_value", false);
+    l->expose_stroke_color = json_bool(j, "expose_stroke_color", false);
+    l->exposed_stroke_single_value = json_bool(j, "exposed_stroke_single_value", false);
     l->live_cue_hidden_if_empty = false;
     l->ignore_persistence = !l->expose_text && json_bool(j, "ignore_persistence", false);
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);
@@ -4948,6 +5317,28 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["live_text_rows"] = live_rows;
     jt["live_text_row_ids"] = t.live_text_row_ids;
     jt["live_text_column_order"] = t.live_text_column_order;
+    if (!t.live_text_cue_style_overrides.empty()) {
+        json style_overrides = json::array();
+        for (const auto &entry : t.live_text_cue_style_overrides) {
+            if (entry.row_id.empty() || entry.layer_id.empty() ||
+                (!entry.fill_color_set && !entry.stroke_color_set))
+                continue;
+            json item;
+            item["row_id"] = entry.row_id;
+            item["layer_id"] = entry.layer_id;
+            if (entry.fill_color_set)
+                item["fill_color"] = entry.fill_color;
+            if (entry.stroke_color_set)
+                item["stroke_color"] = entry.stroke_color;
+            style_overrides.push_back(std::move(item));
+        }
+        if (!style_overrides.empty())
+            jt["live_text_cue_style_overrides"] = std::move(style_overrides);
+        else
+            jt.erase("live_text_cue_style_overrides");
+    } else {
+        jt.erase("live_text_cue_style_overrides");
+    }
     if (!t.live_text_external_bindings.empty()) {
         json cell_bindings = json::array();
         for (const auto &cell : t.live_text_external_bindings)
@@ -5291,7 +5682,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
                 continue;
             has_exposed_text = has_exposed_text ||
                                (layer->type == LayerType::Text && layer->expose_text);
-            has_scene_mask = has_scene_mask || (layer->use_as_scene_mask && layer->type != LayerType::Video);
+            has_scene_mask = has_scene_mask || (layer->use_as_scene_mask && layer_type_can_be_scene_mask(layer->type));
         }
         t->graphic_type = has_exposed_text ? TitleGraphicType::Title
                           : has_scene_mask ? TitleGraphicType::Mask
@@ -5365,6 +5756,38 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         }
     }
     ensure_live_text_row_ids(*t);
+    if (jt.contains("live_text_cue_style_overrides") &&
+        jt["live_text_cue_style_overrides"].is_array()) {
+        const size_t count = std::min(jt["live_text_cue_style_overrides"].size(),
+                                      kMaxLiveTextRows * kMaxLiveTextColumns * 2);
+        t->live_text_cue_style_overrides.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &item = jt["live_text_cue_style_overrides"][i];
+            if (!item.is_object())
+                continue;
+            LiveTextCueStyleOverride entry;
+            if (item.contains("row_id") && item["row_id"].is_string())
+                entry.row_id = item["row_id"].get<std::string>();
+            if (item.contains("layer_id") && item["layer_id"].is_string())
+                entry.layer_id = item["layer_id"].get<std::string>();
+            if (entry.row_id.size() > kMaxNameLength)
+                entry.row_id.resize(kMaxNameLength);
+            if (entry.layer_id.size() > kMaxNameLength)
+                entry.layer_id.resize(kMaxNameLength);
+            if (item.contains("fill_color")) {
+                entry.fill_color_set = true;
+                entry.fill_color = json_color(item, "fill_color", entry.fill_color);
+            }
+            if (item.contains("stroke_color")) {
+                entry.stroke_color_set = true;
+                entry.stroke_color = json_color(item, "stroke_color", entry.stroke_color);
+            }
+            if (!entry.row_id.empty() && !entry.layer_id.empty() &&
+                (entry.fill_color_set || entry.stroke_color_set))
+                t->live_text_cue_style_overrides.push_back(std::move(entry));
+        }
+        prune_live_text_cue_style_overrides(*t);
+    }
     if (jt.contains("live_text_column_order") && jt["live_text_column_order"].is_array()) {
         const size_t count = std::min(jt["live_text_column_order"].size(), kMaxLiveTextColumns);
         t->live_text_column_order.reserve(count);
@@ -5532,6 +5955,11 @@ void TitleDataStore::save() const
     std::string path;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (!persistence_ready_for_save_) {
+            BGL_LOG_WARNING("TitleStore", QStringLiteral(
+                "Skipped save because the title store did not load successfully; refusing to rewrite the previous file in a new schema"));
+            return;
+        }
         snapshot = titles_;
         path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
@@ -5599,6 +6027,11 @@ void TitleDataStore::save_async() const
     auto request = std::make_unique<PendingSave>();
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (!persistence_ready_for_save_) {
+            BGL_LOG_WARNING("TitleStore", QStringLiteral(
+                "Skipped async save because the title store did not load successfully; refusing to rewrite the previous file in a new schema"));
+            return;
+        }
         request->snapshot.reserve(titles_.size());
         for (const auto &source : titles_) {
             if (!source) {
@@ -5837,6 +6270,7 @@ void TitleDataStore::load()
             if (!preserved_existing_store) {
                 loaded_path_ = path;
                 titles_.clear();
+                persistence_ready_for_save_ = error == "Could not open the file.";
             }
         }
 
@@ -5902,6 +6336,7 @@ void TitleDataStore::load()
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             loaded_path_ = path;
             titles_ = std::move(loaded);
+            persistence_ready_for_save_ = true;
             loaded_count = titles_.size();
         }
         bgs::ticker_runtime::clear_all();
@@ -5921,6 +6356,7 @@ void TitleDataStore::load()
             if (!preserved_existing_store) {
                 loaded_path_ = path;
                 titles_.clear();
+                persistence_ready_for_save_ = false;
             }
         }
 

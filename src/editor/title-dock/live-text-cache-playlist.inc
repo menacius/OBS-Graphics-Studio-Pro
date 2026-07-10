@@ -696,25 +696,157 @@ void TitleDock::populate_exposed_text()
                 configure_external_cell_binding(image, row, col, exposed[col],
                     authored_cell_value);
             } else {
-                auto *edit = new LiveTextCueField(
-                    QString::fromStdString(displayed_cell_value), text_table_);
-                edit->setPlaceholderText(live_text_layer_header(exposed[col]));
-                edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
-                edit->editing_finished = [this, title, row, col](const QString &text) {
-                    commit_live_text_cell_edit(title, row, col, text);
-                };
-                if (live_text_cue_cell_state(
-                        *title, live_text_row_id(*title, row), exposed[col]->id) !=
-                    LiveTextCueCellState::ExternalTableManaged) {
-                    QPointer<TitleDock> dock_guard(this);
-                    edit->focus_changed = [dock_guard, title, row](bool focused) {
-                        if (dock_guard)
-                            dock_guard->set_live_text_row_render_paused(title, row, focused);
+                const bool exposes_value = exposed[col] && exposed[col]->expose_text;
+                const bool exposes_color = exposed[col] &&
+                    (exposed[col]->expose_fill_color || exposed[col]->expose_stroke_color);
+
+                LiveTextCueField *edit = nullptr;
+                if (exposes_value) {
+                    edit = new LiveTextCueField(
+                        QString::fromStdString(displayed_cell_value), text_table_);
+                    edit->setPlaceholderText(live_text_layer_header(exposed[col]));
+                    edit->setStyleSheet(QStringLiteral("QPlainTextEdit{padding:3px;}"));
+                    edit->editing_finished = [this, title, row, col](const QString &text) {
+                        commit_live_text_cell_edit(title, row, col, text);
                     };
+                    if (live_text_cue_cell_state(
+                            *title, live_text_row_id(*title, row), exposed[col]->id) !=
+                        LiveTextCueCellState::ExternalTableManaged) {
+                        QPointer<TitleDock> dock_guard(this);
+                        edit->focus_changed = [dock_guard, title, row](bool focused) {
+                            if (dock_guard)
+                                dock_guard->set_live_text_row_render_paused(title, row, focused);
+                        };
+                    }
                 }
-                text_table_->setCellWidget(row, col + kLiveFirstValueColumn, edit);
-                configure_external_cell_binding(edit, row, col, exposed[col],
-                    authored_cell_value);
+
+                if (exposes_color) {
+                    auto *cell = new QWidget(text_table_);
+                    auto *cell_layout = new QVBoxLayout(cell);
+                    cell_layout->setContentsMargins(0, 0, 0, 0);
+                    cell_layout->setSpacing(2);
+                    if (edit)
+                        cell_layout->addWidget(edit, 1);
+                    auto *color_row = new QWidget(cell);
+                    auto *color_layout = new QHBoxLayout(color_row);
+                    color_layout->setContentsMargins(3, edit ? 0 : 3, 3, 2);
+                    color_layout->setSpacing(5);
+                    auto update_chip = [](QToolButton *button, uint32_t argb) {
+                        if (!button) return;
+                        const QColor c((argb >> 16) & 0xFF, (argb >> 8) & 0xFF,
+                                       argb & 0xFF, (argb >> 24) & 0xFF);
+                        button->setStyleSheet(QStringLiteral(
+                            "QToolButton{background:%1;border:1px solid palette(mid);border-radius:2px;}"
+                            "QToolButton:hover{border-color:palette(highlight);}")
+                            .arg(c.name(QColor::HexArgb)));
+                    };
+                    auto commit_color_change = [this, title](QToolButton *target, uint32_t argb,
+                                                            bool stroke, const std::shared_ptr<Layer> &layer,
+                                                            int cue_row, auto update_chip_fn) {
+                        if (!title || !layer)
+                            return;
+                        set_live_text_cue_color_override(*title, *layer, cue_row, stroke, argb);
+                        if (target)
+                            update_chip_fn(target, argb);
+                        const bool single_value_color = stroke
+                            ? layer->exposed_stroke_single_value
+                            : layer->exposed_fill_single_value;
+                        if (title->current_cue_row >= 0 &&
+                            (title->current_cue_row == cue_row || single_value_color))
+                            apply_live_cue_layer_value(*title, layer, title->current_cue_row, layer->text_content);
+                        TitleDataStore::instance().save();
+                        TitleDataStore::instance().touch_runtime_change();
+                        CacheManager::instance().refreshLiveCueStructureAsync(title);
+                        TitleDataStore::instance().notify_change();
+                    };
+                    auto clear_color_change = [this, title](QToolButton *target, bool stroke,
+                                                           const std::shared_ptr<Layer> &layer,
+                                                           int cue_row, auto update_chip_fn) {
+                        if (!title || !layer)
+                            return;
+                        clear_live_text_cue_color_override(*title, *layer, cue_row, stroke);
+                        const uint32_t fallback = live_text_cue_effective_color(*title, *layer, cue_row, stroke);
+                        if (target)
+                            update_chip_fn(target, fallback);
+                        const bool single_value_color = stroke
+                            ? layer->exposed_stroke_single_value
+                            : layer->exposed_fill_single_value;
+                        if (title->current_cue_row >= 0 &&
+                            (title->current_cue_row == cue_row || single_value_color))
+                            apply_live_cue_layer_value(*title, layer, title->current_cue_row, layer->text_content);
+                        TitleDataStore::instance().save();
+                        TitleDataStore::instance().touch_runtime_change();
+                        CacheManager::instance().refreshLiveCueStructureAsync(title);
+                        TitleDataStore::instance().notify_change();
+                    };
+                    auto make_color_button = [&](const QString &label, bool stroke) {
+                        auto *button = new QToolButton(color_row);
+                        button->setText(QString());
+                        button->setToolTip(label);
+                        button->setFixedSize(24, 20);
+                        update_chip(button, live_text_cue_effective_color(*title, *exposed[col], row, stroke));
+                        connect(button, &QToolButton::clicked, this,
+                                [this, title, layer = exposed[col], row, button, stroke,
+                                 update_chip, commit_color_change]() {
+                            if (!title || !layer) return;
+                            const uint32_t current = live_text_cue_effective_color(*title, *layer, row, stroke);
+                            QColor initial((current >> 16) & 0xFF, (current >> 8) & 0xFF,
+                                           current & 0xFF, (current >> 24) & 0xFF);
+                            QColor picked = QColorDialog::getColor(initial, this, stroke
+                                ? QStringLiteral("Stroke color") : QStringLiteral("Fill color"),
+                                QColorDialog::ShowAlphaChannel);
+                            if (!picked.isValid()) return;
+                            const uint32_t argb = (uint32_t(picked.alpha()) << 24) |
+                                                  (uint32_t(picked.red()) << 16) |
+                                                  (uint32_t(picked.green()) << 8) |
+                                                   uint32_t(picked.blue());
+                            commit_color_change(button, argb, stroke, layer, row, update_chip);
+                        });
+                        return button;
+                    };
+                    auto make_default_button = [&](const QString &tip, bool stroke, QToolButton *target) {
+                        auto *button = new QToolButton(color_row);
+                        button->setAutoRaise(true);
+                        button->setText(QString());
+                        button->setIcon(bgl_panel_defaults_icon(palette()));
+                        button->setIconSize(QSize(13, 13));
+                        button->setToolTip(tip);
+                        button->setFixedSize(22, 20);
+                        button->setStyleSheet(bgl_transform_panel_button_style(palette()));
+                        connect(button, &QToolButton::clicked, this,
+                                [title, layer = exposed[col], row, stroke, target,
+                                 update_chip, clear_color_change]() {
+                            clear_color_change(target, stroke, layer, row, update_chip);
+                        });
+                        return button;
+                    };
+                    auto add_color_control = [&](const QString &caption_text, bool stroke) {
+                        auto *caption = new QLabel(caption_text, color_row);
+                        caption->setStyleSheet(QStringLiteral("QLabel{color:palette(text);background:transparent;padding-left:2px;padding-right:2px;}"));
+                        color_layout->addWidget(caption, 0, Qt::AlignVCenter);
+                        auto *swatch = make_color_button(stroke ? QStringLiteral("Stroke color")
+                                                                : QStringLiteral("Fill color"), stroke);
+                        color_layout->addWidget(swatch, 0, Qt::AlignVCenter);
+                        color_layout->addWidget(make_default_button(
+                            stroke ? QStringLiteral("Reset Stroke to default")
+                                   : QStringLiteral("Reset Fill to default"),
+                            stroke, swatch), 0, Qt::AlignVCenter);
+                    };
+                    if (exposed[col]->expose_fill_color)
+                        add_color_control(QStringLiteral("Fill:"), false);
+                    if (exposed[col]->expose_stroke_color)
+                        add_color_control(QStringLiteral("Stroke:"), true);
+                    color_layout->addStretch(1);
+                    cell_layout->addWidget(color_row, edit ? 0 : 1);
+                    text_table_->setCellWidget(row, col + kLiveFirstValueColumn, cell);
+                } else if (edit) {
+                    text_table_->setCellWidget(row, col + kLiveFirstValueColumn, edit);
+                }
+                if (edit) {
+                    configure_external_cell_binding(edit, row, col, exposed[col],
+                        authored_cell_value);
+                }
+
             }
         }
 

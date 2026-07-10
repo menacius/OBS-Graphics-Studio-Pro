@@ -128,6 +128,68 @@ static void test_sparse_overrides_follow_defaults()
     assert(rich_text_format_at(doc, 3).font_size == 40);
 }
 
+static void test_overlapping_sparse_properties_compose_per_text_range()
+{
+    RichTextDocument doc = text_doc("ABCD");
+
+    RichTextCharFormat horizontal = doc.default_format;
+    horizontal.scale_x = 0.70f;
+    rich_text_document_apply_format(
+        doc, 0, 4, horizontal, RichTextCharScaleX);
+
+    RichTextCharFormat vertical = doc.default_format;
+    vertical.scale_y = 4.13f;
+    rich_text_document_apply_format(
+        doc, 1, 2, vertical, RichTextCharScaleY);
+
+    RichTextCharFormat fill = doc.default_format;
+    fill.fill.color = 0xFFFF0066;
+    rich_text_document_apply_format(
+        doc, 2, 2, fill, RichTextCharFillColor);
+
+    RichTextCharFormat stroke = doc.default_format;
+    stroke.stroke.enabled = true;
+    stroke.stroke.width = 3.0f;
+    stroke.stroke.fill.color = 0xFF00FFCC;
+    rich_text_document_apply_format(
+        doc, 1, 3, stroke, RichTextCharStroke);
+
+    doc.normalize();
+    const RichTextCharFormat a = rich_text_format_at(doc, 0);
+    const RichTextCharFormat b = rich_text_format_at(doc, 1);
+    const RichTextCharFormat c = rich_text_format_at(doc, 2);
+    const RichTextCharFormat d = rich_text_format_at(doc, 3);
+
+    assert(a.scale_x == 0.70f);
+    assert(a.scale_y == 1.0f);
+    assert(!a.stroke.enabled);
+
+    assert(b.scale_x == 0.70f);
+    assert(b.scale_y == 4.13f);
+    assert(b.stroke.enabled && b.stroke.width == 3.0f);
+    assert(b.fill.color == doc.default_format.fill.color);
+
+    assert(c.scale_x == 0.70f);
+    assert(c.scale_y == 4.13f);
+    assert(c.fill.color == 0xFFFF0066);
+    assert(c.stroke.enabled && c.stroke.fill.color == 0xFF00FFCC);
+
+    assert(d.scale_x == 0.70f);
+    assert(d.scale_y == 1.0f);
+    assert(d.fill.color == 0xFFFF0066);
+    assert(d.stroke.enabled);
+
+    const uint32_t b_mask = rich_text_format_mask_at(doc, 1);
+    assert((b_mask & RichTextCharScaleX) != 0);
+    assert((b_mask & RichTextCharScaleY) != 0);
+    assert((b_mask & RichTextCharStroke) != 0);
+    const uint32_t c_mask = rich_text_format_mask_at(doc, 2);
+    assert((c_mask & RichTextCharScaleX) != 0);
+    assert((c_mask & RichTextCharScaleY) != 0);
+    assert((c_mask & RichTextCharFillColor) != 0);
+    assert((c_mask & RichTextCharStroke) != 0);
+}
+
 static void test_unicode_boundaries_and_safe_transactions()
 {
     RichTextDocument doc = text_doc(u8"AΩ🙂B");
@@ -286,11 +348,11 @@ static void test_independent_font_scale_metrics()
 
     RichTextFontScaleMetrics vertical = rich_text_font_scale_metrics(1.0f, 2.0f);
     assert(vertical.vertical_factor == 2.0f);
-    assert(vertical.horizontal_stretch_percent == 50);
+    assert(vertical.horizontal_stretch_percent == 100);
 
     RichTextFontScaleMetrics uniform = rich_text_font_scale_metrics(2.0f, 2.0f);
     assert(uniform.vertical_factor == 2.0f);
-    assert(uniform.horizontal_stretch_percent == 100);
+    assert(uniform.horizontal_stretch_percent == 200);
 }
 
 static void test_object_level_property_replaces_only_matching_overrides()
@@ -313,6 +375,56 @@ static void test_object_level_property_replaces_only_matching_overrides()
     assert((doc.ranges[0].mask & RichTextCharScaleX) == 0);
     assert((doc.ranges[0].mask & RichTextCharBold) != 0);
     assert((doc.ranges[0].mask & RichTextCharFillColor) != 0);
+}
+
+static void test_canonical_default_mutation_preserves_unrelated_range_properties()
+{
+    RichTextDocument doc = text_doc("ABCD");
+    RichTextCharFormat local = doc.default_format;
+    local.bold = true;
+    local.fill.color = 0xFFFF0066;
+    local.scale_x = 1.75f;
+    local.scale_y = 2.25f;
+    doc.ranges = {{0, doc.plain_text.size(), local,
+                   RichTextCharBold | RichTextCharFillColor |
+                       RichTextCharScaleX | RichTextCharScaleY}};
+
+    RichTextCharFormat object_scale = doc.default_format;
+    object_scale.scale_x = 0.70f;
+    rich_text_document_apply_default_char_format(
+        doc, object_scale, RichTextCharScaleX, true);
+
+    const RichTextCharFormat effective = rich_text_format_at(doc, 1);
+    assert(effective.scale_x == 0.70f);
+    assert(effective.scale_y == 2.25f);
+    assert(effective.bold);
+    assert(effective.fill.color == 0xFFFF0066);
+    assert(doc.ranges.size() == 1);
+    assert((doc.ranges[0].mask & RichTextCharScaleX) == 0);
+    assert((doc.ranges[0].mask & RichTextCharScaleY) != 0);
+    assert((doc.ranges[0].mask & RichTextCharBold) != 0);
+    assert((doc.ranges[0].mask & RichTextCharFillColor) != 0);
+
+    doc.default_paragraph_format.indent_left = 5.0f;
+    doc.default_paragraph_format.space_after = 2.0f;
+    doc.normalize();
+    doc.blocks[0].format.indent_left = 30.0f;
+    doc.blocks[0].format.space_after = 12.0f;
+    doc.blocks[0].mask = RichTextParagraphIndentLeft |
+                         RichTextParagraphSpaceAfter;
+    doc.normalize();
+
+    RichTextParagraphFormat object_paragraph =
+        doc.default_paragraph_format;
+    object_paragraph.indent_left = 18.0f;
+    rich_text_document_apply_default_paragraph_format(
+        doc, object_paragraph, RichTextParagraphIndentLeft, true);
+    const RichTextParagraphFormat paragraph =
+        rich_text_paragraph_format_at(doc, 0);
+    assert(paragraph.indent_left == 18.0f);
+    assert(paragraph.space_after == 12.0f);
+    assert((doc.blocks[0].mask & RichTextParagraphIndentLeft) == 0);
+    assert((doc.blocks[0].mask & RichTextParagraphSpaceAfter) != 0);
 }
 
 static void test_paragraph_selection_formatting()
@@ -619,10 +731,42 @@ static void test_learned_regex_recognizes_invisible_and_structural_characters()
     }
 }
 
+static void test_anisotropic_scale_detection_across_multistyle_ranges()
+{
+    RichTextDocument uniform = text_doc("AB");
+    uniform.default_format.scale_x = 4.13f;
+    uniform.default_format.scale_y = 4.13f;
+    uniform.normalize();
+    assert(!rich_text_document_has_anisotropic_scale(uniform));
+
+    RichTextDocument reported_case = text_doc(u8"Τίτλος");
+    reported_case.default_format.scale_x = 0.70f;
+    reported_case.default_format.scale_y = 4.13f;
+    reported_case.normalize();
+    assert(rich_text_document_has_anisotropic_scale(reported_case));
+
+    RichTextDocument multistyle = text_doc("AB");
+    multistyle.default_format.scale_x = 0.70f;
+    multistyle.default_format.scale_y = 0.70f;
+    RichTextCharFormat second = multistyle.default_format;
+    second.scale_y = 4.13f;
+    multistyle.ranges.push_back(
+        {1, 1, second, RichTextCharScaleY});
+    multistyle.normalize();
+    assert(rich_text_document_has_anisotropic_scale(multistyle));
+
+    RichTextDocument empty;
+    empty.default_format.scale_x = 0.70f;
+    empty.default_format.scale_y = 4.13f;
+    assert(!rich_text_document_has_anisotropic_scale(empty));
+}
+
 int main()
 {
+    test_anisotropic_scale_detection_across_multistyle_ranges();
     test_mixed_styles_and_transactions();
     test_sparse_overrides_follow_defaults();
+    test_overlapping_sparse_properties_compose_per_text_range();
     test_unicode_boundaries_and_safe_transactions();
     test_paragraph_blocks_survive_normalization_and_edits();
     test_explicit_masks_survive_matching_defaults();
@@ -630,6 +774,7 @@ int main()
     test_sparse_typing_and_unicode_auto_style();
     test_independent_font_scale_metrics();
     test_object_level_property_replaces_only_matching_overrides();
+    test_canonical_default_mutation_preserves_unrelated_range_properties();
     test_paragraph_selection_formatting();
     test_multiple_styles_and_colors_remain_independent();
     test_mixed_property_difference_masks_are_precise();

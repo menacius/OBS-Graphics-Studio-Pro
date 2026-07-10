@@ -2,6 +2,7 @@
 #include "audio-transport-direction.h"
 #include "performance-counters.h"
 #include "title-logger.h"
+#include "title-video-runtime.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -106,6 +107,8 @@ struct EffectiveAudioMedia {
     double media_in = 0.0;
     double media_out = 0.0;
     bool loop = false;
+    bool video_time_remap_enabled = false;
+    Layer video_time_remap_layer;
 };
 
 static EffectiveAudioMedia effective_audio_media(const Title &title,
@@ -129,8 +132,38 @@ static EffectiveAudioMedia effective_audio_media(const Title &title,
     result.timeline_out = video->out_time;
     result.media_in = video->video_in_point;
     result.media_out = video->video_out_point;
-    result.loop = video->video_loop;
+    result.loop = video->video_loop || video->audio_loop ||
+                  video->audio_playback_mode == AudioPlaybackMode::Loop;
+    result.video_time_remap_enabled = video->video_time_remap_enabled &&
+        video->video_time_remap_audio_mode != VideoTimeRemapAudioMode::PreserveLinearClipAudio;
+    if (result.video_time_remap_enabled)
+        result.video_time_remap_layer = *video;
     return result;
+}
+
+static const Layer &effective_audio_controls(const Title &title, const Layer &audio)
+{
+    if (audio.linked_media_stream && !audio.linked_media_layer_id.empty()) {
+        const auto video = title.find_layer(audio.linked_media_layer_id);
+        if (video && video->type == LayerType::Video)
+            return *video;
+    }
+    return audio;
+}
+
+static int64_t timeline_ms_for_transport_cursor(int64_t cursor,
+                                                uint32_t sample_rate,
+                                                bool reverse)
+{
+    if (sample_rate == 0)
+        return 0;
+    int64_t sample = cursor;
+    if (reverse && sample < std::numeric_limits<int64_t>::max())
+        ++sample;
+    sample = std::max<int64_t>(0, sample);
+    return static_cast<int64_t>(
+        std::llround(1000.0 * static_cast<double>(sample) /
+                     static_cast<double>(sample_rate)));
 }
 
 }
@@ -156,6 +189,8 @@ struct SourceAudioRuntime::ClipSpec {
     bool loop = false;
     bool independent = false;
     bool hidden = false;
+    bool video_time_remap_enabled = false;
+    Layer video_time_remap_layer;
 };
 
 struct DecodedAudioAsset {
@@ -300,6 +335,17 @@ void SourceAudioRuntime::set_editor_preview(bool editor_preview)
     }
 }
 
+void SourceAudioRuntime::current_levels(float *left, float *right,
+                                        uint64_t *last_update_ns) const
+{
+    if (left)
+        *left = level_left_.load(std::memory_order_acquire);
+    if (right)
+        *right = level_right_.load(std::memory_order_acquire);
+    if (last_update_ns)
+        *last_update_ns = level_update_ns_.load(std::memory_order_acquire);
+}
+
 bool SourceAudioRuntime::decode_cancelled(uint64_t decode_epoch) const
 {
     return quit_.load(std::memory_order_acquire) ||
@@ -317,28 +363,33 @@ void SourceAudioRuntime::request_rebuild(const std::shared_ptr<Title> &title, ui
             if (!ptr || ptr->type != LayerType::Audio) continue;
             const Layer &l = *ptr;
             const EffectiveAudioMedia media = effective_audio_media(*title, l);
+            const Layer &controls = effective_audio_controls(*title, l);
             ClipSpec s;
             s.id = l.id; s.path = media.path; s.stream_index = l.audio_stream_index;
             s.timeline_in = std::max(0.0, media.timeline_in); s.timeline_out = std::max(s.timeline_in, media.timeline_out);
             s.media_in = std::max(0.0, media.media_in); s.media_out = std::max(0.0, media.media_out);
-            s.volume = std::clamp(l.audio_volume, 0.0f, 4.0f);
-            s.pan = std::clamp(l.audio_pan, -1.0f, 1.0f);
-            s.volume_prop = l.audio_volume_prop;
-            s.pan_prop = l.audio_pan_prop;
+            s.video_time_remap_enabled = media.video_time_remap_enabled;
+            s.video_time_remap_layer = media.video_time_remap_layer;
+            s.volume = std::clamp(controls.audio_volume, 0.0f, 4.0f);
+            s.pan = std::clamp(controls.audio_pan, -1.0f, 1.0f);
+            s.volume_prop = controls.audio_volume_prop;
+            s.pan_prop = controls.audio_pan_prop;
             bool ancestor_audio_muted = false;
             std::set<std::string> visited_parents;
-            std::string parent_id = l.parent_id;
+            std::string parent_id = controls.parent_id;
             while (!parent_id.empty() && visited_parents.insert(parent_id).second) {
                 const auto parent = title->find_layer(parent_id);
                 if (!parent) break;
                 ancestor_audio_muted = ancestor_audio_muted || parent->audio_muted;
                 parent_id = parent->parent_id;
             }
-            s.muted = l.audio_muted || ancestor_audio_muted; s.solo = l.audio_solo;
-            s.fade_in = std::max(0.0, l.audio_fade_in); s.fade_out = std::max(0.0, l.audio_fade_out);
-            s.fade_curve = l.audio_fade_curve; s.effects = l.audio_effects;
+            s.muted = controls.audio_muted || ancestor_audio_muted; s.solo = controls.audio_solo;
+            s.fade_in = std::max(0.0, controls.audio_fade_in); s.fade_out = std::max(0.0, controls.audio_fade_out);
+            s.fade_curve = controls.audio_fade_curve; s.effects = controls.audio_effects;
             s.loop = media.loop;
-            s.independent = l.audio_independent;
+            s.independent = controls.type == LayerType::Video
+                ? (controls.video_playback_mode == 1 || controls.audio_independent)
+                : controls.audio_independent;
             /* Visibility is visual/timeline state. Audio output is controlled by
              * mute/solo so a Video strip can keep playing sound even when its
              * picture visibility is toggled, and embedded stream lanes do not
@@ -421,28 +472,33 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
             if (!ptr || ptr->type != LayerType::Audio) continue;
             const Layer &l = *ptr;
             const EffectiveAudioMedia media = effective_audio_media(*title, l);
+            const Layer &controls = effective_audio_controls(*title, l);
             ClipSpec spec;
             spec.id = l.id; spec.path = media.path; spec.stream_index = l.audio_stream_index;
             spec.timeline_in = std::max(0.0, media.timeline_in); spec.timeline_out = std::max(spec.timeline_in, media.timeline_out);
             spec.media_in = std::max(0.0, media.media_in); spec.media_out = std::max(0.0, media.media_out);
-            spec.volume = std::clamp(l.audio_volume, 0.0f, 4.0f);
-            spec.pan = std::clamp(l.audio_pan, -1.0f, 1.0f);
-            spec.volume_prop = l.audio_volume_prop;
-            spec.pan_prop = l.audio_pan_prop;
+            spec.video_time_remap_enabled = media.video_time_remap_enabled;
+            spec.video_time_remap_layer = media.video_time_remap_layer;
+            spec.volume = std::clamp(controls.audio_volume, 0.0f, 4.0f);
+            spec.pan = std::clamp(controls.audio_pan, -1.0f, 1.0f);
+            spec.volume_prop = controls.audio_volume_prop;
+            spec.pan_prop = controls.audio_pan_prop;
             bool ancestor_audio_muted = false;
             std::set<std::string> visited_parents;
-            std::string parent_id = l.parent_id;
+            std::string parent_id = controls.parent_id;
             while (!parent_id.empty() && visited_parents.insert(parent_id).second) {
                 const auto parent = title->find_layer(parent_id);
                 if (!parent) break;
                 ancestor_audio_muted = ancestor_audio_muted || parent->audio_muted;
                 parent_id = parent->parent_id;
             }
-            spec.muted = l.audio_muted || ancestor_audio_muted; spec.solo = l.audio_solo;
-            spec.fade_in = std::max(0.0, l.audio_fade_in); spec.fade_out = std::max(0.0, l.audio_fade_out);
-            spec.fade_curve = l.audio_fade_curve; spec.effects = l.audio_effects;
+            spec.muted = controls.audio_muted || ancestor_audio_muted; spec.solo = controls.audio_solo;
+            spec.fade_in = std::max(0.0, controls.audio_fade_in); spec.fade_out = std::max(0.0, controls.audio_fade_out);
+            spec.fade_curve = controls.audio_fade_curve; spec.effects = controls.audio_effects;
             spec.loop = media.loop;
-            spec.independent = l.audio_independent;
+            spec.independent = controls.type == LayerType::Video
+                ? (controls.video_playback_mode == 1 || controls.audio_independent)
+                : controls.audio_independent;
             /* Visibility is visual/timeline state; mute/solo are the audio gates. */
             spec.hidden = false;
             live_specs.push_back(spec);
@@ -482,7 +538,8 @@ void SourceAudioRuntime::bind_title(const std::shared_ptr<Title> &title, uint64_
 }
 
 void SourceAudioRuntime::transport(double title_seconds, bool playing,
-                                   bool visible, bool discontinuity, bool reverse)
+                                   bool visible, bool discontinuity, bool reverse,
+                                   double playback_speed)
 {
     bool log_transition = false;
     bool log_jump = false;
@@ -501,6 +558,7 @@ void SourceAudioRuntime::transport(double title_seconds, bool playing,
 
         title_time_ = clamped_time;
         reverse_ = reverse;
+        playback_speed_ = std::clamp(playback_speed, 0.02, 4.0);
         if (jumped || play_changed || visibility_changed) {
             discontinuity_ = true;
             output_sample_cursor_ = transport_sample_cursor(
@@ -532,9 +590,14 @@ void SourceAudioRuntime::transport(double title_seconds, bool playing,
         logged_playing = playing_;
         logged_visible = visible_;
         editor_preview = editor_preview_;
-        reported_time_ms_.store(
-            static_cast<int64_t>(std::llround(title_time_ * 1000.0)),
-            std::memory_order_release);
+        const bool preserve_editor_audio_clock =
+            editor_preview_ && playing_ && visible_ && !jumped &&
+            !play_changed && !visibility_changed;
+        if (!preserve_editor_audio_clock) {
+            reported_time_ms_.store(
+                static_cast<int64_t>(std::llround(title_time_ * 1000.0)),
+                std::memory_order_release);
+        }
         state_.store(!visible ? OBS_MEDIA_STATE_STOPPED
                              : (playing ? OBS_MEDIA_STATE_PLAYING
                                         : OBS_MEDIA_STATE_PAUSED),
@@ -569,6 +632,9 @@ void SourceAudioRuntime::stop(bool)
         output_scheduler_.clear();
         log_last_packet_timestamp_ns_.store(0, std::memory_order_release);
         log_last_delivery_ns_.store(0, std::memory_order_release);
+        level_left_.store(0.0f, std::memory_order_release);
+        level_right_.store(0.0f, std::memory_order_release);
+        level_update_ns_.store(os_gettime_ns(), std::memory_order_release);
         reported_time_ms_.store(0, std::memory_order_release);
         state_.store(OBS_MEDIA_STATE_STOPPED, std::memory_order_release);
         editor_preview = editor_preview_;
@@ -990,12 +1056,13 @@ SourceAudioRuntime::decode_clip(const ClipSpec &spec, uint32_t target_rate,
 #endif
 }
 
-void SourceAudioRuntime::mix_block(int64_t start_sample, uint32_t frames, bool reverse, std::vector<float> &left, std::vector<float> &right)
+void SourceAudioRuntime::mix_block(int64_t start_sample, uint32_t frames, bool reverse, double playback_speed, std::vector<float> &left, std::vector<float> &right)
 {
     bgl::perf::ScopedTimer mix_timer(bgl::perf::Counter::AudioMixNanoseconds);
     bgl::perf::add(bgl::perf::Counter::AudioMixBlocks);
     left.assign(frames, 0.0f);
     right.assign(frames, 0.0f);
+    playback_speed = std::clamp(playback_speed, 0.02, 4.0);
     const bool any_solo = std::any_of(clips_.begin(), clips_.end(), [](const auto &clip) {
         return clip && clip->asset && clip->asset->valid && clip->spec.solo &&
                !clip->spec.muted && !clip->spec.hidden;
@@ -1022,10 +1089,19 @@ void SourceAudioRuntime::mix_block(int64_t start_sample, uint32_t frames, bool r
         for (uint32_t i = 0; i < frames; ++i) {
             const bool editor_reverse_independent =
                 reverse && editor_preview_ && s.independent;
+            const int64_t scaled_offset = static_cast<int64_t>(
+                std::llround(static_cast<double>(i) * playback_speed));
             const int64_t clock =
                 (s.independent && !editor_reverse_independent)
-                    ? static_cast<int64_t>(independent_sample_cursor_ + i)
-                    : transport_sample_at(start_sample, i, reverse);
+                    ? static_cast<int64_t>(independent_sample_cursor_ +
+                                           static_cast<uint64_t>(std::max<int64_t>(0, scaled_offset)))
+                    : (reverse
+                           ? (start_sample < std::numeric_limits<int64_t>::min() + scaled_offset
+                                  ? std::numeric_limits<int64_t>::min()
+                                  : start_sample - scaled_offset)
+                           : (start_sample > std::numeric_limits<int64_t>::max() - scaled_offset
+                                  ? std::numeric_limits<int64_t>::max()
+                                  : start_sample + scaled_offset));
             if (clock < 0)
                 continue;
             const uint64_t unsigned_clock = static_cast<uint64_t>(clock);
@@ -1036,11 +1112,26 @@ void SourceAudioRuntime::mix_block(int64_t start_sample, uint32_t frames, bool r
                 (s.independent && !editor_reverse_independent)
                     ? unsigned_clock
                     : unsigned_clock - timeline_in;
-            if (!s.loop && rel >= span) continue;
-            const uint64_t idx = media_in + (s.loop ? (rel % span) : rel);
+            if (!s.loop && rel >= span && !s.video_time_remap_enabled) continue;
+            uint64_t idx = media_in + (s.loop ? (rel % span) : std::min<uint64_t>(rel, span - 1));
+            const double sec = double(rel) / sample_rate_;
+            if (s.video_time_remap_enabled) {
+                const bgl::video::VideoTimeRemapSample remap =
+                    bgl::video::evaluate_video_time_remap(s.video_time_remap_layer, sec);
+                if (s.video_time_remap_layer.video_time_remap_audio_mode ==
+                        VideoTimeRemapAudioMode::MuteReverseOrFreeze &&
+                    (remap.moving_backward || remap.freeze_section))
+                    continue;
+                const int64_t remapped_sample = static_cast<int64_t>(std::llround(
+                    std::max(0.0, remap.source_time) * double(sample_rate_)));
+                if (remapped_sample < 0)
+                    continue;
+                idx = static_cast<uint64_t>(remapped_sample);
+                if (s.loop && span > 0)
+                    idx = media_in + ((idx >= media_in ? idx - media_in : 0) % span);
+            }
             if (idx >= asset.left.size())
                 continue;
-            const double sec = double(rel) / sample_rate_;
             const double clip_len = double(std::min<uint64_t>(span, timeline_out > timeline_in ? timeline_out - timeline_in : span)) / sample_rate_;
             const float automated_gain = std::clamp(
                 static_cast<float>(s.volume_prop.evaluate(sec)), 0.0f, 4.0f);
@@ -1090,7 +1181,17 @@ void SourceAudioRuntime::mix_block(int64_t start_sample, uint32_t frames, bool r
     /* Master peak protection: linked, soft-knee limiter guarantees legal float range. */
     float peak = 0.0f; for (uint32_t i=0;i<frames;++i) peak = std::max(peak, std::max(std::abs(left[i]), std::abs(right[i])));
     const float trim = peak > 0.98f ? 0.98f / peak : 1.0f;
-    for (uint32_t i=0;i<frames;++i) { left[i] = std::tanh(left[i] * trim); right[i] = std::tanh(right[i] * trim); }
+    float peak_l = 0.0f;
+    float peak_r = 0.0f;
+    for (uint32_t i=0;i<frames;++i) {
+        left[i] = std::tanh(left[i] * trim);
+        right[i] = std::tanh(right[i] * trim);
+        peak_l = std::max(peak_l, std::abs(left[i]));
+        peak_r = std::max(peak_r, std::abs(right[i]));
+    }
+    level_left_.store(std::clamp(peak_l, 0.0f, 1.0f), std::memory_order_release);
+    level_right_.store(std::clamp(peak_r, 0.0f, 1.0f), std::memory_order_release);
+    level_update_ns_.store(os_gettime_ns(), std::memory_order_release);
 }
 
 void SourceAudioRuntime::log_output_packet(uint64_t timestamp_ns,
@@ -1164,6 +1265,25 @@ void SourceAudioRuntime::log_output_packet(uint64_t timestamp_ns,
          static_cast<unsigned long long>(log_output_blocks_),
          static_cast<unsigned long long>(log_output_frames_));
     log_last_summary_ns_ = now;
+}
+
+
+static void advance_transport_cursor_scaled(int64_t &cursor, uint32_t frames,
+                                            bool reverse, double playback_speed)
+{
+    const int64_t delta = std::max<int64_t>(
+        1, static_cast<int64_t>(std::llround(
+               static_cast<double>(frames) *
+               std::clamp(playback_speed, 0.02, 4.0))));
+    if (reverse) {
+        cursor = cursor < std::numeric_limits<int64_t>::min() + delta
+            ? std::numeric_limits<int64_t>::min()
+            : cursor - delta;
+    } else {
+        cursor = cursor > std::numeric_limits<int64_t>::max() - delta
+            ? std::numeric_limits<int64_t>::max()
+            : cursor + delta;
+    }
 }
 
 void SourceAudioRuntime::output_worker_main()
@@ -1316,10 +1436,18 @@ void SourceAudioRuntime::output_worker_main()
                 }
 
                 frames = block_frames_;
+                const double speed = playback_speed_;
                 timestamp = editor_monitor_cadence_.take_timestamp();
-                mix_block(output_sample_cursor_, frames, reverse_, left, right);
-                advance_transport_cursor(output_sample_cursor_, frames, reverse_);
-                independent_sample_cursor_ += frames;
+                mix_block(output_sample_cursor_, frames, reverse_, speed, left, right);
+                advance_transport_cursor_scaled(output_sample_cursor_, frames, reverse_, speed);
+                reported_time_ms_.store(
+                    timeline_ms_for_transport_cursor(output_sample_cursor_,
+                                                     sample_rate_, reverse_),
+                    std::memory_order_release);
+                independent_sample_cursor_ += static_cast<uint64_t>(
+                    std::max<int64_t>(1, static_cast<int64_t>(
+                        std::llround(static_cast<double>(frames) *
+                                     std::clamp(speed, 0.02, 4.0)))));
                 independent_time_ =
                     double(independent_sample_cursor_) / sample_rate_;
             }
@@ -1439,8 +1567,12 @@ void SourceAudioRuntime::output_worker_main()
 
                 frames = block_frames_;
                 timestamp = output_scheduler_.next_timestamp_ns();
-                mix_block(output_sample_cursor_, frames, reverse_, left, right);
+                mix_block(output_sample_cursor_, frames, reverse_, 1.0, left, right);
                 advance_transport_cursor(output_sample_cursor_, frames, reverse_);
+                reported_time_ms_.store(
+                    timeline_ms_for_transport_cursor(output_sample_cursor_,
+                                                     sample_rate_, reverse_),
+                    std::memory_order_release);
                 independent_sample_cursor_ += frames;
                 independent_time_ =
                     double(independent_sample_cursor_) / sample_rate_;

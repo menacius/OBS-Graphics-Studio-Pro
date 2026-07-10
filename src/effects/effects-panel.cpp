@@ -75,7 +75,7 @@ static QString bgl_effects_panel_style()
         "QListWidget{background:@base@;border:1px solid @mid@;color:@text@;alternate-background-color:@alternate@;}"
         "QListWidget::item{padding:4px;}"
         "QListWidget::item:selected{background:@highlight@;color:@highlightedText@;}"
-        "QToolButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:2px;padding:2px;}"
+        "QToolButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:2px;padding:1px 6px;font-size:10px;min-height:18px;max-height:20px;}"
         "QToolButton:hover{background:@hover@;border-color:@mid@;}"
         "QToolButton:pressed{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
         "QToolButton:checked{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
@@ -102,13 +102,7 @@ static QString bgl_effects_panel_style()
 
 static QString bgl_theme_control_style()
 {
-    const QPalette pal = qApp->palette();
-    return QStringLiteral(
-        "QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
-        "border:1px solid %3;border-radius:2px;padding:1px 3px;selection-background-color:%4;}"
-        "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}")
-        .arg(pal.color(QPalette::Text).name(QColor::HexRgb), pal.color(QPalette::Base).name(QColor::HexRgb),
-             pal.color(QPalette::Mid).name(QColor::HexRgb), pal.color(QPalette::Highlight).name(QColor::HexRgb));
+    return bgl_transform_panel_control_style(qApp->palette());
 }
 
 
@@ -1813,6 +1807,7 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
     box->setProperty("bglPanelPersistenceKey",
                      QStringLiteral("%1_%2").arg(identity).arg(occurrence));
     box->setProperty("bglPersistPanelOrder", false);
+    box->setProperty("bglPanelDefaultsDisabled", true);
     // Effect headers already provide the visual separation. Preserve an
     // intentionally flush body top while keeping the common side/bottom inset.
     box->setProperty("bglPreservePanelMargins", true);
@@ -4220,7 +4215,7 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
         paste->setEnabled(QApplication::clipboard()->mimeData()->hasFormat(
             QString::fromUtf8(kEffectStackMimeType)));
         QAction *replace = menu.addAction(tr("Replace effect…"));
-        QAction *reset = menu.addAction(tr("Reset effect"));
+        QAction *reset = menu.addAction(panel->style()->standardIcon(QStyle::SP_BrowserReload), tr("Defaults"));
         menu.addSeparator();
         QAction *duplicate = menu.addAction(obs_icon("duplicate.svg"),
                                              bgl_tr("OBSTitles.DuplicateEffect"));

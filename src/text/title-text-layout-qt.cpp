@@ -6,10 +6,12 @@
 #include <QFontMetricsF>
 #include <QGlyphRun>
 #include <QPointF>
+#include <QPainterPath>
 #include <QRawFont>
 #include <QRectF>
 #include <QString>
 #include <QTextCharFormat>
+#include <QTextFormat>
 #include <QTextLayout>
 #include <QTextLine>
 #include <QTextOption>
@@ -200,11 +202,13 @@ static QFont font_from_rich_format(const RichTextCharFormat &format,
                           (format.tracking +
                            (format.kerning_mode == 2 ? format.manual_kerning : 0.0f)) *
                               device_scale);
-    const RichTextFontScaleMetrics scale =
-        rich_text_font_scale_metrics(format.scale_x, format.scale_y);
-    font.setPixelSize(std::max(1, static_cast<int>(std::lround(
-        static_cast<double>(font.pixelSize()) * scale.vertical_factor))));
-    font.setStretch(scale.horizontal_stretch_percent);
+    /* Character H/V Scale is never encoded in QFont. QFont::setStretch()
+     * changes font matching on DirectWrite and can select discrete condensed/
+     * expanded faces around backend-specific thresholds. It also makes the
+     * shaped advances and the atlas outline come from different geometries.
+     * The canonical layout stage applies both axes explicitly per cluster and
+     * the GPU stage scales the authored-size outline exactly once. */
+    font.setStretch(100);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     font.setFeature("kern", format.kerning_mode != 2 && format.kerning ? 1 : 0);
     font.setFeature("liga", format.ligatures ? 1 : 0);
@@ -223,11 +227,21 @@ static QFont font_from_rich_format(const RichTextCharFormat &format,
     return font;
 }
 
+static constexpr int kLayoutScaleXProperty = QTextFormat::UserProperty + 0x275;
+static constexpr int kLayoutScaleYProperty = QTextFormat::UserProperty + 0x276;
+
 static QTextCharFormat qtext_format(const RichTextCharFormat &format,
                                     float device_scale)
 {
     QTextCharFormat result;
     result.setFont(font_from_rich_format(format, device_scale));
+    /* Keep scale-only rich-text boundaries visible to QTextLayout without
+     * delegating the scale to QFont. This prevents ligatures/items from being
+     * silently coalesced across two canonical scale ranges. */
+    result.setProperty(kLayoutScaleXProperty,
+                       static_cast<double>(format.scale_x));
+    result.setProperty(kLayoutScaleYProperty,
+                       static_cast<double>(format.scale_y));
     result.setFontUnderline(format.underline);
     result.setFontStrikeOut(format.strikethrough);
     result.setFontKerning(format.kerning_mode != 2 && format.kerning);
@@ -267,17 +281,6 @@ shaping_style(const RichTextCharFormat &format)
     style.fractions = format.fractions;
     style.opentype_features = format.opentype_features;
     return style;
-}
-
-static Qt::Alignment qt_alignment(int align_h)
-{
-    if (align_h == 1 || align_h == 4)
-        return Qt::AlignHCenter;
-    if (align_h == 2 || align_h == 5)
-        return Qt::AlignRight;
-    if (align_h >= 3)
-        return Qt::AlignJustify;
-    return Qt::AlignLeft;
 }
 
 static void hash_bytes(uint64_t &hash, const QByteArray &bytes)
@@ -353,6 +356,12 @@ static void scale_line_x(TextLayoutData &data, TextLayoutLine &line,
         TextLayoutGlyph &glyph = data.glyphs[line.glyph_begin + i];
         glyph.x = origin_x + (glyph.x - origin_x) * factor;
         glyph.advance_x *= factor;
+        /* Horizontal-fit is a second, document-level geometry transform.
+         * Carry it into the emitted glyph quad as well as positions; otherwise
+         * fit mode compresses advances only and regresses into tracking-like
+         * spacing. Authored H Scale remains in glyph.scale_x and is multiplied
+         * exactly once by this independent fit factor. */
+        glyph.scale_x = std::clamp(glyph.scale_x * factor, 0.0001f, 100.0f);
         glyph.ink_x = origin_x + (glyph.ink_x - origin_x) * factor;
         glyph.ink_width *= factor;
     }
@@ -379,6 +388,334 @@ static void scale_line_x(TextLayoutData &data, TextLayoutLine &line,
     line.width *= factor;
 }
 
+/* Rebuild split-run clipping from the canonical post-transform clusters. */
+static void rebuild_line_run_clips(TextLayoutData &data,
+                                   const TextLayoutLine &line)
+{
+    const uint32_t run_end = std::min<uint32_t>(
+        line.run_begin + line.run_count,
+        static_cast<uint32_t>(data.runs.size()));
+    for (uint32_t run_index = line.run_begin; run_index < run_end; ++run_index) {
+        TextLayoutRun &run = data.runs[run_index];
+        float clip_left = std::numeric_limits<float>::max();
+        float clip_right = -std::numeric_limits<float>::max();
+        const uint32_t cluster_end = std::min<uint32_t>(
+            run.cluster_begin + run.cluster_count,
+            static_cast<uint32_t>(data.clusters.size()));
+        for (uint32_t cluster_index = run.cluster_begin;
+             cluster_index < cluster_end; ++cluster_index) {
+            const TextLayoutCluster &cluster = data.clusters[cluster_index];
+            if (cluster.run_index != run_index)
+                continue;
+            clip_left = std::min(clip_left, cluster.x);
+            clip_right = std::max(clip_right, cluster.x + cluster.width);
+        }
+        if (std::isfinite(clip_left) && std::isfinite(clip_right)) {
+            run.clip_x = clip_left;
+            run.clip_width = std::max(0.0f, clip_right - clip_left);
+        }
+    }
+}
+
+static std::vector<uint32_t> visual_line_clusters(
+    const TextLayoutData &data, const TextLayoutLine &line)
+{
+    std::vector<uint32_t> clusters;
+    clusters.reserve(line.cluster_count);
+    const uint32_t cluster_end = std::min<uint32_t>(
+        line.cluster_begin + line.cluster_count,
+        static_cast<uint32_t>(data.clusters.size()));
+    for (uint32_t index = line.cluster_begin; index < cluster_end; ++index)
+        clusters.push_back(index);
+    std::stable_sort(clusters.begin(), clusters.end(),
+                     [&](uint32_t left, uint32_t right) {
+        const TextLayoutCluster &a = data.clusters[left];
+        const TextLayoutCluster &b = data.clusters[right];
+        if (a.x != b.x)
+            return a.x < b.x;
+        return a.byte_start < b.byte_start;
+    });
+    return clusters;
+}
+
+/* Apply canonical H Scale after shaping, in visual-cluster order. This is the
+ * only place where character scale changes advances/positions. Alignment is
+ * deliberately applied afterwards from the final scaled line width; preserving
+ * QTextLayout's pre-scale center/right anchor makes a compressed or expanded
+ * line drift inside its text box. */
+static void apply_line_horizontal_character_scale(
+    TextLayoutData &data, TextLayoutLine &line,
+    const RichTextDocument &document)
+{
+    if (line.cluster_count == 0)
+        return;
+
+    const std::vector<uint32_t> visual_clusters =
+        visual_line_clusters(data, line);
+    if (visual_clusters.empty())
+        return;
+
+    float old_left = std::numeric_limits<float>::max();
+    for (uint32_t index : visual_clusters)
+        old_left = std::min(old_left, data.clusters[index].x);
+    if (!std::isfinite(old_left))
+        return;
+
+    float visual_cursor = old_left;
+    float previous_old_right = old_left;
+    for (uint32_t cluster_index : visual_clusters) {
+        TextLayoutCluster &cluster = data.clusters[cluster_index];
+        const float old_x = cluster.x;
+        const float old_width = cluster.width;
+        const float gap = std::max(0.0f, old_x - previous_old_right);
+        visual_cursor += gap;
+
+        const RichTextCharFormat format =
+            rich_text_format_at(document, cluster.byte_start);
+        const float factor = std::clamp(format.scale_x, 0.01f, 100.0f);
+        const float new_x = visual_cursor;
+        const float new_width = std::max(0.0f, old_width * factor);
+
+        const uint32_t glyph_end = std::min<uint32_t>(
+            cluster.glyph_begin + cluster.glyph_count,
+            static_cast<uint32_t>(data.glyphs.size()));
+        for (uint32_t glyph_index = cluster.glyph_begin;
+             glyph_index < glyph_end; ++glyph_index) {
+            TextLayoutGlyph &glyph = data.glyphs[glyph_index];
+            if (glyph.cluster_index != cluster_index)
+                continue;
+            const float old_glyph_x = glyph.x;
+            glyph.x = new_x + (old_glyph_x - old_x) * factor;
+            glyph.ink_x += glyph.x - old_glyph_x;
+            /* advance_x already contains the per-glyph scale copied from the
+             * canonical format. Do not multiply it a second time here. */
+        }
+
+        if (cluster.boundary_begin <= data.cursor_boundaries.size() &&
+            cluster.boundary_count <=
+                data.cursor_boundaries.size() - cluster.boundary_begin) {
+            for (uint32_t boundary = 0; boundary < cluster.boundary_count;
+                 ++boundary) {
+                TextLayoutCursorBoundary &cursor =
+                    data.cursor_boundaries[cluster.boundary_begin + boundary];
+                cursor.x = new_x + (cursor.x - old_x) * factor;
+            }
+        }
+        cluster.x = new_x;
+        cluster.width = new_width;
+        visual_cursor = new_x + new_width;
+        previous_old_right = old_x + old_width;
+    }
+
+    line.x = old_left;
+    line.width = std::max(0.0f, visual_cursor - old_left);
+    rebuild_line_run_clips(data, line);
+}
+
+static bool cluster_is_expandable_space(const TextLayoutData &data,
+                                        const TextLayoutCluster &cluster)
+{
+    if (cluster.byte_length == 0 || cluster.byte_start >= data.text.size())
+        return false;
+    const size_t length = std::min(
+        cluster.byte_length, data.text.size() - cluster.byte_start);
+    const QString text = QString::fromUtf8(
+        data.text.data() + cluster.byte_start, static_cast<int>(length));
+    if (text.isEmpty())
+        return false;
+    for (const QChar character : text) {
+        const ushort code = character.unicode();
+        if (!character.isSpace() || code == 0x00A0 || code == 0x202F)
+            return false;
+    }
+    return true;
+}
+
+/* Expand only inter-word whitespace after authored H Scale has been resolved.
+ * This keeps glyph outlines untouched while making justify modes fill the real
+ * text-box width. Cursor/selection geometry is expanded with the whitespace,
+ * so canvas painting and editing continue to share one layout. */
+static bool justify_line_to_width(TextLayoutData &data, TextLayoutLine &line,
+                                  float target_width)
+{
+    const std::vector<uint32_t> visual_clusters =
+        visual_line_clusters(data, line);
+    if (visual_clusters.size() < 3 || target_width <= line.width + 0.0001f)
+        return false;
+
+    size_t first_content = 0;
+    while (first_content < visual_clusters.size() &&
+           cluster_is_expandable_space(
+               data, data.clusters[visual_clusters[first_content]]))
+        ++first_content;
+    size_t last_content = visual_clusters.size();
+    while (last_content > first_content &&
+           cluster_is_expandable_space(
+               data, data.clusters[visual_clusters[last_content - 1]]))
+        --last_content;
+    if (last_content <= first_content + 1)
+        return false;
+
+    std::vector<bool> expandable(visual_clusters.size(), false);
+    size_t count = 0;
+    for (size_t i = first_content + 1; i < last_content; ++i) {
+        if (cluster_is_expandable_space(
+                data, data.clusters[visual_clusters[i]])) {
+            expandable[i] = true;
+            ++count;
+        }
+    }
+    if (count == 0)
+        return false;
+
+    const float addition = (target_width - line.width) /
+                           static_cast<float>(count);
+    float accumulated = 0.0f;
+    for (size_t visual_index = 0; visual_index < visual_clusters.size();
+         ++visual_index) {
+        const uint32_t cluster_index = visual_clusters[visual_index];
+        TextLayoutCluster &cluster = data.clusters[cluster_index];
+        const float old_x = cluster.x;
+        const float old_width = cluster.width;
+        const float new_x = old_x + accumulated;
+        const float new_width = expandable[visual_index]
+                                    ? std::max(0.0f, old_width + addition)
+                                    : old_width;
+
+        const uint32_t glyph_end = std::min<uint32_t>(
+            cluster.glyph_begin + cluster.glyph_count,
+            static_cast<uint32_t>(data.glyphs.size()));
+        for (uint32_t glyph_index = cluster.glyph_begin;
+             glyph_index < glyph_end; ++glyph_index) {
+            TextLayoutGlyph &glyph = data.glyphs[glyph_index];
+            if (glyph.cluster_index != cluster_index)
+                continue;
+            glyph.x += accumulated;
+            glyph.ink_x += accumulated;
+        }
+
+        if (cluster.boundary_begin <= data.cursor_boundaries.size() &&
+            cluster.boundary_count <=
+                data.cursor_boundaries.size() - cluster.boundary_begin) {
+            for (uint32_t boundary = 0; boundary < cluster.boundary_count;
+                 ++boundary) {
+                TextLayoutCursorBoundary &cursor =
+                    data.cursor_boundaries[cluster.boundary_begin + boundary];
+                const float relative = old_width > 0.0001f
+                    ? std::clamp((cursor.x - old_x) / old_width, 0.0f, 1.0f)
+                    : (boundary + 1 == cluster.boundary_count ? 1.0f : 0.0f);
+                cursor.x = new_x + relative * new_width;
+            }
+        }
+        cluster.x = new_x;
+        cluster.width = new_width;
+        if (expandable[visual_index])
+            accumulated += addition;
+    }
+
+    line.width = target_width;
+    rebuild_line_run_clips(data, line);
+    return true;
+}
+
+static void align_scaled_line(TextLayoutData &data, TextLayoutLine &line,
+                              float line_left, float available_width,
+                              int align_h, bool last_in_paragraph)
+{
+    if (available_width <= 0.0f)
+        return;
+
+    const bool justify = align_h == 6 ||
+        (align_h >= 3 && align_h <= 5 && !last_in_paragraph);
+    if (line.x != line_left)
+        translate_line(data, line, line_left - line.x, 0.0f);
+    if (justify)
+        justify_line_to_width(data, line, available_width);
+
+    int terminal_alignment = align_h;
+    if (justify)
+        terminal_alignment = 0;
+    else if (align_h == 3)
+        terminal_alignment = 0;
+    else if (align_h == 4)
+        terminal_alignment = 1;
+    else if (align_h == 5)
+        terminal_alignment = 2;
+
+    float target_x = line_left;
+    if (terminal_alignment == 1)
+        target_x += (available_width - line.width) * 0.5f;
+    else if (terminal_alignment == 2)
+        target_x += available_width - line.width;
+    if (target_x != line.x)
+        translate_line(data, line, target_x - line.x, 0.0f);
+}
+
+/* Expand a line to the real scaled glyph envelope without changing shaping.
+ * V Scale is applied around each glyph baseline, so a run above 100% can extend
+ * above and below QTextLine's natural metrics. Rebase that envelope to the
+ * requested line top and use the resulting height for following lines and
+ * vertical alignment. This is run-safe for mixed H/V scales. */
+static void normalize_line_vertical_scale(TextLayoutData &data,
+                                          TextLayoutLine &line)
+{
+    if (line.glyph_count == 0)
+        return;
+
+    float visual_top = line.y;
+    float visual_bottom = line.y + line.height;
+    const uint32_t glyph_end = std::min<uint32_t>(
+        line.glyph_begin + line.glyph_count,
+        static_cast<uint32_t>(data.glyphs.size()));
+    for (uint32_t index = line.glyph_begin; index < glyph_end; ++index) {
+        const TextLayoutGlyph &glyph = data.glyphs[index];
+        if (glyph.ink_width <= 0.0f || glyph.ink_height <= 0.0f)
+            continue;
+        visual_top = std::min(visual_top, glyph.ink_y);
+        visual_bottom = std::max(visual_bottom,
+                                 glyph.ink_y + glyph.ink_height);
+    }
+
+    const float content_shift = std::max(0.0f, line.y - visual_top);
+    if (content_shift > 0.0f) {
+        for (uint32_t index = line.glyph_begin; index < glyph_end; ++index) {
+            TextLayoutGlyph &glyph = data.glyphs[index];
+            glyph.y += content_shift;
+            glyph.ink_y += content_shift;
+        }
+        const uint32_t run_end = std::min<uint32_t>(
+            line.run_begin + line.run_count,
+            static_cast<uint32_t>(data.runs.size()));
+        for (uint32_t index = line.run_begin; index < run_end; ++index)
+            data.runs[index].clip_y += content_shift;
+        line.baseline += content_shift;
+        visual_bottom += content_shift;
+    }
+
+    line.height = std::max(line.height + content_shift,
+                           visual_bottom - line.y);
+    line.ascent = std::max(0.0f, line.baseline - line.y);
+    line.descent = std::max(0.0f, line.height - line.ascent);
+
+    const uint32_t cluster_end = std::min<uint32_t>(
+        line.cluster_begin + line.cluster_count,
+        static_cast<uint32_t>(data.clusters.size()));
+    for (uint32_t index = line.cluster_begin; index < cluster_end; ++index) {
+        data.clusters[index].y = line.y;
+        data.clusters[index].height = line.height;
+    }
+
+    /* Split-ligature clipping is horizontal. Give it the complete scaled line
+     * envelope vertically so tall glyphs are never cut at 100% metrics. */
+    const uint32_t run_end = std::min<uint32_t>(
+        line.run_begin + line.run_count,
+        static_cast<uint32_t>(data.runs.size()));
+    for (uint32_t index = line.run_begin; index < run_end; ++index) {
+        data.runs[index].clip_y = line.y;
+        data.runs[index].clip_height = line.height;
+    }
+}
+
 static std::vector<size_t> format_breaks(const RichTextDocument &doc,
                                          const ParagraphSpan &paragraph)
 {
@@ -396,6 +733,13 @@ static std::vector<size_t> format_breaks(const RichTextDocument &doc,
     std::sort(breaks.begin(), breaks.end());
     breaks.erase(std::unique(breaks.begin(), breaks.end()), breaks.end());
     return breaks;
+}
+
+static bool same_shaping_format(const RichTextCharFormat &left,
+                                const RichTextCharFormat &right)
+{
+    return rich_text_char_format_difference_mask(
+               left, right, RichTextCharShapingMask) == 0;
 }
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -425,6 +769,28 @@ static LayoutFormatList formats_for_paragraph(const RichTextDocument &doc,
             formats.push_back(range);
     }
     return formats;
+}
+
+static float paragraph_horizontal_scale_hint(const RichTextDocument &doc,
+                                             const ParagraphSpan &paragraph)
+{
+    if (paragraph.length == 0)
+        return 1.0f;
+    const std::vector<size_t> breaks = format_breaks(doc, paragraph);
+    double weighted = 0.0;
+    double weight = 0.0;
+    for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+        const size_t begin = breaks[i];
+        const size_t end = breaks[i + 1];
+        if (end <= begin)
+            continue;
+        const double segment_weight = static_cast<double>(end - begin);
+        const RichTextCharFormat format = rich_text_format_at(doc, begin);
+        weighted += segment_weight * std::clamp(
+            static_cast<double>(format.scale_x), 0.01, 100.0);
+        weight += segment_weight;
+    }
+    return static_cast<float>(weight > 0.0 ? weighted / weight : 1.0);
 }
 
 static void append_empty_line(TextLayoutData &data,
@@ -623,9 +989,10 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                                       ? QTextOption::WrapAnywhere
                                       : QTextOption::WrapAtWordBoundaryOrAnywhere)
                                : QTextOption::NoWrap);
-        option.setAlignment(request.overflow_mode == 2
-                                ? Qt::AlignLeft
-                                : qt_alignment(paragraph_format.align_h));
+        /* Shape every line from a neutral left origin. Center, right and all
+         * justify variants are resolved after canonical per-cluster H Scale,
+         * using the final line width rather than QTextLayout's 100% metrics. */
+        option.setAlignment(Qt::AlignLeft);
         layout.setTextOption(option);
 
         const float left_indent =
@@ -648,8 +1015,16 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                 break;
             const float line_indent = paragraph_line_index == 0 ? first_indent : 0.0f;
             const float available = std::max(1.0f, available_base - line_indent);
+            const float horizontal_hint = std::clamp(
+                paragraph_horizontal_scale_hint(request.document, paragraph),
+                0.01f, 100.0f);
+            /* QTextLayout shapes at 100% character width. Compensate its line
+             * width so ordinary uniform H Scale wraps at the same point as the
+             * explicit post-shaping geometry. Mixed runs use a deterministic
+             * weighted hint; final positions remain exact per cluster. */
+            const float shaping_width = available / horizontal_hint;
             qline.setLineWidth(request.overflow_mode == 0 || request.max_width > 0.0f
-                                   ? available
+                                   ? std::max(1.0f, shaping_width)
                                    : 10000000.0f);
             qline.setPosition(QPointF(left_indent + line_indent, cursor_y));
 
@@ -673,193 +1048,304 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
             line.cluster_begin = static_cast<uint32_t>(data->clusters.size());
             line.glyph_begin = static_cast<uint32_t>(data->glyphs.size());
 
+            const int line_qstart = qline.textStart();
+            const int line_qend = qline.textStart() + qline.textLength();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
             const auto glyph_runs = layout.glyphRuns(
-                qline.textStart(), qline.textLength(),
+                line_qstart, qline.textLength(),
                 QTextLayout::RetrieveGlyphIndexes |
                     QTextLayout::RetrieveGlyphPositions |
                     QTextLayout::RetrieveStringIndexes);
 #else
-            const auto glyph_runs =
-                layout.glyphRuns(qline.textStart(), qline.textLength());
+            const auto glyph_runs = layout.glyphRuns(
+                line_qstart, qline.textLength());
 #endif
+
+            struct MappedGlyphRun {
+                QGlyphRun glyph_run;
+                std::vector<size_t> cluster_starts;
+                std::vector<RichTextCharFormat> formats;
+            };
+            std::vector<MappedGlyphRun> mapped_runs;
+            std::vector<size_t> line_logical_starts;
+            line_logical_starts.push_back(line.byte_start + line.byte_length);
+
+            /* Ask Qt for each visual glyph exactly once. Then map every glyph
+             * back to its canonical UTF-8 cluster and resolve the complete
+             * effective RichTextDocument format at that cluster. Querying
+             * glyphRuns() separately for each style range is invalid: Qt may
+             * return split/coalesced runs and the same visual glyph more than
+             * once. This line-wide map is shared by geometry, selection and
+             * GPU emission, so there is only one property source. */
             for (const QGlyphRun &glyph_run : glyph_runs) {
                 const auto glyph_ids = glyph_run.glyphIndexes();
                 const auto positions = glyph_run.positions();
                 if (glyph_ids.isEmpty() || glyph_ids.size() != positions.size())
                     continue;
-                const int glyph_count = static_cast<int>(glyph_ids.size());
 
-                TextLayoutRun run;
-                run.glyph_begin = static_cast<uint32_t>(data->glyphs.size());
-                run.cluster_begin = static_cast<uint32_t>(data->clusters.size());
-                run.line_index = static_cast<uint32_t>(data->lines.size());
-                run.right_to_left = glyph_run.isRightToLeft();
-                run.split_ligature =
-                    glyph_run.flags().testFlag(QGlyphRun::SplitLigature);
-                const QRectF run_clip = glyph_run.boundingRect();
-                run.clip_x = static_cast<float>(run_clip.x());
-                run.clip_y = static_cast<float>(run_clip.y());
-                run.clip_width = static_cast<float>(run_clip.width());
-                run.clip_height = static_cast<float>(run_clip.height());
-                const QRawFont raw_font = glyph_run.rawFont();
-                run.font = resolved_font_key(raw_font);
-
-                std::vector<size_t> cluster_starts;
-                cluster_starts.reserve(static_cast<size_t>(glyph_count));
+                MappedGlyphRun mapped;
+                mapped.glyph_run = glyph_run;
+                mapped.cluster_starts.reserve(static_cast<size_t>(glyph_ids.size()));
+                mapped.formats.reserve(static_cast<size_t>(glyph_ids.size()));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
                 const auto string_indexes = glyph_run.stringIndexes();
 #endif
-                for (int i = 0; i < glyph_count; ++i) {
-                    int qindex = qline.textStart();
+                for (int i = 0; i < static_cast<int>(glyph_ids.size()); ++i) {
+                    int qindex = line_qstart;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-                    if (i < static_cast<int>(string_indexes.size()))
+                    /* QGlyphRun::stringIndexes() is the authoritative mapping
+                     * from each visual glyph to the UTF-16 index in the complete
+                     * QTextLayout string. Re-inferring that index from x geometry
+                     * is incorrect for bidi text, ligatures, combining marks and
+                     * wrapped lines, and was the reason a visible selection could
+                     * contain H/V Scale while the emitted glyph used the document
+                     * default. */
+                    if (i < static_cast<int>(string_indexes.size())) {
                         qindex = static_cast<int>(string_indexes[i]);
-                    else
-#endif
-                    {
+                    } else {
                         const qreal relative_x =
                             positions[i].x() - qline.position().x();
                         qindex = qline.xToCursor(
-                            relative_x, QTextLine::CursorBetweenCharacters);
+                            relative_x, QTextLine::CursorOnCharacter);
                     }
-                    qindex = std::clamp(qindex, qline.textStart(),
-                                        qline.textStart() + qline.textLength());
-                    cluster_starts.push_back(
-                        paragraph.start +
-                        paragraph_positions.byte_from_qpos(qindex));
-                }
-
-                size_t run_start = line.byte_start + line.byte_length;
-                size_t run_end = line.byte_start;
-                for (size_t start : cluster_starts) {
-                    run_start = std::min(run_start, start);
-                    run_end = std::max(run_end, start);
-                }
-                if (run_start > line.byte_start + line.byte_length)
-                    run_start = line.byte_start;
-                std::vector<size_t> logical_starts = cluster_starts;
-                logical_starts.push_back(line.byte_start + line.byte_length);
-                std::sort(logical_starts.begin(), logical_starts.end());
-                logical_starts.erase(
-                    std::unique(logical_starts.begin(), logical_starts.end()),
-                    logical_starts.end());
-                auto cluster_end_for = [&](size_t start) {
-                    const auto it = std::upper_bound(logical_starts.begin(),
-                                                     logical_starts.end(), start);
-                    return it == logical_starts.end()
-                               ? line.byte_start + line.byte_length
-                               : *it;
-                };
-                run_end = cluster_end_for(run_end);
-                run.byte_start = run_start;
-                run.byte_length = run_end - run_start;
-                const RichTextCharFormat run_format =
-                    rich_text_format_at(request.document, run_start);
-                run.shaping_style = shaping_style(run_format);
-                run.clip_y -= run_format.baseline_shift *
-                              request.device_scale;
-
-                const auto advances = raw_font.advancesForGlyphIndexes(glyph_ids);
-                std::vector<uint32_t> glyph_indices;
-                glyph_indices.reserve(static_cast<size_t>(glyph_count));
-                for (int i = 0; i < glyph_count; ++i) {
-                    TextLayoutGlyph glyph;
-                    glyph.glyph_id = glyph_ids[i];
-                    glyph.run_index = static_cast<uint32_t>(data->runs.size());
-                    glyph.x = static_cast<float>(positions[i].x());
-                    glyph.y = static_cast<float>(positions[i].y() -
-                                                  run_format.baseline_shift *
-                                                      request.device_scale);
-                    if (i < static_cast<int>(advances.size())) {
-                        glyph.advance_x = static_cast<float>(advances[i].x());
-                        glyph.advance_y = static_cast<float>(advances[i].y());
+#else
+                    const qreal relative_x =
+                        positions[i].x() - qline.position().x();
+                    qindex = qline.xToCursor(
+                        relative_x, QTextLine::CursorOnCharacter);
+#endif
+                    qindex = std::clamp(
+                        qindex, line_qstart,
+                        std::max(line_qstart, line_qend - 1));
+                    size_t cluster_byte = paragraph.start +
+                        paragraph_positions.byte_from_qpos(qindex);
+                    if (line.byte_length > 0) {
+                        cluster_byte = std::clamp(
+                            cluster_byte, line.byte_start,
+                            line.byte_start + line.byte_length - 1);
+                        cluster_byte = rich_text_utf8_previous_boundary(
+                            data->text, cluster_byte);
+                    } else {
+                        cluster_byte = line.byte_start;
                     }
-                    const QRectF ink = raw_font.boundingRect(glyph_ids[i]);
-                    glyph.ink_x = glyph.x + static_cast<float>(ink.x());
-                    glyph.ink_y = glyph.y + static_cast<float>(ink.y());
-                    glyph.ink_width = static_cast<float>(ink.width());
-                    glyph.ink_height = static_cast<float>(ink.height());
-                    glyph_indices.push_back(
-                        static_cast<uint32_t>(data->glyphs.size()));
-                    data->glyphs.push_back(glyph);
+                    mapped.cluster_starts.push_back(cluster_byte);
+                    mapped.formats.push_back(
+                        rich_text_format_at(request.document, cluster_byte));
+                    line_logical_starts.push_back(cluster_byte);
                 }
-
-                std::vector<size_t> visual_clusters;
-                for (size_t start : cluster_starts) {
-                    if (std::find(visual_clusters.begin(), visual_clusters.end(),
-                                  start) == visual_clusters.end())
-                        visual_clusters.push_back(start);
-                }
-                for (size_t cluster_start : visual_clusters) {
-                    TextLayoutCluster cluster;
-                    cluster.byte_start = cluster_start;
-                    cluster.byte_length =
-                        cluster_end_for(cluster_start) - cluster_start;
-                    cluster.run_index = static_cast<uint32_t>(data->runs.size());
-                    cluster.line_index = static_cast<uint32_t>(data->lines.size());
-                    cluster.right_to_left = run.right_to_left;
-                    cluster.glyph_begin = std::numeric_limits<uint32_t>::max();
-                    for (size_t i = 0; i < cluster_starts.size(); ++i) {
-                        if (cluster_starts[i] != cluster_start)
-                            continue;
-                        const uint32_t glyph_index = glyph_indices[i];
-                        TextLayoutGlyph &glyph = data->glyphs[glyph_index];
-                        if (cluster.glyph_begin ==
-                            std::numeric_limits<uint32_t>::max())
-                            cluster.glyph_begin = glyph_index;
-                        ++cluster.glyph_count;
-                        glyph.cluster_index =
-                            static_cast<uint32_t>(data->clusters.size());
-                    }
-                    if (cluster.glyph_begin ==
-                        std::numeric_limits<uint32_t>::max())
-                        cluster.glyph_begin = run.glyph_begin;
-                    const int cluster_qstart = paragraph_positions.qpos_from_byte(
-                        cluster_start - paragraph.start);
-                    const int cluster_qend = paragraph_positions.qpos_from_byte(
-                        cluster_end_for(cluster_start) - paragraph.start);
-                    const qreal cursor_start =
-                        qline.cursorToX(cluster_qstart);
-                    const qreal cursor_end = qline.cursorToX(cluster_qend);
-                    const float advance_left = line.x + static_cast<float>(
-                        std::min(cursor_start, cursor_end));
-                    const float advance_right = line.x + static_cast<float>(
-                        std::max(cursor_start, cursor_end));
-                    cluster.x = advance_left;
-                    cluster.y = line.y;
-                    cluster.width = std::max(0.0f,
-                                             advance_right - advance_left);
-                    cluster.height = line.height;
-                    /* Cursor boundaries are finalized after every glyph
-                     * run on this line has contributed its logical starts. */
-                    cluster.boundary_begin = 0;
-                    cluster.boundary_count = 0;
-                    /* Keep ink extents on the glyph records. Cluster bounds
-                     * deliberately use cursor advances so spaces, combining
-                     * marks, ligatures and RTL selections remain hittable. */
-                    data->clusters.push_back(cluster);
-                }
-
-                run.glyph_count = static_cast<uint32_t>(data->glyphs.size()) -
-                                  run.glyph_begin;
-                run.cluster_count =
-                    static_cast<uint32_t>(data->clusters.size()) -
-                    run.cluster_begin;
-                data->runs.push_back(std::move(run));
+                mapped_runs.push_back(std::move(mapped));
             }
 
-            finalize_line_cluster_boundaries(*data, line, paragraph,
-                                             paragraph_positions, qline);
+            std::sort(line_logical_starts.begin(), line_logical_starts.end());
+            line_logical_starts.erase(
+                std::unique(line_logical_starts.begin(),
+                            line_logical_starts.end()),
+                line_logical_starts.end());
+            auto line_cluster_end_for = [&](size_t start) {
+                const auto next = std::upper_bound(
+                    line_logical_starts.begin(), line_logical_starts.end(), start);
+                return next == line_logical_starts.end()
+                    ? line.byte_start + line.byte_length : *next;
+            };
+
+            for (const MappedGlyphRun &mapped : mapped_runs) {
+                const auto glyph_ids = mapped.glyph_run.glyphIndexes();
+                const auto positions = mapped.glyph_run.positions();
+                const QRawFont raw_font = mapped.glyph_run.rawFont();
+                const auto advances = raw_font.advancesForGlyphIndexes(glyph_ids);
+                const int count = static_cast<int>(glyph_ids.size());
+
+                int segment_begin = 0;
+                while (segment_begin < count) {
+                    int segment_end = segment_begin + 1;
+                    while (segment_end < count &&
+                           same_shaping_format(
+                               mapped.formats[static_cast<size_t>(segment_begin)],
+                               mapped.formats[static_cast<size_t>(segment_end)])) {
+                        ++segment_end;
+                    }
+
+                    const RichTextCharFormat &run_format =
+                        mapped.formats[static_cast<size_t>(segment_begin)];
+                    TextLayoutRun run;
+                    run.glyph_begin = static_cast<uint32_t>(data->glyphs.size());
+                    run.cluster_begin = static_cast<uint32_t>(data->clusters.size());
+                    run.line_index = static_cast<uint32_t>(data->lines.size());
+                    run.right_to_left = mapped.glyph_run.isRightToLeft();
+                    run.split_ligature =
+                        mapped.glyph_run.flags().testFlag(QGlyphRun::SplitLigature) ||
+                        segment_begin != 0 || segment_end != count;
+                    run.font = resolved_font_key(raw_font);
+                    run.shaping_style = shaping_style(run_format);
+
+                    size_t run_start = line.byte_start + line.byte_length;
+                    size_t run_last_start = line.byte_start;
+                    for (int i = segment_begin; i < segment_end; ++i) {
+                        const size_t cluster =
+                            mapped.cluster_starts[static_cast<size_t>(i)];
+                        run_start = std::min(run_start, cluster);
+                        run_last_start = std::max(run_last_start, cluster);
+                    }
+                    if (run_start > line.byte_start + line.byte_length)
+                        run_start = line.byte_start;
+                    const size_t run_end = line_cluster_end_for(run_last_start);
+                    run.byte_start = run_start;
+                    run.byte_length = run_end - run_start;
+
+                    const int clip_qstart = paragraph_positions.qpos_from_byte(
+                        run_start - paragraph.start);
+                    const int clip_qend = paragraph_positions.qpos_from_byte(
+                        run_end - paragraph.start);
+                    const qreal clip_cursor_start = qline.cursorToX(clip_qstart);
+                    const qreal clip_cursor_end = qline.cursorToX(clip_qend);
+                    run.clip_x = line.x + static_cast<float>(
+                        std::min(clip_cursor_start, clip_cursor_end));
+                    run.clip_y = line.y;
+                    run.clip_width = static_cast<float>(
+                        std::abs(clip_cursor_end - clip_cursor_start));
+                    run.clip_height = line.height;
+
+                    std::vector<uint32_t> glyph_indices;
+                    glyph_indices.reserve(
+                        static_cast<size_t>(segment_end - segment_begin));
+                    for (int i = segment_begin; i < segment_end; ++i) {
+                        const RichTextCharFormat &glyph_format =
+                            mapped.formats[static_cast<size_t>(i)];
+                        TextLayoutGlyph glyph;
+                        glyph.glyph_id = glyph_ids[i];
+                        glyph.run_index = static_cast<uint32_t>(data->runs.size());
+                        glyph.x = static_cast<float>(positions[i].x());
+                        glyph.y = static_cast<float>(
+                            positions[i].y() - glyph_format.baseline_shift *
+                                                   request.device_scale);
+                        glyph.scale_x = std::clamp(
+                            glyph_format.scale_x, 0.01f, 100.0f);
+                        glyph.scale_y = std::clamp(
+                            glyph_format.scale_y, 0.01f, 100.0f);
+
+                        const QPainterPath glyph_outline =
+                            raw_font.pathForGlyph(glyph_ids[i]);
+                        const QRectF ink = glyph_outline.isEmpty()
+                            ? raw_font.boundingRect(glyph_ids[i])
+                            : glyph_outline.boundingRect();
+                        glyph.ink_x = glyph.x +
+                            static_cast<float>(ink.x()) * glyph.scale_x;
+                        glyph.ink_y = glyph.y +
+                            static_cast<float>(ink.y()) * glyph.scale_y;
+                        glyph.ink_width =
+                            static_cast<float>(ink.width()) * glyph.scale_x;
+                        glyph.ink_height =
+                            static_cast<float>(ink.height()) * glyph.scale_y;
+                        if (i < static_cast<int>(advances.size())) {
+                            glyph.advance_x =
+                                static_cast<float>(advances[i].x()) *
+                                glyph.scale_x;
+                            glyph.advance_y =
+                                static_cast<float>(advances[i].y()) *
+                                glyph.scale_y;
+                        }
+                        glyph_indices.push_back(
+                            static_cast<uint32_t>(data->glyphs.size()));
+                        data->glyphs.push_back(glyph);
+                    }
+
+                    std::vector<size_t> visual_clusters;
+                    for (int i = segment_begin; i < segment_end; ++i) {
+                        const size_t start =
+                            mapped.cluster_starts[static_cast<size_t>(i)];
+                        if (std::find(visual_clusters.begin(),
+                                      visual_clusters.end(), start) ==
+                            visual_clusters.end()) {
+                            visual_clusters.push_back(start);
+                        }
+                    }
+                    for (size_t cluster_start : visual_clusters) {
+                        TextLayoutCluster cluster;
+                        cluster.byte_start = cluster_start;
+                        cluster.byte_length =
+                            line_cluster_end_for(cluster_start) - cluster_start;
+                        cluster.run_index =
+                            static_cast<uint32_t>(data->runs.size());
+                        cluster.line_index =
+                            static_cast<uint32_t>(data->lines.size());
+                        cluster.right_to_left = run.right_to_left;
+                        cluster.glyph_begin =
+                            std::numeric_limits<uint32_t>::max();
+                        for (int i = segment_begin; i < segment_end; ++i) {
+                            if (mapped.cluster_starts[static_cast<size_t>(i)] !=
+                                cluster_start)
+                                continue;
+                            const uint32_t glyph_index = glyph_indices[
+                                static_cast<size_t>(i - segment_begin)];
+                            TextLayoutGlyph &glyph = data->glyphs[glyph_index];
+                            if (cluster.glyph_begin ==
+                                std::numeric_limits<uint32_t>::max()) {
+                                cluster.glyph_begin = glyph_index;
+                            }
+                            ++cluster.glyph_count;
+                            glyph.cluster_index =
+                                static_cast<uint32_t>(data->clusters.size());
+                        }
+                        if (cluster.glyph_begin ==
+                            std::numeric_limits<uint32_t>::max()) {
+                            cluster.glyph_begin = run.glyph_begin;
+                        }
+                        const int cluster_qstart =
+                            paragraph_positions.qpos_from_byte(
+                                cluster_start - paragraph.start);
+                        const int cluster_qend =
+                            paragraph_positions.qpos_from_byte(
+                                line_cluster_end_for(cluster_start) -
+                                paragraph.start);
+                        const qreal cursor_start =
+                            qline.cursorToX(cluster_qstart);
+                        const qreal cursor_end = qline.cursorToX(cluster_qend);
+                        cluster.x = line.x + static_cast<float>(
+                            std::min(cursor_start, cursor_end));
+                        cluster.y = line.y;
+                        cluster.width = std::max(
+                            0.0f, static_cast<float>(
+                                std::abs(cursor_end - cursor_start)));
+                        cluster.height = line.height;
+                        cluster.boundary_begin = 0;
+                        cluster.boundary_count = 0;
+                        data->clusters.push_back(cluster);
+                    }
+
+                    run.glyph_count =
+                        static_cast<uint32_t>(data->glyphs.size()) -
+                        run.glyph_begin;
+                    run.cluster_count =
+                        static_cast<uint32_t>(data->clusters.size()) -
+                        run.cluster_begin;
+                    data->runs.push_back(std::move(run));
+                    segment_begin = segment_end;
+                }
+            }
+
             line.run_count = static_cast<uint32_t>(data->runs.size()) -
                              line.run_begin;
             line.cluster_count = static_cast<uint32_t>(data->clusters.size()) -
                                  line.cluster_begin;
             line.glyph_count = static_cast<uint32_t>(data->glyphs.size()) -
                                line.glyph_begin;
+            finalize_line_cluster_boundaries(*data, line, paragraph,
+                                             paragraph_positions, qline);
+            apply_line_horizontal_character_scale(
+                *data, line, request.document);
+            normalize_line_vertical_scale(*data, line);
+            const bool last_in_paragraph =
+                qline.textStart() + qline.textLength() >=
+                static_cast<int>(paragraph_text.size());
+            const float intrinsic_line_width =
+                left_indent + line_indent + line.width + right_indent;
+            if (request.max_width > 0.0f) {
+                align_scaled_line(*data, line, left_indent + line_indent,
+                                  available, paragraph_format.align_h,
+                                  last_in_paragraph);
+            }
             data->lines.push_back(line);
-            natural_width = std::max(natural_width,
-                                     line.x + line.width + right_indent);
+            natural_width = std::max(natural_width, intrinsic_line_width);
             cursor_y += line.height;
             ++paragraph_line_index;
             if (request.overflow_mode != 0)

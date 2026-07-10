@@ -194,7 +194,16 @@ static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
                 const double current_opacity = gpu_layer_chain_visible(title, layer, title_time)
                     ? std::clamp(gpu_layer_chain_opacity(title, layer, title_time), 0.0, 1.0)
                     : 0.0;
-                const double sample_weight = mix / static_cast<double>(sample_times.size());
+                /* Development Version 250: motion blur must never reduce the
+                 * opacity of the displayed object.  The authored layer remains
+                 * fully present at the current frame; the temporal samples are
+                 * an additional shutter trail controlled by the effect amount.
+                 * The previous normalized mix replaced part of the sharp layer
+                 * with alpha-weighted samples, which made text, shapes and
+                 * parented/grouped objects look semi-transparent. */
+                const double sharp_mix = 1.0;
+                const double blur_mix = mix;
+                const double sample_weight = blur_mix / static_cast<double>(sample_times.size());
                 auto draw_at_time = [&](double sample_time, double weight) {
                     /* Temporal blur integrates geometry over the shutter interval,
                      * but opacity is evaluated once at the displayed frame. Sampling
@@ -218,10 +227,12 @@ static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
                     gs_matrix_pop();
                 };
 
-                if (mix < 1.0)
-                    draw_at_time(title_time, 1.0 - mix);
-                for (double sample_time : sample_times)
-                    draw_at_time(sample_time, sample_weight);
+                if (sharp_mix > 0.0)
+                    draw_at_time(title_time, sharp_mix);
+                if (blur_mix > 0.0) {
+                    for (double sample_time : sample_times)
+                        draw_at_time(sample_time, sample_weight);
+                }
             }
             gs_texrender_end(target);
         }
@@ -275,6 +286,11 @@ struct MotionBaseRaster {
     double logical_height = 0.0;
     QRectF layer_box_rect;
     QRectF image_clip_rect;
+    bool video_frame = false;
+    bool video_exact_frame = true;
+    qint64 video_frame_number = -1;
+    qint64 video_requested_frame_number = -1;
+    int video_loading_progress_percent = -1;
 };
 
 static MotionBaseRaster render_motion_base_raster(const Title &title,
@@ -423,28 +439,27 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
         if (sample_times.empty())
             return true;
 
-        /* Motion blur must replace the sharp layer, not sit on top of it.
-         * Build an averaged temporal exposure first, then mix that exposure
-         * with the current sharp sample only when the effect opacity is below
-         * 100%.  The old path painted the current layer at full opacity and
-         * then added blurred samples over it, which looked like a smear effect
-         * attached to an otherwise sharp object.
-         */
+        /* Development Version 250: treat effect opacity as trail strength,
+         * not as a crossfade that replaces the layer with semi-transparent
+         * shutter samples.  The sharp current frame is always composited at
+         * full authored opacity; blur samples are additive trail energy. */
         const double mix = std::clamp(amount, 0.0, 1.0);
         if (gpu_accumulator && gpu_accumulator(sample_times, mix))
             return true;
+        const double sharp_mix = 1.0;
+        const double blur_mix = mix;
 
         cairo_save(cr);
         cairo_push_group(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
 
-        if (mix < 1.0) {
+        if (sharp_mix > 0.0) {
             cairo_push_group(cr);
             cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
             render_original(cr);
             cairo_pop_group_to_source(cr);
             cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
-            cairo_paint_with_alpha(cr, 1.0 - mix);
+            cairo_paint_with_alpha(cr, sharp_mix);
         }
 
         cairo_push_group(cr);
@@ -460,7 +475,7 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
             cairo_paint_with_alpha(cr, sample_alpha);
         }
         cairo_pop_group_to_source(cr);
-        cairo_paint_with_alpha(cr, mix);
+        cairo_paint_with_alpha(cr, blur_mix);
 
         cairo_pop_group_to_source(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_OVER);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.11)
+project(broadcast-graphics-live VERSION 0.8.12)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "239")
+set(OBS_BGS_DEVELOPMENT_VERSION "281")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)

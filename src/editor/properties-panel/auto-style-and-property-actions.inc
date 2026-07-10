@@ -11,12 +11,12 @@
                 const bool text_like = layer_->type == LayerType::Text ||
                                        layer_->type == LayerType::Clock ||
                                        layer_->type == LayerType::Ticker;
-                if (text_like && text_edit_active()) {
+                if (text_like) {
                     RichTextCharFormat fmt = current_text_char_format();
                     fmt.stroke.width = (float)v;
                     fmt.stroke.enabled = v > 0.0;
                     if (v > 0.0 && fmt.stroke.fill.color == 0)
-                        fmt.stroke.fill.color = layer_->stroke_color;
+                        fmt.stroke.fill.color = 0xFFFFFFFF;
                     apply_text_char_format(fmt, RichTextCharStroke);
                 } else {
                     layer_->stroke_width = (float)v;
@@ -426,7 +426,7 @@
                     emit_change();
                 }
             });
-    connect(btn_shape_defaults_, &QPushButton::clicked,
+    connect(btn_shape_defaults_, &QToolButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 const double t = local_time();
@@ -509,6 +509,26 @@
                     for (auto &point : layer_->path_points)
                         point.corner_radius = std::max(0.0, v);
                 }
+                emit_change();
+            });
+    btn_fill_color_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(btn_fill_color_, &QWidget::customContextMenuRequested,
+            this, [this, emit_change](const QPoint &pos) {
+                if (!layer_ || loading_values_) return;
+                QMenu menu(btn_fill_color_);
+                QAction *expose = menu.addAction(QStringLiteral("Expose Fill to Dock"));
+                expose->setCheckable(true);
+                expose->setChecked(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+                expose->setEnabled(!layer_->use_as_scene_mask);
+                QAction *single = menu.addAction(QStringLiteral("Single value"));
+                single->setCheckable(true);
+                single->setChecked(layer_->exposed_fill_single_value && !layer_->use_as_scene_mask);
+                single->setEnabled(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+                QAction *chosen = menu.exec(btn_fill_color_->mapToGlobal(pos));
+                if (!chosen) return;
+                if (chosen == expose) layer_->expose_fill_color = !layer_->use_as_scene_mask && expose->isChecked();
+                if (chosen == single) layer_->exposed_fill_single_value = !layer_->use_as_scene_mask && single->isChecked();
+                load_values();
                 emit_change();
             });
     connect(btn_fill_color_, &QPushButton::clicked,
@@ -669,6 +689,25 @@
         layer_->video_pixel_width = media.width;
         layer_->video_pixel_height = media.height;
         layer_->video_has_alpha = media.has_alpha;
+        layer_->video_has_hdr = media.has_hdr;
+        layer_->video_source_time = AnimatedProperty{"video_source_time", layer_->video_in_point};
+        layer_->video_source_time.keyframes = {
+            Keyframe{0.0, layer_->video_in_point, EasingType::Linear},
+            Keyframe{std::max(0.0, layer_->video_out_point - layer_->video_in_point),
+                     layer_->video_out_point, EasingType::Linear}
+        };
+        layer_->video_time_remap_enabled = false;
+        layer_->video_time_remap_loop_segments.clear();
+        layer_->video_time_remap_curve_fingerprint.clear();
+        layer_->video_optical_flow_cache_fingerprint.clear();
+        bgl::video::FrameRuntime::instance().cancel_optical_flow_analysis_for_layer(video_id);
+        layer_->video_source_fingerprint = bgl::video::fingerprint_string_for_media_source(layer_->video_source);
+        layer_->video_proxy_path.clear();
+        layer_->video_proxy_fingerprint.clear();
+        layer_->video_proxy_profile.clear();
+        layer_->video_proxy_complete = false;
+        layer_->video_proxy_progress_percent = 0;
+        layer_->video_proxy_generating = false;
         layer_->image_width = static_cast<float>(std::max(1, media.width));
         layer_->image_height = static_cast<float>(std::max(1, media.height));
         if (media.duration > 0.0)
@@ -762,6 +801,30 @@
             emit_change();
         };
     }
+    connect(btn_clear_image_, &QToolButton::clicked,
+            this, [this]() {
+                if (!layer_ || loading_values_) return;
+                const bool video = layer_->type == LayerType::Video;
+                if (video) {
+                    layer_->video_source.clear();
+                    layer_->video_source_relative.clear();
+                    layer_->video_source_absolute.clear();
+                    layer_->video_source_fingerprint.clear();
+                    layer_->video_proxy_path.clear();
+                    layer_->video_proxy_fingerprint.clear();
+                    layer_->video_media_duration = 0.0;
+                    layer_->video_pixel_width = 0;
+                    layer_->video_pixel_height = 0;
+                } else if (layer_->type == LayerType::Image) {
+                    layer_->image_path.clear();
+                } else {
+                    return;
+                }
+                if (edit_image_path_) edit_image_path_->clear();
+                if (lbl_image_preview_) set_image_preview_label(lbl_image_preview_, QString());
+                emit property_changed(true);
+            });
+
     connect(btn_pick_image_, &QPushButton::clicked,
             this, [this, can_edit, fit_image_size_to_current_image,
                    apply_video_media, emit_change]() {

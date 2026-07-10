@@ -30,9 +30,9 @@ changelog = read("docs/CHANGELOG.md")
 note = read("docs/EDITOR_WORKFLOW.md")
 
 # This is a behavior-only patch package; authored data remains Version 212.
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build_info
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build_info
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*243", schema)
 
 # A path segment must not steal the layer context menu. Only an explicit
 # keyframe vertex is allowed to open spatial-keyframe actions.

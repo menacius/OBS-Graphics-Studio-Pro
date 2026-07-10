@@ -259,7 +259,7 @@
     canvas_->set_checkerboard_pattern(saved_checkerboard_pattern);
 
     const auto refresh_canvas_background_control =
-        [this, checkerboard_group, stinger_scene_background_action]() {
+        [this, checkerboard, checkerboard_group, stinger_scene_background_action]() {
             const bool point_switch = title_ &&
                 title_->graphic_type == TitleGraphicType::Stinger &&
                 title_->stinger_switch_mode == StingerSwitchMode::SwitchAtPoint;
@@ -284,6 +284,8 @@
             if (selected) {
                 QSignalBlocker blocker(checkerboard_group);
                 selected->setChecked(true);
+                checkerboard->setText(QStringLiteral("Background: %1").arg(selected->text()));
+                checkerboard->setToolTip(QStringLiteral("Canvas background: %1").arg(selected->text()));
             }
         };
     connect(checkerboard_menu, &QMenu::aboutToShow, this,
@@ -590,6 +592,11 @@
     prerender_dock_ = create_editor_dock(QString::fromUtf8(kPrerenderDockObjectName),
                                          bgl_tr("OBSTitles.PlaybackAndCache"),
                                          create_prerender_panel());
+    editor_audio_dock_ = create_editor_dock(QString::fromUtf8(kEditorAudioDockObjectName),
+                                            QStringLiteral("Editor Audio"),
+                                            create_editor_audio_panel());
+    editor_audio_dock_->setMinimumWidth(56);
+    editor_audio_dock_->setMaximumWidth(96);
     tools_sidebar_ = new ToolsSidebar(this);
     tools_dock_ = create_editor_dock(QStringLiteral("BroadcastGraphicsLiveToolsDock"),
                                      bgl_tr("OBSTitles.Tools"),
@@ -606,12 +613,16 @@
     tabifyDockWidget(styles_dock_, effects_presets_dock_);
     addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
     splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
+    addDockWidget(Qt::RightDockWidgetArea, editor_audio_dock_);
+    splitDockWidget(layer_props_dock_, editor_audio_dock_, Qt::Vertical);
     addDockWidget(Qt::RightDockWidgetArea, prerender_dock_);
-    tabifyDockWidget(effects_dock_, prerender_dock_);
+    tabifyDockWidget(editor_audio_dock_, prerender_dock_);
+    editor_audio_dock_->raise();
     tools_dock_->raise();
     graphic_props_dock_->raise();
     layer_props_dock_->raise();
     styles_dock_->raise();
+    resizeDocks({styles_dock_, graphic_props_dock_}, {320, 320}, Qt::Horizontal);
 
     /* ── Timeline editor: full-width transport | LayerStack + Timeline | full-width zoom ── */
     auto *timeline_editor = new QWidget(this);
@@ -1009,6 +1020,17 @@
                     l->video_pixel_width = media.width;
                     l->video_pixel_height = media.height;
                     l->video_has_alpha = media.has_alpha;
+                    l->video_has_hdr = media.has_hdr;
+                    l->video_source_time = AnimatedProperty{"video_source_time", l->video_in_point};
+                    l->video_source_time.keyframes = {
+                        Keyframe{0.0, l->video_in_point, EasingType::Linear},
+                        Keyframe{std::max(0.0, l->video_out_point - l->video_in_point),
+                                 l->video_out_point, EasingType::Linear}
+                    };
+                    l->video_time_remap_enabled = false;
+                    l->video_time_remap_loop_segments.clear();
+                    l->video_time_remap_curve_fingerprint.clear();
+                    l->video_optical_flow_cache_fingerprint.clear();
                     l->image_width = std::max(1, media.width);
                     l->image_height = std::max(1, media.height);
                     l->image_size.static_value.x = l->image_width;
@@ -1686,15 +1708,28 @@
                 }
             });
 
+    connect(props_, &PropertiesPanel::undo_requested, this, [this]() {
+        if (undo_index_ > 0)
+            restore_undo_snapshot(undo_index_ - 1);
+    });
+    connect(props_, &PropertiesPanel::redo_requested, this, [this]() {
+        if (undo_index_ + 1 < (int)undo_stack_.size())
+            restore_undo_snapshot(undo_index_ + 1);
+    });
+
     connect(props_, &PropertiesPanel::property_changed,
-            this, [this](bool push_undo_snapshot) {
+            this, [this](bool commit_undo) {
                 if (updating_layer_panels_)
                     return;
-                // Every EffectsPanel notification represents a real visual-model edit.
-                // Bypass the selection-only visual hash guard so enable/disable and
-                // stack changes always invalidate prerender/frame caches immediately.
+                // Every PropertiesPanel notification represents a real model edit.
+                // Live drag steps invalidate rendering without adding snapshots; the
+                // final committed step records the canonical post-state exactly once.
                 force_next_title_visual_update();
-                on_title_modified(push_undo_snapshot);
+                on_title_modified(commit_undo);
+                if (commit_undo) {
+                    text_property_transaction_active_ = false;
+                    text_property_transaction_layer_id_.clear();
+                }
                 if (layers_) layers_->refresh();
             });
     connect(props_, &PropertiesPanel::audio_property_changed,
@@ -1742,6 +1777,10 @@
                     return;
                 if (canvas_)
                     canvas_->refresh_runtime_dynamic_content();
+            });
+    connect(props_, &PropertiesPanel::text_property_change_started,
+            this, [this](const std::string &layer_id) {
+                begin_text_property_transaction(layer_id);
             });
     connect(props_, &PropertiesPanel::text_char_format_changed,
             this, [this](const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask) {

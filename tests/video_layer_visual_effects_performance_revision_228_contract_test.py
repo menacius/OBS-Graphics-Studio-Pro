@@ -12,8 +12,8 @@ compat = (root / "src/obs/title-source/compatibility-layer-raster.inc").read_tex
 gpu = (root / "src/obs/title-source/gpu-masks-groups-cache.inc").read_text(encoding="utf-8")
 playback = (root / "src/obs/title-source/source-lifecycle-playback.inc").read_text(encoding="utf-8")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert "Development Version 239" in readme
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert "Development Version 243" in readme
 
 # Video is image-like for rendering, but it must never be treated as an empty
 # still-image placeholder. The hatch/diagonal overlay is only for image layers

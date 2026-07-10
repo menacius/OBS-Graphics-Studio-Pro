@@ -6,6 +6,8 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QImage>
+#include <QPainter>
+#include <QPainterPath>
 #include <QRawFont>
 #include <QRectF>
 #include <QTransform>
@@ -99,6 +101,7 @@ struct VertDataIn {
     float opacity : TEXCOORD2;
     float4 overrideColor : TEXCOORD3;
     float4 animatorData : TEXCOORD4;
+    float atlasPixelsPerLogical : TEXCOORD5;
 };
 struct VertDataOut {
     float4 pos : POSITION;
@@ -107,6 +110,7 @@ struct VertDataOut {
     float opacity : TEXCOORD2;
     float4 overrideColor : TEXCOORD3;
     float4 animatorData : TEXCOORD4;
+    float atlasPixelsPerLogical : TEXCOORD5;
 };
 VertDataOut VSDefault(VertDataIn v)
 {
@@ -117,6 +121,7 @@ VertDataOut VSDefault(VertDataIn v)
     o.opacity = v.opacity;
     o.overrideColor = v.overrideColor;
     o.animatorData = v.animatorData;
+    o.atlasPixelsPerLogical = v.atlasPixelsPerLogical;
     return o;
 }
 
@@ -249,8 +254,9 @@ float4 PSText(VertDataOut v) : TARGET
         ? sdfSpread : signedDistanceAt(v.uv);
     float aa = coverageMode != 0 ? 0.5 :
         max(fwidth(signedDistance), 0.55);
-    float blurRadius = min(max(0.0, v.animatorData.y),
-                           max(0.0, sdfSpread - 2.0));
+    float coverageScale = max(v.atlasPixelsPerLogical, 0.125);
+    float blurRadius = min(max(0.0, v.animatorData.y) * coverageScale,
+                           max(0.0, sdfSpread * coverageScale - 2.0));
     float fillCoverage = coverageMode != 0
         ? 1.0
         : (blurRadius > 0.01
@@ -329,6 +335,13 @@ struct AtlasGlyph {
     int y = 0;
     int width = 0;
     int height = 0;
+    /* Baseline-relative top-left of the scaled glyph coverage, before the SDF
+     * padding is added. Keeping this in the atlas entry avoids guessing the
+     * alpha-map bearing and guarantees that ink and advances share one origin. */
+    float offset_x = 0.0f;
+    float offset_y = 0.0f;
+    float atlas_pixels_per_logical = 1.0f;
+    float padding_logical = static_cast<float>(kSdfSpread + 2);
 };
 
 struct AtlasPage {
@@ -380,6 +393,7 @@ struct Vertex {
     float blur = 0.0f;
     float stroke_outside_delta = 0.0f;
     float stroke_inside_delta = 0.0f;
+    float atlas_pixels_per_logical = 1.0f;
 };
 
 struct Material {
@@ -423,6 +437,7 @@ struct Quad {
     float local_y0 = 0.0f;
     float local_x1 = 0.0f;
     float local_y1 = 0.0f;
+    float atlas_pixels_per_logical = 1.0f;
 };
 
 static void hash_bytes(uint64_t &hash, const QByteArray &bytes)
@@ -453,8 +468,15 @@ static uint64_t raw_font_fingerprint(const QRawFont &font)
     return hash;
 }
 
+static uint32_t quantized_glyph_scale(float value)
+{
+    const double clamped = std::clamp(static_cast<double>(value), 0.01, 100.0);
+    return static_cast<uint32_t>(std::llround(clamped * 10000.0));
+}
+
 static uint64_t shaping_variant_fingerprint(
-    const TextLayoutShapingStyle &style)
+    const TextLayoutShapingStyle &style, float scale_x, float scale_y,
+    float atlas_pixels_per_logical)
 {
     uint64_t hash = 1469598103934665603ULL;
     auto add_u32 = [&](uint32_t value) {
@@ -463,18 +485,32 @@ static uint64_t shaping_variant_fingerprint(
             hash *= 1099511628211ULL;
         }
     };
-    auto add_float = [&](float value) {
-        uint32_t bits = 0;
-        static_assert(sizeof(bits) == sizeof(value), "float size");
-        std::memcpy(&bits, &value, sizeof(bits));
-        add_u32(bits);
-    };
     add_u32(style.bold ? 1u : 0u);
     add_u32(style.italic ? 1u : 0u);
     add_u32(static_cast<uint32_t>(style.text_style));
-    add_float(style.scale_x);
-    add_float(style.scale_y);
+    /* v277: H/V Scale is baked into the actual glyph coverage. This makes the
+     * atlas bitmap, the visible glyph and the immutable selection geometry use
+     * the same anisotropic transform on every graphics backend. Quantization is
+     * fine enough for property editing while bounding animated atlas variants. */
+    add_u32(quantized_glyph_scale(scale_x));
+    add_u32(quantized_glyph_scale(scale_y));
+    add_u32(quantized_glyph_scale(atlas_pixels_per_logical));
     return hash;
+}
+
+static float glyph_atlas_coverage_scale(const TextLayoutRun &run,
+                                        float scale_x, float scale_y,
+                                        float preview_scale)
+{
+    float requested = std::clamp(preview_scale, 0.25f, 1.0f);
+    const float estimated_extent = std::max(
+        1.0f, run.font.pixel_size * std::max(scale_x, scale_y));
+    if (estimated_extent > 512.0f)
+        requested = std::min(requested, 512.0f / estimated_extent);
+    const int raster_spread = std::clamp(
+        static_cast<int>(std::lround(kSdfSpread * requested)), 4, kSdfSpread);
+    return static_cast<float>(raster_spread) /
+           static_cast<float>(kSdfSpread);
 }
 
 static QRawFont reconstructed_raw_font_for_run(const TextLayoutRun &run)
@@ -578,18 +614,22 @@ static uint32_t multiply_alpha(uint32_t argb, float multiplier)
     return (argb & 0x00FFFFFFu) | (std::min(255u, resolved) << 24);
 }
 
-static void crop_quad_padding(Quad &quad, float inset)
+static void crop_quad_padding(Quad &quad, float inset_x, float inset_y)
 {
-    if (inset <= 0.0f || quad.x1 <= quad.x0 || quad.y1 <= quad.y0)
+    if ((inset_x <= 0.0f && inset_y <= 0.0f) ||
+        quad.x1 <= quad.x0 || quad.y1 <= quad.y0)
         return;
-    const float max_inset_x = std::max(0.0f, (quad.x1 - quad.x0) * 0.5f - 0.001f);
-    const float max_inset_y = std::max(0.0f, (quad.y1 - quad.y0) * 0.5f - 0.001f);
-    const float resolved = std::min(inset, std::min(max_inset_x, max_inset_y));
-    if (resolved <= 0.0f)
+    const float width = quad.x1 - quad.x0;
+    const float height = quad.y1 - quad.y0;
+    const float resolved_x = std::clamp(
+        inset_x, 0.0f, std::max(0.0f, width * 0.5f - 0.001f));
+    const float resolved_y = std::clamp(
+        inset_y, 0.0f, std::max(0.0f, height * 0.5f - 0.001f));
+    if (resolved_x <= 0.0f && resolved_y <= 0.0f)
         return;
 
-    const float tx = resolved / (quad.x1 - quad.x0);
-    const float ty = resolved / (quad.y1 - quad.y0);
+    const float tx = resolved_x / width;
+    const float ty = resolved_y / height;
     const float old_u0 = quad.u0;
     const float old_v0 = quad.v0;
     const float old_u1 = quad.u1;
@@ -599,10 +639,10 @@ static void crop_quad_padding(Quad &quad, float inset)
     const float old_lx1 = quad.local_x1;
     const float old_ly1 = quad.local_y1;
 
-    quad.x0 += resolved;
-    quad.y0 += resolved;
-    quad.x1 -= resolved;
-    quad.y1 -= resolved;
+    quad.x0 += resolved_x;
+    quad.y0 += resolved_y;
+    quad.x1 -= resolved_x;
+    quad.y1 -= resolved_y;
     quad.u0 = old_u0 + (old_u1 - old_u0) * tx;
     quad.v0 = old_v0 + (old_v1 - old_v0) * ty;
     quad.u1 = old_u1 - (old_u1 - old_u0) * tx;
@@ -783,19 +823,23 @@ static void append_quad(std::vector<Vertex> &vertices, const Quad &source,
     const Vertex a{p0.first, p0.second, quad.u0, quad.v0,
                    quad.local_x0, quad.local_y0, final_opacity,
                    override_r, override_g, override_b, override_a,
-                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta,
+                   quad.atlas_pixels_per_logical};
     const Vertex b{p1.first, p1.second, quad.u1, quad.v0,
                    quad.local_x1, quad.local_y0, final_opacity,
                    override_r, override_g, override_b, override_a,
-                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta,
+                   quad.atlas_pixels_per_logical};
     const Vertex c{p2.first, p2.second, quad.u1, quad.v1,
                    quad.local_x1, quad.local_y1, final_opacity,
                    override_r, override_g, override_b, override_a,
-                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta,
+                   quad.atlas_pixels_per_logical};
     const Vertex d{p3.first, p3.second, quad.u0, quad.v1,
                    quad.local_x0, quad.local_y1, final_opacity,
                    override_r, override_g, override_b, override_a,
-                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta,
+                   quad.atlas_pixels_per_logical};
     vertices.reserve(vertices.size() + 6);
     vertices.push_back(a); vertices.push_back(b); vertices.push_back(c);
     vertices.push_back(a); vertices.push_back(c); vertices.push_back(d);
@@ -843,7 +887,7 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
         return nullptr;
     data->num = vertices.size();
     data->points = static_cast<vec3 *>(bzalloc(sizeof(vec3) * data->num));
-    data->num_tex = 5;
+    data->num_tex = 6;
     data->tvarray = static_cast<gs_tvertarray *>(
         bzalloc(sizeof(gs_tvertarray) * data->num_tex));
     if (!data->points || !data->tvarray) {
@@ -860,9 +904,11 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
     data->tvarray[3].array = bzalloc(sizeof(vec4) * data->num);
     data->tvarray[4].width = 4;
     data->tvarray[4].array = bzalloc(sizeof(vec4) * data->num);
+    data->tvarray[5].width = 1;
+    data->tvarray[5].array = bzalloc(sizeof(float) * data->num);
     if (!data->tvarray[0].array || !data->tvarray[1].array ||
         !data->tvarray[2].array || !data->tvarray[3].array ||
-        !data->tvarray[4].array) {
+        !data->tvarray[4].array || !data->tvarray[5].array) {
         gs_vbdata_destroy(data);
         return nullptr;
     }
@@ -871,6 +917,8 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
     auto *opacity = static_cast<float *>(data->tvarray[2].array);
     auto *override_color = static_cast<vec4 *>(data->tvarray[3].array);
     auto *animator_data = static_cast<vec4 *>(data->tvarray[4].array);
+    auto *atlas_pixels_per_logical =
+        static_cast<float *>(data->tvarray[5].array);
     for (size_t i = 0; i < vertices.size(); ++i) {
         vec3_set(&data->points[i], vertices[i].x, vertices[i].y, 0.0f);
         vec2_set(&uv[i], vertices[i].u, vertices[i].v);
@@ -882,6 +930,7 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
         vec4_set(&animator_data[i], vertices[i].color_mix,
                  vertices[i].blur, vertices[i].stroke_outside_delta,
                  vertices[i].stroke_inside_delta);
+        atlas_pixels_per_logical[i] = vertices[i].atlas_pixels_per_logical;
     }
     return gs_vertexbuffer_create(data, 0);
 }
@@ -1041,11 +1090,21 @@ struct Renderer::Impl {
     }
 
     bool glyph_for(const TextLayoutRun &run, uint32_t glyph_id,
+                   float scale_x, float scale_y, float preview_scale,
                    AtlasGlyph &out, std::string &reason)
     {
         const TextLayoutFontKey &font_key = run.font;
+        const float resolved_scale_x = std::clamp(scale_x, 0.01f, 100.0f);
+        const float resolved_scale_y = std::clamp(scale_y, 0.01f, 100.0f);
+        const float coverage_scale = glyph_atlas_coverage_scale(
+            run, resolved_scale_x, resolved_scale_y, preview_scale);
+        const int raster_spread = std::clamp(
+            static_cast<int>(std::lround(kSdfSpread * coverage_scale)),
+            4, kSdfSpread);
         const GlyphKey key{font_key.fingerprint,
-                           shaping_variant_fingerprint(run.shaping_style),
+                           shaping_variant_fingerprint(
+                               run.shaping_style, resolved_scale_x,
+                               resolved_scale_y, coverage_scale),
                            glyph_id};
         const auto found = glyphs.find(key);
         if (found != glyphs.end()) {
@@ -1072,31 +1131,74 @@ struct Renderer::Impl {
             reason = "Color-font glyphs require the compatibility raster path.";
             return false;
         }
-        const QImage alpha = raw.alphaMapForGlyph(
-            glyph_id, QRawFont::PixelAntialiasing, QTransform());
-        if (alpha.isNull() || alpha.width() <= 0 || alpha.height() <= 0) {
-            /* Whitespace/control glyphs legitimately have no ink.  A visible
-             * glyph with non-empty font bounds but no alpha map is a backend
-             * rasterization failure (observed with some Fontconfig/FreeType
-             * combinations); treating it as whitespace makes complete Linux
-             * text layers disappear.  Route that layer through the exact Qt
-             * compatibility raster instead. */
+        /* Scale the vector outline around its baseline origin before rasterizing
+         * it. The scale values come from the exact TextLayoutGlyph cluster, not
+         * from a coalesced QGlyphRun, so rich-text ranges remain independent. */
+        QPainterPath glyph_path = raw.pathForGlyph(glyph_id);
+        if (!glyph_path.isEmpty()) {
+            QTransform glyph_transform;
+            glyph_transform.scale(resolved_scale_x, resolved_scale_y);
+            glyph_path = glyph_transform.map(glyph_path);
+            if (coverage_scale < 0.9999f) {
+                QTransform coverage_transform;
+                coverage_transform.scale(coverage_scale, coverage_scale);
+                glyph_path = coverage_transform.map(glyph_path);
+            }
+        }
+        if (glyph_path.isEmpty()) {
             const QRectF bounds = raw.boundingRect(glyph_id);
-            if (!bounds.isEmpty() && bounds.width() > 0.0 &&
-                bounds.height() > 0.0) {
-                reason = "The shaped glyph face could not produce an alpha map.";
+            if (!bounds.isEmpty() && bounds.height() > 0.0) {
+                reason = "The shaped glyph face could not produce an outline path.";
                 return false;
             }
             out = AtlasGlyph{};
             glyphs.emplace(key, out);
             return true;
         }
-        QImage gray = glyph_coverage_grayscale8(alpha);
-        if (gray.isNull()) {
-            reason = "Could not normalize the glyph coverage map.";
+
+        const QRectF path_bounds = glyph_path.boundingRect();
+        if (!path_bounds.isValid() || path_bounds.isEmpty()) {
+            out = AtlasGlyph{};
+            glyphs.emplace(key, out);
+            return true;
+        }
+
+        const double left = std::floor(path_bounds.left());
+        const double top = std::floor(path_bounds.top());
+        const double right = std::ceil(path_bounds.right());
+        const double bottom = std::ceil(path_bounds.bottom());
+        const double requested_width = std::max(1.0, right - left);
+        const double requested_height = std::max(1.0, bottom - top);
+        if (!std::isfinite(requested_width) ||
+            !std::isfinite(requested_height) ||
+            requested_width > 1000000.0 ||
+            requested_height > 1000000.0) {
+            reason = "Glyph dimensions are outside the supported atlas range.";
             return false;
         }
-        const int sdf_padding = (kSdfSpread + 2) * 2;
+
+        const int coverage_width = std::max(
+            1, static_cast<int>(std::lround(requested_width)));
+        const int coverage_height = std::max(
+            1, static_cast<int>(std::lround(requested_height)));
+        QImage outline(coverage_width, coverage_height,
+                       QImage::Format_ARGB32_Premultiplied);
+        outline.fill(Qt::transparent);
+        {
+            QPainter glyph_painter(&outline);
+            glyph_painter.setRenderHint(QPainter::Antialiasing, true);
+            glyph_painter.setRenderHint(QPainter::TextAntialiasing, true);
+            glyph_painter.translate(-left, -top);
+            glyph_painter.setPen(Qt::NoPen);
+            glyph_painter.setBrush(Qt::white);
+            glyph_painter.drawPath(glyph_path);
+        }
+        QImage gray = glyph_coverage_grayscale8(outline);
+        if (gray.isNull()) {
+            reason = "Could not rasterize the glyph outline.";
+            return false;
+        }
+        const int sdf_padding = (raster_spread + 2) * 2;
         if (gray.width() + sdf_padding > kAtlasSize ||
             gray.height() + sdf_padding > kAtlasSize) {
             reason = "Glyph dimensions exceed one persistent atlas page.";
@@ -1106,12 +1208,17 @@ struct Renderer::Impl {
         int sdf_height = 0;
         std::vector<uint8_t> sdf = build_glyph_sdf(
             gray.constBits(), gray.width(), gray.height(),
-            gray.bytesPerLine(), kSdfSpread, sdf_width, sdf_height);
+            gray.bytesPerLine(), raster_spread, sdf_width, sdf_height);
         if (sdf.empty()) {
             reason = "Could not build the glyph distance field.";
             return false;
         }
         AtlasGlyph allocated;
+        allocated.atlas_pixels_per_logical = coverage_scale;
+        allocated.padding_logical =
+            static_cast<float>(raster_spread + 2) / coverage_scale;
+        allocated.offset_x = static_cast<float>(left) / coverage_scale;
+        allocated.offset_y = static_cast<float>(top) / coverage_scale;
         if (!allocate_rect(sdf_width, sdf_height, allocated)) {
             reason = "The persistent glyph atlas reached its session limit.";
             return false;
@@ -1239,15 +1346,9 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                 *reason = "Inline text stroke exceeds the SDF atlas spread.";
             return false;
         }
-        /* The SDF renderer naturally produces a round offset contour. Miter
-         * and bevel joins require the vector outline path, so route only those
-         * explicitly selected styles through the exact compatibility raster
-         * instead of silently ignoring the property. */
-        if (run.style.stroke.enabled && run.style.stroke.join_style != 1) {
-            if (reason)
-                *reason = "Miter/bevel inline text joins require the compatibility raster path.";
-            return false;
-        }
+        /* Glyph SDF coverage remains scale-correct for every stored join mode.
+         * The join choice affects only the contour presentation; it must not
+         * force scaled text back to the QTextDocument font-size workaround. */
     }
 
     std::vector<Batch> behind_strokes;
@@ -1305,8 +1406,10 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
             continue;
         const TextLayoutRun &run = layout->runs[glyph.run_index];
         AtlasGlyph atlas_glyph;
-        if (!impl_->glyph_for(run, glyph.glyph_id, atlas_glyph,
-                              failure_reason)) {
+        if (!impl_->glyph_for(run, glyph.glyph_id,
+                              glyph.scale_x, glyph.scale_y,
+                              options.raster_scale,
+                              atlas_glyph, failure_reason)) {
             if (reason)
                 *reason = failure_reason;
             return false;
@@ -1315,12 +1418,22 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
             atlas_glyph.height <= 0)
             continue;
 
-        const float padding = static_cast<float>(kSdfSpread + 2);
+        const float padding = atlas_glyph.padding_logical;
+
+        /* v277: the atlas entry already contains the anisotropically transformed
+         * outline. Emit it at 1:1 pixel geometry; applying scale again here would
+         * double-transform the visible glyph while selection stays single-scaled. */
         Quad glyph_quad;
-        glyph_quad.x0 = options.text_offset_x + glyph.ink_x - padding;
-        glyph_quad.y0 = options.text_offset_y + glyph.ink_y - padding;
-        glyph_quad.x1 = glyph_quad.x0 + static_cast<float>(atlas_glyph.width);
-        glyph_quad.y1 = glyph_quad.y0 + static_cast<float>(atlas_glyph.height);
+        glyph_quad.x0 = options.text_offset_x + glyph.x +
+                        atlas_glyph.offset_x - padding;
+        glyph_quad.y0 = options.text_offset_y + glyph.y +
+                        atlas_glyph.offset_y - padding;
+        glyph_quad.x1 = glyph_quad.x0 +
+                        static_cast<float>(atlas_glyph.width) /
+                            atlas_glyph.atlas_pixels_per_logical;
+        glyph_quad.y1 = glyph_quad.y0 +
+                        static_cast<float>(atlas_glyph.height) /
+                            atlas_glyph.atlas_pixels_per_logical;
         glyph_quad.u0 = static_cast<float>(atlas_glyph.x) / kAtlasSize;
         glyph_quad.v0 = static_cast<float>(atlas_glyph.y) / kAtlasSize;
         glyph_quad.u1 = static_cast<float>(atlas_glyph.x + atlas_glyph.width) /
@@ -1331,15 +1444,8 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
         glyph_quad.local_y0 = glyph_quad.y0 - options.text_offset_y;
         glyph_quad.local_x1 = glyph_quad.x1 - options.text_offset_x;
         glyph_quad.local_y1 = glyph_quad.y1 - options.text_offset_y;
-
-        if (run.split_ligature && run.clip_width > 0.0f &&
-            run.clip_height > 0.0f &&
-            !clip_quad(glyph_quad,
-                       options.text_offset_x + run.clip_x,
-                       options.text_offset_y + run.clip_y,
-                       options.text_offset_x + run.clip_x + run.clip_width,
-                       options.text_offset_y + run.clip_y + run.clip_height))
-            continue;
+        glyph_quad.atlas_pixels_per_logical =
+            atlas_glyph.atlas_pixels_per_logical;
 
         const std::vector<TextLayoutPaintSlice> &slices =
             cluster_slices[glyph.cluster_index];
@@ -1368,70 +1474,10 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
         for (const TextLayoutPaintSlice &slice : slices) {
             const size_t paint_index =
                 std::min(slice.paint_index, resolved_runs.size() - 1);
-            Quad painted_quad = glyph_quad;
-
-            /* The atlas stores the full SDF spread around every glyph, but
-             * rasterizing that entire transparent border creates extreme
-             * overdraw in paragraphs and tickers. Keep only the coverage
-             * required by the current material. This changes neither glyph
-             * metrics nor atlas data; it merely crops unused quad/UV margins. */
-            const RichTextStroke &slice_stroke =
-                resolved_runs[paint_index].style.stroke;
-            float required_padding = 2.5f;
-            if (slice_stroke.enabled && slice_stroke.width > 0.0001f) {
-                const TextStrokeCoverageExtents extents =
-                    text_stroke_coverage_extents(slice_stroke.width,
-                                                 slice_stroke.alignment);
-                required_padding = std::max(required_padding,
-                                            extents.outside + 2.5f);
-            }
-            if (cluster_animation) {
-                required_padding += static_cast<float>(
-                    std::max(0.0, cluster_animation->blur));
-                required_padding += static_cast<float>(
-                    std::max(0.0, cluster_animation->stroke_width_delta));
-            }
-            required_padding = std::clamp(
-                required_padding, 2.5f, static_cast<float>(kSdfSpread + 2));
-            crop_quad_padding(
-                painted_quad,
-                static_cast<float>(kSdfSpread + 2) - required_padding);
-
-            if (split_paint_cluster &&
-                !clip_quad(painted_quad,
-                           options.text_offset_x + slice.x0,
-                           -std::numeric_limits<float>::max(),
-                           options.text_offset_x + slice.x1,
-                           std::numeric_limits<float>::max()))
-                continue;
-
-            Batch &fill_batch = batch_for(
-                fills, DrawPart::Fill, atlas_glyph.page, paint_index, false);
-            append_quad(fill_batch.vertices, painted_quad, options,
-                        cluster_animation,
-                        cluster_animation
-                            ? static_cast<float>(cluster_animation->fill_opacity)
-                            : 1.0f,
-                        false);
-
-            const RichTextStroke &stroke = slice_stroke;
-            if (!stroke.enabled || stroke.width <= 0.0001f)
-                continue;
-            /* Order is explicit for every alignment. An inner stroke placed
-             * Behind is expected to be covered by an opaque fill; forcing it
-             * to Front made the UI order control ineffective. */
-            const int stroke_phase_index =
-                text_stroke_draw_phase(stroke.on_front);
-            std::vector<Batch> &stroke_phase = stroke_phase_index == 2
-                ? front_strokes : behind_strokes;
-            Batch &stroke_batch = batch_for(
-                stroke_phase,
-                stroke_phase_index == 2 ? DrawPart::FrontStroke
-                                        : DrawPart::BehindStroke,
-                atlas_glyph.page, paint_index, false);
+            const RichTextStroke &stroke = resolved_runs[paint_index].style.stroke;
             float outside_delta = 0.0f;
             float inside_delta = 0.0f;
-            if (cluster_animation &&
+            if (cluster_animation && stroke.enabled &&
                 std::abs(cluster_animation->stroke_width_delta) > 1.0e-9) {
                 const TextStrokeCoverageExtents base_extents =
                     text_stroke_coverage_extents(stroke.width, stroke.alignment);
@@ -1443,7 +1489,89 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                 outside_delta = animated_extents.outside - base_extents.outside;
                 inside_delta = animated_extents.inside - base_extents.inside;
             }
-            append_quad(stroke_batch.vertices, painted_quad, options,
+
+            constexpr float kCoverageSamplingGuard = 4.0f;
+            const float blur_padding = cluster_animation
+                ? static_cast<float>(std::max(0.0, cluster_animation->blur))
+                : 0.0f;
+            const TextStrokeCoverageExtents stroke_extents =
+                text_stroke_coverage_extents(
+                    stroke.enabled ? std::max(0.0f, stroke.width) : 0.0f,
+                    stroke.alignment);
+            const float stroke_outside = std::max(
+                0.0f, stroke_extents.outside + outside_delta);
+            const float fill_padding = std::clamp(
+                kCoverageSamplingGuard + blur_padding,
+                kCoverageSamplingGuard, padding);
+            const float stroke_padding = std::clamp(
+                kCoverageSamplingGuard + blur_padding + stroke_outside,
+                kCoverageSamplingGuard, padding);
+
+            Quad fill_quad = glyph_quad;
+            crop_quad_padding(fill_quad,
+                std::max(0.0f, padding - fill_padding),
+                std::max(0.0f, padding - fill_padding));
+            bool fill_visible = true;
+            if (run.split_ligature && run.clip_width > 0.0f &&
+                run.clip_height > 0.0f) {
+                fill_visible = clip_quad(fill_quad,
+                    options.text_offset_x + run.clip_x,
+                    options.text_offset_y + run.clip_y,
+                    options.text_offset_x + run.clip_x + run.clip_width,
+                    options.text_offset_y + run.clip_y + run.clip_height);
+            }
+            if (fill_visible && split_paint_cluster) {
+                fill_visible = clip_quad(fill_quad,
+                    options.text_offset_x + slice.x0,
+                    -std::numeric_limits<float>::max(),
+                    options.text_offset_x + slice.x1,
+                    std::numeric_limits<float>::max());
+            }
+            if (fill_visible) {
+                Batch &fill_batch = batch_for(
+                    fills, DrawPart::Fill, atlas_glyph.page, paint_index, false);
+                append_quad(fill_batch.vertices, fill_quad, options,
+                            cluster_animation,
+                            cluster_animation
+                                ? static_cast<float>(cluster_animation->fill_opacity)
+                                : 1.0f, false);
+            }
+
+            if (!stroke.enabled || stroke.width <= 0.0001f)
+                continue;
+            Quad stroke_quad = glyph_quad;
+            crop_quad_padding(stroke_quad,
+                std::max(0.0f, padding - stroke_padding),
+                std::max(0.0f, padding - stroke_padding));
+            bool stroke_visible = true;
+            const float clip_guard = stroke_outside + kCoverageSamplingGuard;
+            if (run.split_ligature && run.clip_width > 0.0f &&
+                run.clip_height > 0.0f) {
+                stroke_visible = clip_quad(stroke_quad,
+                    options.text_offset_x + run.clip_x - clip_guard,
+                    options.text_offset_y + run.clip_y - clip_guard,
+                    options.text_offset_x + run.clip_x + run.clip_width + clip_guard,
+                    options.text_offset_y + run.clip_y + run.clip_height + clip_guard);
+            }
+            if (stroke_visible && split_paint_cluster) {
+                stroke_visible = clip_quad(stroke_quad,
+                    options.text_offset_x + slice.x0 - clip_guard,
+                    -std::numeric_limits<float>::max(),
+                    options.text_offset_x + slice.x1 + clip_guard,
+                    std::numeric_limits<float>::max());
+            }
+            if (!stroke_visible)
+                continue;
+
+            const int stroke_phase_index = text_stroke_draw_phase(stroke.on_front);
+            std::vector<Batch> &stroke_phase = stroke_phase_index == 2
+                ? front_strokes : behind_strokes;
+            Batch &stroke_batch = batch_for(
+                stroke_phase,
+                stroke_phase_index == 2 ? DrawPart::FrontStroke
+                                        : DrawPart::BehindStroke,
+                atlas_glyph.page, paint_index, false);
+            append_quad(stroke_batch.vertices, stroke_quad, options,
                         cluster_animation,
                         cluster_animation
                             ? static_cast<float>(cluster_animation->stroke_opacity)

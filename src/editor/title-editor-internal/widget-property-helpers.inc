@@ -3,7 +3,7 @@ constexpr const char *kEditorLayoutSettingsGroup = "TitleEditorLayout";
 constexpr const char *kEditorGeometryKey = "geometry";
 constexpr const char *kEditorWindowStateKey = "windowState";
 constexpr const char *kEditorLayoutVersionKey = "layoutVersion";
-constexpr int kEditorLayoutVersion = 3;
+constexpr int kEditorLayoutVersion = 4;
 constexpr const char *kEditorPanelsLockedKey = "panelsLocked";
 constexpr const char *kEditorCanvasTransparencyKey = "canvasTransparency";
 constexpr const char *kEditorSafeGuidesVisibleKey = "safeGuidesVisible";
@@ -14,6 +14,7 @@ constexpr const char *kEffectsPresetsDockObjectName = "BroadcastGraphicsLiveEffe
 constexpr const char *kStylesDockObjectName = "BroadcastGraphicsLiveStylesDock";
 constexpr const char *kTimelineDockObjectName = "BroadcastGraphicsLiveTimelineDock";
 constexpr const char *kPrerenderDockObjectName = "BroadcastGraphicsLivePrerenderDock";
+constexpr const char *kEditorAudioDockObjectName = "BroadcastGraphicsLiveEditorAudioDock";
 
 static QString bgl_color_dialog_style()
 {

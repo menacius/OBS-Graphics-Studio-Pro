@@ -14,6 +14,7 @@
 
     QLabel *label_ = nullptr;
     QToolButton *button_ = nullptr;
+    QToolButton *clear_button_ = nullptr;
     QString path_;
     QString preview_tooltip_;
     bool preview_tooltip_dirty_ = true;
@@ -577,7 +578,7 @@ static bool title_has_scene_mask(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
     for (const auto &layer : title->layers) {
-        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
+        if (layer && layer->use_as_scene_mask && layer_type_can_be_scene_mask(layer->type))
             return true;
     }
     return false;

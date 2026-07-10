@@ -1,4 +1,5 @@
 #include "style-presets.h"
+#include "properties-panel.h"
 #include "title-localization.h"
 #include "title-serialization-schema.h"
 
@@ -17,8 +18,11 @@
 #include <QAbstractItemView>
 #include <QMenu>
 #include <QPainter>
+#include <QPaintEvent>
+#include <QPalette>
 #include <QStandardPaths>
 #include <QToolButton>
+#include <QTransform>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QUuid>
@@ -30,6 +34,26 @@
 #include <QLinearGradient>
 #include <QRadialGradient>
 #include <QConicalGradient>
+#include <QCheckBox>
+#include <QColorDialog>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFontComboBox>
+#include <QFontDatabase>
+#include <QFontMetricsF>
+#include <QFormLayout>
+#include <QFrame>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QPainterPath>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSizePolicy>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QTabWidget>
+#include <QVariant>
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -39,7 +63,7 @@
 namespace obsbgs {
 namespace {
 
-constexpr int kStylePresetFileVersion = 3;
+constexpr int kStylePresetFileVersion = 4;
 constexpr int kMaxStylePresets = 4096;
 constexpr int kMaxPresetIdLength = 256;
 constexpr int kMaxPresetNameLength = 512;
@@ -226,6 +250,12 @@ static uint32_t parseArgb(const QJsonObject &o, const char *key, uint32_t fallba
     return ok ? value : fallback;
 }
 
+bool isTextLikeLayer(const Layer &layer)
+{
+    return layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+           layer.type == LayerType::Ticker;
+}
+
 QColor colorFromArgb(uint32_t argb)
 {
     return QColor((argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff, (argb >> 24) & 0xff);
@@ -319,6 +349,117 @@ void fillFromGradientPayload(const QJsonObject &o,
     }
 }
 
+QJsonObject strokePayloadFromLayer(const Layer &layer)
+{
+    RichTextFill fill;
+    fill.type = layer.stroke_fill_type == 2 ? 1 : 0;
+    fill.color = layer.stroke_color;
+    fill.gradient_type = layer.stroke_gradient_type;
+    fill.gradient_spread = layer.stroke_gradient_spread;
+    fill.gradient_start_color = layer.stroke_gradient_start_color;
+    fill.gradient_end_color = layer.stroke_gradient_end_color;
+    fill.gradient_start_pos = layer.stroke_gradient_start_pos;
+    fill.gradient_end_pos = layer.stroke_gradient_end_pos;
+    fill.gradient_start_opacity = layer.stroke_gradient_start_opacity;
+    fill.gradient_end_opacity = layer.stroke_gradient_end_opacity;
+    fill.gradient_opacity = layer.stroke_gradient_opacity;
+    fill.gradient_angle = layer.stroke_gradient_angle;
+    fill.gradient_center_x = layer.stroke_gradient_center_x;
+    fill.gradient_center_y = layer.stroke_gradient_center_y;
+    fill.gradient_scale = layer.stroke_gradient_scale;
+    fill.gradient_focal_x = layer.stroke_gradient_focal_x;
+    fill.gradient_focal_y = layer.stroke_gradient_focal_y;
+
+    QJsonObject stroke;
+    stroke[QStringLiteral("enabled")] = layer.outline_enabled;
+    stroke[QStringLiteral("width")] = layer.stroke_width;
+    stroke[QStringLiteral("opacity")] = layer.outline_opacity;
+    stroke[QStringLiteral("onFront")] = layer.outline_on_front;
+    stroke[QStringLiteral("alignment")] = layer.outline_alignment;
+    stroke[QStringLiteral("antialias")] = layer.outline_antialias;
+    stroke[QStringLiteral("joinStyle")] = layer.outline_join_style;
+    stroke[QStringLiteral("fillType")] = layer.stroke_fill_type;
+    stroke[QStringLiteral("color")] = QString::number(layer.stroke_color, 16);
+    stroke[QStringLiteral("gradient")] = gradientPayloadFromFill(fill, layer.stroke_gradient_stops);
+    return stroke;
+}
+
+void applyStrokePayloadToLayer(const QJsonObject &stroke, Layer &layer)
+{
+    layer.outline_enabled = stroke.value(QStringLiteral("enabled")).toBool(layer.outline_enabled);
+    layer.stroke_width = float(stroke.value(QStringLiteral("width")).toDouble(layer.stroke_width));
+    layer.outline_opacity = float(stroke.value(QStringLiteral("opacity")).toDouble(layer.outline_opacity));
+    layer.outline_on_front = stroke.value(QStringLiteral("onFront")).toBool(layer.outline_on_front);
+    layer.outline_alignment = std::clamp(stroke.value(QStringLiteral("alignment")).toInt(layer.outline_alignment), 0, 2);
+    layer.outline_antialias = stroke.value(QStringLiteral("antialias")).toBool(layer.outline_antialias);
+    layer.outline_join_style = std::clamp(stroke.value(QStringLiteral("joinStyle")).toInt(layer.outline_join_style), 0, 2);
+    layer.stroke_fill_type = std::clamp(stroke.value(QStringLiteral("fillType")).toInt(layer.stroke_fill_type), 0, 2);
+    layer.stroke_color = parseArgb(stroke, "color", layer.stroke_color);
+
+    if (stroke.value(QStringLiteral("gradient")).isObject()) {
+        RichTextFill fill;
+        fill.color = layer.stroke_color;
+        fill.gradient_type = layer.stroke_gradient_type;
+        fill.gradient_spread = layer.stroke_gradient_spread;
+        fill.gradient_start_color = layer.stroke_gradient_start_color;
+        fill.gradient_end_color = layer.stroke_gradient_end_color;
+        fill.gradient_start_pos = layer.stroke_gradient_start_pos;
+        fill.gradient_end_pos = layer.stroke_gradient_end_pos;
+        fill.gradient_start_opacity = layer.stroke_gradient_start_opacity;
+        fill.gradient_end_opacity = layer.stroke_gradient_end_opacity;
+        fill.gradient_opacity = layer.stroke_gradient_opacity;
+        fill.gradient_angle = layer.stroke_gradient_angle;
+        fill.gradient_center_x = layer.stroke_gradient_center_x;
+        fill.gradient_center_y = layer.stroke_gradient_center_y;
+        fill.gradient_scale = layer.stroke_gradient_scale;
+        fill.gradient_focal_x = layer.stroke_gradient_focal_x;
+        fill.gradient_focal_y = layer.stroke_gradient_focal_y;
+        std::vector<GradientStop> stops;
+        fillFromGradientPayload(stroke.value(QStringLiteral("gradient")).toObject(), fill, &stops);
+        layer.stroke_gradient_type = fill.gradient_type;
+        layer.stroke_gradient_spread = fill.gradient_spread;
+        layer.stroke_gradient_start_color = fill.gradient_start_color;
+        layer.stroke_gradient_end_color = fill.gradient_end_color;
+        layer.stroke_gradient_start_pos = fill.gradient_start_pos;
+        layer.stroke_gradient_end_pos = fill.gradient_end_pos;
+        layer.stroke_gradient_start_opacity = fill.gradient_start_opacity;
+        layer.stroke_gradient_end_opacity = fill.gradient_end_opacity;
+        layer.stroke_gradient_opacity = fill.gradient_opacity;
+        layer.stroke_gradient_angle = fill.gradient_angle;
+        layer.stroke_gradient_center_x = fill.gradient_center_x;
+        layer.stroke_gradient_center_y = fill.gradient_center_y;
+        layer.stroke_gradient_scale = fill.gradient_scale;
+        layer.stroke_gradient_focal_x = fill.gradient_focal_x;
+        layer.stroke_gradient_focal_y = fill.gradient_focal_y;
+        layer.stroke_gradient_stops = std::move(stops);
+    }
+    layer.outline_enabled = layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f;
+}
+
+void strokeFormatFromPayload(const QJsonObject &stroke, RichTextStroke &format)
+{
+    format.enabled = stroke.value(QStringLiteral("enabled")).toBool(format.enabled);
+    format.width = float(stroke.value(QStringLiteral("width")).toDouble(format.width));
+    format.opacity = float(stroke.value(QStringLiteral("opacity")).toDouble(format.opacity));
+    format.on_front = stroke.value(QStringLiteral("onFront")).toBool(format.on_front);
+    format.alignment = std::clamp(stroke.value(QStringLiteral("alignment")).toInt(format.alignment), 0, 2);
+    format.antialias = stroke.value(QStringLiteral("antialias")).toBool(format.antialias);
+    format.join_style = std::clamp(stroke.value(QStringLiteral("joinStyle")).toInt(format.join_style), 0, 2);
+    const int fill_type = std::clamp(stroke.value(QStringLiteral("fillType")).toInt(format.fill.type == 1 ? 2 : 1), 0, 2);
+    format.fill.type = fill_type == 2 ? 1 : 0;
+    format.fill.color = parseArgb(stroke, "color", format.fill.color);
+    if (stroke.value(QStringLiteral("gradient")).isObject()) {
+        RichTextCharFormat wrapper;
+        wrapper.fill = format.fill;
+        fillFormatFromGradientPayload(stroke.value(QStringLiteral("gradient")).toObject(), wrapper);
+        format.fill = wrapper.fill;
+        format.fill.type = fill_type == 2 ? 1 : 0;
+        if (format.fill.type == 0)
+            format.fill.color = parseArgb(stroke, "color", format.fill.color);
+    }
+    format.enabled = format.enabled && fill_type != 0 && format.width > 0.0f;
+}
+
 QColor gradientStopColor(uint32_t argb, double stop_opacity, double overall_opacity)
 {
     QColor color = colorFromArgb(argb);
@@ -338,6 +479,361 @@ void drawCheckerboard(QPainter &painter, const QRect &rect)
         }
     }
 }
+
+static void setColorButtonValue(QPushButton *button, uint32_t argb)
+{
+    if (!button) return;
+    button->setProperty("styleArgb", QVariant::fromValue<qulonglong>(argb));
+    const QColor color = colorFromArgb(argb);
+    const QColor border = color.lightness() < 128 ? color.lighter(170) : color.darker(170);
+    button->setText(color.name(QColor::HexArgb));
+    button->setStyleSheet(QStringLiteral(
+        "QPushButton{background:%1;color:%2;border:1px solid %3;padding:3px 8px;}"
+        "QPushButton:hover{border:2px solid %3;}")
+        .arg(color.name(QColor::HexArgb),
+             color.lightness() < 128 ? QStringLiteral("white") : QStringLiteral("black"),
+             border.name(QColor::HexRgb)));
+}
+
+static uint32_t colorButtonValue(const QPushButton *button, uint32_t fallback)
+{
+    if (!button) return fallback;
+    bool ok = false;
+    const qulonglong value = button->property("styleArgb").toULongLong(&ok);
+    return ok ? static_cast<uint32_t>(value) : fallback;
+}
+
+static QBrush previewGradientBrush(int type, const QRectF &bounds,
+                                   uint32_t start_argb, uint32_t end_argb,
+                                   double angle)
+{
+    const QColor start = colorFromArgb(start_argb);
+    const QColor end = colorFromArgb(end_argb);
+    if (type == 1) {
+        QRadialGradient gradient(bounds.center(), std::max(1.0, std::min(bounds.width(), bounds.height()) * 0.55));
+        gradient.setColorAt(0.0, start);
+        gradient.setColorAt(1.0, end);
+        return QBrush(gradient);
+    }
+    if (type == 2) {
+        QConicalGradient gradient(bounds.center(), -angle);
+        gradient.setColorAt(0.0, start);
+        gradient.setColorAt(1.0, end);
+        return QBrush(gradient);
+    }
+    constexpr double kPi = 3.14159265358979323846;
+    const double radians = angle * kPi / 180.0;
+    const QPointF direction(std::cos(radians), std::sin(radians));
+    const double half = 0.5 * std::hypot(bounds.width(), bounds.height());
+    QLinearGradient gradient(bounds.center() - direction * half,
+                             bounds.center() + direction * half);
+    gradient.setColorAt(0.0, start);
+    gradient.setColorAt(1.0, end);
+    return QBrush(gradient);
+}
+
+class TextStylePreview final : public QWidget {
+public:
+    explicit TextStylePreview(const Layer *layer, QWidget *parent = nullptr)
+        : QWidget(parent), layer_(layer)
+    {
+        setMinimumHeight(180);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    void setSample(const QString &sample)
+    {
+        sample_ = sample.isEmpty() ? QStringLiteral("Broadcast Graphics  Aa 123") : sample;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillRect(rect(), palette().color(QPalette::Base));
+        const QRectF frame = QRectF(rect()).adjusted(10, 10, -10, -10);
+        painter.setPen(palette().color(QPalette::Mid));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(frame, 4, 4);
+        if (!layer_) return;
+
+        QString text = sample_;
+        if (layer_->text_style == 1)
+            text = text.toUpper();
+
+        QFont font(QString::fromStdString(layer_->font_family));
+        if (!layer_->font_style.empty())
+            font.setStyleName(QString::fromStdString(layer_->font_style));
+        const double preview_size = std::clamp(static_cast<double>(layer_->font_size), 28.0, 144.0);
+        font.setPixelSize(static_cast<int>(std::lround(preview_size)));
+        font.setBold(layer_->font_bold);
+        font.setItalic(layer_->font_italic);
+        font.setUnderline(false);
+        font.setStrikeOut(false);
+        if (layer_->text_style == 2)
+            font.setCapitalization(QFont::SmallCaps);
+        if (layer_->text_style == 3 || layer_->text_style == 4)
+            font.setPixelSize(std::max(1, static_cast<int>(std::lround(font.pixelSize() * 0.65))));
+
+        const QFontMetricsF metrics(font);
+        QPainterPath path;
+        double cursor = 0.0;
+        const double preview_tracking = std::clamp(static_cast<double>(layer_->char_tracking), -80.0, 160.0);
+        for (int i = 0; i < text.size(); ++i) {
+            const QString ch(text.at(i));
+            path.addText(QPointF(cursor, metrics.ascent()), font, ch);
+            cursor += metrics.horizontalAdvance(ch) + preview_tracking;
+        }
+        if (path.isEmpty()) return;
+
+        QTransform glyph_scale;
+        glyph_scale.scale(std::clamp(static_cast<double>(layer_->char_scale_x), 0.1, 5.0),
+                          std::clamp(static_cast<double>(layer_->char_scale_y), 0.1, 5.0));
+        path = glyph_scale.map(path);
+        QRectF bounds = path.boundingRect();
+        const double available_scale = std::min(
+            1.0, std::min((frame.width() - 20.0) / std::max(1.0, bounds.width()),
+                          (frame.height() - 20.0) / std::max(1.0, bounds.height())));
+        if (available_scale < 1.0) {
+            QTransform fit;
+            fit.scale(available_scale, available_scale);
+            path = fit.map(path);
+            bounds = path.boundingRect();
+        }
+        const QPointF target = frame.center() - bounds.center() +
+            QPointF(0.0, -layer_->baseline_shift * std::min(1.0, available_scale));
+        path.translate(target);
+        bounds = path.boundingRect();
+
+        const QBrush fill_brush = layer_->fill_type == 1
+            ? previewGradientBrush(layer_->gradient_type, bounds,
+                                   layer_->gradient_start_color,
+                                   layer_->gradient_end_color,
+                                   layer_->gradient_angle)
+            : QBrush(colorFromArgb(layer_->text_color));
+        const QBrush stroke_brush = layer_->stroke_fill_type == 2
+            ? previewGradientBrush(layer_->stroke_gradient_type, bounds,
+                                   layer_->stroke_gradient_start_color,
+                                   layer_->stroke_gradient_end_color,
+                                   layer_->stroke_gradient_angle)
+            : QBrush(colorFromArgb(layer_->stroke_color));
+
+        QPen stroke_pen(stroke_brush,
+                        std::max(0.1, static_cast<double>(layer_->stroke_width)));
+        stroke_pen.setJoinStyle(layer_->outline_join_style == 1 ? Qt::RoundJoin
+                                : layer_->outline_join_style == 2 ? Qt::BevelJoin
+                                                                  : Qt::MiterJoin);
+        QColor stroke_color = stroke_brush.color();
+        const double stroke_alpha = std::clamp(
+            static_cast<double>(stroke_color.alphaF()) *
+                static_cast<double>(layer_->outline_opacity),
+            0.0, 1.0);
+        stroke_color.setAlphaF(stroke_alpha);
+        if (layer_->stroke_fill_type != 2)
+            stroke_pen.setColor(stroke_color);
+
+        const bool draw_stroke = layer_->outline_enabled &&
+            layer_->stroke_fill_type != 0 && layer_->stroke_width > 0.0f;
+        if (draw_stroke && !layer_->outline_on_front) {
+            painter.setPen(stroke_pen);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(path);
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(fill_brush);
+        painter.drawPath(path);
+        if (draw_stroke && layer_->outline_on_front) {
+            painter.setPen(stroke_pen);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(path);
+        }
+
+        painter.setPen(QPen(fill_brush, std::max(1.0, preview_size / 18.0)));
+        if (layer_->text_underline)
+            painter.drawLine(QPointF(bounds.left(), bounds.bottom() + 3.0),
+                             QPointF(bounds.right(), bounds.bottom() + 3.0));
+        if (layer_->text_strikethrough)
+            painter.drawLine(QPointF(bounds.left(), bounds.center().y()),
+                             QPointF(bounds.right(), bounds.center().y()));
+    }
+
+private:
+    const Layer *layer_ = nullptr;
+    QString sample_ = QStringLiteral("Broadcast Graphics  Aa 123");
+};
+
+class TextStyleEditDialog final : public QDialog {
+public:
+    explicit TextStyleEditDialog(const StylePreset &preset, QWidget *parent = nullptr)
+        : QDialog(parent), original_(preset), layer_(std::make_shared<Layer>())
+    {
+        layer_->id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+        layer_->name = "Text style preview";
+        layer_->type = LayerType::Text;
+        layer_->text_content = default_sample_.toUtf8().toStdString();
+        StylePresetLibrary::applyTextPreset(preset, *layer_);
+        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+
+        setWindowTitle(QStringLiteral("Edit Text Style"));
+        resize(1360, 880);
+        setMinimumSize(1060, 700);
+
+        auto *root = new QVBoxLayout(this);
+        root->setContentsMargins(8, 8, 8, 8);
+        root->setSpacing(7);
+
+        auto *identity_host = new QWidget(this);
+        auto *identity = new QGridLayout(identity_host);
+        identity->setContentsMargins(0, 0, 0, 0);
+        identity->setHorizontalSpacing(8);
+        identity->setVerticalSpacing(5);
+        name_ = new QLineEdit(preset.name, identity_host);
+        category_ = new QLineEdit(preset.category, identity_host);
+        sample_ = new QLineEdit(default_sample_, identity_host);
+        identity->addWidget(new QLabel(QStringLiteral("Name"), identity_host), 0, 0);
+        identity->addWidget(name_, 0, 1);
+        identity->addWidget(new QLabel(QStringLiteral("Category"), identity_host), 0, 2);
+        identity->addWidget(category_, 0, 3);
+        identity->addWidget(new QLabel(QStringLiteral("Preview text"), identity_host), 1, 0);
+        identity->addWidget(sample_, 1, 1, 1, 3);
+        identity->setColumnStretch(1, 1);
+        identity->setColumnStretch(3, 1);
+        root->addWidget(identity_host);
+
+        auto *split = new QSplitter(Qt::Horizontal, this);
+        split->setChildrenCollapsible(false);
+        properties_ = new PropertiesPanel(split);
+        properties_->setMinimumWidth(390);
+        properties_->set_layer(layer_, 0.0);
+        properties_->set_text_style_editor_mode(true);
+
+        auto *preview_host = new QWidget(split);
+        auto *preview_layout = new QVBoxLayout(preview_host);
+        preview_layout->setContentsMargins(0, 0, 0, 0);
+        preview_layout->setSpacing(4);
+        auto *preview_label = new QLabel(QStringLiteral("Preview"), preview_host);
+        preview_ = new TextStylePreview(layer_.get(), preview_host);
+        preview_->setMinimumSize(560, 480);
+        preview_->setSample(default_sample_);
+        preview_layout->addWidget(preview_label);
+        preview_layout->addWidget(preview_, 1);
+
+        split->addWidget(properties_);
+        split->addWidget(preview_host);
+        split->setStretchFactor(0, 2);
+        split->setStretchFactor(1, 3);
+        split->setSizes({470, 820});
+        root->addWidget(split, 1);
+
+        connect(sample_, &QLineEdit::textChanged, this, [this](const QString &text) {
+            preview_->setSample(text);
+        });
+        connect(properties_, &PropertiesPanel::property_changed, this,
+                [this](bool push_undo_snapshot) {
+                    properties_->set_text_style_editor_mode(true);
+                    preview_->update();
+                    if (push_undo_snapshot)
+                        pushHistorySnapshot();
+                });
+        connect(properties_, &PropertiesPanel::undo_requested, this, [this]() {
+            restoreHistory(history_index_ - 1);
+        });
+        connect(properties_, &PropertiesPanel::redo_requested, this, [this]() {
+            restoreHistory(history_index_ + 1);
+        });
+
+        history_.push_back(currentPayload());
+        history_index_ = 0;
+        updateHistoryButtons();
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+        connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
+            if (name_->text().trimmed().isEmpty()) {
+                QMessageBox::warning(this, QStringLiteral("Edit Text Style"),
+                                     QStringLiteral("The style name cannot be empty."));
+                return;
+            }
+            accept();
+        });
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        root->addWidget(buttons);
+    }
+
+    StylePreset editedPreset() const
+    {
+        StylePreset edited = StylePresetLibrary::makeTextPreset(
+            *layer_, name_->text().trimmed(),
+            category_->text().trimmed().isEmpty() ? QStringLiteral("User")
+                                                   : category_->text().trimmed());
+        edited.id = original_.id;
+        return edited;
+    }
+
+private:
+    QJsonObject currentPayload() const
+    {
+        return StylePresetLibrary::makeTextPreset(*layer_, QStringLiteral("Snapshot"),
+                                                   QStringLiteral("Internal")).payload;
+    }
+
+    void pushHistorySnapshot()
+    {
+        if (restoring_history_)
+            return;
+        const QJsonObject snapshot = currentPayload();
+        if (history_index_ >= 0 && history_index_ < static_cast<int>(history_.size()) &&
+            history_[history_index_] == snapshot) {
+            updateHistoryButtons();
+            return;
+        }
+        if (history_index_ + 1 < static_cast<int>(history_.size()))
+            history_.erase(history_.begin() + history_index_ + 1, history_.end());
+        history_.push_back(snapshot);
+        if (history_.size() > 128)
+            history_.erase(history_.begin());
+        history_index_ = static_cast<int>(history_.size()) - 1;
+        updateHistoryButtons();
+    }
+
+    void restoreHistory(int index)
+    {
+        if (index < 0 || index >= static_cast<int>(history_.size()) || index == history_index_)
+            return;
+        restoring_history_ = true;
+        StylePreset snapshot;
+        snapshot.kind = StylePresetKind::Text;
+        snapshot.payload = history_[index];
+        StylePresetLibrary::applyTextPreset(snapshot, *layer_);
+        layer_->text_content = sample_->text().toUtf8().toStdString();
+        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+        history_index_ = index;
+        properties_->set_layer(layer_, 0.0);
+        properties_->set_text_style_editor_mode(true);
+        preview_->update();
+        restoring_history_ = false;
+        updateHistoryButtons();
+    }
+
+    void updateHistoryButtons()
+    {
+        properties_->set_undo_redo_available(history_index_ > 0,
+                                              history_index_ + 1 < static_cast<int>(history_.size()));
+    }
+
+    const QString default_sample_ = QStringLiteral("Broadcast Graphics  Aa 123");
+    StylePreset original_;
+    std::shared_ptr<Layer> layer_;
+    PropertiesPanel *properties_ = nullptr;
+    TextStylePreview *preview_ = nullptr;
+    QLineEdit *name_ = nullptr;
+    QLineEdit *category_ = nullptr;
+    QLineEdit *sample_ = nullptr;
+    std::vector<QJsonObject> history_;
+    int history_index_ = -1;
+    bool restoring_history_ = false;
+};
 }
 
 StylePresetLibrary::StylePresetLibrary()
@@ -533,46 +1029,74 @@ bool StylePresetLibrary::remove(const QString &id)
 
 StylePreset StylePresetLibrary::makeTextPreset(const Layer &layer, const QString &name, const QString &category)
 {
+    /* Presets are serialized from the canonical document defaults, never from
+     * possibly stale compatibility mirrors. A copy keeps this const operation
+     * side-effect free while still migrating legacy titles on read. */
+    Layer canonical_layer = layer;
+    if (isTextLikeLayer(canonical_layer))
+        rich_text_document_ensure_canonical(canonical_layer);
+    const Layer &source = canonical_layer;
+
     StylePreset p;
     p.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     p.name = name;
     p.category = category.isEmpty() ? QStringLiteral("User") : category;
     p.kind = StylePresetKind::Text;
     QJsonObject o;
-    o[QStringLiteral("fontFamily")] = QString::fromStdString(layer.font_family);
-    o[QStringLiteral("fontStyle")] = QString::fromStdString(layer.font_style);
-    o[QStringLiteral("fontSize")] = layer.font_size;
-    o[QStringLiteral("bold")] = layer.font_bold;
-    o[QStringLiteral("italic")] = layer.font_italic;
-    o[QStringLiteral("underline")] = layer.text_underline;
-    o[QStringLiteral("strike")] = layer.text_strikethrough;
-    o[QStringLiteral("tracking")] = layer.char_tracking;
-    o[QStringLiteral("scaleX")] = layer.char_scale_x;
-    o[QStringLiteral("scaleY")] = layer.char_scale_y;
-    o[QStringLiteral("baseline")] = layer.baseline_shift;
-    o[QStringLiteral("leading")] = layer.text_leading;
-    o[QStringLiteral("textColor")] = QString::number(layer.text_color, 16);
-    o[QStringLiteral("alignH")] = layer.align_h;
-    o[QStringLiteral("alignV")] = layer.align_v;
-    o[QStringLiteral("paragraphBefore")] = layer.paragraph_space_before;
-    o[QStringLiteral("paragraphAfter")] = layer.paragraph_space_after;
-    o[QStringLiteral("paragraphLeft")] = layer.paragraph_indent_left;
-    o[QStringLiteral("paragraphRight")] = layer.paragraph_indent_right;
-    o[QStringLiteral("paragraphFirst")] = layer.paragraph_indent_first_line;
-    o[QStringLiteral("fillType")] = layer.fill_type;
-    o[QStringLiteral("gradient")] = gradientPayloadFromLayer(layer);
+    o[QStringLiteral("fontFamily")] = QString::fromStdString(source.font_family);
+    o[QStringLiteral("fontStyle")] = QString::fromStdString(source.font_style);
+    o[QStringLiteral("fontSize")] = source.font_size;
+    o[QStringLiteral("bold")] = source.font_bold;
+    o[QStringLiteral("italic")] = source.font_italic;
+    o[QStringLiteral("underline")] = source.text_underline;
+    o[QStringLiteral("strike")] = source.text_strikethrough;
+    o[QStringLiteral("kerning")] = source.font_kerning;
+    o[QStringLiteral("kerningMode")] = source.kerning_mode;
+    o[QStringLiteral("manualKerning")] = source.manual_kerning;
+    o[QStringLiteral("tracking")] = source.char_tracking;
+    o[QStringLiteral("scaleX")] = source.char_scale_x;
+    o[QStringLiteral("scaleY")] = source.char_scale_y;
+    o[QStringLiteral("baseline")] = source.baseline_shift;
+    o[QStringLiteral("leading")] = source.text_leading;
+    o[QStringLiteral("textStyle")] = source.text_style;
+    o[QStringLiteral("ligatures")] = source.text_ligatures;
+    o[QStringLiteral("stylisticAlternates")] = source.text_stylistic_alternates;
+    o[QStringLiteral("fractions")] = source.text_fractions;
+    o[QStringLiteral("openTypeFeatures")] = source.text_opentype_features;
+    o[QStringLiteral("language")] = QString::fromStdString(source.text_language);
+    o[QStringLiteral("textColor")] = QString::number(source.text_color, 16);
+    o[QStringLiteral("alignH")] = source.align_h;
+    o[QStringLiteral("alignV")] = source.align_v;
+    o[QStringLiteral("paragraphBefore")] = source.paragraph_space_before;
+    o[QStringLiteral("paragraphAfter")] = source.paragraph_space_after;
+    o[QStringLiteral("paragraphLeft")] = source.paragraph_indent_left;
+    o[QStringLiteral("paragraphRight")] = source.paragraph_indent_right;
+    o[QStringLiteral("paragraphFirst")] = source.paragraph_indent_first_line;
+    o[QStringLiteral("paragraphHyphenate")] = source.paragraph_hyphenate;
+    o[QStringLiteral("overflowMode")] = source.text_overflow_mode;
+    o[QStringLiteral("fitMinScale")] = source.text_fit_min_scale;
+    o[QStringLiteral("boxWidthToText")] = source.text_box_width_to_text;
+    o[QStringLiteral("boxHeightToText")] = source.text_box_height_to_text;
+    o[QStringLiteral("maxBoxWidth")] = source.max_text_box_width;
+    o[QStringLiteral("maxBoxHeight")] = source.max_text_box_height;
+    o[QStringLiteral("fillType")] = source.fill_type;
+    o[QStringLiteral("gradient")] = gradientPayloadFromLayer(source);
+    o[QStringLiteral("stroke")] = strokePayloadFromLayer(source);
     p.payload = o;
     return p;
 }
 
 StylePreset StylePresetLibrary::makeGradientPreset(const Layer &layer, const QString &name, const QString &category)
 {
+    Layer canonical_layer = layer;
+    if (isTextLikeLayer(canonical_layer))
+        rich_text_document_ensure_canonical(canonical_layer);
     StylePreset p;
     p.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     p.name = name;
     p.category = category.isEmpty() ? QStringLiteral("User") : category;
     p.kind = StylePresetKind::Gradient;
-    p.payload = gradientPayloadFromLayer(layer);
+    p.payload = gradientPayloadFromLayer(canonical_layer);
     p.payload[QStringLiteral("fillType")] = 1;
     return p;
 }
@@ -593,49 +1117,102 @@ StylePreset StylePresetLibrary::makeGradientPreset(const RichTextFill &fill,
 
 bool StylePresetLibrary::applyTextPreset(const StylePreset &preset, Layer &layer)
 {
-    if (preset.kind != StylePresetKind::Text) return false;
-    const auto o = preset.payload;
-    layer.font_family = o.value(QStringLiteral("fontFamily")).toString(QString::fromStdString(layer.font_family)).toStdString();
-    layer.font_style = o.value(QStringLiteral("fontStyle")).toString(QString::fromStdString(layer.font_style)).toStdString();
-    layer.font_size = o.value(QStringLiteral("fontSize")).toInt(layer.font_size);
-    layer.font_size_prop.static_value = layer.font_size; layer.font_size_prop.keyframes.clear();
-    layer.font_bold = o.value(QStringLiteral("bold")).toBool(layer.font_bold);
-    layer.font_italic = o.value(QStringLiteral("italic")).toBool(layer.font_italic);
-    layer.text_underline = o.value(QStringLiteral("underline")).toBool(layer.text_underline);
-    layer.text_strikethrough = o.value(QStringLiteral("strike")).toBool(layer.text_strikethrough);
-    layer.char_tracking = float(o.value(QStringLiteral("tracking")).toDouble(layer.char_tracking));
-    layer.char_tracking_prop.static_value = layer.char_tracking; layer.char_tracking_prop.keyframes.clear();
-    layer.char_scale_x = float(o.value(QStringLiteral("scaleX")).toDouble(layer.char_scale_x));
-    layer.char_scale_x_prop.static_value = layer.char_scale_x; layer.char_scale_x_prop.keyframes.clear();
-    layer.char_scale_y = float(o.value(QStringLiteral("scaleY")).toDouble(layer.char_scale_y));
-    layer.char_scale_y_prop.static_value = layer.char_scale_y; layer.char_scale_y_prop.keyframes.clear();
-    layer.baseline_shift = float(o.value(QStringLiteral("baseline")).toDouble(layer.baseline_shift));
-    layer.baseline_shift_prop.static_value = layer.baseline_shift; layer.baseline_shift_prop.keyframes.clear();
-    layer.text_leading = float(o.value(QStringLiteral("leading")).toDouble(layer.text_leading));
-    layer.text_color = parseArgb(o, "textColor", layer.text_color);
-    layer.align_h = o.value(QStringLiteral("alignH")).toInt(layer.align_h);
-    layer.align_v = std::clamp(o.value(QStringLiteral("alignV")).toInt(layer.align_v), 0, 3);
-    layer.paragraph_space_before = float(o.value(QStringLiteral("paragraphBefore")).toDouble(layer.paragraph_space_before));
-    layer.paragraph_space_before_prop.static_value = layer.paragraph_space_before; layer.paragraph_space_before_prop.keyframes.clear();
-    layer.paragraph_space_after = float(o.value(QStringLiteral("paragraphAfter")).toDouble(layer.paragraph_space_after));
-    layer.paragraph_space_after_prop.static_value = layer.paragraph_space_after; layer.paragraph_space_after_prop.keyframes.clear();
-    layer.paragraph_indent_left = float(o.value(QStringLiteral("paragraphLeft")).toDouble(layer.paragraph_indent_left));
-    layer.paragraph_indent_left_prop.static_value = layer.paragraph_indent_left; layer.paragraph_indent_left_prop.keyframes.clear();
-    layer.paragraph_indent_right = float(o.value(QStringLiteral("paragraphRight")).toDouble(layer.paragraph_indent_right));
-    layer.paragraph_indent_right_prop.static_value = layer.paragraph_indent_right; layer.paragraph_indent_right_prop.keyframes.clear();
-    layer.paragraph_indent_first_line = float(o.value(QStringLiteral("paragraphFirst")).toDouble(layer.paragraph_indent_first_line));
-    layer.paragraph_indent_first_line_prop.static_value = layer.paragraph_indent_first_line; layer.paragraph_indent_first_line_prop.keyframes.clear();
-    if (o.contains(QStringLiteral("gradient"))) applyGradientPayload(o.value(QStringLiteral("gradient")).toObject(), layer);
+    if (preset.kind != StylePresetKind::Text || !isTextLikeLayer(layer))
+        return false;
+
+    rich_text_document_ensure_canonical(layer);
+    RichTextCharFormat character = layer.rich_text.default_format;
+    RichTextParagraphFormat paragraph = layer.rich_text.default_paragraph_format;
+    if (!textPresetToCharFormat(preset, character) ||
+        !textPresetToParagraphFormat(preset, paragraph)) {
+        return false;
+    }
+
+    const QJsonObject o = preset.payload;
+    /* Preserve arbitrary gradient-stop arrays in their existing compatibility
+     * storage. The authored fill/stroke fields themselves are committed only to
+     * RichTextDocument below and then mirrored back to Layer. */
+    if (o.contains(QStringLiteral("gradient")))
+        applyGradientPayload(o.value(QStringLiteral("gradient")).toObject(), layer);
+    if (o.value(QStringLiteral("stroke")).isObject())
+        applyStrokePayloadToLayer(o.value(QStringLiteral("stroke")).toObject(), layer);
+
+    rich_text_document_apply_default_char_format(
+        layer.rich_text, character, textPresetCharMask(), true);
+    rich_text_document_apply_default_paragraph_format(
+        layer.rich_text, paragraph, textPresetParagraphMask(), true);
+
+    layer.text_overflow_mode = std::clamp(
+        o.value(QStringLiteral("overflowMode")).toInt(layer.text_overflow_mode),
+        0, 2);
+    layer.text_fit_min_scale = float(std::clamp(
+        o.value(QStringLiteral("fitMinScale")).toDouble(layer.text_fit_min_scale),
+        0.01, 1.0));
+    layer.text_box_width_to_text = o.value(QStringLiteral("boxWidthToText"))
+                                       .toBool(layer.text_box_width_to_text);
+    layer.text_box_height_to_text = o.value(QStringLiteral("boxHeightToText"))
+                                        .toBool(layer.text_box_height_to_text);
+    layer.max_text_box_width = float(std::max(
+        1.0, o.value(QStringLiteral("maxBoxWidth"))
+                 .toDouble(layer.max_text_box_width)));
+    layer.max_text_box_height = float(std::max(
+        1.0, o.value(QStringLiteral("maxBoxHeight"))
+                 .toDouble(layer.max_text_box_height)));
+
+    rich_text_document_sync_layer_mirrors_canonical(layer);
+
+    /* A style preset is a static authoring operation. Match the old contract by
+     * replacing any animation on included text/paragraph properties, but derive
+     * every static value from the canonical model after the commit. */
+    layer.font_size_prop.static_value = layer.rich_text.default_format.font_size;
+    layer.font_size_prop.keyframes.clear();
+    layer.char_tracking_prop.static_value = layer.rich_text.default_format.tracking;
+    layer.char_tracking_prop.keyframes.clear();
+    layer.char_scale_x_prop.static_value = layer.rich_text.default_format.scale_x;
+    layer.char_scale_x_prop.keyframes.clear();
+    layer.char_scale_y_prop.static_value = layer.rich_text.default_format.scale_y;
+    layer.char_scale_y_prop.keyframes.clear();
+    layer.baseline_shift_prop.static_value =
+        layer.rich_text.default_format.baseline_shift;
+    layer.baseline_shift_prop.keyframes.clear();
+    layer.paragraph_space_before_prop.static_value =
+        layer.rich_text.default_paragraph_format.space_before;
+    layer.paragraph_space_before_prop.keyframes.clear();
+    layer.paragraph_space_after_prop.static_value =
+        layer.rich_text.default_paragraph_format.space_after;
+    layer.paragraph_space_after_prop.keyframes.clear();
+    layer.paragraph_indent_left_prop.static_value =
+        layer.rich_text.default_paragraph_format.indent_left;
+    layer.paragraph_indent_left_prop.keyframes.clear();
+    layer.paragraph_indent_right_prop.static_value =
+        layer.rich_text.default_paragraph_format.indent_right;
+    layer.paragraph_indent_right_prop.keyframes.clear();
+    layer.paragraph_indent_first_line_prop.static_value =
+        layer.rich_text.default_paragraph_format.indent_first_line;
+    layer.paragraph_indent_first_line_prop.keyframes.clear();
     return true;
 }
 
 bool StylePresetLibrary::applyGradientPreset(const StylePreset &preset, Layer &layer)
 {
-    if (preset.kind != StylePresetKind::Gradient) return false;
+    if (preset.kind != StylePresetKind::Gradient)
+        return false;
+    if (!isTextLikeLayer(layer)) {
+        applyGradientPayload(preset.payload, layer);
+        layer.fill_type = 1;
+        return true;
+    }
+
+    rich_text_document_ensure_canonical(layer);
+    RichTextCharFormat character = layer.rich_text.default_format;
+    if (!gradientPresetToCharFormat(preset, character))
+        return false;
+    /* Retain additional stops in the layer compatibility array while making the
+     * canonical fill the only authored source for all represented properties. */
     applyGradientPayload(preset.payload, layer);
-    layer.fill_type = 1;
-    if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker)
-        layer.text_color = layer.gradient_start_color;
+    rich_text_document_apply_default_char_format(
+        layer.rich_text, character, gradientPresetCharMask(), true);
+    rich_text_document_sync_layer_mirrors_canonical(layer);
     return true;
 }
 
@@ -700,20 +1277,53 @@ bool StylePresetLibrary::textPresetToCharFormat(const StylePreset &preset, RichT
     const auto o = preset.payload;
     format.font_family = o.value(QStringLiteral("fontFamily")).toString(QString::fromStdString(format.font_family)).toStdString();
     format.font_style = o.value(QStringLiteral("fontStyle")).toString(QString::fromStdString(format.font_style)).toStdString();
-    format.font_size = o.value(QStringLiteral("fontSize")).toInt(format.font_size);
+    format.font_size = std::clamp(o.value(QStringLiteral("fontSize")).toInt(format.font_size), 1, 4096);
     format.bold = o.value(QStringLiteral("bold")).toBool(format.bold);
     format.italic = o.value(QStringLiteral("italic")).toBool(format.italic);
     format.underline = o.value(QStringLiteral("underline")).toBool(format.underline);
     format.strikethrough = o.value(QStringLiteral("strike")).toBool(format.strikethrough);
+    format.kerning = o.value(QStringLiteral("kerning")).toBool(format.kerning);
+    format.kerning_mode = std::clamp(o.value(QStringLiteral("kerningMode")).toInt(format.kerning_mode), 0, 2);
+    format.manual_kerning = float(o.value(QStringLiteral("manualKerning")).toDouble(format.manual_kerning));
     format.tracking = float(o.value(QStringLiteral("tracking")).toDouble(format.tracking));
-    format.scale_x = float(o.value(QStringLiteral("scaleX")).toDouble(format.scale_x));
-    format.scale_y = float(o.value(QStringLiteral("scaleY")).toDouble(format.scale_y));
+    format.scale_x = float(std::clamp(o.value(QStringLiteral("scaleX")).toDouble(format.scale_x), 0.01, 100.0));
+    format.scale_y = float(std::clamp(o.value(QStringLiteral("scaleY")).toDouble(format.scale_y), 0.01, 100.0));
     format.baseline_shift = float(o.value(QStringLiteral("baseline")).toDouble(format.baseline_shift));
+    format.text_style = std::clamp(o.value(QStringLiteral("textStyle")).toInt(format.text_style), 0, 4);
+    format.ligatures = o.value(QStringLiteral("ligatures")).toBool(format.ligatures);
+    format.stylistic_alternates = o.value(QStringLiteral("stylisticAlternates")).toBool(format.stylistic_alternates);
+    format.fractions = o.value(QStringLiteral("fractions")).toBool(format.fractions);
+    format.opentype_features = o.value(QStringLiteral("openTypeFeatures")).toBool(format.opentype_features);
+    format.language = o.value(QStringLiteral("language")).toString(QString::fromStdString(format.language)).toStdString();
     format.fill.color = parseArgb(o, "textColor", format.fill.color);
-    format.fill.type = o.value(QStringLiteral("fillType")).toInt(format.fill.type);
+    format.fill.type = std::clamp(o.value(QStringLiteral("fillType")).toInt(format.fill.type), 0, 1);
     if (o.contains(QStringLiteral("gradient")))
         fillFormatFromGradientPayload(o.value(QStringLiteral("gradient")).toObject(), format);
+    if (o.value(QStringLiteral("stroke")).isObject())
+        strokeFormatFromPayload(o.value(QStringLiteral("stroke")).toObject(), format.stroke);
     return true;
+}
+
+bool StylePresetLibrary::textPresetToParagraphFormat(const StylePreset &preset,
+                                                     RichTextParagraphFormat &format)
+{
+    if (preset.kind != StylePresetKind::Text) return false;
+    const auto o = preset.payload;
+    format.align_h = std::clamp(o.value(QStringLiteral("alignH")).toInt(format.align_h), 0, 6);
+    format.align_v = std::clamp(o.value(QStringLiteral("alignV")).toInt(format.align_v), 0, 3);
+    format.indent_left = float(o.value(QStringLiteral("paragraphLeft")).toDouble(format.indent_left));
+    format.indent_right = float(o.value(QStringLiteral("paragraphRight")).toDouble(format.indent_right));
+    format.indent_first_line = float(o.value(QStringLiteral("paragraphFirst")).toDouble(format.indent_first_line));
+    format.line_spacing = float(o.value(QStringLiteral("leading")).toDouble(format.line_spacing));
+    format.space_before = float(o.value(QStringLiteral("paragraphBefore")).toDouble(format.space_before));
+    format.space_after = float(o.value(QStringLiteral("paragraphAfter")).toDouble(format.space_after));
+    format.hyphenate = o.value(QStringLiteral("paragraphHyphenate")).toBool(format.hyphenate);
+    return true;
+}
+
+uint32_t StylePresetLibrary::textPresetParagraphMask()
+{
+    return RichTextParagraphAll;
 }
 
 bool StylePresetLibrary::gradientPresetToCharFormat(const StylePreset &preset, RichTextCharFormat &format)
@@ -727,8 +1337,11 @@ uint32_t StylePresetLibrary::textPresetCharMask()
 {
     return RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharFontSize |
            RichTextCharBold | RichTextCharItalic | RichTextCharUnderline |
-           RichTextCharStrikethrough | RichTextCharTracking | RichTextCharScaleX |
-           RichTextCharScaleY | RichTextCharBaselineShift | RichTextCharFillColor;
+           RichTextCharStrikethrough | RichTextCharKerning | RichTextCharTracking |
+           RichTextCharScaleX | RichTextCharScaleY | RichTextCharBaselineShift |
+           RichTextCharFillColor | RichTextCharTextStyle | RichTextCharLigatures |
+           RichTextCharStylisticAlternates | RichTextCharFractions |
+           RichTextCharOpenTypeFeatures | RichTextCharLanguage | RichTextCharStroke;
 }
 
 uint32_t StylePresetLibrary::gradientPresetCharMask()
@@ -804,15 +1417,84 @@ QPixmap StylePresetLibrary::thumbnail(const StylePreset &preset, const QSize &si
         p.setBrush(gradient_brush);
         p.drawRoundedRect(r, 3, 3);
     } else {
-        const QColor c = colorFromArgb(parseArgb(preset.payload, "textColor", 0xffffffff));
+        Layer preview_layer;
+        applyTextPreset(preset, preview_layer);
+        p.setPen(Qt::NoPen);
         p.setBrush(QColor(35, 35, 35));
         p.drawRoundedRect(r, 5, 5);
-        QFont f(preset.payload.value(QStringLiteral("fontFamily")).toString(QStringLiteral("Arial")), 22);
-        f.setBold(preset.payload.value(QStringLiteral("bold")).toBool(false));
-        f.setItalic(preset.payload.value(QStringLiteral("italic")).toBool(false));
-        p.setFont(f);
-        p.setPen(c);
-        p.drawText(r, Qt::AlignCenter, QStringLiteral("Aa"));
+
+        QFont font(QString::fromStdString(preview_layer.font_family));
+        if (!preview_layer.font_style.empty())
+            font.setStyleName(QString::fromStdString(preview_layer.font_style));
+        font.setPixelSize(24);
+        font.setBold(preview_layer.font_bold);
+        font.setItalic(preview_layer.font_italic);
+        if (preview_layer.text_style == 2)
+            font.setCapitalization(QFont::SmallCaps);
+
+        QPainterPath path;
+        path.addText(QPointF(0.0, QFontMetricsF(font).ascent()), font,
+                     preview_layer.text_style == 1 ? QStringLiteral("AA")
+                                                   : QStringLiteral("Aa"));
+        QTransform character_scale;
+        character_scale.scale(
+            std::clamp(static_cast<double>(preview_layer.char_scale_x), 0.1, 5.0),
+            std::clamp(static_cast<double>(preview_layer.char_scale_y), 0.1, 5.0));
+        path = character_scale.map(path);
+        QRectF bounds = path.boundingRect();
+        const double fit = std::min(
+            1.0, std::min((r.width() - 8.0) / std::max(1.0, bounds.width()),
+                          (r.height() - 8.0) / std::max(1.0, bounds.height())));
+        if (fit < 1.0) {
+            QTransform fit_transform;
+            fit_transform.scale(fit, fit);
+            path = fit_transform.map(path);
+            bounds = path.boundingRect();
+        }
+        path.translate(r.center() - bounds.center());
+        bounds = path.boundingRect();
+
+        const QBrush fill_brush = preview_layer.fill_type == 1
+            ? previewGradientBrush(preview_layer.gradient_type, bounds,
+                                   preview_layer.gradient_start_color,
+                                   preview_layer.gradient_end_color,
+                                   preview_layer.gradient_angle)
+            : QBrush(colorFromArgb(preview_layer.text_color));
+        const QBrush stroke_brush = preview_layer.stroke_fill_type == 2
+            ? previewGradientBrush(preview_layer.stroke_gradient_type, bounds,
+                                   preview_layer.stroke_gradient_start_color,
+                                   preview_layer.stroke_gradient_end_color,
+                                   preview_layer.stroke_gradient_angle)
+            : QBrush(colorFromArgb(preview_layer.stroke_color));
+        QPen stroke_pen(stroke_brush,
+            std::clamp(static_cast<double>(preview_layer.stroke_width), 0.5, 6.0));
+        stroke_pen.setJoinStyle(preview_layer.outline_join_style == 1 ? Qt::RoundJoin
+                                : preview_layer.outline_join_style == 2 ? Qt::BevelJoin
+                                                                        : Qt::MiterJoin);
+        if (preview_layer.stroke_fill_type != 2) {
+            QColor stroke_color = colorFromArgb(preview_layer.stroke_color);
+            const double stroke_alpha = std::clamp(
+                static_cast<double>(stroke_color.alphaF()) *
+                    static_cast<double>(preview_layer.outline_opacity),
+                0.0, 1.0);
+            stroke_color.setAlphaF(stroke_alpha);
+            stroke_pen.setColor(stroke_color);
+        }
+        const bool has_stroke = preview_layer.outline_enabled &&
+            preview_layer.stroke_fill_type != 0 && preview_layer.stroke_width > 0.0f;
+        if (has_stroke && !preview_layer.outline_on_front) {
+            p.setPen(stroke_pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+        }
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill_brush);
+        p.drawPath(path);
+        if (has_stroke && preview_layer.outline_on_front) {
+            p.setPen(stroke_pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+        }
     }
     return pix;
 }
@@ -882,11 +1564,13 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
                                 ? bgl_tr("OBSTitles.SaveGradientPreset")
                                 : bgl_tr("OBSTitles.SaveStylePreset"));
     apply_button_ = new QToolButton(this); apply_button_->setText(QStringLiteral("✓")); apply_button_->setToolTip(bgl_tr("OBSTitles.ApplyStylePreset"));
+    edit_button_ = new QToolButton(this); edit_button_->setText(QStringLiteral("Edit")); edit_button_->setToolTip(QStringLiteral("Edit text style properties"));
     delete_button_ = new QToolButton(this); delete_button_->setText(QStringLiteral("−")); delete_button_->setToolTip(bgl_tr("OBSTitles.DeleteStylePreset"));
     import_button_ = new QToolButton(this); import_button_->setText(QStringLiteral("Import")); import_button_->setToolTip(bgl_tr("OBSTitles.ImportStylePresets"));
     export_button_ = new QToolButton(this); export_button_->setText(QStringLiteral("Export")); export_button_->setToolTip(bgl_tr("OBSTitles.ExportStylePresets"));
     buttons->addWidget(add_button_);
     buttons->addWidget(apply_button_);
+    buttons->addWidget(edit_button_);
     buttons->addWidget(delete_button_);
     buttons->addStretch(1);
     buttons->addWidget(import_button_);
@@ -900,6 +1584,7 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
             applySelectedPreset();
         });
         apply_button_->hide();
+        edit_button_->hide();
     } else {
         connect(list_, &QListWidget::itemDoubleClicked, this, [this]() {
             applySelectedPreset();
@@ -908,7 +1593,9 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
     connect(list_, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) {
                 const StylePreset *preset = selectedPreset();
-                delete_button_->setEnabled(preset && !StylePresetLibrary::isBuiltIn(*preset));
+                const bool user_preset = preset && !StylePresetLibrary::isBuiltIn(*preset);
+                delete_button_->setEnabled(user_preset);
+                edit_button_->setEnabled(preset && kind_ == StylePresetKind::Text);
                 apply_button_->setEnabled(preset != nullptr);
             });
     connect(list_, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -917,15 +1604,24 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
             return;
         list_->setCurrentItem(item);
         const StylePreset *preset = selectedPreset();
-        if (!preset || StylePresetLibrary::isBuiltIn(*preset))
+        if (!preset)
             return;
         QMenu menu(list_);
-        QAction *remove_action = menu.addAction(bgl_tr("OBSTitles.DeleteStylePreset"));
-        if (menu.exec(list_->viewport()->mapToGlobal(pos)) == remove_action)
+        QAction *edit_action = kind_ == StylePresetKind::Text
+            ? menu.addAction(QStringLiteral("Edit")) : nullptr;
+        QAction *remove_action = StylePresetLibrary::isBuiltIn(*preset)
+            ? nullptr : menu.addAction(bgl_tr("OBSTitles.DeleteStylePreset"));
+        if (!edit_action && !remove_action)
+            return;
+        QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+        if (chosen == edit_action)
+            editSelectedPreset();
+        else if (chosen == remove_action)
             deleteSelectedPreset();
     });
     connect(add_button_, &QToolButton::clicked, this, &StylePresetPanel::addCurrentAsPreset);
     connect(apply_button_, &QToolButton::clicked, this, &StylePresetPanel::applySelectedPreset);
+    connect(edit_button_, &QToolButton::clicked, this, &StylePresetPanel::editSelectedPreset);
     connect(delete_button_, &QToolButton::clicked, this, &StylePresetPanel::deleteSelectedPreset);
     connect(import_button_, &QToolButton::clicked, this, &StylePresetPanel::importPresets);
     connect(export_button_, &QToolButton::clicked, this, &StylePresetPanel::exportPresets);
@@ -933,6 +1629,7 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
     rebuildCategoryFilter();
     refreshList();
     delete_button_->setEnabled(false);
+    edit_button_->setEnabled(false);
     apply_button_->setEnabled(false);
     StylePresetLibrary::subscribe(this, [this]() {
         reload();
@@ -1028,6 +1725,19 @@ void StylePresetPanel::applySelectedPreset()
 {
     const StylePreset *preset = selectedPreset();
     if (preset && apply_callback_) apply_callback_(*preset);
+}
+
+void StylePresetPanel::editSelectedPreset()
+{
+    const StylePreset *preset = selectedPreset();
+    if (!preset || kind_ != StylePresetKind::Text)
+        return;
+    TextStyleEditDialog dialog(*preset, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    library_.upsert(dialog.editedPreset());
+    rebuildCategoryFilter();
+    refreshList();
 }
 
 void StylePresetPanel::deleteSelectedPreset()

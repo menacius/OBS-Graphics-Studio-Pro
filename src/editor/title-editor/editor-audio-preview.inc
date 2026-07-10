@@ -1,3 +1,197 @@
+class BglEditorAudioMeter : public QWidget {
+public:
+    explicit BglEditorAudioMeter(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("BroadcastGraphicsLiveEditorAudioMeter"));
+        setMinimumSize(54, 180);
+        setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+        setToolTip(QStringLiteral("Editor audio level"));
+    }
+
+    void setLevels(float left, float right, bool active)
+    {
+        const float target_l = active ? std::clamp(left, 0.0f, 1.0f) : 0.0f;
+        const float target_r = active ? std::clamp(right, 0.0f, 1.0f) : 0.0f;
+        const float attack = 0.85f;
+        const float release = 0.74f;
+        auto smooth = [&](float current, float target) {
+            if (target > current)
+                return current + (target - current) * attack;
+            return std::max(target, current * release);
+        };
+        level_left_ = smooth(level_left_, target_l);
+        level_right_ = smooth(level_right_, target_r);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        const QPalette pal = palette();
+        painter.fillRect(rect(), pal.color(QPalette::Window));
+
+        const QRect meter_rect(8, 18, 18, std::max(24, height() - 30));
+        const QRect scale_rect(meter_rect.right() + 5, meter_rect.top(),
+                               width() - meter_rect.right() - 6,
+                               meter_rect.height());
+
+        painter.setPen(pal.color(QPalette::Mid));
+        painter.drawRect(meter_rect.adjusted(0, 0, -1, -1));
+        painter.fillRect(meter_rect.adjusted(1, 1, -1, -1),
+                         pal.color(QPalette::Base));
+
+        auto y_for_db = [&](double db) -> int {
+            db = std::clamp(db, -60.0, 0.0);
+            const double t = (db + 60.0) / 60.0;
+            return meter_rect.bottom() - static_cast<int>(std::round(t * meter_rect.height()));
+        };
+        auto db_for_level = [](float level) -> double {
+            return level > 0.000001f ? 20.0 * std::log10(level) : -60.0;
+        };
+
+        auto draw_level_bar = [&](int x, float level) {
+            const int bar_w = 7;
+            const int y = y_for_db(db_for_level(level));
+            const QRect fill(x, y, bar_w, meter_rect.bottom() - y);
+            if (fill.height() <= 0)
+                return;
+            const QRect green(x, y_for_db(-20.0), bar_w, meter_rect.bottom() - y_for_db(-20.0));
+            const QRect yellow(x, y_for_db(-6.0), bar_w, y_for_db(-20.0) - y_for_db(-6.0));
+            const QRect red(x, meter_rect.top() + 1, bar_w, y_for_db(-6.0) - meter_rect.top());
+            painter.fillRect(fill.intersected(green), QColor(34, 154, 58));
+            painter.fillRect(fill.intersected(yellow), QColor(174, 132, 42));
+            painter.fillRect(fill.intersected(red), QColor(154, 30, 54));
+        };
+        draw_level_bar(meter_rect.left() + 2, level_left_);
+        draw_level_bar(meter_rect.left() + 10, level_right_);
+
+        painter.setPen(QPen(pal.color(QPalette::Mid), 1));
+        for (int db = 0; db >= -60; db -= 6) {
+            const int y = y_for_db(db);
+            painter.drawLine(meter_rect.right() + 1, y, meter_rect.right() + 4, y);
+            if (db % 12 == 0 || db == -6) {
+                painter.setPen(pal.color(QPalette::Text));
+                painter.drawText(scale_rect.left(), y - 7, scale_rect.width(), 14,
+                                 Qt::AlignVCenter | Qt::AlignLeft,
+                                 QString::number(db));
+                painter.setPen(QPen(pal.color(QPalette::Mid), 1));
+            }
+        }
+        painter.setPen(pal.color(QPalette::Text));
+        painter.drawText(0, 1, width(), 14, Qt::AlignHCenter | Qt::AlignTop,
+                         QStringLiteral("dB"));
+    }
+
+private:
+    float level_left_ = 0.0f;
+    float level_right_ = 0.0f;
+};
+
+QWidget *TitleEditor::create_editor_audio_panel()
+{
+    auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("BroadcastGraphicsLiveEditorAudioPanel"));
+    panel->setMinimumWidth(56);
+    panel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+
+    editor_audio_monitor_button_ = new QToolButton(panel);
+    editor_audio_monitor_button_->setObjectName(
+        QStringLiteral("BroadcastGraphicsLiveEditorAudioMonitorButton"));
+    editor_audio_monitor_button_->setIcon(obs_icon("headphones.svg"));
+    editor_audio_monitor_button_->setText(QStringLiteral("🎧"));
+    editor_audio_monitor_button_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    editor_audio_monitor_button_->setCheckable(true);
+    editor_audio_monitor_button_->setAutoRaise(false);
+    editor_audio_monitor_button_->setFixedSize(36, 36);
+    editor_audio_monitor_button_->setIconSize(QSize(22, 22));
+    editor_audio_monitor_button_->setStyleSheet(QStringLiteral(
+        "QToolButton{border:1px solid palette(mid);border-radius:5px;"
+        "background:palette(button);padding:4px;}"
+        "QToolButton:hover{background:palette(light);}"
+        "QToolButton:checked{background:palette(highlight);"
+        "color:palette(highlighted-text);border-color:palette(highlight);}"
+        "QToolButton:disabled{background:palette(window);color:palette(mid);}"));
+    connect(editor_audio_monitor_button_, &QToolButton::toggled, this,
+            [this](bool enabled) {
+                editor_audio_monitor_enabled_ = enabled;
+                apply_editor_audio_monitoring();
+                update_editor_audio_monitor_button();
+            });
+
+    layout->addWidget(editor_audio_monitor_button_, 0, Qt::AlignHCenter);
+    editor_audio_meter_ = new BglEditorAudioMeter(panel);
+    layout->addWidget(editor_audio_meter_, 1, Qt::AlignHCenter);
+
+    editor_audio_meter_timer_ = new QTimer(panel);
+    editor_audio_meter_timer_->setInterval(33);
+    connect(editor_audio_meter_timer_, &QTimer::timeout, this,
+            &TitleEditor::update_editor_audio_meter);
+    editor_audio_meter_timer_->start();
+    connect(&CacheManager::instance(), &CacheManager::playbackSettingsChanged, this,
+            [this]() {
+                apply_editor_audio_monitoring();
+                update_editor_audio_monitor_button();
+                update_editor_audio_meter();
+                if (editor_audio_preview_source_)
+                    sync_editor_audio_preview(false);
+            });
+
+    update_editor_audio_monitor_button();
+    update_editor_audio_meter();
+    return panel;
+}
+
+void TitleEditor::apply_editor_audio_monitoring()
+{
+    if (!editor_audio_preview_source_)
+        return;
+
+    obs_source_set_monitoring_type(
+        editor_audio_preview_source_,
+        editor_audio_monitor_enabled_
+            ? OBS_MONITORING_TYPE_MONITOR_ONLY
+            : OBS_MONITORING_TYPE_NONE);
+}
+
+void TitleEditor::update_editor_audio_monitor_button()
+{
+    if (!editor_audio_monitor_button_)
+        return;
+
+    QSignalBlocker blocker(editor_audio_monitor_button_);
+    const bool play_every_frame =
+        CacheManager::instance().playbackSettings().play_every_frame;
+    editor_audio_monitor_button_->setChecked(editor_audio_monitor_enabled_);
+    editor_audio_monitor_button_->setEnabled(
+        editor_audio_preview_source_ != nullptr || title_ != nullptr);
+    editor_audio_monitor_button_->setToolTip(
+        editor_audio_monitor_enabled_
+            ? (play_every_frame
+                   ? QStringLiteral("Editor audio monitoring is on; Play Every Frame varispeeds audio to visual cadence")
+                   : QStringLiteral("Editor audio monitoring is on"))
+            : QStringLiteral("Editor audio monitoring is muted"));
+}
+
+void TitleEditor::update_editor_audio_meter()
+{
+    if (!editor_audio_meter_)
+        return;
+
+    float left = 0.0f;
+    float right = 0.0f;
+    const bool has_levels = editor_audio_preview_source_ &&
+        title_source_get_audio_levels(editor_audio_preview_source_, &left, &right);
+    editor_audio_meter_->setLevels(left, right,
+                                   has_levels && playing_ && title_ != nullptr);
+}
+
 /* Editor-only monitored preview source. It uses the same BGL source/audio
  * runtime as program output, but is private and monitor-only, preventing a
  * second scene/program output while still following the editor transport. */
@@ -30,8 +224,8 @@ void TitleEditor::ensure_editor_audio_preview()
 
     obs_source_inc_active(editor_audio_preview_source_);
     obs_source_inc_showing(editor_audio_preview_source_);
-    obs_source_set_monitoring_type(
-        editor_audio_preview_source_, OBS_MONITORING_TYPE_MONITOR_ONLY);
+    apply_editor_audio_monitoring();
+    update_editor_audio_monitor_button();
 
     BGL_LOG_INFO(
         "Audio",
@@ -72,6 +266,7 @@ void TitleEditor::release_editor_audio_preview()
     obs_source_dec_active(editor_audio_preview_source_);
     obs_source_release(editor_audio_preview_source_);
     editor_audio_preview_source_ = nullptr;
+    update_editor_audio_monitor_button();
 }
 
 void TitleEditor::sync_editor_audio_preview(bool discontinuity)
@@ -82,10 +277,37 @@ void TitleEditor::sync_editor_audio_preview(bool discontinuity)
     ensure_editor_audio_preview();
     if (!editor_audio_preview_source_)
         return;
+    apply_editor_audio_monitoring();
+    update_editor_audio_monitor_button();
 
     title_source_set_editor_title_snapshot(editor_audio_preview_source_, title_);
-    title_source_set_editor_transport(editor_audio_preview_source_, playhead_,
-                                      playback_reverse_);
+    const CachePlaybackSettings cache_settings =
+        CacheManager::instance().playbackSettings();
+    double editor_audio_play_every_frame_speed_factor = 1.0;
+    if (cache_settings.play_every_frame && playing_ && !discontinuity) {
+        const qint64 elapsed_ms = editor_audio_speed_clock_.isValid()
+            ? editor_audio_speed_clock_.elapsed()
+            : 0;
+        const double wall_seconds = static_cast<double>(elapsed_ms) / 1000.0;
+        const double timeline_seconds = std::abs(
+            playhead_ - editor_audio_speed_last_playhead_);
+        if (wall_seconds > 0.001 && timeline_seconds > 0.0) {
+            const double measured = std::clamp(timeline_seconds / wall_seconds,
+                                               0.02, 4.0);
+            editor_audio_speed_factor_ =
+                std::clamp(editor_audio_speed_factor_ * 0.65 +
+                               measured * 0.35,
+                           0.02, 4.0);
+        }
+        editor_audio_play_every_frame_speed_factor = editor_audio_speed_factor_;
+    } else {
+        editor_audio_speed_factor_ = 1.0;
+    }
+    editor_audio_speed_last_playhead_ = playhead_;
+    editor_audio_speed_clock_.restart();
+    title_source_set_editor_transport(
+        editor_audio_preview_source_, playhead_, playback_reverse_,
+        editor_audio_play_every_frame_speed_factor);
 
     if (discontinuity) {
         BGL_LOG_INFO(
@@ -110,7 +332,7 @@ void TitleEditor::sync_editor_audio_preview(bool discontinuity)
         "Audio",
         QStringLiteral(
             "[editor-preview-sync] source=%1 playhead=%2 playing=%3 "
-            "media_state=%4 discontinuity=%5 reverse=%6")
+            "media_state=%4 discontinuity=%5 reverse=%6 audioSpeed=%7")
             .arg(QString::fromUtf8(
                 obs_source_get_name(editor_audio_preview_source_)))
             .arg(playhead_, 0, 'f', 3)
@@ -118,7 +340,8 @@ void TitleEditor::sync_editor_audio_preview(bool discontinuity)
             .arg(static_cast<int>(
                 obs_source_media_get_state(editor_audio_preview_source_)))
             .arg(discontinuity ? 1 : 0)
-            .arg(playback_reverse_ ? 1 : 0));
+            .arg(playback_reverse_ ? 1 : 0)
+            .arg(editor_audio_play_every_frame_speed_factor, 0, 'f', 3));
 }
 
 
@@ -144,6 +367,7 @@ void TitleEditor::publish_editor_audio_runtime_state()
             dst->audio_loop = src->audio_loop;
             dst->audio_independent = src->audio_independent;
             dst->audio_playback_mode = src->audio_playback_mode;
+            dst->video_playback_mode = src->video_playback_mode;
             dst->audio_in_point = src->audio_in_point;
             dst->audio_out_point = src->audio_out_point;
             dst->audio_effects = src->audio_effects;

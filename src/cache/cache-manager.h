@@ -403,6 +403,7 @@ signals:
     void liveCueStateChanged(const QString &title_id, int row);
     void queueChanged();
     void cacheEnabledChanged(bool enabled);
+    void playbackSettingsChanged();
     void diagnosticsChanged();
 
 private:

@@ -984,7 +984,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
             apply_live_text_runtime_binding(*title, value_row, *target);
             const std::string cue_value = effective_live_text_cue_value(
                 *title, value_row, *target, title->live_text_rows[value_row][col]);
-            apply_live_cue_layer_value(target, cue_value);
+            apply_live_cue_layer_value(*title, target, row, cue_value);
         }
         title->current_cue_row = row;
         title->pending_cue_row = -1;

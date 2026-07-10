@@ -241,6 +241,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setAttribute(Qt::WA_NoSystemBackground, true);
     gpu_display_ = std::make_unique<GpuDisplayState>();
     gpu_render_session_ = title_gpu_render_session_create();
+    title_gpu_render_session_set_editor_video_decode_client(
+        gpu_render_session_, true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAcceptDrops(true);
@@ -849,6 +851,17 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
             inline_text_editor_->setCurrentCharFormat(typing);
         }
         inline_text_editor_->document()->setModified(false);
+        /* A Properties edit has already been checkpointed in the title-level
+         * history and applied to the canonical RichTextDocument. Rebuilding
+         * the QTextEdit adapter creates implementation-defined local undo
+         * commands on some Qt backends. Drop those adapter-only commands so
+         * Ctrl+Z cannot restore stale formatting over the canonical model; the
+         * next undo is routed to TitleEditor history instead. */
+        QTextDocument *adapter_document = inline_text_editor_->document();
+        const bool undo_redo_enabled = adapter_document->isUndoRedoEnabled();
+        adapter_document->setUndoRedoEnabled(false);
+        adapter_document->setUndoRedoEnabled(undo_redo_enabled);
+        adapter_document->setModified(false);
     }
     inline_text_last_visual_scale_ = visual_scale;
     updating_inline_text_editor_ = previous_updating;
@@ -867,11 +880,19 @@ QPointF CanvasPreview::view_center_canvas_point() const
     return view_to_canvas(QPointF(width() * 0.5, height() * 0.5));
 }
 
-void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
+void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view,
+                              bool commit_active_text)
 {
     if (shutting_down_)
         return;
-    commit_text_edit(true);
+    /* A normal title switch commits the live adapter. Undo/redo, however,
+     * has already replaced the canonical Title model. In that case the old
+     * QTextDocument is stale and must be discarded without writing it back
+     * over the restored RichTextDocument. */
+    if (commit_active_text)
+        commit_text_edit(true);
+    else
+        commit_text_edit(false, false);
     if (title_)
         bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     title_ = t;
@@ -917,6 +938,8 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
     force_live_full_quality_render_ = false;
     frame_image_preview_scale_ = 1.0;
     last_full_quality_render_cost_ms_ = 0;
+    last_adaptive_render_cost_ms_ = 0;
+    last_render_cost_ms_ = 0;
 
     /* Prime the immutable GPU model immediately when a title is opened. The
      * GPU swap chain can request its first presentation before QWidget's
@@ -1376,10 +1399,37 @@ void CanvasPreview::clear_rendered_frame()
 QImage CanvasPreview::current_rendered_frame() const
 {
     /* Explicit inspection/export path only. Normal editor presentation never
-     * maps the GPU frame back to system memory. */
-    return gpu_render_session_
-        ? title_gpu_render_session_readback(gpu_render_session_)
-        : QImage();
+     * maps the GPU frame back to system memory.  Save/color-pick readbacks must
+     * never persist the editor's reduced adaptive surface: that can leave a
+     * group/shape snapshot scaled into the upper-left quarter after the stored
+     * title is refreshed.  Temporarily read back at full quality, then restore
+     * the editor draft quality for the next interactive frame. */
+    if (!gpu_render_session_)
+        return QImage();
+
+    const bool restore_adaptive_draft =
+        adaptive_rendering_enabled_ && frame_image_preview_scale_ < 0.999;
+    const double restore_scale = frame_image_preview_scale_;
+    if (restore_adaptive_draft)
+        title_gpu_render_session_set_preview_quality(gpu_render_session_,
+                                                     1.0, false);
+
+    QImage image = title_gpu_render_session_readback(gpu_render_session_);
+
+    if (restore_adaptive_draft) {
+        title_gpu_render_session_set_preview_quality(gpu_render_session_,
+                                                     restore_scale, true);
+        const_cast<CanvasPreview *>(this)->dirty_ = true;
+        const_cast<CanvasPreview *>(this)->update();
+    }
+
+    if (!image.isNull() && title_ &&
+        image.size() != QSize(title_->width, title_->height)) {
+        image = image.scaled(title_->width, title_->height,
+                             Qt::IgnoreAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    return image;
 }
 
 

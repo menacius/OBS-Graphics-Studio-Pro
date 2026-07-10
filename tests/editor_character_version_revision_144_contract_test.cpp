@@ -78,12 +78,12 @@ int main(int argc, char **argv)
                   "OBS plugin runtime version");
     ok &= require(vcpkg, "\"version-string\": \"0.8.11-alpha\"",
                   "vcpkg version");
-    ok &= require(readme, "v0.8.11-alpha` · `Development Version 239",
+    ok &= require(readme, "v0.8.11-alpha` · `Development Version 243",
                   "README current build");
     ok &= require(readme, "since `v0.8.9-alpha` Development Version 189",
                   "README release-change baseline");
     ok &= require(readme,
-                  "Broadcast_Graphics_Live_v0.8.11-alpha_development-version-239.zip",
+                  "Broadcast_Graphics_Live_v0.8.11-alpha_development-version-240.zip",
                   "README current package example");
     ok &= require(docs_readme, "canonical documents for `v0.8.11-alpha`",
                   "canonical docs version");

@@ -43,81 +43,111 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
 
 static double eval_text_font_size(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.font_size)
+        : static_cast<double>(layer.font_size);
     return std::clamp(layer.font_size_prop.is_animated()
                           ? layer.font_size_prop.evaluate(t)
-                          : (double)layer.font_size,
+                          : authored,
                       1.0, 512.0);
 }
 
 static double eval_char_tracking(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.tracking)
+        : static_cast<double>(layer.char_tracking);
     return std::clamp(layer.char_tracking_prop.is_animated()
                           ? layer.char_tracking_prop.evaluate(t)
-                          : (double)layer.char_tracking,
+                          : authored,
                       -1000.0, 1000.0);
 }
 
 static double eval_char_scale_x(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.scale_x)
+        : static_cast<double>(layer.char_scale_x);
     return std::clamp(layer.char_scale_x_prop.is_animated()
                           ? layer.char_scale_x_prop.evaluate(t)
-                          : (double)layer.char_scale_x,
+                          : authored,
                       0.01, 100.0);
 }
 
 static double eval_char_scale_y(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.scale_y)
+        : static_cast<double>(layer.char_scale_y);
     return std::clamp(layer.char_scale_y_prop.is_animated()
                           ? layer.char_scale_y_prop.evaluate(t)
-                          : (double)layer.char_scale_y,
+                          : authored,
                       0.01, 100.0);
 }
 
 static double eval_baseline_shift(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.baseline_shift)
+        : static_cast<double>(layer.baseline_shift);
     return std::clamp(layer.baseline_shift_prop.is_animated()
                           ? layer.baseline_shift_prop.evaluate(t)
-                          : (double)layer.baseline_shift,
+                          : authored,
                       -1000.0, 1000.0);
 }
 
 static double eval_paragraph_space_before(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.space_before)
+        : static_cast<double>(layer.paragraph_space_before);
     return std::clamp(layer.paragraph_space_before_prop.is_animated()
                           ? layer.paragraph_space_before_prop.evaluate(t)
-                          : (double)layer.paragraph_space_before,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_space_after(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.space_after)
+        : static_cast<double>(layer.paragraph_space_after);
     return std::clamp(layer.paragraph_space_after_prop.is_animated()
                           ? layer.paragraph_space_after_prop.evaluate(t)
-                          : (double)layer.paragraph_space_after,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_left(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_left)
+        : static_cast<double>(layer.paragraph_indent_left);
     return std::clamp(layer.paragraph_indent_left_prop.is_animated()
                           ? layer.paragraph_indent_left_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_left,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_right(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_right)
+        : static_cast<double>(layer.paragraph_indent_right);
     return std::clamp(layer.paragraph_indent_right_prop.is_animated()
                           ? layer.paragraph_indent_right_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_right,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_first_line(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_first_line)
+        : static_cast<double>(layer.paragraph_indent_first_line);
     return std::clamp(layer.paragraph_indent_first_line_prop.is_animated()
                           ? layer.paragraph_indent_first_line_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_first_line,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
@@ -556,12 +586,21 @@ static void apply_rich_text_extended_font_properties(QFont &font, const RichText
     font.setKerning(format.kerning_mode != 2 && format.kerning);
     font.setLetterSpacing(QFont::AbsoluteSpacing,
                           format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
-    const RichTextFontScaleMetrics scale = rich_text_font_scale_metrics(format.scale_x, format.scale_y);
+    /* QTextDocument is only a compatibility raster. Encode V Scale in the
+     * font size, but never encode H/V into QFont::stretch: DirectWrite may
+     * switch between discrete width faces at a matching threshold (the
+     * reported 89%/90% discontinuity). A continuous residual X transform is
+     * applied by the positioned-document helpers when all effective runs share
+     * the same H/V ratio. Ordinary and multistyle canvas text stays on the GPU
+     * per-glyph path. */
+    const double scale_y = std::clamp(
+        static_cast<double>(format.scale_y), 0.01, 100.0);
     if (font.pixelSize() > 0)
-        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * scale.vertical_factor)));
+        font.setPixelSize(std::max(1, static_cast<int>(std::lround(
+            static_cast<double>(font.pixelSize()) * scale_y))));
     else if (font.pointSizeF() > 0.0)
-        font.setPointSizeF(std::max(0.1, font.pointSizeF() * scale.vertical_factor));
-    font.setStretch(scale.horizontal_stretch_percent);
+        font.setPointSizeF(std::max(0.1, font.pointSizeF() * scale_y));
+    font.setStretch(100);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     font.setFeature("kern", format.kerning_mode != 2 && format.kerning ? 1 : 0);
     font.setFeature("liga", format.ligatures ? 1 : 0);
@@ -806,37 +845,6 @@ static bool resolve_auto_text_style_preset(const std::string &preset_id, RichTex
     return true;
 }
 
-static RichTextStroke rich_text_layer_stroke_for_source_time(
-    const Layer &layer, double local_time)
-{
-    RichTextStroke stroke;
-    stroke.enabled = eval_outline_enabled(layer, local_time);
-    stroke.width = static_cast<float>(eval_outline_width(layer, local_time));
-    stroke.opacity = static_cast<float>(eval_outline_opacity(layer, local_time));
-    stroke.on_front = eval_outline_on_front(layer, local_time);
-    stroke.alignment = eval_outline_alignment(layer, local_time);
-    stroke.antialias = eval_outline_antialias(layer, local_time);
-    stroke.join_style = layer.outline_join_style;
-    stroke.fill.type = layer.stroke_fill_type == 2 ? 1 : 0;
-    stroke.fill.color = eval_outline_color(layer, local_time);
-    stroke.fill.gradient_type = layer.stroke_gradient_type;
-    stroke.fill.gradient_spread = layer.stroke_gradient_spread;
-    stroke.fill.gradient_start_color = layer.stroke_gradient_start_color;
-    stroke.fill.gradient_end_color = layer.stroke_gradient_end_color;
-    stroke.fill.gradient_start_pos = layer.stroke_gradient_start_pos;
-    stroke.fill.gradient_end_pos = layer.stroke_gradient_end_pos;
-    stroke.fill.gradient_start_opacity = layer.stroke_gradient_start_opacity;
-    stroke.fill.gradient_end_opacity = layer.stroke_gradient_end_opacity;
-    stroke.fill.gradient_opacity = layer.stroke_gradient_opacity;
-    stroke.fill.gradient_angle = layer.stroke_gradient_angle;
-    stroke.fill.gradient_center_x = layer.stroke_gradient_center_x;
-    stroke.fill.gradient_center_y = layer.stroke_gradient_center_y;
-    stroke.fill.gradient_scale = layer.stroke_gradient_scale;
-    stroke.fill.gradient_focal_x = layer.stroke_gradient_focal_x;
-    stroke.fill.gradient_focal_y = layer.stroke_gradient_focal_y;
-    return stroke;
-}
-
 static RichTextDocument rich_text_model_for_source_time(const Layer &layer,
                                                         double local_time)
 {
@@ -846,7 +854,7 @@ static RichTextDocument rich_text_model_for_source_time(const Layer &layer,
     if (layer.type == LayerType::Clock || layer.type == LayerType::Ticker ||
         external_text_bound) {
         const std::string display_text =
-            display_text_for_style(layer).toStdString();
+            display_text_for_style(layer).toUtf8().toStdString();
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(canonical);
         rich_text_document_replace_text_canonical(
@@ -868,30 +876,65 @@ static RichTextDocument rich_text_model_for_source_time(const Layer &layer,
     defaults.baseline_shift =
         static_cast<float>(eval_baseline_shift(layer, local_time));
     defaults.solid_fill_color = eval_text_color(layer, local_time);
-    defaults.align_h = layer.align_h;
-    defaults.align_v = layer.align_v;
+    defaults.align_h = canonical.default_paragraph_format.align_h;
+    defaults.align_v = canonical.default_paragraph_format.align_v;
     defaults.indent_left =
         static_cast<float>(eval_paragraph_indent_left(layer, local_time));
     defaults.indent_right =
         static_cast<float>(eval_paragraph_indent_right(layer, local_time));
     defaults.indent_first_line = static_cast<float>(
         eval_paragraph_indent_first_line(layer, local_time));
-    defaults.line_spacing = layer.text_leading;
+    defaults.line_spacing = canonical.default_paragraph_format.line_spacing;
     defaults.space_before =
         static_cast<float>(eval_paragraph_space_before(layer, local_time));
     defaults.space_after =
         static_cast<float>(eval_paragraph_space_after(layer, local_time));
-    defaults.hyphenate = layer.paragraph_hyphenate;
+    defaults.hyphenate = canonical.default_paragraph_format.hyphenate;
     RichTextDocument model =
         rich_text_document_with_evaluated_defaults_canonical(
             std::move(canonical), defaults);
-    /* Layer-wide text stroke is the fallback character stroke. Sparse
-     * RichTextCharStroke ranges remain independent overrides, so changing the
-     * object order/width/color no longer erases mixed inline stroke styles. */
-    model.default_format.stroke =
-        rich_text_layer_stroke_for_source_time(layer, local_time);
+    /* Static default and inline stroke are already part of the canonical
+     * document. Do not merge compatibility layer mirrors back into it. */
     return rich_text_document_with_auto_styles_canonical(
         std::move(model), resolve_auto_text_style_preset);
+}
+
+/* QTextDocument can reproduce anisotropic scale continuously with a painter
+ * transform when every effective style run has the same H/V ratio. This covers
+ * layer-wide H/V Scale and proportional multistyle runs without asking the
+ * platform font matcher to synthesize or substitute a width face. */
+static double rich_text_compatibility_x_ratio(const Layer &layer, double t)
+{
+    const RichTextDocument model = rich_text_model_for_source_time(layer, t);
+    const auto ratio_for = [](const RichTextCharFormat &format) {
+        const double sx = std::clamp(
+            static_cast<double>(format.scale_x), 0.01, 100.0);
+        const double sy = std::clamp(
+            static_cast<double>(format.scale_y), 0.01, 100.0);
+        return sx / sy;
+    };
+
+    const double reference = ratio_for(model.default_format);
+    const size_t text_size = model.plain_text.size();
+    std::vector<size_t> boundaries;
+    boundaries.reserve(model.ranges.size() * 2 + 1);
+    boundaries.push_back(0);
+    for (const RichTextRange &range : model.ranges) {
+        const size_t start = std::min(range.start, text_size);
+        const size_t end = start + std::min(range.length, text_size - start);
+        boundaries.push_back(start);
+        boundaries.push_back(end);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+    for (size_t offset : boundaries) {
+        const double ratio = ratio_for(
+            rich_text_format_at(model, std::min(offset, text_size)));
+        if (std::abs(ratio - reference) > 0.0001)
+            return 1.0;
+    }
+    return std::clamp(reference, 0.01, 100.0);
 }
 
 static double max_rich_text_stroke_width(const Layer &layer, double t)
@@ -948,6 +991,44 @@ static double max_rich_text_font_height_hint(const Layer &layer, double t)
         maximum = std::max(maximum,
                            format_height(rich_text_format_at(model, offset)));
     }
+    return maximum;
+}
+
+
+/* Conservative extra ink envelope required by anisotropic character scaling.
+ * The immutable layout applies scale around each glyph baseline, so values
+ * above 100% may extend outside the authored text box even when line wrapping
+ * remains inside it. This hint is used only for raster allocation/clipping; it
+ * does not change shaping, line breaks or alignment. */
+static double max_rich_text_scale_overhang_hint(const Layer &layer, double t)
+{
+    const RichTextDocument model = rich_text_model_for_source_time(layer, t);
+    const auto format_overhang = [](const RichTextCharFormat &format) {
+        const double font_size = static_cast<double>(std::max(1, format.font_size));
+        const double scale_x = std::clamp(
+            std::abs(static_cast<double>(format.scale_x)), 0.01, 100.0);
+        const double scale_y = std::clamp(
+            std::abs(static_cast<double>(format.scale_y)), 0.01, 100.0);
+        return font_size * std::max({0.0, scale_x - 1.0, scale_y - 1.0});
+    };
+
+    double maximum = format_overhang(model.default_format);
+    const size_t text_size = model.plain_text.size();
+    std::vector<size_t> boundaries;
+    boundaries.reserve(model.ranges.size() * 2 + 1);
+    boundaries.push_back(0);
+    for (const RichTextRange &range : model.ranges) {
+        const size_t start = std::min(range.start, text_size);
+        const size_t end = start + std::min(range.length, text_size - start);
+        boundaries.push_back(start);
+        boundaries.push_back(end);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+    for (size_t offset : boundaries)
+        maximum = std::max(maximum, format_overhang(
+            rich_text_format_at(model, std::min(offset, text_size))));
     return maximum;
 }
 
@@ -1162,6 +1243,17 @@ static double rich_text_horizontal_fit_scale(const Layer &layer,
                       1.0);
 }
 
+static double rich_text_document_horizontal_scale(
+    const Layer &layer, const QRectF &text_rect,
+    const QSizeF &document_size, double t)
+{
+    const double ratio = rich_text_compatibility_x_ratio(layer, t);
+    const QSizeF ratio_size(document_size.width() * ratio,
+                            document_size.height());
+    return ratio * rich_text_horizontal_fit_scale(
+        layer, text_rect, ratio_size);
+}
+
 static QPointF rich_text_document_origin(const Layer &layer,
                                          const QRectF &text_rect,
                                          const QSizeF &document_size,
@@ -1220,7 +1312,8 @@ static QPointF rich_text_document_cursor_position(const QTextDocument &doc,
                   block_rect.top() + line.y());
 
     const QSizeF document_size = doc.size();
-    const double horizontal_scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const double horizontal_scale = rich_text_document_horizontal_scale(
+        layer, text_rect, document_size, t);
     const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, horizontal_scale);
     local.setX(local.x() * horizontal_scale);
     return origin + local;

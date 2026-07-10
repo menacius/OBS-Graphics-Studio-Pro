@@ -53,6 +53,17 @@ void TitleEditor::next_keyframe()
 
 
 
+static bool title_has_editor_audio_clock(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return false;
+    return std::any_of(title->layers.cbegin(), title->layers.cend(),
+                       [](const std::shared_ptr<Layer> &layer) {
+                           return layer && layer->type == LayerType::Audio;
+                       });
+}
+
+
 void TitleEditor::reset_playback_timer_cadence()
 {
     playback_timer_fractional_error_ms_ = 0.0;
@@ -202,7 +213,34 @@ void TitleEditor::tick()
             break;
         }
     }
-    const double next_playhead = snap_to_obs_frame(t);
+    double next_playhead = snap_to_obs_frame(t);
+    if (!cache_settings.play_every_frame && playing_ &&
+        editor_audio_preview_source_ &&
+        title_has_editor_audio_clock(title_)) {
+        float audio_level_left = 0.0f;
+        float audio_level_right = 0.0f;
+        uint64_t last_audio_level_update_ns = 0;
+        const bool audio_clock_live =
+            title_source_get_audio_levels(editor_audio_preview_source_,
+                                          &audio_level_left, &audio_level_right,
+                                          &last_audio_level_update_ns) &&
+            last_audio_level_update_ns > 0 &&
+            obs_source_media_get_state(editor_audio_preview_source_) ==
+                OBS_MEDIA_STATE_PLAYING;
+        if (audio_clock_live) {
+            const double audio_time = std::clamp(
+                static_cast<double>(
+                    obs_source_media_get_time(editor_audio_preview_source_)) /
+                    1000.0,
+                0.0, duration);
+            constexpr double kAudioClockTrustWindowSeconds = 0.750;
+            if (std::abs(audio_time - next_playhead) <=
+                    kAudioClockTrustWindowSeconds ||
+                std::abs(audio_time - playhead_) <=
+                    kAudioClockTrustWindowSeconds)
+                next_playhead = snap_to_obs_frame(audio_time);
+        }
+    }
     if (cache_settings.cached_frames_only && canvas_ &&
         !canvas_->prepare_cached_playback_frame(next_playhead)) {
         /* Play after rendering means the playhead must not outrun the cache.

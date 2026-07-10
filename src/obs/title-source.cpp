@@ -39,6 +39,7 @@
 #include "asset-runtime.h"
 #include "image-layer-utils.h"
 #include "title-text-layout.h"
+#include "title-text-layout-qt-font-registry.h"
 #include "text-animator-presets.h"
 
 #include <obs-module.h>
@@ -66,6 +67,7 @@
 #include <QPainterPath>
 #include <QtGlobal>
 #include <QFont>
+#include <QRawFont>
 #include <QFontMetrics>
 #include <QFontDatabase>
 #include <QTextLayout>

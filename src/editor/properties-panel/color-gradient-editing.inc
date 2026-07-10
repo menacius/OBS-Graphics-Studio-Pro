@@ -622,8 +622,47 @@
         if (live_visual_dirty)
             emit_change();
     };
+    btn_appearance_fill_color_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(btn_appearance_fill_color_, &QWidget::customContextMenuRequested,
+            this, [this, emit_change](const QPoint &pos) {
+                if (!layer_ || loading_values_) return;
+                QMenu menu(btn_appearance_fill_color_);
+                QAction *expose = menu.addAction(QStringLiteral("Expose Fill to Dock"));
+                expose->setCheckable(true);
+                expose->setChecked(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+                expose->setEnabled(!layer_->use_as_scene_mask);
+                QAction *single = menu.addAction(QStringLiteral("Single value"));
+                single->setCheckable(true);
+                single->setChecked(layer_->exposed_fill_single_value && !layer_->use_as_scene_mask);
+                single->setEnabled(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+                QAction *chosen = menu.exec(btn_appearance_fill_color_->mapToGlobal(pos));
+                if (!chosen) return;
+                if (chosen == expose) layer_->expose_fill_color = !layer_->use_as_scene_mask && expose->isChecked();
+                if (chosen == single) layer_->exposed_fill_single_value = !layer_->use_as_scene_mask && single->isChecked();
+                load_values();
+                emit_change();
+            });
     connect(btn_appearance_fill_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(false); });
+    btn_appearance_stroke_color_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(btn_appearance_stroke_color_, &QWidget::customContextMenuRequested,
+            this, [this, emit_change](const QPoint &pos) {
+                if (!layer_ || loading_values_) return;
+                QMenu menu(btn_appearance_stroke_color_);
+                QAction *expose = menu.addAction(QStringLiteral("Expose Stroke to Dock"));
+                expose->setCheckable(true);
+                expose->setChecked(layer_->expose_stroke_color);
+                QAction *single = menu.addAction(QStringLiteral("Single value"));
+                single->setCheckable(true);
+                single->setChecked(layer_->exposed_stroke_single_value);
+                single->setEnabled(layer_->expose_stroke_color);
+                QAction *chosen = menu.exec(btn_appearance_stroke_color_->mapToGlobal(pos));
+                if (!chosen) return;
+                if (chosen == expose) layer_->expose_stroke_color = expose->isChecked();
+                if (chosen == single) layer_->exposed_stroke_single_value = single->isChecked();
+                load_values();
+                emit_change();
+            });
     connect(btn_appearance_stroke_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(true); });
     connect(stroke_options_trigger, &QPushButton::clicked,
@@ -634,7 +673,7 @@
                 const bool text_like = layer_->type == LayerType::Text ||
                                        layer_->type == LayerType::Clock ||
                                        layer_->type == LayerType::Ticker;
-                const bool inline_stroke = text_like && text_edit_active();
+                const bool inline_stroke = text_like;
                 const RichTextStroke displayed_stroke = inline_stroke
                     ? current_text_char_format().stroke
                     : layer_stroke_for_editor(*layer_);

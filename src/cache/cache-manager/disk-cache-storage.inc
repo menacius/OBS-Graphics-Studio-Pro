@@ -374,6 +374,7 @@ void CacheManager::shutdownWorker()
         return;
     }
     queue_.setAcceptingJobs(false);
+    bgl::video::FrameRuntime::instance().clear();
     worker_cv_.notify_all();
     if (worker_thread_.joinable())
         worker_thread_.join();

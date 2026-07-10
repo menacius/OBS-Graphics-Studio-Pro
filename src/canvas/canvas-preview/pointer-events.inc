@@ -839,6 +839,19 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
         return false;
     };
+    auto disable_text_auto_size_for_manual_resize = [](
+        Layer &layer, bool width_changed, bool height_changed) {
+        if (!is_canvas_text_layer(layer))
+            return;
+        /* A manual bounding-box dimension becomes authoritative immediately.
+         * Disable only the matching auto-size axis; the other axis may continue
+         * following its text content. This model change participates in the same
+         * geometry undo transaction as the resize itself. */
+        if (width_changed && layer.text_box_width_to_text)
+            layer.text_box_width_to_text = false;
+        if (height_changed && layer.text_box_height_to_text)
+            layer.text_box_height_to_text = false;
+    };
 
     if (drag_mode_ == DragMode::Rotate) {
         clear_snap_feedback();
@@ -963,8 +976,15 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                     set_animated_x(layer->scale, lt, state.scale_x * sx);
                     set_animated_y(layer->scale, lt, state.scale_y * sy);
                 } else {
-                    layer->rect_width = std::max(0.0f, (float)(state.w * sx));
-                    layer->rect_height = std::max(0.0f, (float)(state.h * sy));
+                    const float resized_width =
+                        std::max(0.0f, static_cast<float>(state.w * sx));
+                    const float resized_height =
+                        std::max(0.0f, static_cast<float>(state.h * sy));
+                    disable_text_auto_size_for_manual_resize(
+                        *layer, std::abs(resized_width - state.w) > 0.01f,
+                        std::abs(resized_height - state.h) > 0.01f);
+                    layer->rect_width = resized_width;
+                    layer->rect_height = resized_height;
                     set_animated_x(layer->size, lt, layer->rect_width);
                     set_animated_y(layer->size, lt, layer->rect_height);
                     apply_shape_resize_metrics_from_state(*layer, state.w, state.h,
@@ -1206,6 +1226,13 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                         parent_local_shift);
             }
         } else {
+            const float start_width = start_state ? start_state->w
+                                                   : drag_start_w_;
+            const float start_height = start_state ? start_state->h
+                                                    : drag_start_h_;
+            disable_text_auto_size_for_manual_resize(
+                *layer, std::abs(new_w - start_width) > 0.01,
+                std::abs(new_h - start_height) > 0.01);
             layer->rect_width = static_cast<float>(new_w);
             layer->rect_height = static_cast<float>(new_h);
             set_animated_x(layer->size, lt, new_w);

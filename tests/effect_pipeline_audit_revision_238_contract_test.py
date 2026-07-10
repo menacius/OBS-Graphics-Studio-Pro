@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Development Version 239 effect-pipeline audit contract."""
+"""Development Version 243 effect-pipeline audit contract."""
 from pathlib import Path
 import json
 
@@ -15,12 +15,12 @@ manifest = json.loads(read('tests/test-suite-manifest.json'))
 readme = read('README.md')
 changelog = read('docs/CHANGELOG.md')
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 238:' in schema
-assert manifest['development_version'] == 239
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 238:' in schema
+assert manifest['development_version'] == 243
+assert 'Development Version 243' in readme
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 
 surface = read('src/obs/title-source/compatibility-effects-compositor.inc')
 gpu = read('src/obs/title-source/gpu-presentation-readback.inc')
@@ -82,4 +82,4 @@ for blur_type in ('Blur', 'Glow', 'DropShadow', 'Bloom', 'Halation', 'Glare'):
     assert f'LayerEffectType::{blur_type}' in blur_backend
 assert 'has_gaussian_lowpass' in surface
 
-print('Development Version 239 effect-pipeline audit contract: PASS')
+print('Development Version 243 effect-pipeline audit contract: PASS')

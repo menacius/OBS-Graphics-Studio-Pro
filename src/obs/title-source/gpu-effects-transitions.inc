@@ -111,7 +111,8 @@ static void source_video_tick(void *priv, float seconds)
             data->audio_runtime->transport(
                 data->playhead, data->playing,
                 obs_source_active(data->source), false,
-                data->editor_playback_reverse);
+                data->editor_playback_reverse,
+                data->editor_audio_speed.load(std::memory_order_acquire));
             data->audio_runtime->pump();
         }
         return;
@@ -791,6 +792,7 @@ static constexpr const char *kGpuFrameBlitEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+sampler_state pointSampler { Filter = Point; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 VertDataOut VSDefault(VertDataIn v)
@@ -838,10 +840,13 @@ uniform int imageClipEnabled;
 uniform float4 imageClipRect;
 uniform float4 imageCornerRadii;
 uniform float2 imageLogicalSize;
+uniform float2 sourceTexelSize;
+uniform int imageScaleFilter;
 uniform texture2d postProjectionMask;
 uniform int postProjectionMaskEnabled;
 uniform int postProjectionMaskMode;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+sampler_state pointSampler { Filter = Point; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 clipPos : TEXCOORD1; };
 VertDataOut VSDefault(VertDataIn v)
@@ -966,6 +971,87 @@ float projected_mask_alpha(VertDataOut v)
         value = 1.0 - value;
     return clamp(value, 0.0, 1.0);
 }
+float cubic_weight(float x)
+{
+    x = abs(x);
+    float x2 = x * x;
+    float x3 = x2 * x;
+    /* Catmull-Rom cubic.  It is sharp enough for editor/live previews and
+     * stays fully on the GPU, avoiding the old CPU QImage/Cairo resample path
+     * during interactive box scaling. */
+    if (x <= 1.0)
+        return 1.5 * x3 - 2.5 * x2 + 1.0;
+    if (x < 2.0)
+        return -0.5 * x3 + 2.5 * x2 - 4.0 * x + 2.0;
+    return 0.0;
+}
+float sinc_approx(float x)
+{
+    x = abs(x);
+    if (x < 0.0001)
+        return 1.0;
+    float pix = 3.14159265359 * x;
+    return sin(pix) / pix;
+}
+float lanczos_weight(float x)
+{
+    x = abs(x);
+    if (x >= 3.0)
+        return 0.0;
+    return sinc_approx(x) * sinc_approx(x / 3.0);
+}
+float4 sample_cubic(float2 uv)
+{
+    float2 texel = max(sourceTexelSize, float2(0.000001, 0.000001));
+    float2 size = 1.0 / texel;
+    float2 pixel = uv * size - 0.5;
+    float2 base = floor(pixel);
+    float2 f = pixel - base;
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    float total = 0.0;
+    for (int y = -1; y <= 2; ++y) {
+        float wy = cubic_weight(float(y) - f.y);
+        for (int x = -1; x <= 2; ++x) {
+            float wx = cubic_weight(float(x) - f.x);
+            float w = wx * wy;
+            float2 tap = (base + float2(x, y) + 0.5) * texel;
+            sum += image.Sample(pointSampler, clamp(tap, 0.0, 1.0)) * w;
+            total += w;
+        }
+    }
+    return total > 0.000001 ? sum / total : image.Sample(textureSampler, uv);
+}
+float4 sample_lanczos(float2 uv)
+{
+    float2 texel = max(sourceTexelSize, float2(0.000001, 0.000001));
+    float2 size = 1.0 / texel;
+    float2 pixel = uv * size - 0.5;
+    float2 base = floor(pixel);
+    float2 f = pixel - base;
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    float total = 0.0;
+    for (int y = -2; y <= 3; ++y) {
+        float wy = lanczos_weight(float(y) - f.y);
+        for (int x = -2; x <= 3; ++x) {
+            float wx = lanczos_weight(float(x) - f.x);
+            float w = wx * wy;
+            float2 tap = (base + float2(x, y) + 0.5) * texel;
+            sum += image.Sample(pointSampler, clamp(tap, 0.0, 1.0)) * w;
+            total += w;
+        }
+    }
+    return total > 0.000001 ? sum / total : image.Sample(textureSampler, uv);
+}
+float4 sample_scaled_image(float2 uv)
+{
+    if (imageScaleFilter == 0)
+        return image.Sample(pointSampler, uv);
+    if (imageScaleFilter == 2)
+        return sample_cubic(uv);
+    if (imageScaleFilter == 3)
+        return sample_lanczos(uv);
+    return image.Sample(textureSampler, uv);
+}
 float4 layer_color(VertDataOut v)
 {
     float clipAlpha = 1.0;
@@ -973,7 +1059,7 @@ float4 layer_color(VertDataOut v)
         float2 logicalPoint = v.uv * imageLogicalSize;
         clipAlpha = rounded_box_alpha(logicalPoint, imageClipRect, imageCornerRadii);
     }
-    return image.Sample(textureSampler, v.uv) *
+    return sample_scaled_image(v.uv) *
         (weight * transition_alpha(v.uv) * clipAlpha * projected_mask_alpha(v));
 }
 float4 PSLayer(VertDataOut v) : TARGET

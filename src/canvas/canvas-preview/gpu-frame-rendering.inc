@@ -203,6 +203,7 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
                 dragging_guide_value_ = std::clamp(dragging_guide_value_, -10000.0, title_->height + 10000.0);
         }
         dragging_guide_value_ = snap_guide_value_to_objects(drag_mode_ == DragMode::GuideX, dragging_guide_value_);
+        invalidate_canvas_overlay_caches();
         update();
         ev->accept();
         return;

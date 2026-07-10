@@ -20,9 +20,9 @@ gpu_key = read("src/obs/title-source/gpu-presentation-readback.inc")
 doc = read("docs/EDITOR_WORKFLOW.md")
 changelog = read("docs/CHANGELOG.md")
 readme = read("README.md")
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema
 assert 'bool parent_bind_enabled = false' in model
 assert 'std::array<double, 16> parent_bind_matrix' in model
 assert 'j["parent_bind_enabled"]' in data and 'j["parent_bind_matrix"]' in data
@@ -56,6 +56,6 @@ assert 'LayerEffectSpace::PostTransform' in transform
 assert 'LayerEffectSpace::ScreenSpace' in transform
 assert 'ordered_group_children' in transform
 assert 'Keyframe-safe hierarchy' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 assert 'parent-bind matrix' in doc
 print('Development Version 216 3D pipeline completion contract passed')

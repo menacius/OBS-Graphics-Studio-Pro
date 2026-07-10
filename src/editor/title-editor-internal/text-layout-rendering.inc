@@ -633,81 +633,111 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
 
 static double eval_text_font_size(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.font_size)
+        : static_cast<double>(layer.font_size);
     return std::clamp(layer.font_size_prop.is_animated()
                           ? layer.font_size_prop.evaluate(t)
-                          : (double)layer.font_size,
+                          : authored,
                       1.0, 512.0);
 }
 
 static double eval_char_tracking(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.tracking)
+        : static_cast<double>(layer.char_tracking);
     return std::clamp(layer.char_tracking_prop.is_animated()
                           ? layer.char_tracking_prop.evaluate(t)
-                          : (double)layer.char_tracking,
+                          : authored,
                       -1000.0, 1000.0);
 }
 
 static double eval_char_scale_x(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.scale_x)
+        : static_cast<double>(layer.char_scale_x);
     return std::clamp(layer.char_scale_x_prop.is_animated()
                           ? layer.char_scale_x_prop.evaluate(t)
-                          : (double)layer.char_scale_x,
+                          : authored,
                       0.01, 100.0);
 }
 
 static double eval_char_scale_y(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.scale_y)
+        : static_cast<double>(layer.char_scale_y);
     return std::clamp(layer.char_scale_y_prop.is_animated()
                           ? layer.char_scale_y_prop.evaluate(t)
-                          : (double)layer.char_scale_y,
+                          : authored,
                       0.01, 100.0);
 }
 
 static double eval_baseline_shift(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_format.baseline_shift)
+        : static_cast<double>(layer.baseline_shift);
     return std::clamp(layer.baseline_shift_prop.is_animated()
                           ? layer.baseline_shift_prop.evaluate(t)
-                          : (double)layer.baseline_shift,
+                          : authored,
                       -1000.0, 1000.0);
 }
 
 static double eval_paragraph_space_before(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.space_before)
+        : static_cast<double>(layer.paragraph_space_before);
     return std::clamp(layer.paragraph_space_before_prop.is_animated()
                           ? layer.paragraph_space_before_prop.evaluate(t)
-                          : (double)layer.paragraph_space_before,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_space_after(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.space_after)
+        : static_cast<double>(layer.paragraph_space_after);
     return std::clamp(layer.paragraph_space_after_prop.is_animated()
                           ? layer.paragraph_space_after_prop.evaluate(t)
-                          : (double)layer.paragraph_space_after,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_left(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_left)
+        : static_cast<double>(layer.paragraph_indent_left);
     return std::clamp(layer.paragraph_indent_left_prop.is_animated()
                           ? layer.paragraph_indent_left_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_left,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_right(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_right)
+        : static_cast<double>(layer.paragraph_indent_right);
     return std::clamp(layer.paragraph_indent_right_prop.is_animated()
                           ? layer.paragraph_indent_right_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_right,
+                          : authored,
                       -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_first_line(const Layer &layer, double t)
 {
+    const double authored = !layer.rich_text.empty()
+        ? static_cast<double>(layer.rich_text.default_paragraph_format.indent_first_line)
+        : static_cast<double>(layer.paragraph_indent_first_line);
     return std::clamp(layer.paragraph_indent_first_line_prop.is_animated()
                           ? layer.paragraph_indent_first_line_prop.evaluate(t)
-                          : (double)layer.paragraph_indent_first_line,
+                          : authored,
                       -10000.0, 10000.0);
 }
 

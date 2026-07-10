@@ -77,6 +77,7 @@ class QStatusBar;
 class QActionGroup;
 class QVBoxLayout;
 class QTextEdit;
+class BglEditorAudioMeter;
 struct RichTextCharFormat;
 struct obs_source;
 typedef struct obs_source obs_source_t;
@@ -197,9 +198,12 @@ private:
     void push_undo_snapshot();
     void restore_undo_snapshot(int index);
     void update_undo_redo_actions();
+    void begin_text_property_transaction(const std::string &layer_id);
+    void commit_text_property_transaction(const std::string &layer_id);
     void create_docked_panel_menu(QMenuBar *menu_bar);
     QDockWidget *create_editor_dock(const QString &object_name, const QString &title, QWidget *panel);
     QWidget *create_prerender_panel();
+    QWidget *create_editor_audio_panel();
     QWidget *create_effects_panel();
     QWidget *create_effects_presets_panel();
     QWidget *create_styles_panel();
@@ -254,6 +258,9 @@ private:
     void ensure_editor_audio_preview();
     void release_editor_audio_preview();
     void sync_editor_audio_preview(bool discontinuity);
+    void apply_editor_audio_monitoring();
+    void update_editor_audio_monitor_button();
+    void update_editor_audio_meter();
     void publish_editor_audio_runtime_state();
     void update_footer_diagnostics();
     void begin_shutdown();
@@ -306,6 +313,7 @@ private:
     QDockWidget     *styles_dock_ = nullptr;
     QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *prerender_dock_ = nullptr;
+    QDockWidget     *editor_audio_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
     ResponsiveSwatchGrid *recent_color_swatches_grid_ = nullptr;
     std::vector<QToolButton *> recent_color_swatch_buttons_;
@@ -398,6 +406,7 @@ private:
     QAction         *act_styles_visible_ = nullptr;
     QAction         *act_timeline_visible_ = nullptr;
     QAction         *act_prerender_visible_ = nullptr;
+    QAction         *act_editor_audio_visible_ = nullptr;
     QAction         *act_tools_visible_ = nullptr;
     std::string      canvas_created_shape_layer_id_;
     int              alignment_target_ = 3; /* 0=selection bounds, 1=title safe, 2=action safe, 3=artboard, 4=selection anchors */
@@ -405,6 +414,16 @@ private:
     std::vector<std::shared_ptr<Title>> undo_stack_;
     int              undo_index_ = -1;
     bool             restoring_undo_ = false;
+    /* Inline typing uses QTextDocument's local history until commit. This flag
+     * records that the canonical title has advanced beyond the most recent
+     * title-wide snapshot, allowing a property edit to insert its true
+     * pre-change checkpoint. */
+    bool             inline_text_changed_since_undo_snapshot_ = false;
+    /* A Properties drag/popup may emit many live updates before one committed
+     * change. Track a single title-level transaction so the canonical rich-text
+     * pre-state is checkpointed once and the post-state is pushed once. */
+    bool             text_property_transaction_active_ = false;
+    std::string      text_property_transaction_layer_id_;
     bool             live_editing_ = false;
     std::string      pending_inline_text_refresh_layer_id_;
     bool             updating_layer_panels_ = false;
@@ -412,7 +431,14 @@ private:
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
     obs_source_t     *editor_audio_preview_source_ = nullptr;
+    QToolButton      *editor_audio_monitor_button_ = nullptr;
+    BglEditorAudioMeter *editor_audio_meter_ = nullptr;
+    QTimer           *editor_audio_meter_timer_ = nullptr;
     bool              editor_audio_preview_seeking_ = false;
+    bool              editor_audio_monitor_enabled_ = true;
+    QElapsedTimer     editor_audio_speed_clock_;
+    double            editor_audio_speed_last_playhead_ = 0.0;
+    double            editor_audio_speed_factor_ = 1.0;
     std::vector<std::shared_ptr<Layer>> layer_clipboard_;
     std::vector<TitleCamera> layer_clipboard_cameras_;
     std::string layer_clipboard_source_title_id_;

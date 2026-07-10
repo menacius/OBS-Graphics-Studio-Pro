@@ -110,10 +110,9 @@ struct RichTextFontScaleMetrics {
     int horizontal_stretch_percent = 100;
 };
 
-/* QTextDocument/QFont do not expose an independent vertical glyph transform.
- * Until the GPU glyph renderer replaces the Qt adapter, preserve independent
- * H/V character scale by scaling the font size vertically and compensating
- * the horizontal font stretch by scale_x / scale_y. */
+/* Normalize character-scale values for compatibility/adapter calculations.
+ * The canonical GPU layout never encodes H/V Scale in QFont: both axes are
+ * applied explicitly to immutable per-cluster/per-glyph geometry. */
 RichTextFontScaleMetrics rich_text_font_scale_metrics(float scale_x, float scale_y);
 
 /* Frame-evaluated layer defaults shared by the editor, source renderer and
@@ -319,10 +318,22 @@ uint32_t rich_text_char_format_difference_mask(const RichTextCharFormat &a,
 void rich_text_merge_char_format(RichTextCharFormat &target,
                                  const RichTextCharFormat &source, uint32_t mask);
 RichTextCharFormat rich_text_format_at(const RichTextDocument &doc, size_t byte_offset);
+/* Return true when any visible effective character-format run has different
+ * horizontal and vertical scale. Range boundaries are resolved through the
+ * same sparse-format merge rules used by shaping and rendering. */
+bool rich_text_document_has_anisotropic_scale(
+    const RichTextDocument &doc, float epsilon = 0.0001f);
 uint32_t rich_text_format_mask_at(const RichTextDocument &doc, size_t byte_offset);
 RichTextCharFormat rich_text_effective_typing_format(const RichTextDocument &doc);
 void rich_text_document_apply_format(RichTextDocument &doc, size_t start, size_t length,
                                      const RichTextCharFormat &format, uint32_t mask);
+/* Object-level property mutation. The document default is updated and, when
+ * requested, only the same property bits are removed from local ranges. Other
+ * properties on those ranges remain intact, so a textbox can carry independent
+ * overlapping font, scale, fill and stroke state without a second truth source. */
+void rich_text_document_apply_default_char_format(
+    RichTextDocument &doc, const RichTextCharFormat &format, uint32_t mask,
+    bool clear_matching_overrides = true);
 uint32_t rich_text_paragraph_format_difference_mask(const RichTextParagraphFormat &a,
                                                     const RichTextParagraphFormat &b,
                                                     uint32_t mask = RichTextParagraphAll);
@@ -337,6 +348,9 @@ void rich_text_document_apply_paragraph_format(RichTextDocument &doc,
                                                size_t selection_end,
                                                const RichTextParagraphFormat &format,
                                                uint32_t mask);
+void rich_text_document_apply_default_paragraph_format(
+    RichTextDocument &doc, const RichTextParagraphFormat &format, uint32_t mask,
+    bool clear_matching_overrides = true);
 void rich_text_document_clear_char_format_mask(RichTextDocument &doc, uint32_t mask);
 void rich_text_document_clear_paragraph_format_mask(RichTextDocument &doc, uint32_t mask);
 

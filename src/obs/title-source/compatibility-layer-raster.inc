@@ -124,6 +124,10 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
 
     QRectF text_rect = text_rect_for_style(base_rect, layer);
     QString text = display_text_for_style(layer);
+    const bool has_rich_text = layer.type != LayerType::Ticker;
+    const ExactRichTextRaster exact_rich_text = has_rich_text
+        ? exact_rich_text_raster_for_layer(layer, text_rect, t)
+        : ExactRichTextRaster{};
     painter.save();
     const double text_ink_clip_pad = text_raster_ink_gutter(font, layer, t);
     painter.setClipRect(text_rect.adjusted(-text_ink_clip_pad, -text_ink_clip_pad,
@@ -133,7 +137,6 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
     if (layer.align_v == 0 || layer.align_v == 3) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
-    const bool has_rich_text = layer.type != LayerType::Ticker;
     QPainterPath text_path;
     if (!has_rich_text) {
         text_path = layer.type == LayerType::Ticker
@@ -152,8 +155,12 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         mask_painter.setRenderHint(QPainter::Antialiasing, true);
         mask_painter.setPen(Qt::NoPen);
         mask_painter.setBrush(Qt::white);
-        if (has_rich_text)
-            draw_rich_text_document(mask_painter, layer, font, text_rect, t);
+        if (has_rich_text && exact_rich_text.valid)
+            draw_exact_rich_text_fill(mask_painter, exact_rich_text,
+                                      text_rect, true);
+        else if (has_rich_text)
+            draw_rich_text_document(mask_painter, layer, font, text_rect, t,
+                                    nullptr, false, true);
         else
             mask_painter.drawPath(text_path);
         mask_painter.end();
@@ -177,7 +184,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     std::unique_ptr<QTextDocument> rich_document;
     RichTextDocument rich_stroke_model;
     std::vector<RichTextStrokeRenderGroup> rich_stroke_groups;
-    if (has_rich_text) {
+    if (has_rich_text && !exact_rich_text.valid) {
         rich_document = rich_text_document_for_layer(
             layer, font, text_rect, t, nullptr);
         rich_stroke_model = rich_text_model_for_source_time(layer, t);
@@ -186,6 +193,10 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     }
 
     auto draw_text_fill = [&]() {
+        if (has_rich_text && exact_rich_text.valid) {
+            draw_exact_rich_text_fill(painter, exact_rich_text, text_rect);
+            return;
+        }
         if (has_rich_text && rich_document) {
             std::unique_ptr<QTextDocument> fill_document =
                 rich_text_fill_only_document(*rich_document);
@@ -204,6 +215,11 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     };
 
     auto draw_rich_stroke_phase = [&](bool on_front) {
+        if (has_rich_text && exact_rich_text.valid) {
+            draw_exact_rich_text_strokes(
+                painter, exact_rich_text, text_rect, on_front);
+            return;
+        }
         if (!has_rich_text || !rich_document)
             return;
         for (const RichTextStrokeRenderGroup &group : rich_stroke_groups) {
@@ -292,13 +308,25 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
          * flattened compositor remains only a bounded emergency fallback for
          * unusually large/unsupported layouts. Both consume the same
          * TextAnimatorEvaluation and neither evaluates LayerTransition. */
-        bool applied = apply_unified_text_animator_raster(
-            text_image, static_text_background, layer, text, font, text_rect,
-            t, shadow_params, render_shadow);
-        if (!applied) {
-            applied = apply_unified_text_animator_flattened(
-                text_image, static_text_background, layer, font, text_rect, t,
-                shadow_params, render_shadow);
+        bool applied = false;
+        if (exact_rich_text.valid) {
+            /* Build exact isolated glyph units from ImmutableTextLayout paths.
+             * Cropping the complete precomposed bitmap through overlapping
+             * cluster rectangles lets neighbouring pixels travel with the
+             * wrong transition unit; rebuilding QTextDocuments would instead
+             * reintroduce the old H/V Scale divergence. */
+            applied = apply_unified_text_animator_raster(
+                text_image, static_text_background, layer, text, font, text_rect,
+                t, shadow_params, render_shadow, &exact_rich_text);
+        } else {
+            applied = apply_unified_text_animator_raster(
+                text_image, static_text_background, layer, text, font, text_rect,
+                t, shadow_params, render_shadow);
+            if (!applied) {
+                applied = apply_unified_text_animator_flattened(
+                    text_image, static_text_background, layer, font, text_rect, t,
+                    shadow_params, render_shadow);
+            }
         }
         if (!applied && !static_text_background.isNull()) {
             /* Fail safe: unsupported/invalid shaping must not drop the text-box
@@ -752,13 +780,102 @@ static void render_layer_image(cairo_t *cr, const Title &title,
     render_layer_image_pixels(cr, title, layer, title_time, image, identity);
 }
 
+static thread_local bgl::video::VideoDecodeClient g_raster_video_decode_client =
+    bgl::video::VideoDecodeClient::LiveOutput;
+
+struct ScopedRasterVideoDecodeClient {
+    bgl::video::VideoDecodeClient previous_client;
+    explicit ScopedRasterVideoDecodeClient(bgl::video::VideoDecodeClient client)
+        : previous_client(g_raster_video_decode_client)
+    {
+        g_raster_video_decode_client = client;
+    }
+    ~ScopedRasterVideoDecodeClient()
+    {
+        g_raster_video_decode_client = previous_client;
+    }
+};
+
+
+static QImage make_video_loading_placeholder_raster(
+    const Title &title, const Layer &layer, double title_time,
+    const bgl::video::VideoFrameLoadingStatus &status)
+{
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const double box_w = std::max(1.0, eval_box_width(layer, t));
+    const double box_h = std::max(1.0, eval_box_height(layer, t));
+    const int max_sample_dim = std::clamp(std::max(title.width, title.height) * 2,
+                                          512, 4096);
+    const int w = std::clamp(static_cast<int>(std::ceil(box_w)), 160, max_sample_dim);
+    const int h = std::clamp(static_cast<int>(std::ceil(box_h)), 90, max_sample_dim);
+    QImage image(w, h, QImage::Format_ARGB32_Premultiplied);
+    image.fill(QColor(22, 26, 34, 235));
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor border(114, 157, 255, 210);
+    const QColor fill(55, 68, 92, 210);
+    painter.setPen(QPen(border, 2));
+    painter.setBrush(fill);
+    const QRectF card(8, 8, std::max(1, w - 16), std::max(1, h - 16));
+    painter.drawRoundedRect(card, 8, 8);
+
+    const int progress = std::clamp(status.progress_percent, 0, 100);
+    const QString headline = QStringLiteral("Loading video…");
+    QString detail = QString::fromStdString(status.label);
+    if (detail.isEmpty())
+        detail = QStringLiteral("Preparing first decoded frame");
+    if (progress > 0 && progress < 100 && !detail.contains(QLatin1Char('%')))
+        detail += QStringLiteral(" · %1%").arg(progress);
+
+    QFont headline_font = painter.font();
+    headline_font.setBold(true);
+    headline_font.setPointSize(std::max(9, std::min(18, h / 9)));
+    painter.setFont(headline_font);
+    painter.setPen(QColor(245, 248, 255));
+    painter.drawText(card.adjusted(14, 12, -14, -h / 2),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                     headline);
+
+    QFont detail_font = painter.font();
+    detail_font.setBold(false);
+    detail_font.setPointSize(std::max(8, std::min(13, h / 13)));
+    painter.setFont(detail_font);
+    painter.setPen(QColor(210, 218, 235));
+    painter.drawText(card.adjusted(14, h / 3, -14, -30),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                     detail);
+
+    const QRectF track(22, h - 24, std::max(8, w - 44), 7);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(20, 24, 31, 230));
+    painter.drawRoundedRect(track, 3, 3);
+    painter.setBrush(QColor(114, 157, 255, 235));
+    painter.drawRoundedRect(QRectF(track.left(), track.top(),
+                                   track.width() * progress / 100.0,
+                                   track.height()), 3, 3);
+    painter.end();
+    return image;
+}
+
 static void render_layer_video(cairo_t *cr, const Title &title,
                                const Layer &layer, double title_time)
 {
     const bgl::video::VideoFrame frame =
         bgl::video::FrameRuntime::instance().frame_for_layer(
-            layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()));
-    if (frame.image.isNull()) return;
+            layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()),
+            g_raster_video_decode_client);
+    if (frame.image.isNull()) {
+        const bgl::video::VideoFrameLoadingStatus status =
+            bgl::video::FrameRuntime::instance().loading_status_for_layer(layer);
+        const QImage placeholder = make_video_loading_placeholder_raster(
+            title, layer, title_time, status);
+        const QString identity = QStringLiteral("video-loading|%1|%2")
+            .arg(QString::fromStdString(layer.id))
+            .arg(status.progress_percent);
+        render_layer_image_pixels(cr, title, layer, title_time, placeholder, identity);
+        return;
+    }
     const QString identity = QStringLiteral("video|%1|decoded=%2")
         .arg(QString::fromStdString(layer.id)).arg(frame.frame_number);
     render_layer_image_pixels(cr, title, layer, title_time, frame.image, identity);
@@ -779,6 +896,41 @@ struct ScopedSceneMaskPlaceholderPreview {
         g_scene_mask_placeholder_preview_enabled = previous;
     }
 };
+
+static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Layer &layer,
+                                      double title_time, int canvas_w, int canvas_h);
+
+static void clear_placeholder_rich_text_strokes(RichTextDocument &doc)
+{
+    doc.default_format.stroke.enabled = false;
+    doc.default_format.stroke.width = 0.0f;
+    doc.default_format.stroke.opacity = 0.0f;
+    if (doc.has_typing_format) {
+        doc.typing_format.stroke.enabled = false;
+        doc.typing_format.stroke.width = 0.0f;
+        doc.typing_format.stroke.opacity = 0.0f;
+    }
+    for (RichTextRange &range : doc.ranges) {
+        range.format.stroke.enabled = false;
+        range.format.stroke.width = 0.0f;
+        range.format.stroke.opacity = 0.0f;
+    }
+}
+
+static Layer scene_mask_placeholder_fill_only_layer(const Layer &layer)
+{
+    Layer fill = layer;
+    fill.outline_enabled = false;
+    fill.stroke_width = 0.0f;
+    fill.outline_opacity = 0.0f;
+    fill.stroke_fill_type = 0;
+    fill.background_stroke_width = 0.0f;
+    fill.background_stroke_opacity = 0.0f;
+    fill.background_stroke_width_prop = AnimatedProperty("background_stroke_width", 0.0);
+    fill.background_stroke_opacity_prop = AnimatedProperty("background_stroke_opacity", 0.0);
+    clear_placeholder_rich_text_strokes(fill.rich_text);
+    return fill;
+}
 
 static uint32_t scene_mask_placeholder_color(const Layer &layer, double local_time)
 {
@@ -811,8 +963,128 @@ static void add_scene_mask_placeholder_path(cairo_t *cr, const Layer &layer,
                                    layer.corner_bevel_roundness);
 }
 
-static void render_scene_mask_placeholder(cairo_t *cr, const Layer &layer,
-                                          double title_time)
+static bool render_scene_mask_placeholder_from_layer_alpha(
+    cairo_t *cr, const Title &title, const Layer &layer, double title_time,
+    int canvas_w, int canvas_h, double r, double g, double b, double a)
+{
+    if (!cr || layer_type_uses_shape_geometry(layer.type) ||
+        layer_type_is_container(layer.type))
+        return false;
+
+    Layer silhouette_layer = scene_mask_placeholder_fill_only_layer(layer);
+    silhouette_layer.use_as_scene_mask = false;
+
+    cairo_push_group(cr);
+    {
+        ScopedSceneMaskPlaceholderPreview disable_placeholder(false);
+        render_layer_unmasked_raw(cr, title, silhouette_layer, title_time,
+                                  canvas_w, canvas_h);
+    }
+    cairo_pattern_t *silhouette = cairo_pop_group(cr);
+    if (!silhouette || cairo_pattern_status(silhouette) != CAIRO_STATUS_SUCCESS) {
+        if (silhouette)
+            cairo_pattern_destroy(silhouette);
+        return false;
+    }
+
+    const double grid = std::max(
+        18.0, std::min(std::max(1, canvas_w), std::max(1, canvas_h)) / 28.0);
+
+    cairo_save(cr);
+    cairo_set_source_rgba(cr, r, g, b, std::max(0.24, a * 0.62));
+    cairo_mask(cr, silhouette);
+
+    cairo_push_group(cr);
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.18);
+    for (double px = -grid; px <= canvas_w + grid; px += grid) {
+        cairo_move_to(cr, px, 0.0);
+        cairo_line_to(cr, px, canvas_h);
+    }
+    for (double py = -grid; py <= canvas_h + grid; py += grid) {
+        cairo_move_to(cr, 0.0, py);
+        cairo_line_to(cr, canvas_w, py);
+    }
+    cairo_stroke(cr);
+    cairo_pattern_t *grid_pattern = cairo_pop_group(cr);
+    if (grid_pattern && cairo_pattern_status(grid_pattern) == CAIRO_STATUS_SUCCESS) {
+        cairo_set_source(cr, grid_pattern);
+        cairo_mask(cr, silhouette);
+    }
+    if (grid_pattern)
+        cairo_pattern_destroy(grid_pattern);
+    cairo_restore(cr);
+
+    cairo_pattern_destroy(silhouette);
+    return true;
+}
+
+static void render_scene_mask_placeholder_shape_stroke(cairo_t *cr,
+                                                       const Title &title,
+                                                       const Layer &layer,
+                                                       double title_time,
+                                                       double width,
+                                                       double height)
+{
+    if (!cr || !layer_type_uses_shape_geometry(layer.type))
+        return;
+
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    const double alpha = layer_chain_opacity(title, layer, title_time);
+    const double outline_width = eval_outline_width(layer, local_time);
+    const uint32_t outline_color = eval_outline_color(layer, local_time);
+    const bool has_outline = outline_width > 0.0 &&
+        (layer.stroke_fill_type == 2 || ((outline_color >> 24) & 0xFF) > 0);
+    if (!has_outline)
+        return;
+
+    auto set_stroke_source = [&]() -> cairo_pattern_t * {
+        return set_layer_outline_source(cr, layer, 0.0, 0.0, width, height,
+                                        alpha, local_time);
+    };
+
+    const int alignment = eval_outline_alignment(layer, local_time);
+    cairo_save(cr);
+    cairo_set_antialias(cr, outline_cairo_antialias(layer));
+    cairo_set_line_join(cr, outline_cairo_join_style(layer));
+
+    if (alignment == 0) {
+        cairo_push_group(cr);
+        cairo_add_layer_shape(cr, layer, width, height);
+        cairo_set_line_width(cr, outline_width * 2.0);
+        cairo_pattern_t *pattern = set_stroke_source();
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+        cairo_set_operator(cr, CAIRO_OPERATOR_DEST_OUT);
+        cairo_add_layer_shape(cr, layer, width, height);
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+        cairo_fill(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_pop_group_to_source(cr);
+        cairo_paint(cr);
+    } else if (alignment == 2) {
+        cairo_add_layer_shape(cr, layer, width, height);
+        cairo_clip(cr);
+        cairo_add_layer_shape(cr, layer, width, height);
+        cairo_set_line_width(cr, outline_width * 2.0);
+        cairo_pattern_t *pattern = set_stroke_source();
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+    } else {
+        cairo_add_layer_shape(cr, layer, width, height);
+        cairo_set_line_width(cr, outline_width);
+        cairo_pattern_t *pattern = set_stroke_source();
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+    }
+
+    cairo_restore(cr);
+}
+
+static void render_scene_mask_placeholder(cairo_t *cr, const Title &title,
+                                          const Layer &layer,
+                                          double title_time, int canvas_w,
+                                          int canvas_h)
 {
     const double local_time = std::max(0.0, title_time - layer.in_time);
     const double width = std::max(1.0, eval_box_width(layer, local_time));
@@ -822,15 +1094,20 @@ static void render_scene_mask_placeholder(cairo_t *cr, const Layer &layer,
     double r = 0.0, g = 0.0, b = 0.0, a = 1.0;
     unpack_color(scene_mask_placeholder_color(layer, local_time), r, g, b, a);
 
+    /* Text, clocks, tickers, bitmap/video layers and other non-path sources
+     * must preview with the same alpha silhouette that the OBS scene-mask
+     * pass consumes. A rectangular placeholder made text masks look valid in
+     * the editor but produced a different matte at output time. */
+    if (render_scene_mask_placeholder_from_layer_alpha(
+            cr, title, layer, title_time, canvas_w, canvas_h, r, g, b, a))
+        return;
+
     cairo_save(cr);
     cairo_translate(cr, x, y);
 
-    /* Editor-only scene-mask placeholders intentionally follow the actual
-     * layer content silhouette instead of drawing an overlay rectangle.  Shape
-     * masks preserve corners/path/star/polygon geometry; image/text-like masks
-     * preserve the editable box and rounded-corner crop.  The normal effect
-     * stack is applied after this base raster, exactly like Stinger A/B
-     * placeholders. */
+    /* Geometric masks keep their authored path/corner geometry. The normal
+     * effect stack is applied after this base raster, exactly like Stinger
+     * A/B placeholders. */
     add_scene_mask_placeholder_path(cr, layer, width, height);
     cairo_set_source_rgba(cr, r, g, b, std::max(0.20, a * 0.38));
     cairo_fill_preserve(cr);
@@ -848,21 +1125,12 @@ static void render_scene_mask_placeholder(cairo_t *cr, const Layer &layer,
     cairo_stroke(cr);
 
     cairo_reset_clip(cr);
-    add_scene_mask_placeholder_path(cr, layer, width, height);
-    cairo_set_source_rgba(cr, r, g, b, 0.92);
-    cairo_set_line_width(cr, 2.0);
-    cairo_stroke(cr);
-
-    const char *label = "MASK";
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
-                           CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, std::max(32.0, std::min(width, height) * 0.16));
-    cairo_text_extents_t extents{};
-    cairo_text_extents(cr, label, &extents);
-    cairo_move_to(cr, (width - extents.width) * 0.5 - extents.x_bearing,
-                  (height - extents.height) * 0.5 - extents.y_bearing);
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.78);
-    cairo_show_text(cr, label);
+    /* Development Version 262: the placeholder remains a fill-only editor
+     * affordance, but shape strokes are composited back into the same raster.
+     * This keeps the authored stroke visible and lets the scene-mask layer
+     * effect stack process fill and stroke together. */
+    render_scene_mask_placeholder_shape_stroke(cr, title, layer, title_time,
+                                               width, height);
     cairo_restore(cr);
 }
 
@@ -875,6 +1143,7 @@ static void render_transition_input_placeholder(cairo_t *cr, const Layer &layer,
     const double x = -eval_origin_x(layer, local_time) * width;
     const double y = -eval_origin_y(layer, local_time) * height;
     const bool scene_b = layer.transition_input_slot == 1;
+
     cairo_save(cr);
     cairo_rectangle(cr, x, y, width, height);
     if (scene_b)
@@ -882,16 +1151,20 @@ static void render_transition_input_placeholder(cairo_t *cr, const Layer &layer,
     else
         cairo_set_source_rgb(cr, 0.06, 0.20, 0.36);
     cairo_fill(cr);
+
     const double grid = std::max(24.0, std::min(width, height) / 12.0);
     cairo_set_line_width(cr, 1.0);
     cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.12);
     for (double px = x; px <= x + width; px += grid) {
-        cairo_move_to(cr, px, y); cairo_line_to(cr, px, y + height);
+        cairo_move_to(cr, px, y);
+        cairo_line_to(cr, px, y + height);
     }
     for (double py = y; py <= y + height; py += grid) {
-        cairo_move_to(cr, x, py); cairo_line_to(cr, x + width, py);
+        cairo_move_to(cr, x, py);
+        cairo_line_to(cr, x + width, py);
     }
     cairo_stroke(cr);
+
     const char *label = scene_b ? "B" : "A";
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_BOLD);
@@ -909,10 +1182,8 @@ static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Lay
                                       double title_time, int canvas_w, int canvas_h)
 {
     if (layer.use_as_scene_mask && g_scene_mask_placeholder_preview_enabled) {
-        (void)title;
-        (void)canvas_w;
-        (void)canvas_h;
-        render_scene_mask_placeholder(cr, layer, title_time);
+        render_scene_mask_placeholder(cr, title, layer, title_time,
+                                      canvas_w, canvas_h);
         return;
     }
     switch (layer.type) {

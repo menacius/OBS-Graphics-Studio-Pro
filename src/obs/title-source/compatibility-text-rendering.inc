@@ -15,7 +15,8 @@
         return {};
 
     const QSizeF document_size = doc.size();
-    const double horizontal_scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const double horizontal_scale = rich_text_document_horizontal_scale(
+        layer, text_rect, document_size, t);
     const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, horizontal_scale);
     const qreal scaled_left = local_bounds.left() * horizontal_scale;
     const qreal scaled_width = local_bounds.width() * horizontal_scale;
@@ -45,7 +46,7 @@ static QRect text_transition_unit_render_bounds(const QTextDocument &shaped_docu
     double pad = std::max({8.0, bounds.height() * 0.75,
                            rich_height * 0.75}) +
                  std::max(std::max(0.0, eval_outline_width(layer, t)),
-                          max_rich_text_stroke_width(layer, t)) * 2.0 + 3.0;
+                          max_rich_text_stroke_width(layer, t)) * 2.0 + 6.0;
     if (render_shadow) {
         const double drop_extent = std::max(std::abs(shadow_params.dx),
                                             std::abs(shadow_params.dy)) +
@@ -109,6 +110,441 @@ static void clear_global_outline_on_local_stroke_ranges(
     }
 }
 
+
+/* v277 exact compatibility raster -------------------------------------------------
+ *
+ * The editor selection already consumes ImmutableTextLayout. The old visible
+ * fallback consumed QTextDocument/QFont instead, encoding V Scale as font size
+ * and H Scale as font stretch. DirectWrite may treat that stretch as face
+ * selection or metrics only, so selection and visible glyphs diverged. This
+ * adapter draws the exact QRawFont outline at each immutable glyph baseline and
+ * applies the same per-glyph scale values as the GPU atlas. QTextDocument remains
+ * only for color-font/transition compatibility that cannot expose an outline. */
+struct ExactRichTextGlyphPiece {
+    QPainterPath path;
+    QRectF clip;
+    size_t paint_index = 0;
+    size_t cluster_index = 0;
+    bool clip_required = false;
+};
+
+struct ExactRichTextRaster {
+    RichTextDocument model;
+    ImmutableTextLayout layout;
+    std::vector<TextLayoutPaintRun> paint_runs;
+    std::vector<ExactRichTextGlyphPiece> pieces;
+    bool valid = false;
+};
+
+static QRawFont exact_rich_text_raw_font(const TextLayoutRun &run)
+{
+    QRawFont raw = text_layout_registered_raw_font(run.font);
+    if (raw.isValid())
+        return raw;
+    QFont font(QString::fromStdString(run.font.family));
+    if (!run.font.style.empty())
+        font.setStyleName(QString::fromStdString(run.font.style));
+    font.setPixelSize(std::max(1, static_cast<int>(std::lround(
+        std::max(1.0f, run.font.pixel_size)))));
+    raw = QRawFont::fromFont(font);
+    if (raw.isValid())
+        raw.setPixelSize(std::max(1.0f, run.font.pixel_size));
+    return raw;
+}
+
+static ExactRichTextRaster exact_rich_text_raster_for_layer(
+    const Layer &layer, const QRectF &text_rect, double local_time)
+{
+    ExactRichTextRaster out;
+    out.model = rich_text_model_for_source_time(layer, local_time);
+    if (layer.text_overflow_mode == 2) {
+        const QString fitted = overflow_layout_text(
+            QString::fromStdString(out.model.plain_text), layer);
+        const RichTextCharFormat insertion_format =
+            rich_text_effective_typing_format(out.model);
+        rich_text_document_replace_text_canonical(
+            out.model, fitted.toUtf8().toStdString(), insertion_format,
+            out.model.has_typing_format ? out.model.typing_format_mask : 0);
+    }
+
+    TextLayoutRequest request;
+    request.document = out.model;
+    request.max_width = static_cast<float>(std::max(1.0, text_rect.width()));
+    request.max_height = static_cast<float>(std::max(1.0, text_rect.height()));
+    request.device_scale = 1.0f;
+    request.minimum_horizontal_fit =
+        std::clamp(layer.text_fit_min_scale, 0.05f, 1.0f);
+    request.overflow_mode = layer.text_overflow_mode;
+    out.layout = cached_text_layout(request);
+    if (!out.layout || !out.layout->valid)
+        return out;
+
+    out.paint_runs = text_layout_paint_runs_canonical(out.model);
+    if (out.paint_runs.empty()) {
+        TextLayoutPaintRun fallback;
+        fallback.byte_start = 0;
+        fallback.byte_length = out.model.plain_text.size();
+        fallback.style.fill = out.model.default_format.fill;
+        fallback.style.stroke = out.model.default_format.stroke;
+        fallback.style.underline = out.model.default_format.underline;
+        fallback.style.strikethrough = out.model.default_format.strikethrough;
+        out.paint_runs.push_back(std::move(fallback));
+    }
+
+    std::vector<std::vector<TextLayoutPaintSlice>> cluster_slices;
+    cluster_slices.reserve(out.layout->clusters.size());
+    for (const TextLayoutCluster &cluster : out.layout->clusters) {
+        auto slices = text_layout_cluster_paint_slices(
+            *out.layout, cluster, out.paint_runs);
+        if (slices.empty())
+            slices.push_back({0, cluster.x, cluster.x + cluster.width});
+        cluster_slices.push_back(std::move(slices));
+    }
+
+    for (const TextLayoutGlyph &glyph : out.layout->glyphs) {
+        if (glyph.run_index >= out.layout->runs.size() ||
+            glyph.cluster_index >= out.layout->clusters.size())
+            continue;
+        const TextLayoutRun &run = out.layout->runs[glyph.run_index];
+        const QRawFont raw = exact_rich_text_raw_font(run);
+        if (!raw.isValid())
+            return ExactRichTextRaster{};
+        QPainterPath path = raw.pathForGlyph(glyph.glyph_id);
+        if (path.isEmpty()) {
+            const QRectF bounds = raw.boundingRect(glyph.glyph_id);
+            if (!bounds.isEmpty())
+                return ExactRichTextRaster{};
+            continue;
+        }
+        QTransform transform;
+        transform.translate(text_rect.left() + glyph.x,
+                            text_rect.top() + glyph.y);
+        transform.scale(std::clamp(glyph.scale_x, 0.01f, 100.0f),
+                        std::clamp(glyph.scale_y, 0.01f, 100.0f));
+        path = transform.map(path);
+
+        QRectF run_clip(-1000000.0, -1000000.0, 2000000.0, 2000000.0);
+        if (run.split_ligature && run.clip_width > 0.0f &&
+            run.clip_height > 0.0f) {
+            run_clip = QRectF(text_rect.left() + run.clip_x,
+                              text_rect.top() + run.clip_y,
+                              run.clip_width, run.clip_height);
+        }
+        const auto &slices = cluster_slices[glyph.cluster_index];
+        const bool split_paint_cluster = slices.size() > 1;
+        for (const TextLayoutPaintSlice &slice : slices) {
+            ExactRichTextGlyphPiece piece;
+            piece.path = path;
+            piece.paint_index = std::min(
+                slice.paint_index, out.paint_runs.size() - 1);
+            piece.cluster_index = glyph.cluster_index;
+            const QRectF paint_clip(
+                text_rect.left() + slice.x0, -1000000.0,
+                std::max(0.0f, slice.x1 - slice.x0), 2000000.0);
+            /* A normal glyph belongs wholly to one canonical paint run. Do not
+             * crop it to the cluster advance: italic bearings, swashes and
+             * outside strokes legitimately overlap neighbouring advances.
+             * Restrict geometry only for an actual split ligature/paint
+             * cluster, where one shaped outline must be divided between two
+             * independently styled source ranges. */
+            piece.clip_required = run.split_ligature || split_paint_cluster;
+            piece.clip = piece.clip_required
+                ? run_clip.intersected(paint_clip)
+                : run_clip;
+            if (!piece.clip_required || !piece.clip.isEmpty())
+                out.pieces.push_back(std::move(piece));
+        }
+    }
+    out.valid = true;
+    return out;
+}
+
+static void draw_exact_rich_text_fill(QPainter &painter,
+                                      const ExactRichTextRaster &raster,
+                                      const QRectF &text_rect,
+                                      bool alpha_mask_only = false,
+                                      size_t cluster_begin = 0,
+                                      size_t cluster_count =
+                                          std::numeric_limits<size_t>::max())
+{
+    if (!raster.valid)
+        return;
+    const size_t cluster_end = cluster_count == std::numeric_limits<size_t>::max()
+        ? std::numeric_limits<size_t>::max()
+        : cluster_begin + cluster_count;
+    const auto cluster_selected = [&](size_t cluster_index) {
+        return cluster_index >= cluster_begin && cluster_index < cluster_end;
+    };
+    for (const ExactRichTextGlyphPiece &piece : raster.pieces) {
+        if (piece.paint_index >= raster.paint_runs.size())
+            continue;
+        if (!cluster_selected(piece.cluster_index))
+            continue;
+        painter.save();
+        if (piece.clip_required)
+            painter.setClipRect(piece.clip, Qt::IntersectClip);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(alpha_mask_only
+            ? QBrush(Qt::white)
+            : rich_text_fill_brush(
+                  raster.paint_runs[piece.paint_index].style.fill, text_rect));
+        painter.drawPath(piece.path);
+        painter.restore();
+    }
+
+    if (alpha_mask_only)
+        return;
+    /* Decorations share the canonical paint slices and immutable line geometry.
+     * Their thickness is intentionally independent from H/V glyph scale, like
+     * GPU stroke width and standard DTP character-scale semantics. */
+    for (size_t cluster_index = 0;
+         cluster_index < raster.layout->clusters.size(); ++cluster_index) {
+        if (!cluster_selected(cluster_index))
+            continue;
+        const TextLayoutCluster &cluster = raster.layout->clusters[cluster_index];
+        if (cluster.line_index >= raster.layout->lines.size())
+            continue;
+        const TextLayoutLine &line = raster.layout->lines[cluster.line_index];
+        const auto slices = text_layout_cluster_paint_slices(
+            *raster.layout, cluster, raster.paint_runs);
+        for (const TextLayoutPaintSlice &slice : slices) {
+            if (slice.paint_index >= raster.paint_runs.size())
+                continue;
+            const TextLayoutPaintRun &paint = raster.paint_runs[slice.paint_index];
+            if (!paint.style.underline && !paint.style.strikethrough)
+                continue;
+            painter.save();
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(rich_text_fill_brush(paint.style.fill, text_rect));
+            const qreal thickness = std::max<qreal>(
+                1.0, (line.ascent + line.descent) / 18.0);
+            if (paint.style.underline) {
+                const qreal y = text_rect.top() + line.y + line.baseline +
+                                std::max<qreal>(1.0, line.descent * 0.2);
+                painter.drawRect(QRectF(text_rect.left() + slice.x0, y,
+                                        std::max(0.0f, slice.x1 - slice.x0),
+                                        thickness));
+            }
+            if (paint.style.strikethrough) {
+                const qreal y = text_rect.top() + line.y + line.baseline -
+                                line.ascent * 0.35;
+                painter.drawRect(QRectF(text_rect.left() + slice.x0, y,
+                                        std::max(0.0f, slice.x1 - slice.x0),
+                                        thickness));
+            }
+            painter.restore();
+        }
+    }
+}
+
+static void draw_exact_rich_text_strokes(QPainter &painter,
+                                         const ExactRichTextRaster &raster,
+                                         const QRectF &text_rect,
+                                         bool on_front,
+                                         size_t cluster_begin = 0,
+                                         size_t cluster_count =
+                                             std::numeric_limits<size_t>::max(),
+                                         const QPointF &surface_origin = QPointF())
+{
+    if (!raster.valid || !painter.device())
+        return;
+    const QSize surface_size(painter.device()->width(), painter.device()->height());
+    if (surface_size.isEmpty())
+        return;
+    const size_t cluster_end = cluster_count == std::numeric_limits<size_t>::max()
+        ? std::numeric_limits<size_t>::max()
+        : cluster_begin + cluster_count;
+    const auto cluster_selected = [&](size_t cluster_index) {
+        return cluster_index >= cluster_begin && cluster_index < cluster_end;
+    };
+
+    for (size_t paint_index = 0; paint_index < raster.paint_runs.size();
+         ++paint_index) {
+        const RichTextStroke &stroke =
+            raster.paint_runs[paint_index].style.stroke;
+        if (!stroke.enabled || stroke.width <= 0.0001f ||
+            stroke.on_front != on_front)
+            continue;
+
+        QImage stroke_layer(surface_size, QImage::Format_ARGB32_Premultiplied);
+        stroke_layer.fill(Qt::transparent);
+        {
+            QPainter stroke_painter(&stroke_layer);
+            stroke_painter.setRenderHint(QPainter::Antialiasing,
+                                         stroke.antialias);
+            stroke_painter.translate(-surface_origin.x(), -surface_origin.y());
+            stroke_painter.setPen(rich_text_stroke_pen(stroke, text_rect));
+            stroke_painter.setBrush(Qt::NoBrush);
+            QPainterPath continuous_path;
+            for (const ExactRichTextGlyphPiece &piece : raster.pieces) {
+                if (piece.paint_index != paint_index)
+                    continue;
+                if (!cluster_selected(piece.cluster_index))
+                    continue;
+                if (!piece.clip_required) {
+                    continuous_path.addPath(piece.path);
+                    continue;
+                }
+                /* A split ligature still needs a style boundary, but the
+                 * boundary must include the complete antialiased stroke
+                 * support. Clipping exactly at the logical split recreates the
+                 * visible vertical 'invisible box' seam. */
+                const qreal stroke_guard = std::max<qreal>(
+                    2.0, stroke.alignment == 1
+                        ? stroke.width * 0.5 + 2.0
+                        : stroke.width + 2.0);
+                stroke_painter.save();
+                stroke_painter.setClipRect(
+                    piece.clip.adjusted(-stroke_guard, -stroke_guard,
+                                        stroke_guard, stroke_guard),
+                    Qt::IntersectClip);
+                stroke_painter.drawPath(piece.path);
+                stroke_painter.restore();
+            }
+            /* Draw all ordinary glyph subpaths in one operation. This prevents
+             * semi-transparent strokes from accumulating darker seams where
+             * neighbouring glyph outlines overlap. */
+            if (!continuous_path.isEmpty())
+                stroke_painter.drawPath(continuous_path);
+        }
+
+        if (stroke.alignment != 1) {
+            QImage glyph_mask(surface_size,
+                              QImage::Format_ARGB32_Premultiplied);
+            glyph_mask.fill(Qt::transparent);
+            {
+                QPainter mask_painter(&glyph_mask);
+                mask_painter.setRenderHint(QPainter::Antialiasing,
+                                            stroke.antialias);
+                mask_painter.translate(-surface_origin.x(), -surface_origin.y());
+                mask_painter.setPen(Qt::NoPen);
+                mask_painter.setBrush(Qt::white);
+                QPainterPath continuous_mask;
+                for (const ExactRichTextGlyphPiece &piece : raster.pieces) {
+                    if (piece.paint_index != paint_index)
+                        continue;
+                    if (!cluster_selected(piece.cluster_index))
+                        continue;
+                    if (!piece.clip_required) {
+                        continuous_mask.addPath(piece.path);
+                        continue;
+                    }
+                    mask_painter.save();
+                    mask_painter.setClipRect(piece.clip, Qt::IntersectClip);
+                    mask_painter.drawPath(piece.path);
+                    mask_painter.restore();
+                }
+                if (!continuous_mask.isEmpty())
+                    mask_painter.drawPath(continuous_mask);
+            }
+            QPainter isolate(&stroke_layer);
+            isolate.setCompositionMode(
+                stroke.alignment == 0
+                    ? QPainter::CompositionMode_DestinationOut
+                    : QPainter::CompositionMode_DestinationIn);
+            isolate.drawImage(QPointF(0.0, 0.0), glyph_mask);
+        }
+        painter.drawImage(surface_origin, stroke_layer);
+    }
+}
+
+static QRect exact_text_transition_unit_render_bounds(
+    const ExactRichTextRaster &raster, const Layer &layer,
+    const QRectF &text_rect, double local_time, size_t cluster_index,
+    const ShadowRenderParams &shadow_params, bool render_shadow,
+    const QRect &image_bounds)
+{
+    if (!raster.valid || cluster_index >= raster.layout->clusters.size())
+        return {};
+
+    QRectF bounds;
+    bool has_bounds = false;
+    for (const ExactRichTextGlyphPiece &piece : raster.pieces) {
+        if (piece.cluster_index != cluster_index)
+            continue;
+        QRectF piece_bounds = piece.path.boundingRect();
+        if (piece.clip_required)
+            piece_bounds = piece_bounds.intersected(piece.clip);
+        if (piece_bounds.isEmpty())
+            continue;
+        bounds = has_bounds ? bounds.united(piece_bounds) : piece_bounds;
+        has_bounds = true;
+    }
+
+    const TextLayoutCluster &cluster = raster.layout->clusters[cluster_index];
+    const QRectF logical_bounds(text_rect.left() + cluster.x,
+                                text_rect.top() + cluster.y,
+                                std::max(1.0f, cluster.width),
+                                std::max(1.0f, cluster.height));
+    bounds = has_bounds ? bounds.united(logical_bounds) : logical_bounds;
+
+    double pad = std::max(
+        6.0, max_rich_text_stroke_width(layer, local_time) * 2.0 + 4.0);
+    if (render_shadow) {
+        const double drop_extent =
+            std::max(std::abs(shadow_params.dx), std::abs(shadow_params.dy)) +
+            shadow_params.blur * 3.0 + std::max(0.0, shadow_params.spread);
+        const double long_extent = std::max(0.0, shadow_params.long_length) +
+                                   std::max(0.0, shadow_params.long_blur) * 3.0;
+        pad += std::max(drop_extent, long_extent);
+    }
+    return bounds.adjusted(-pad, -pad, pad, pad)
+        .toAlignedRect().intersected(image_bounds);
+}
+
+static QImage render_exact_rich_text_transition_unit(
+    const ExactRichTextRaster &raster, const Layer &layer,
+    const QRectF &text_rect, const QRect &render_bounds,
+    const ShadowRenderParams &shadow_params, bool render_shadow,
+    size_t cluster_index)
+{
+    if (!raster.valid || render_bounds.isEmpty())
+        return {};
+
+    QImage unit_image(render_bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    unit_image.fill(Qt::transparent);
+    QPainter painter(&unit_image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    painter.translate(-render_bounds.x(), -render_bounds.y());
+    painter.setClipRect(QRectF(render_bounds));
+
+    if (render_shadow) {
+        QImage shadow_mask(render_bounds.size(),
+                           QImage::Format_ARGB32_Premultiplied);
+        shadow_mask.fill(Qt::transparent);
+        QPainter mask_painter(&shadow_mask);
+        mask_painter.setRenderHint(QPainter::Antialiasing, true);
+        mask_painter.setRenderHint(QPainter::TextAntialiasing, true);
+        mask_painter.translate(-render_bounds.x(), -render_bounds.y());
+        draw_exact_rich_text_fill(mask_painter, raster, text_rect, true,
+                                  cluster_index, 1);
+        mask_painter.end();
+        const QString shape_key = QStringLiteral("exact-text-transition|%1,%2,%3x%4|%5")
+            .arg(render_bounds.x()).arg(render_bounds.y())
+            .arg(render_bounds.width()).arg(render_bounds.height())
+            .arg(image_content_hash(shadow_mask));
+        CachedShadowImage shadow = build_shadow_image(
+            layer, shadow_params, shape_key, shadow_mask);
+        painter.save();
+        painter.setClipping(false);
+        painter.drawImage(QPointF(render_bounds.topLeft()) + shadow.origin,
+                          shadow.image);
+        painter.restore();
+    }
+
+    draw_exact_rich_text_strokes(
+        painter, raster, text_rect, false, cluster_index, 1,
+        render_bounds.topLeft());
+    draw_exact_rich_text_fill(
+        painter, raster, text_rect, false, cluster_index, 1);
+    draw_exact_rich_text_strokes(
+        painter, raster, text_rect, true, cluster_index, 1,
+        render_bounds.topLeft());
+    painter.end();
+    return unit_image;
+}
+
 static void draw_rich_text_document(QPainter &painter, const Layer &layer, const QFont &font,
                                     const QRectF &text_rect, double t,
                                     const QPen *text_outline = nullptr,
@@ -145,7 +581,8 @@ static void draw_rich_text_document(QPainter &painter, const Layer &layer, const
             clear_global_outline_on_local_stroke_ranges(*doc, layer, t, visible_range);
     }
     QSizeF doc_size = doc->size();
-    const double scale = rich_text_horizontal_fit_scale(layer, text_rect, doc_size);
+    const double scale = rich_text_document_horizontal_scale(
+        layer, text_rect, doc_size, t);
     const QPointF origin = rich_text_document_origin(layer, text_rect, doc_size, t, scale);
     if (std::abs(scale - 1.0) > 0.0001) {
         painter.save();
@@ -197,7 +634,8 @@ static void draw_prepared_rich_text_document(QPainter &painter,
     }
 
     const QSizeF document_size = document->size();
-    const double scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const double scale = rich_text_document_horizontal_scale(
+        layer, text_rect, document_size, t);
     const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, scale);
     if (std::abs(scale - 1.0) > 0.0001) {
         painter.save();
@@ -256,8 +694,8 @@ static void draw_positioned_rich_text_document(QPainter &painter,
                                                 double t)
 {
     const QSizeF document_size = document.size();
-    const double scale = rich_text_horizontal_fit_scale(
-        layer, text_rect, document_size);
+    const double scale = rich_text_document_horizontal_scale(
+        layer, text_rect, document_size, t);
     const QPointF origin = rich_text_document_origin(
         layer, text_rect, document_size, t, scale);
     painter.save();
@@ -436,7 +874,7 @@ static double text_raster_ink_gutter(const QFont &font,
     const double rich_height = max_rich_text_font_height_hint(layer, t);
     return std::ceil(std::max({4.0, metrics.height() * 0.5,
                                rich_height * 0.75}) +
-                     stroke * 2.0 + 3.0);
+                     stroke * 2.0 + 6.0);
 }
 
 static QRect transition_image_alpha_bounds(const QImage &image)
@@ -632,7 +1070,8 @@ static bool apply_unified_text_animator_raster(
     QImage &image, const QImage &static_background, const Layer &layer,
     const QString &text, const QFont &font, const QRectF &text_rect,
     double local_time, const ShadowRenderParams &shadow_params,
-    bool render_shadow)
+    bool render_shadow,
+    const ExactRichTextRaster *exact_raster = nullptr)
 {
     if (image.isNull() || layer.type == LayerType::Ticker ||
         !text_animator_stack_has_enabled_animators(layer.text_animators))
@@ -667,9 +1106,10 @@ static bool apply_unified_text_animator_raster(
     const QByteArray text_digest = QCryptographicHash::hash(
         text.toUtf8(), QCryptographicHash::Sha1).toHex();
     const QString cache_key = QStringLiteral(
-        "%1|unified|rev=%2|layout=%3:%4|%5x%6|text=%7|font=%8|"
-        "rect=%9,%10,%11,%12|shadow=%13|frame=%14")
+        "%1|unified|exact=%2|rev=%3|layout=%4:%5|%6x%7|text=%8|font=%9|"
+        "rect=%10,%11,%12,%13|shadow=%14|frame=%15")
         .arg(QString::fromStdString(layer.id))
+        .arg(exact_raster && exact_raster->valid ? 1 : 0)
         .arg(static_cast<qulonglong>(TitleDataStore::instance().revision()))
         .arg(static_cast<qulonglong>(layout->key.content))
         .arg(static_cast<qulonglong>(layout->key.geometry))
@@ -705,10 +1145,13 @@ static bool apply_unified_text_animator_raster(
             return false;
         }
 
-        const std::unique_ptr<QTextDocument> shaped_document =
-            rich_text_document_for_layer(layer, font, text_rect, local_time,
-                                         nullptr);
-        if (!shaped_document) {
+        const bool use_exact_units = exact_raster && exact_raster->valid;
+        std::unique_ptr<QTextDocument> shaped_document;
+        if (!use_exact_units) {
+            shaped_document = rich_text_document_for_layer(
+                layer, font, text_rect, local_time, nullptr);
+        }
+        if (!use_exact_units && !shaped_document) {
             cache.rejected_key = cache_key;
             return false;
         }
@@ -722,7 +1165,9 @@ static bool apply_unified_text_animator_raster(
         cache.placement_offsets.reserve(static_cast<qsizetype>(layout->clusters.size()));
         qsizetype source_crop_bytes = 0;
 
-        for (const TextLayoutCluster &cluster : layout->clusters) {
+        for (size_t cluster_index = 0;
+             cluster_index < layout->clusters.size(); ++cluster_index) {
+            const TextLayoutCluster &cluster = layout->clusters[cluster_index];
             const int start = positions.qpos_from_byte(cluster.byte_start);
             const int end = positions.qpos_from_byte(
                 cluster.byte_start + cluster.byte_length);
@@ -742,22 +1187,34 @@ static bool apply_unified_text_animator_raster(
                 continue;
             }
 
-            const std::unique_ptr<QTextDocument> isolated_document =
-                rich_text_document_for_layer(layer, font, text_rect,
-                                             local_time, &range);
-            const QPointF placement_offset = isolated_document
-                ? rich_text_transition_unit_kerning_offset(
-                      *shaped_document, *isolated_document, layer, text_rect,
-                      local_time, range)
-                : QPointF();
-            const QRect render_bounds = text_transition_unit_render_bounds(
-                *shaped_document, layer, text_rect, local_time, range,
-                shadow_params, render_shadow, image.rect());
-            QImage unit_image = isolated_document
-                ? render_rich_text_transition_unit(
-                      *isolated_document, layer, local_time, font, text_rect,
-                      render_bounds, shadow_params, render_shadow, range)
-                : QImage();
+            std::unique_ptr<QTextDocument> isolated_document;
+            QPointF placement_offset;
+            QRect render_bounds;
+            QImage unit_image;
+            if (use_exact_units) {
+                render_bounds = exact_text_transition_unit_render_bounds(
+                    *exact_raster, layer, text_rect, local_time, cluster_index,
+                    shadow_params, render_shadow, image.rect());
+                unit_image = render_exact_rich_text_transition_unit(
+                    *exact_raster, layer, text_rect, render_bounds,
+                    shadow_params, render_shadow, cluster_index);
+            } else {
+                isolated_document = rich_text_document_for_layer(
+                    layer, font, text_rect, local_time, &range);
+                placement_offset = isolated_document
+                    ? rich_text_transition_unit_kerning_offset(
+                          *shaped_document, *isolated_document, layer, text_rect,
+                          local_time, range)
+                    : QPointF();
+                render_bounds = text_transition_unit_render_bounds(
+                    *shaped_document, layer, text_rect, local_time, range,
+                    shadow_params, render_shadow, image.rect());
+                unit_image = isolated_document
+                    ? render_rich_text_transition_unit(
+                          *isolated_document, layer, local_time, font, text_rect,
+                          render_bounds, shadow_params, render_shadow, range)
+                    : QImage();
+            }
             const QRect ink_bounds = transition_image_alpha_bounds(unit_image)
                 .intersected(unit_image.rect());
             constexpr int kTextAnimatorResamplingGutter = 4;
@@ -1037,7 +1494,7 @@ static bool apply_unified_text_animator_flattened(
         text_raster_ink_gutter(font, layer, local_time),
         std::max(
             std::max(0.0, eval_outline_width(layer, local_time)),
-            max_rich_text_stroke_width(layer, local_time)) * 2.0 + 3.0);
+            max_rich_text_stroke_width(layer, local_time)) * 2.0 + 6.0);
     if (render_shadow) {
         clip_padding += std::max(
             std::max(std::abs(shadow_params.dx), std::abs(shadow_params.dy)) +

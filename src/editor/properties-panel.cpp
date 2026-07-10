@@ -44,6 +44,7 @@
 #include "properties-panel/auto-style-and-property-actions.inc"
 #include "properties-panel/property-synchronization.inc"
 #include "properties-panel/selection-refresh.inc"
+#include "properties-panel/panel-defaults.inc"
 /* Full member-function definitions must be included only after the constructor
  * and the legacy ordered implementation chain have returned to file scope. */
 #include "properties-panel/text-animator-controls.inc"

@@ -252,3 +252,21 @@ All future work must extend the shared animator, selector, shaped-layout, and re
 ## Development Version 139 compile correction
 
 The glyph-envelope height hint introduced in version 138 now reads font size and vertical scale from effective `RichTextCharFormat` values at rich-text range boundaries. `TextLayoutPaintStyle` remains paint-only, matching the immutable text-layout architecture and fixing the MSVC compile failure without weakening animation overscan or mixed-style glyph protection.
+
+## Canonical text-property and geometry contract
+
+`RichTextDocument` is the single authored source for static text, defaults, sparse character ranges, paragraph blocks and typing format. Animated tracks are the only separate authored time-varying overlay. Scalar `Layer` fields are compatibility mirrors, `QTextDocument` is an input/IME adapter, and immutable layout/GPU data are derived state.
+
+Every mutation carries a property mask. Overlapping sparse masks are normalized without deleting unrelated font, H/V Scale, tracking, baseline, fill, stroke or paragraph properties, so one text box can contain multiple independent property combinations.
+
+### H/V Scale, alignment and selection
+
+The shaping font remains at neutral width. Effective H Scale is applied after shaping to clusters, glyph positions, advances, cursor boundaries, selection geometry and clips. Effective V Scale transforms each vector glyph around its baseline and expands the line ink envelope. Glyphs are mapped back to canonical UTF-8 clusters even when Qt coalesces runs. Horizontal Fit, center/right alignment and all justify modes use the final post-scale geometry.
+
+### Stroke composition and clipping
+
+Stroke order is **Behind → Fill → Front**. Fill and stroke use separate clip geometry: fill remains limited to the authored ligature/style slice, while stroke receives its real outside coverage and a sampling guard. Text-box dimensions control wrapping and alignment; they are not an ink mask. Surface bounds include stroke, scale and animator overhang.
+
+### Undo/Redo, Text Styles and auto-size
+
+Committed property edits create one title-level transaction and rebuild the inline adapter from the restored canonical snapshot. Native local Undo/Redo remains for ordinary typing. Text Style editing embeds the same Properties implementation as text layers. A manual width/height bounding-box edit disables only the corresponding `size to text` axis in the same geometry transaction.

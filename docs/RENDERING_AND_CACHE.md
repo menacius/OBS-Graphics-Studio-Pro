@@ -89,3 +89,27 @@ Debug counters cover queue peaks, render/readback duration, notification coalesc
 ## Threading and lifetime contract
 
 Network access, media decode, waveform generation, cache compression, disk hydration/writes and proxy generation stay outside UI and render threads. Audio processing avoids blocking file/network operations. Jobs carry cancellation/generation state and must stop before a title, source or OBS graphics subsystem is destroyed. Repeated title open/close, audio deletion, proxy deletion and OBS shutdown must release workers, GPU resources and cached data without retained-growth trends.
+
+## Text rendering and performance audit (Development Version 281)
+
+### Development Version 281 stroke and transition routing
+
+Static text, clock and ticker layers with evaluated rich-text strokes use the exact compatibility compositor. Ordinary glyphs are not clipped to their logical cluster advances; same-style outlines are accumulated into one continuous painter path, while bounded clipping remains only for genuine split ligatures or mixed-paint clusters.
+
+Text with enabled Text Animators—including transition-managed animators—stays on the unified GPU glyph pipeline. The compatibility fallback now also has an exact isolated-unit adapter: it rerenders each cluster from its own immutable glyph paths instead of sampling the complete text bitmap through overlapping rectangular clips. This prevents neighbouring glyph pixels from moving with the wrong transition unit and preserves exact H/V Scale if the GPU backend cannot render a font or glyph.
+
+The ordinary text path is canonical rich-text evaluation → bounded immutable shaping cache → paint runs → per-glyph vector/SDF atlas → batched GPU fill/stroke → layer/effect compositing.
+
+The audit found that reduced-resolution preview bypassed the shaping cache, overwrote the full-quality Auto timing reference, imposed a fixed 100 ms cadence, and reduced only the final render target rather than glyph SDF work. Large glyph SDF construction also repeatedly allocated distance-transform buffers, while paint slicing scanned every style run for every cluster.
+
+Corrections:
+
+- all preview modes use the bounded shared layout cache;
+- Auto Adaptive is driven only by full-resolution timing, with reduced timing tracked separately;
+- reduced resolution follows normal display/render-cost pacing rather than a 10 fps cap;
+- atlas coverage density follows preview quality, with SDF spread scaled by the same ratio so distances remain logical pixels;
+- very large full-resolution glyph coverage is bounded to a high-quality 512-pixel envelope per axis while emitted geometry remains exact;
+- SDF alpha/distance/site/boundary buffers are thread-local and reused;
+- paint-run overlap lookup is ordered and stops after the cluster range.
+
+Preview quality may change raster density, never rich-text properties, layout geometry, selection, caret, alignment or final settled/OBS full-quality output.

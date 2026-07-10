@@ -1,4 +1,285 @@
-# v0.8.11-alpha — Development Version 239
+# v0.8.12-alpha — Development Version 281
+
+## Development Version 281 — continuous static strokes and restored text transitions
+
+- Removed logical cluster-advance clipping from ordinary exact rich-text glyphs, so italic bearings, swashes, accents and outside strokes are no longer cut by an invisible neighbouring character box.
+- Composed all unclipped glyph outlines that share a stroke style into one painter path, eliminating dark overlap seams and hard vertical cuts between adjacent static glyph strokes.
+- Retained bounded, stroke-expanded clipping only for genuine split ligatures or mixed-paint clusters where one shaped outline must be divided across independent source styles.
+- Restored transition-managed and manually animated stroked text to the unified GPU glyph animator pipeline instead of the flattened compatibility adapter, preventing neighbouring glyph pixels from being captured and transformed by overlapping rectangular unit crops.
+- Added an exact isolated-unit compatibility adapter for backend/font fallbacks, so each animated cluster is rerendered from its own immutable glyph paths and retains exact H/V Scale without borrowing pixels from adjacent characters.
+- Advanced the runtime/build development version and GPU text cache revision to 281.
+
+# v0.8.12-alpha — Development Version 280
+
+## Development Version 280 — continuous stroked-text fallback
+
+- Routed text layers with any evaluated rich-text stroke back through the compatibility text raster instead of the per-glyph GPU SDF raster.
+- This removes the remaining visible cuts at glyph boundaries on thick or adjacent strokes, because the compatibility path composes the shaped text before applying the outline.
+- Kept the Development Version 279 GPU text performance improvements for non-stroked text, so ordinary text, clock and ticker layers still use the fast GPU pipeline.
+
+## Development Version 279 — stroke-safe text rendering, adaptive performance audit and documentation consolidation
+
+- Separated fill and stroke clipping so outside strokes are not cut at glyph, ligature or rich-text style boundaries.
+- Expanded text surfaces and text-box clip envelopes with a dedicated stroke sampling guard.
+- Reused thread-local Euclidean distance-transform workspaces for glyph SDF generation.
+- Made adaptive preview reuse the bounded immutable layout cache and stopped reduced-resolution timing from overwriting the full-quality Auto reference.
+- Removed the fixed 100 ms adaptive editor cadence.
+- Added adaptive glyph-atlas coverage and a bounded 512-pixel coverage envelope for very large full-resolution glyphs while preserving logical geometry and SDF stroke units.
+- Changed paint-slice lookup from a complete paint-run scan per cluster to an ordered overlap search.
+- Consolidated the Development Versions 276–278 text audits into the canonical guides.
+- Updated README for changes since Development Version 239, started `v0.8.12-alpha`, and advanced the GPU text cache revision to 279.
+
+# v0.8.11-alpha — Development Version 278
+
+## Development Version 278 — post-scale text alignment and manual auto-size override
+
+- Rebased center and right alignment on the final canonical line width after rich-text H Scale.
+- Implemented post-scale terminal alignment for Justify Last Left/Center/Right and post-scale whitespace expansion for Justify All.
+- Kept visible glyphs, caret, selection and run clipping on the same aligned immutable layout.
+- Made manual canvas bounding-box width/height edits disable only the corresponding text-box auto-size axis.
+- Advanced the GPU text cache revision to 278.
+
+# Development Version 276
+
+- Audited the complete text model, editor adapter, Undo/Redo, shaping, atlas, GPU geometry, clipping and cache pipeline.
+- Removed character H/V Scale from `QFont` matching in the canonical GPU path.
+- Added deterministic per-cluster horizontal geometry and per-glyph vertical geometry for ordinary and multistyle text.
+- Fixed Horizontal Fit so it scales emitted glyph quads together with advances, clusters, cursors and clips.
+- Preserved scale-only rich-text boundaries and mapped glyphs to canonical UTF-8 clusters.
+- Enforced canonical adapter provenance so auto/evaluated formatting cannot become manual ranges.
+- Made UTF-8 conversion explicit at text model boundaries.
+- Consolidated text-property history into title-level transactions and adapter replacement on restore.
+- Advanced the GPU text cache revision to 276.
+
+# v0.8.11-alpha — Development Version 275
+
+## Development Version 275 — canonical multistyle rich text and Undo/Redo
+
+- Made the normalized `RichTextDocument` the only authored static source for text properties; layer scalar fields are compatibility mirrors.
+- Split GPU shaping extraction by canonical effective style span, so rich-text H/V Scale and all concurrent properties reach the correct glyphs even when Qt coalesces `QGlyphRun` objects.
+- Preserved overlapping/multiple sparse properties within one text box.
+- Prevented stale inline QTextDocument state from overwriting restored Undo/Redo snapshots.
+- Added inline history routing: native typing undo first, title snapshot history when the local document has no matching step.
+- Advanced GPU text pipeline cache revision to 275.
+
+# v0.8.11-alpha — Development Version 274
+
+## Development Version 274 — unified GPU H/V Scale route and 90% threshold fix
+
+- Removed the transition-managed text branch that sent otherwise supported text through the `QTextDocument` compatibility raster.
+- All Text, Clock and Ticker layers now use the same immutable-layout/SDF glyph path whenever the GPU backend is available, including transition-managed Text Animator stacks.
+- Preserved independent per-glyph H/V Scale for every effective rich-text range, including multistyle text boxes.
+- Expanded GPU text allocation and clipping by the actual anisotropic glyph overhang, preventing V Scale above 100% from being clipped to the unscaled text-box envelope.
+- Removed the compatibility raster's `H/V -> QFont::stretch` conversion that triggered platform font-width matching jumps around values such as V Scale 89%/90%.
+- Added a continuous painter-space X residual for uniform H/V ratios in the compatibility path and a GPU text pipeline cache revision to invalidate stale rasters.
+
+# v0.8.11-alpha — Development Version 273
+
+## Development Version 273 — GPU text H/V Scale pipeline rewrite
+
+- Effective H/V Scale is resolved at each glyph's logical rich-text cluster and stored in the immutable glyph record.
+- The persistent atlas now stores one authored-size glyph outline; scale is no longer baked into or keyed by a potentially coalesced Qt glyph run.
+- GPU quads apply H and V Scale directly to baseline-relative bearings, glyph dimensions and SDF padding.
+- H Scale therefore changes actual glyph width as well as shaped advances; V Scale changes actual glyph height above and below the baseline.
+- SDF padding is cropped independently on X and Y after anisotropic scaling.
+- Multistyle text boxes can mix different H/V values inside one Qt glyph run without losing scale.
+- The QTextDocument compatibility and editor-overlay routes use compensated vertical font sizing and H/V stretch, preserving correct output if the GPU route is unavailable.
+
+# v0.8.11-alpha — Development Version 272
+
+## Development Version 272 — true per-glyph H/V Scale on canvas
+
+- Removed the font-size/compensating-stretch workaround that made H Scale look like tracking and corrupted V Scale above 100%.
+- H Scale now controls shaped advances directly, while both H and V Scale are applied to each glyph outline around its baseline.
+- The GPU atlas rasterizes transformed vector glyph outlines, preserving correct bearings and crisp output at extreme values such as H 70% / V 413%.
+- Line envelopes, vertical alignment and split-ligature clipping now use the scaled glyph bounds.
+- Effective scale remains per rich-text run, so multistyle text boxes can mix different H/V values without cross-run distortion.
+
+# v0.8.11-alpha — Development Version 271
+
+## Development Version 271 — exact anisotropic H/V text scaling on canvas
+
+- Routed visible text runs whose effective H Scale and V Scale differ through the same Qt rich-text raster path used by the editor preview, eliminating backend-dependent QRawFont/SDF geometry mismatches on the canvas.
+- Added per-range effective-format detection at all rich-text boundaries, so mixed-scale multistyle text boxes select the exact path whenever any visible style run uses independent H/V scaling.
+- Kept the GPU glyph-atlas path for text whose H/V scale is uniform, preserving normal GPU rendering performance where its geometry is deterministic.
+- Covered the reported 70% H Scale / 413% V Scale case and synchronized CMake/runtime metadata to Development Version 271.
+
+# v0.8.11-alpha — Development Version 270
+
+## Development Version 270 — canvas and multi-style character scaling fix
+
+- Replaced backend-dependent `QRawFont::alphaMapForGlyph()` transform scaling with explicit horizontal resampling of normalized glyph coverage before SDF atlas generation.
+- Applied the same rounded `QFont::stretch` ratio to per-run glyph ink bearings and widths, keeping atlas placement aligned with QTextLayout advances.
+- Kept H/V scaling isolated per rich-text shaping run so multi-style text boxes can mix independent character scales without overlap or geometry leakage between runs.
+- Preserved the unified Text Properties/Text Style editor controls introduced in Development Version 269.
+- Synchronized CMake and runtime build metadata to Development Version 270.
+
+# v0.8.11-alpha — Development Version 269
+
+## Development Version 269 — unified text properties and corrected glyph scaling
+
+- Replaced the separate Text Style edit form with the same `PropertiesPanel` implementation used for text layers.
+- Unified Character, Type, Paragraph, Fill and Stroke controls in appearance and behavior, including drag-label numeric editing.
+- Added local undo/redo history to Text Style editing through the shared Properties history controls.
+- Enlarged the Text Style preview and made it resize with the dialog splitter.
+- Rasterized independent H/V character scale directly into GPU atlas glyphs, so H Scale changes glyph width rather than behaving like tracking and V Scale remains stable above 100%.
+- Synchronized CMake and runtime build metadata to Development Version 269.
+
+# v0.8.11-alpha — Development Version 268
+
+## Development Version 268 — MSVC text-style stroke clamp build fix
+
+- Fixed two MSVC C2672 build errors in `style-presets.cpp` by converting both stroke-alpha expressions and clamp bounds to an unambiguous `double` type.
+- Retained all Development Version 267 text-style, stroke, glyph-scaling and Properties history changes.
+- Synchronized CMake and runtime build metadata to Development Version 268.
+
+# v0.8.11-alpha — Development Version 267
+
+## Development Version 267 — Editable text styles, stroke, character scaling and Properties history
+
+- Added stroke data to text style presets, including enable state, width, opacity, alignment, join, front/back order, antialiasing, solid color and gradient settings.
+- Added an Edit action for text styles. The editor exposes character, paragraph, text-box, fill and stroke properties with a live preview and preserves the preset identity when saving changes.
+- Applied text styles consistently to rich-text character and paragraph formatting, including stroke and the extended OpenType/text options.
+- Corrected GPU glyph raster geometry so H Scale changes glyph width instead of behaving like tracking, and V Scale remains independent above and below 100%.
+- Added Undo and Redo controls to the Properties panel, synchronized with the editor’s canonical undo stack.
+- Synchronized CMake and runtime build metadata to Development Version 267.
+
+# v0.8.11-alpha — Development Version 264
+
+
+## Development Version 264 — Play Every Frame audio varispeed and cache UI hiding
+
+- Changed `Play Every Frame` so editor audio remains audible and is varispeeded to the visual-frame cadence instead of being muted/skipped.
+- Kept `Skip Frames` as the default realtime audio-master mode.
+- Hid cache-only controls, buttons, status, and diagnostics from Playback and Cache when cache is disabled.
+- Synchronized CMake, runtime build info and serialization development metadata to Development Version 264.
+
+## Development Version 263 — Editor Audio Sync and GUI Gap Audit
+
+- Removed the elastic bottom spacer from the headphones-only Editor Audio dock so the stereo dB meter consumes the available dock height without a blank tail below the levels.
+- Audited comparable dock/panel bottom stretchers and removed the matching bottom spacer from Playback and Cache; horizontal row spacers and intentional toolbar/list stretchers were retained.
+- Added an A/V sync dropdown to Playback and Cache: `Skip Frames` (default) and `Play Every Frame`.
+- In `Skip Frames`, editor playback can follow the live editor-audio media clock so slow visual rendering skips frames rather than letting audio drift.
+- In `Play Every Frame`, the editor shows every visual frame and pauses/skips editor audio monitoring/levels to prevent slow-frame audio desync.
+- Synchronized CMake, runtime build info and serialization development metadata to Development Version 263.
+
+# v0.8.11-alpha — Development Version 262
+
+## Development Version 262 — Scene Mask Shape Preview and Audio Meter
+
+- Fixed Shape/SolidRect/ColorSolid scene-mask editor previews so the fill placeholder appears immediately when Scene Mask is enabled, without requiring a later effect edit to invalidate the raster cache.
+- Kept the placeholder restricted to the mask fill while compositing the authored shape stroke into the same preview raster, so the stroke remains visible and the layer effect stack processes fill and stroke together.
+- Added a visual stereo dB meter to the Editor Audio dock, fed by the private OBS editor-preview source audio levels while keeping the control itself headphones-only.
+- Synchronized CMake, runtime build info and serialization development metadata to Development Version 262.
+
+# v0.8.11-alpha — Development Version 261
+
+## Development Version 261 — Editor Scene Mask, Clock Presets and Audio Monitor Dock
+
+- Restricted editor scene-mask placeholders to the mask fill/silhouette only, so authored strokes stay out of the placeholder preview and scene-mask toggles repaint immediately through the editor GPU preview path.
+- Composited scene-mask strokes into the matted scene before applying the mask layer's effect stack, so the same effects now affect both the scene fill and the stroke.
+- Simplified Add Blank Title by removing the graphic-type chooser; blank titles now start as element-defined graphics, with Stinger setup remaining in Graphic Properties.
+- Removed the redundant Character section title for Clock and Ticker layers, added Clock date/time format presets with a Custom mode, and exposed the selected canvas background in the Background button text.
+- Added an Editor Audio Monitor dock with a headphones-only control backed by the private OBS editor-preview source monitoring path.
+- Synchronized CMake, runtime build info and serialization development metadata to Development Version 261.
+
+# v0.8.11-alpha — Development Version 260
+
+## Development Version 260 — Effect Library Cleanup and Textured Damage Effects
+
+- Removed duplicate effect/preset entries at catalog load time by normalizing category paths and display names before inserting items into the Effects & Presets tree.
+- Emptied the Animation Presets root so shipped animation preset entries no longer appear in the editor library.
+- Rebuilt Film Distortion, Analog Distortion and Digital Distortion around packaged artifact texture maps and bound those real textures to the GPU shader at render time.
+- Synchronized CMake, runtime build info and serialization development metadata to Development Version 260.
+
+# v0.8.11-alpha — Development Version 257
+
+## Development Version 257 — Scene Masks on All Visual Layers
+
+- Restored Scene Mask availability for all visual layer types, including Text, Clock, Ticker, Image, Video, Shape, SolidRect, ColorSolid, Group/Asset and TransitionInput layers, while keeping non-visual Audio/Adjustment rows out of the scene-mask contract.
+- Replaced scattered Image/Video/Video-only exclusions with a single `layer_type_can_be_scene_mask()` helper used by serialization, editor UI, dock status, source properties and the OBS render path.
+- Preserved legacy and newly-authored Image/Video scene-mask flags on load instead of clearing them during deserialization or title-type detection.
+- Added decoded-frame cache invalidation for Video scene-mask auxiliary rasters so video mattes update frame-accurately in live output.
+- Reworked editor scene-mask placeholder rendering for Text, Clock, Ticker and bitmap/video-like layers so the placeholder texture is masked by the object's actual alpha silhouette rather than a rectangular layer box.
+
+
+## Development Version 254 — Live Properties Layout and Defaults Icon Cleanup
+- Removed duplicate switch labels from Live Properties rows; the form label is now the only row label.
+- Added spacing around Appearance swatches so Fill/Stroke color chips are not visually attached to labels.
+- Made Fill/Stroke exposure participate in live cue columns and added color-chip/reset controls for color-only cue columns.
+- Scene Mask layers no longer offer Fill exposure, and enabling Scene Mask clears existing Fill exposure state.
+- Converted panel header Defaults controls to icon-only buttons with a mono reset glyph.
+- Hardened property combo popup styling so dropdowns are opaque and aligned.
+
+## Development Version 253 — Properties Defaults, Live Cue and GUI Fixes
+
+- Moved visual-effect Defaults to the effect header menu and disabled duplicate generic Defaults buttons inside effect panel headers.
+- Converted panel-header Defaults to compact icon buttons and kept reset handlers wired for Transform, Shape, Live, Image/Video, Audio, Asset and other property sections.
+- Added clear actions for Image/Video/Audio source rows and live image cue rows.
+- Removed Scene Mask availability from Image layers and invalidated legacy Image scene-mask flags on load.
+- Added Fill/Stroke live-dock exposure toggles, optional single-value toggles, color selector chips and reset buttons in live cue rows.
+- Fixed property combo popup styling so menus are opaque, padded and correctly selected instead of visually overlapping adjacent controls.
+- Stabilized the Libraries dock width when resizing outer dock edges and forced guide overlays to invalidate/repaint while dragging.
+
+## Development Version 251 — GPU Image Filtering and Box Size UI
+
+- Applies image/video filtering in the GPU layer-copy shader for direct image/video layers, including layers without effects.
+- Avoids CPU resample/texture-upload churn during interactive Box size changes by keeping direct source textures resident and updating only layout metadata.
+- Moves Box size into the Image Source/Video Source section and labels it “Box size”.
+
+# v0.8.11-alpha — Development Version 247
+
+## Development Version 247 — Editor Video Decode Cadence Fix
+
+- Fixed the initial blank Video layer preview/bounding-box behavior by refusing to cache an empty async video raster under the requested GPU layer key.
+- Fixed stepped editor video playback where the render loop could cache the previous decoded frame as if it satisfied the current playhead frame. Video GPU rasters are now keyed by the delivered decoded frame number.
+- Added explicit `requested_frame_number` / `exact_requested_frame` metadata to decoded Video frames so the editor can distinguish exact hits from safe stale fallback frames.
+- Restored a steady-playback editor prefetch window while preserving small request-coalesced prefetch for scrubbing, jumps, reverse movement and freeze sections.
+- Retained the 246 rollback of preview-sized decode: editor video remains full-resolution and software-first when Auto hardware decode would require readback.
+
+## Development Version 246 — Editor Video Decode Stability Fix
+
+- Reverted the 245 preview-sized video decode approach that degraded editor preview quality and could make scrubbing worse by changing decode dimensions.
+- Editor preview now marks its render session as the Editor video decode client while preserving full-resolution decoded frames and the existing image/video raster quality path.
+- When hardware decode is set to Auto, editor preview now uses software decode first because the current QImage upload path requires CPU readback from D3D11VA/DXVA/VAAPI/VideoToolbox frames; live output keeps the hardware Auto path.
+- Reduced editor prefetch to a small nearest-frame window so a single FFmpeg worker prioritizes the newest playhead request instead of decoding stale look-ahead/look-behind frames during scrubbing.
+- Retained the Development Version 244 serialization/migration audit and MSVC hotfix.
+
+## Development Version 244 — Serialization and Migration Audit
+
+- MSVC hotfix: declared the animated scalar default helper before the 244 schema migration routine so translation units including `title-serialization-schema.h` compile cleanly.
+- Audited the persisted envelope for layer effects, external plugin effects and Video layers. Effects now round-trip stable `effect_id`/`extension_id`, schema/runtime versions, parameters, keyframes, presets, plugin identifiers, opaque binary state and missing-plugin placeholder state.
+- Missing external plugins now reopen as inert placeholders instead of deleting plugin state; reinstalling the plugin can recover the preserved parameter/keyframe/binary payload.
+- Video layers now round-trip authored relative paths, resolved absolute paths, media roots, fingerprints, stream selection, color interpretation, proxy references, timeline trims, time-remap state, audio stream choices and decode/cache settings. Offline media remains diagnostic-only and never blocks title load.
+- Built-in Glow/Noise and other older built-in effect records no longer reset to current defaults just because descriptor schema versions changed. Revised implementations are used only after explicit successful migration.
+- Added a persistence safety guard so previous-version projects are written in the new format only after the title store has loaded or cleanly initialized successfully.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 244.
+
+## Development Version 243 — Video Time Remapping and Frame Interpolation
+
+- Added Video source-time as a first-class keyframeable animation track with Hold, Linear and Bezier timing, speed-ramp support, reverse/freeze sections and loopable source segments.
+- Exposed source-time in the existing Graph Editor with source-time and speed views; negative speed is surfaced as an explicit reverse-time indication instead of being hidden behind ordinary timeline playback.
+- Updated the Video runtime to resolve decoded media frames through the authored time-remap curve, preserving continuous speed-ramp boundaries and avoiding redundant decode work for freeze sections.
+- Added frame interpolation modes: nearest frame, frame blend and optional motion-compensated interpolation. Motion-compensated mode uses background-only optical-flow analysis/cache manifests and falls back to draft preview when analysis is unavailable.
+- Connected linked Video audio to the selected remap audio policy: preserve linear clip audio, follow source time, or mute reverse/freeze regions.
+- Invalidate optical-flow analysis only when source media or the time-remap/interpolation fingerprint changes; transform-only and non-baked-effect edits do not poison the analysis cache.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 243.
+
+## Development Version 242 — Video Proxy, Decode Cache and Hardware Acceleration
+
+- Integrated Video layers with the runtime proxy/cache pipeline through source-media fingerprints, disk-only proxy sidecar manifests, automatic proxy relink and source-only invalidation. Transform changes and non-baked effects no longer poison proxy identity.
+- Added background proxy generation using external ffmpeg when available, with per-layer progress, per-title aggregate progress, pause/resume, cancel, alpha/HDR-capable proxy profiles and audio stream copy preservation.
+- Reworked the decoded-frame cache around the playhead with separate editor/live budgets, active request priority, cache-aware scrubbing and forward/reverse prefetch. Layer/media replacement, deletion, title cache removal and shutdown release runtime decode/proxy state.
+- Added a platform hardware-decoding abstraction with safe software fallback, codec/profile fallback, hardware-frame transfer to the existing QImage upload path and non-fatal decoder failure handling.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 242.
+
+## Development Version 240 — Inspector Widget Unification
+
+- Added shared Transform-panel-derived control styling for all editor inspector/effects sections, including numeric fields, combo boxes, text fields, buttons, tool buttons and sliders.
+- Normalized common panel widgets to the Transform panel's compact 20 px control height, 10 px font sizing, 2 px border radius, 12 px spin-button width, theme-aware hover/focus colors and consistent icon-only button sizing.
+- Applied the shared metrics automatically when any collapsible inspector panel or effect/audio-effect panel section is created, including dynamically generated effect settings and header actions.
+- Updated Properties and Effects panel control-style helpers to use the same source of truth instead of separate per-panel QSS fragments.
+- Synchronized build metadata, migration continuity and source contracts to Development Version 240.
 
 ## Development Version 239 — Motion Blur Posterization Fix and Organic Damage Effects
 

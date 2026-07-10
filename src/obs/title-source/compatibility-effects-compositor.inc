@@ -807,6 +807,9 @@ struct CompatibilityEffectSurfacePool {
     gs_texrender_t *ping = nullptr;
     gs_texrender_t *pong = nullptr;
     gs_stagesurf_t *stage = nullptr;
+    gs_texture_t *damage_film_texture = nullptr;
+    gs_texture_t *damage_analog_texture = nullptr;
+    gs_texture_t *damage_digital_texture = nullptr;
     std::vector<uint8_t> upload;
     std::vector<uint8_t> readback;
 
@@ -816,14 +819,69 @@ struct CompatibilityEffectSurfacePool {
         if (ping) gs_texrender_destroy(ping);
         if (pong) gs_texrender_destroy(pong);
         if (stage) gs_stagesurface_destroy(stage);
+        if (damage_film_texture) gs_texture_destroy(damage_film_texture);
+        if (damage_analog_texture) gs_texture_destroy(damage_analog_texture);
+        if (damage_digital_texture) gs_texture_destroy(damage_digital_texture);
         source = nullptr;
         ping = nullptr;
         pong = nullptr;
         stage = nullptr;
+        damage_film_texture = nullptr;
+        damage_analog_texture = nullptr;
+        damage_digital_texture = nullptr;
         width = 0;
         height = 0;
         std::vector<uint8_t>().swap(upload);
         std::vector<uint8_t>().swap(readback);
+    }
+
+
+    gs_texture_t *load_damage_texture_asset(const char *relative_path)
+    {
+        char *module_path = obs_module_file(relative_path);
+        if (!module_path)
+            return nullptr;
+        QImage image(QString::fromUtf8(module_path));
+        bfree(module_path);
+        if (image.isNull())
+            return nullptr;
+        QImage converted = image.convertToFormat(QImage::Format_RGBA8888);
+        if (converted.isNull() || converted.width() <= 0 || converted.height() <= 0)
+            return nullptr;
+        std::vector<uint8_t> pixels(static_cast<size_t>(converted.width()) *
+                                    static_cast<size_t>(converted.height()) * 4);
+        for (int y = 0; y < converted.height(); ++y) {
+            const uchar *line = converted.constScanLine(y);
+            std::copy(line, line + static_cast<size_t>(converted.width()) * 4,
+                      pixels.begin() + static_cast<size_t>(y) * converted.width() * 4);
+        }
+        const uint8_t *planes[] = { pixels.data() };
+        return gs_texture_create(static_cast<uint32_t>(converted.width()),
+                                 static_cast<uint32_t>(converted.height()),
+                                 GS_RGBA, 1, planes, 0);
+    }
+
+    bool ensure_damage_textures()
+    {
+        if (!damage_film_texture)
+            damage_film_texture = load_damage_texture_asset(
+                "effect-transitions/textures/damage/film-artifacts.png");
+        if (!damage_analog_texture)
+            damage_analog_texture = load_damage_texture_asset(
+                "effect-transitions/textures/damage/analog-artifacts.png");
+        if (!damage_digital_texture)
+            damage_digital_texture = load_damage_texture_asset(
+                "effect-transitions/textures/damage/digital-artifacts.png");
+        return damage_film_texture && damage_analog_texture && damage_digital_texture;
+    }
+
+    gs_texture_t *damage_texture_for(LayerEffectType type) const
+    {
+        if (type == LayerEffectType::AnalogDistortion)
+            return damage_analog_texture;
+        if (type == LayerEffectType::DigitalDistortion)
+            return damage_digital_texture;
+        return damage_film_texture;
     }
 
     bool ensure(int requested_width, int requested_height)
@@ -859,7 +917,7 @@ struct CompatibilityEffectSurfacePool {
             upload.resize(bytes);
             readback.resize(bytes);
         }
-        return source && ping && pong && stage;
+        return source && ping && pong && stage && ensure_damage_textures();
     }
 };
 
@@ -937,6 +995,12 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
         if (gs_eparam_t *hard_mask =
                 bgl_effect_param(gpu_effect, "hardMask"))
             gs_effect_set_texture(hard_mask, g_surface_effect_pool.source);
+        if (effect_is_damage_distortion(resolved.type)) {
+            if (gs_eparam_t *artifact_texture =
+                    bgl_effect_param(gpu_effect, "artifactTexture"))
+                gs_effect_set_texture(artifact_texture,
+                    g_surface_effect_pool.damage_texture_for(resolved.type));
+        }
         set_gpu_surface_effect_params(gpu_effect, resolved, width, height, t);
         set_gpu_extension_surface_params(gpu_effect, resolved, t);
 

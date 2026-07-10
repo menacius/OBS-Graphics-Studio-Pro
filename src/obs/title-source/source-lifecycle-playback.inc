@@ -758,6 +758,8 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                       std::max(1, session->title.height));
         const int transition_blur_padding =
             general_transition_blur_padding(layer);
+        const bool direct_image = layer_can_use_direct_gpu_image_raster(
+            layer, layer_time, transition_blur_padding);
         if (transition_blur_padding > 0) {
             base_surface_rect = base_surface_rect.adjusted(
                 -transition_blur_padding, -transition_blur_padding,
@@ -774,12 +776,39 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             std::to_string(base_surface_rect.height()) +
             "|gpu-effect-surface=" +
             (preserve_effect_surface ? std::string("preserved")
-                                     : std::string("cropped"));
+                                     : std::string("cropped")) +
+            "|gpu-direct-image=" +
+            (direct_image ? std::string("1") : std::string("0"));
+        if (direct_image) {
+            /* Direct bitmap/video layers keep their source texture resident
+             * while the user scales the image box.  Filtering is now applied
+             * by the GPU layer-copy shader, so box geometry and filtering mode
+             * must not force a CPU raster regeneration or a texture upload. */
+            if (layer.type == LayerType::Image) {
+                const std::string effective_image_path = effective_external_string(
+                    layer, ExternalPropertyPaths::ImagePath, layer.image_path);
+                QFileInfo info(QString::fromStdString(effective_image_path));
+                key = std::string("direct-image|src=") + effective_image_path +
+                    "|mtime=" + std::to_string(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0) +
+                    "|size=" + std::to_string(info.exists() ? info.size() : -1) +
+                    "|svg=" + (image_path_is_svg(QString::fromStdString(effective_image_path)) ? "1" : "0") +
+                    "|preview=" + std::to_string(session->editor_draft ? session->preview_quality_scale : 1.0f);
+            } else if (layer.type == LayerType::Video) {
+                key = std::string("direct-video|src=") + layer.video_source +
+                    "|stream=" + std::to_string(layer.video_stream_index) +
+                    "|astream=" + std::to_string(layer.video_audio_stream_index) +
+                    "|streams=" + layer.video_selected_streams_json +
+                    "|preview=" + std::to_string(session->editor_draft ? session->preview_quality_scale : 1.0f);
+            }
+        }
         if (layer.type == LayerType::Clock)
             key += "|clock=" + std::to_string(clock_second);
         else if (layer.type == LayerType::Ticker)
             key += "|ticker=" + std::to_string(QDateTime::currentMSecsSinceEpoch());
-        else if (layer.type == LayerType::Video) {
+        if (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+            layer.type == LayerType::Ticker)
+            key += "|gpu-text-pipeline=281";
+        if (layer.type == LayerType::Video) {
             key += "|" + bgl::video::FrameRuntime::instance()
                 .frame_cache_key_for_layer(
                     layer, layer_time, 1.0 / std::max(1e-6, source_frame_duration()));
@@ -834,11 +863,9 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
          * texture resident and update only logical box geometry. This works for
          * Stretch/Fit/Fill because layout is metadata; no bitmap rescale, SVG
          * reraster or texture upload is required until the settled edit. */
-        const bool direct_image = layer_can_use_direct_gpu_image_raster(
-            layer, layer_time, transition_blur_padding);
-        if (transform_only_update && direct_image &&
+        if (direct_image &&
             (entry.texture || entry.pending_upload || !entry.pending_image.isNull()) &&
-            !entry.key.empty()) {
+            !entry.key.empty() && entry.key == key) {
             QPointF updated_origin;
             double updated_width = 0.0;
             double updated_height = 0.0;
@@ -864,7 +891,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         }
         if (transform_only_update && !local_geometry_changed &&
             (entry.texture || entry.pending_upload || !entry.pending_image.isNull()) &&
-            !entry.key.empty())
+            !entry.key.empty() && entry.key == key)
             continue;
         const bool dynamic_raster = layer.type != LayerType::TransitionInput &&
             (layer.type == LayerType::Clock ||
@@ -873,20 +900,24 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
              layer_has_non_transform_animation(base_key_layer) ||
              text_animator_stack_is_time_dependent(layer.text_animators));
         if (!model_changed && !dynamic_raster && !local_geometry_changed &&
-            !entry.key.empty())
+            !entry.key.empty() && entry.key == key)
             continue;
         if (entry.key == key)
             continue;
         /* Phase 12C consumes the immutable Phase 12B glyph layout first.
-         * Unsupported font/color-glyph/transition semantics stay on the exact
-         * compatibility raster, while successful text layers become atlas
-         * quads rendered into an inactive persistent target. */
-        const bool gpu_text_candidate = layer_can_use_gpu_text_raster(
-            layer, layer_time, !session->text_backend_unavailable);
+         * Text Animator transitions use the same per-glyph GPU path. Only an
+         * actually unsupported font/glyph or backend failure uses the
+         * compatibility raster. */
+        const bool scene_mask_placeholder_layer =
+            session->scene_mask_placeholder_preview_enabled && layer.use_as_scene_mask;
+        const bool gpu_text_candidate = !scene_mask_placeholder_layer &&
+            layer_can_use_gpu_text_raster(
+                layer, layer_time, !session->text_backend_unavailable);
         const bool gpu_primitive = !gpu_text_candidate &&
+            !scene_mask_placeholder_layer &&
             layer_can_use_gpu_primitive_raster(
                 layer, layer_time, !session->primitive_backend_unavailable);
-        entry.key = std::move(key);
+        entry.key = key;
         entry.base_box_width = current_box_width;
         entry.base_box_height = current_box_height;
 
@@ -964,9 +995,45 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                 ? session->preview_quality_scale : 1.0;
             const MotionBaseRaster raster = render_gpu_layer_base_raster(
                 session->title, layer, layer_time, raster_scale,
-                session->scene_mask_placeholder_preview_enabled);
+                session->scene_mask_placeholder_preview_enabled,
+                session->video_decode_client);
             entry.gpu_text = false;
             entry.gpu_primitive = false;
+
+            if (layer.type == LayerType::Video) {
+                /* Development Version 247: Video decode is asynchronous. Do not
+                 * cache an empty raster, and do not store a stale decoded frame
+                 * under the requested-frame key.  Older builds could publish an
+                 * empty texture when the layer was first added, then consider the
+                 * requested key satisfied until the playhead/transform changed.
+                 * During playback they could also cache the previous decoded
+                 * frame as if it were the current request, producing visibly
+                 * stepped video even when the editor FPS counter stayed healthy. */
+                if (raster.image.isNull()) {
+                    entry.key.clear();
+                    if (!entry.texture && !entry.pending_upload && entry.pending_image.isNull()) {
+                        entry.origin = QPointF(
+                            -eval_origin_x(layer, base_local_time) * current_box_width,
+                            -eval_origin_y(layer, base_local_time) * current_box_height);
+                        entry.logical_width = current_box_width;
+                        entry.logical_height = current_box_height;
+                        entry.layer_box_rect = QRectF(0.0, 0.0,
+                                                      current_box_width, current_box_height);
+                        entry.image_clip_rect = QRectF();
+                    }
+                    continue;
+                }
+                entry.key = key + "|video-delivered-frame=" +
+                    std::to_string(raster.video_frame_number) +
+                    "|video-requested-frame=" +
+                    std::to_string(raster.video_requested_frame_number) +
+                    "|video-exact=" +
+                    (raster.video_exact_frame ? std::string("1") : std::string("0"));
+                if (raster.video_loading_progress_percent >= 0)
+                    entry.key += "|video-loading-progress=" +
+                        std::to_string(raster.video_loading_progress_percent);
+            }
+
             entry.pending_image = raster.image;
             entry.origin = raster.origin;
             entry.logical_width = raster.logical_width > 0.0
@@ -1025,6 +1092,27 @@ void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session
             pair.second.effect_cache_key.clear();
             pair.second.key.clear();
         }
+    }
+}
+
+void title_gpu_render_session_set_editor_video_decode_client(
+    TitleGpuRenderSession *session, bool editor_client)
+{
+    if (!session || session->destroying.load())
+        return;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load())
+        return;
+    const bgl::video::VideoDecodeClient next = editor_client
+        ? bgl::video::VideoDecodeClient::Editor
+        : bgl::video::VideoDecodeClient::LiveOutput;
+    if (session->video_decode_client == next)
+        return;
+    session->video_decode_client = next;
+    session->frame_dirty = true;
+    for (auto &pair : session->layers) {
+        pair.second.effect_cache_key.clear();
+        pair.second.key.clear();
     }
 }
 

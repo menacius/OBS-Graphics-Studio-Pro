@@ -27,10 +27,13 @@ public:
 
     void bind_title(const std::shared_ptr<Title> &title, uint64_t revision);
     void transport(double title_seconds, bool playing, bool visible,
-                   bool discontinuity = false, bool reverse = false);
+                   bool discontinuity = false, bool reverse = false,
+                   double playback_speed = 1.0);
     void stop(bool allow_fade = true);
     void pump();
     void set_editor_preview(bool editor_preview);
+    void current_levels(float *left, float *right,
+                        uint64_t *last_update_ns = nullptr) const;
 
     int64_t duration_ms() const;
     int64_t time_ms() const;
@@ -63,6 +66,7 @@ private:
                                              uint64_t decode_epoch);
     bool decode_cancelled(uint64_t decode_epoch) const;
     void mix_block(int64_t start_sample, uint32_t frames, bool reverse,
+                   double playback_speed,
                    std::vector<float> &left, std::vector<float> &right);
 
     obs_source_t *source_ = nullptr;
@@ -98,6 +102,7 @@ private:
     bool playing_ = false;
     bool visible_ = false;
     bool reverse_ = false;
+    double playback_speed_ = 1.0;
     bool discontinuity_ = true;
     int64_t output_sample_cursor_ = 0;
     RealtimeMonitorCadence editor_monitor_cadence_;
@@ -116,6 +121,9 @@ private:
     std::atomic<uint64_t> log_transport_updates_{0};
     std::atomic<uint64_t> log_discontinuities_{0};
     std::atomic<uint64_t> log_late_repairs_{0};
+    std::atomic<float> level_left_{0.0f};
+    std::atomic<float> level_right_{0.0f};
+    std::atomic<uint64_t> level_update_ns_{0};
 };
 
 } // namespace bgl::audio

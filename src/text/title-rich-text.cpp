@@ -52,6 +52,32 @@ RichTextCharFormat rich_text_char_format_from_layer(const Layer &layer)
     f.fill.gradient_scale = layer.gradient_scale;
     f.fill.gradient_focal_x = layer.gradient_focal_x;
     f.fill.gradient_focal_y = layer.gradient_focal_y;
+    f.stroke.enabled = layer.outline_enabled &&
+                       layer.stroke_fill_type != 0 &&
+                       layer.stroke_width > 0.0f;
+    f.stroke.width = layer.stroke_width;
+    f.stroke.opacity = layer.outline_opacity;
+    f.stroke.on_front = layer.outline_on_front;
+    f.stroke.alignment = layer.outline_alignment;
+    f.stroke.antialias = layer.outline_antialias;
+    f.stroke.join_style = layer.outline_join_style;
+    f.stroke.fill.type = layer.stroke_fill_type == 2 ? 1 : 0;
+    f.stroke.fill.color = layer.stroke_color;
+    f.stroke.fill.gradient_type = layer.stroke_gradient_type;
+    f.stroke.fill.gradient_spread = layer.stroke_gradient_spread;
+    f.stroke.fill.gradient_start_color = layer.stroke_gradient_start_color;
+    f.stroke.fill.gradient_end_color = layer.stroke_gradient_end_color;
+    f.stroke.fill.gradient_start_pos = layer.stroke_gradient_start_pos;
+    f.stroke.fill.gradient_end_pos = layer.stroke_gradient_end_pos;
+    f.stroke.fill.gradient_start_opacity = layer.stroke_gradient_start_opacity;
+    f.stroke.fill.gradient_end_opacity = layer.stroke_gradient_end_opacity;
+    f.stroke.fill.gradient_opacity = layer.stroke_gradient_opacity;
+    f.stroke.fill.gradient_angle = layer.stroke_gradient_angle;
+    f.stroke.fill.gradient_center_x = layer.stroke_gradient_center_x;
+    f.stroke.fill.gradient_center_y = layer.stroke_gradient_center_y;
+    f.stroke.fill.gradient_scale = layer.stroke_gradient_scale;
+    f.stroke.fill.gradient_focal_x = layer.stroke_gradient_focal_x;
+    f.stroke.fill.gradient_focal_y = layer.stroke_gradient_focal_y;
     return f;
 }
 
@@ -174,8 +200,11 @@ RichTextFontScaleMetrics rich_text_font_scale_metrics(float scale_x, float scale
     const float sy = std::clamp(scale_y, 0.01f, 100.0f);
     RichTextFontScaleMetrics result;
     result.vertical_factor = sy;
+    /* Compatibility adapters may still need a normalized horizontal percent.
+     * The canonical GPU pipeline does not pass this value to QFont::setStretch;
+     * it transforms shaped cluster geometry explicitly. */
     result.horizontal_stretch_percent = std::clamp(
-        static_cast<int>(std::lround((sx / sy) * 100.0f)), 1, 4000);
+        static_cast<int>(std::lround(sx * 100.0f)), 1, 4000);
     return result;
 }
 
@@ -385,6 +414,40 @@ RichTextCharFormat rich_text_format_at(const RichTextDocument &doc, size_t byte_
     return result;
 }
 
+bool rich_text_document_has_anisotropic_scale(const RichTextDocument &doc,
+                                               float epsilon)
+{
+    const size_t text_size = doc.plain_text.size();
+    if (text_size == 0)
+        return false;
+
+    std::vector<size_t> boundaries;
+    boundaries.reserve(doc.ranges.size() * 2 + 1);
+    boundaries.push_back(0);
+    for (const RichTextRange &range : doc.ranges) {
+        const size_t start = std::min(range.start, text_size);
+        const size_t end = clamped_end(start, range.length, text_size);
+        if (start < text_size)
+            boundaries.push_back(start);
+        if (end < text_size)
+            boundaries.push_back(end);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+
+    const double tolerance = std::max(0.0, static_cast<double>(epsilon));
+    for (const size_t offset : boundaries) {
+        const RichTextCharFormat format = rich_text_format_at(doc, offset);
+        const double scale_x = static_cast<double>(format.scale_x);
+        const double scale_y = static_cast<double>(format.scale_y);
+        if (!std::isfinite(scale_x) || !std::isfinite(scale_y) ||
+            std::abs(scale_x - scale_y) > tolerance)
+            return true;
+    }
+    return false;
+}
+
 uint32_t rich_text_format_mask_at(const RichTextDocument &doc, size_t byte_offset)
 {
     uint32_t mask = 0;
@@ -458,6 +521,41 @@ void rich_text_document_apply_paragraph_format(RichTextDocument &doc,
         rich_text_merge_paragraph_format(effective, format, mask);
         block.format = effective;
         block.mask = (block.mask | mask) & RichTextParagraphAll;
+    }
+    doc.normalize();
+}
+
+void rich_text_document_apply_default_char_format(
+    RichTextDocument &doc, const RichTextCharFormat &format, uint32_t mask,
+    bool clear_matching_overrides)
+{
+    mask &= RichTextCharAll;
+    if (mask == 0)
+        return;
+    doc.normalize();
+    rich_text_merge_char_format(doc.default_format, format, mask);
+    if (clear_matching_overrides) {
+        for (auto &range : doc.ranges)
+            range.mask &= ~mask;
+        doc.typing_format_mask &= ~mask;
+        if (doc.typing_format_mask == 0)
+            doc.has_typing_format = false;
+    }
+    doc.normalize();
+}
+
+void rich_text_document_apply_default_paragraph_format(
+    RichTextDocument &doc, const RichTextParagraphFormat &format, uint32_t mask,
+    bool clear_matching_overrides)
+{
+    mask &= RichTextParagraphAll;
+    if (mask == 0)
+        return;
+    doc.normalize();
+    rich_text_merge_paragraph_format(doc.default_paragraph_format, format, mask);
+    if (clear_matching_overrides) {
+        for (auto &block : doc.blocks)
+            block.mask &= ~mask;
     }
     doc.normalize();
 }
@@ -686,6 +784,20 @@ static void rich_text_document_sync_layer_mirrors_impl(
     layer.char_scale_x = f.scale_x;
     layer.char_scale_y = f.scale_y;
     layer.baseline_shift = f.baseline_shift;
+    /* The RichTextDocument default is the sole authored static source. The
+     * scalar fields above and non-animated timeline properties are mirrors for
+     * legacy serialization/UI only. Animated tracks remain independent
+     * overlays and therefore retain their keyframes/static base. */
+    if (!layer.font_size_prop.is_animated())
+        layer.font_size_prop.static_value = f.font_size;
+    if (!layer.char_tracking_prop.is_animated())
+        layer.char_tracking_prop.static_value = f.tracking;
+    if (!layer.char_scale_x_prop.is_animated())
+        layer.char_scale_x_prop.static_value = f.scale_x;
+    if (!layer.char_scale_y_prop.is_animated())
+        layer.char_scale_y_prop.static_value = f.scale_y;
+    if (!layer.baseline_shift_prop.is_animated())
+        layer.baseline_shift_prop.static_value = f.baseline_shift;
     layer.text_style = f.text_style;
     layer.text_ligatures = f.ligatures;
     layer.text_stylistic_alternates = f.stylistic_alternates;
@@ -711,6 +823,33 @@ static void rich_text_document_sync_layer_mirrors_impl(
     layer.gradient_focal_y = f.fill.gradient_focal_y;
     set_static_argb_channels(layer.text_color_a, layer.text_color_r, layer.text_color_g,
                              layer.text_color_b, layer.text_color);
+
+    const RichTextStroke &stroke = f.stroke;
+    layer.outline_enabled = stroke.enabled && stroke.width > 0.0f;
+    layer.stroke_width = stroke.width;
+    layer.outline_opacity = stroke.opacity;
+    layer.outline_on_front = stroke.on_front;
+    layer.outline_alignment = stroke.alignment;
+    layer.outline_antialias = stroke.antialias;
+    layer.outline_join_style = stroke.join_style;
+    layer.stroke_fill_type = !stroke.enabled ? 0 :
+        (stroke.fill.type == 1 ? 2 : 1);
+    layer.stroke_color = stroke.fill.color;
+    layer.stroke_gradient_type = stroke.fill.gradient_type;
+    layer.stroke_gradient_spread = stroke.fill.gradient_spread;
+    layer.stroke_gradient_start_color = stroke.fill.gradient_start_color;
+    layer.stroke_gradient_end_color = stroke.fill.gradient_end_color;
+    layer.stroke_gradient_start_pos = stroke.fill.gradient_start_pos;
+    layer.stroke_gradient_end_pos = stroke.fill.gradient_end_pos;
+    layer.stroke_gradient_start_opacity = stroke.fill.gradient_start_opacity;
+    layer.stroke_gradient_end_opacity = stroke.fill.gradient_end_opacity;
+    layer.stroke_gradient_opacity = stroke.fill.gradient_opacity;
+    layer.stroke_gradient_angle = stroke.fill.gradient_angle;
+    layer.stroke_gradient_center_x = stroke.fill.gradient_center_x;
+    layer.stroke_gradient_center_y = stroke.fill.gradient_center_y;
+    layer.stroke_gradient_scale = stroke.fill.gradient_scale;
+    layer.stroke_gradient_focal_x = stroke.fill.gradient_focal_x;
+    layer.stroke_gradient_focal_y = stroke.fill.gradient_focal_y;
 
     const RichTextParagraphFormat &p = layer.rich_text.default_paragraph_format;
     layer.align_h = p.align_h;

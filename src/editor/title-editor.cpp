@@ -4,6 +4,7 @@
 #include "title-editor-internal.h"
 #include "title-logger.h"
 #include "title-video-runtime.h"
+#include "title-source.h"
 #include "layer-transform-3d.h"
 #include "title-snapshot.h"
 #include "build-info.h"
@@ -38,8 +39,12 @@
 #include <QStatusBar>
 #include <QPalette>
 #include <QStringList>
+#include <QToolButton>
+#include <QPainter>
+#include <QPaintEvent>
 
 #include <cmath>
+#include <algorithm>
 #include <chrono>
 #include <obs.h>
 

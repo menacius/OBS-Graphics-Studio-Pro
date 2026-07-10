@@ -50,16 +50,18 @@ assert "int64_t output_sample_cursor_ = 0" in audio_h
 assert "transport_sample_cursor" in direction
 assert "transport_sample_at" in direction
 assert "direction_changed = reverse != reverse_" in audio_cpp
-assert "transport_sample_at(start_sample, i, reverse)" in audio_cpp
+assert "scaled_offset" in audio_cpp
+assert "start_sample - scaled_offset" in audio_cpp
+assert "start_sample + scaled_offset" in audio_cpp
 assert "advance_transport_cursor(output_sample_cursor_, frames, reverse_)" in audio_cpp
 assert "editor_reverse_independent" in audio_cpp
 assert "data->editor_playback_reverse" in registration
 assert "data->playback_reverse" in tick
 
 # Delivery identity and migration ledger.
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
-assert "kCurrentDevelopmentVersion = 239" in schema
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build_info
+assert "kCurrentDevelopmentVersion = 243" in schema
 assert "case 189:" in schema
 
 print("PASS audio mixer visibility and reverse editor audio contracts")

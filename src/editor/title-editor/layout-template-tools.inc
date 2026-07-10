@@ -67,7 +67,11 @@
         ? std::vector<std::string>{result_layer->id}
         : std::vector<std::string>{};
     layers_->refresh();
-    canvas_->set_title(title_, true);
+    /* Never let the pre-undo QTextDocument commit into the restored title.
+     * set_title(..., commit_active_text=false) closes that adapter without a
+     * model write, then we optionally reopen editing from the restored
+     * canonical rich-text document below. */
+    canvas_->set_title(title_, true, false);
     timeline_->set_title(title_);
     synchronize_layer_selection(selection);
     force_next_title_visual_update();
@@ -870,6 +874,9 @@ void TitleEditor::delete_selected_layer()
 
     if (remaining.size() == title_->layers.size()) return;
 
+    for (const std::string &id : removed_ids)
+        bgl::video::FrameRuntime::instance().forget_layer(id);
+
     title_->layers = std::move(remaining);
     for (auto &layer : title_->layers) {
         if (!layer) continue;
@@ -911,6 +918,52 @@ void TitleEditor::cut_selected_layer()
     delete_selected_layer();
 }
 
+void TitleEditor::begin_text_property_transaction(const std::string &layer_id)
+{
+    if (restoring_undo_ || !title_ || layer_id.empty() ||
+        active_text_edit_layer_id_ != layer_id ||
+        !title_->find_layer(layer_id)) {
+        return;
+    }
+    if (text_property_transaction_active_ &&
+        text_property_transaction_layer_id_ == layer_id) {
+        return;
+    }
+
+    /* The canonical document is updated continuously while typing. Before a
+     * property operation starts, commit that current typed state as the true
+     * pre-property history boundary. */
+    if (inline_text_changed_since_undo_snapshot_) {
+        push_undo_snapshot();
+        inline_text_changed_since_undo_snapshot_ = false;
+    }
+    text_property_transaction_active_ = true;
+    text_property_transaction_layer_id_ = layer_id;
+}
+
+void TitleEditor::commit_text_property_transaction(const std::string &layer_id)
+{
+    if (restoring_undo_ || !title_ || layer_id.empty() ||
+        !title_->find_layer(layer_id)) {
+        text_property_transaction_active_ = false;
+        text_property_transaction_layer_id_.clear();
+        return;
+    }
+
+    /* Keyboard formatting inside the transparent QTextEdit mutates the
+     * RichTextDocument directly and intentionally clears adapter-only undo.
+     * Record its canonical post-state in title history exactly once. */
+    force_next_title_visual_update();
+    on_title_modified(true);
+    inline_text_changed_since_undo_snapshot_ = false;
+    text_property_transaction_active_ = false;
+    text_property_transaction_layer_id_.clear();
+    if (layers_)
+        layers_->refresh();
+    if (auto layer = title_->find_layer(layer_id))
+        update_layer_panels(layer, playhead_);
+}
+
 void TitleEditor::push_undo_snapshot()
 {
     if (!title_ || restoring_undo_) return;
@@ -928,6 +981,11 @@ void TitleEditor::restore_undo_snapshot(int index)
     if (!title_ || index < 0 || index >= (int)undo_stack_.size()) return;
     restoring_undo_ = true;
     auto snapshot = undo_stack_[(size_t)index];
+    const std::string text_edit_layer_before_restore =
+        active_text_edit_layer_id_;
+    inline_text_changed_since_undo_snapshot_ = false;
+    text_property_transaction_active_ = false;
+    text_property_transaction_layer_id_.clear();
     restore_title_authoring_snapshot(*title_, *snapshot);
     undo_index_ = index;
     if (!sel_layer_id_.empty() && !title_->find_layer(sel_layer_id_))
@@ -940,7 +998,10 @@ void TitleEditor::restore_undo_snapshot(int index)
      * restored model before lightweight transform-only presentation resumes. */
     force_next_title_visual_update();
     schedule_cache_invalidation();
-    canvas_->set_title(title_, true);
+    /* Discard the pre-restore QTextEdit adapter. Committing it here would
+     * immediately overwrite the canonical RichTextDocument restored from the
+     * undo snapshot, especially for mixed inline properties. */
+    canvas_->set_title(title_, true, false);
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
@@ -949,6 +1010,16 @@ void TitleEditor::restore_undo_snapshot(int index)
         synchronize_layer_selection({sel_layer_id_});
     else
         synchronize_layer_selection({});
+    active_text_edit_layer_id_.clear();
+    if (props_)
+        props_->set_active_text_edit_layer(std::string());
+    if (!text_edit_layer_before_restore.empty() &&
+        title_->find_layer(text_edit_layer_before_restore)) {
+        active_text_edit_layer_id_ = text_edit_layer_before_restore;
+        if (props_)
+            props_->set_active_text_edit_layer(active_text_edit_layer_id_);
+        canvas_->begin_text_edit_for_layer(active_text_edit_layer_id_);
+    }
     on_playhead_changed(std::clamp(playhead_, 0.0, title_->duration));
     restoring_undo_ = false;
     update_undo_redo_actions();
@@ -963,8 +1034,12 @@ void TitleEditor::restore_undo_snapshot(int index)
 
 void TitleEditor::update_undo_redo_actions()
 {
-    if (act_undo_) act_undo_->setEnabled(undo_index_ > 0);
-    if (act_redo_) act_redo_->setEnabled(undo_index_ >= 0 && undo_index_ + 1 < (int)undo_stack_.size());
+    const bool undo_available = undo_index_ > 0;
+    const bool redo_available = undo_index_ >= 0 &&
+        undo_index_ + 1 < (int)undo_stack_.size();
+    if (act_undo_) act_undo_->setEnabled(undo_available);
+    if (act_redo_) act_redo_->setEnabled(redo_available);
+    if (props_) props_->set_undo_redo_available(undo_available, redo_available);
 }
 
 void TitleEditor::update_title_bar()

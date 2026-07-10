@@ -33,8 +33,8 @@ layer_model = read("src/layers/layer-model.h")
 shape_editing = read("src/editor/title-editor/document-shape-editing.inc")
 transform_ui = read("src/editor/properties-panel/construction-transform-character.inc")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build
 
 # One real elapsed-time diagnostics window per footer tick.
 assert "struct DiagnosticsSample" in preview_h
@@ -103,6 +103,6 @@ assert "static parent-bind matrix" in readme
 assert "# Development Version 215 — Timeline and Graph Editor Completion" in changelog
 assert "All authored Transform values are stored and keyframed" in note
 assert "layer-local coordinates" in note
-assert "kCurrentDevelopmentVersion = 239" in schema
+assert "kCurrentDevelopmentVersion = 243" in schema
 
 print("Development Version 214 unified editor data model and coordinate audit contract passed")

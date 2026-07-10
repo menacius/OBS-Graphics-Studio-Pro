@@ -642,6 +642,16 @@ void TimelineWidget::paint_graph_editor(QPainter &p, const QRect &dirty)
         property_label(prop.name()));
     if (!channel_name.isEmpty()) graph_title += QStringLiteral(" · %1").arg(channel_name);
     p.drawText(8, 0, width() - 16, 18, Qt::AlignVCenter | Qt::AlignLeft, graph_title);
+    if (prop.name() == "video_source_time" && graph_view_mode_ == GraphViewMode::Speed &&
+        playhead_ >= owner->in_time && playhead_ <= owner->out_time) {
+        const double local_playhead = playhead_ - owner->in_time;
+        const double source_speed = prop.graph_speed(local_playhead);
+        if (source_speed < -1e-6) {
+            /* Clear indication when source time moves backward. */
+            p.drawText(8, 18, width() - 16, 18, Qt::AlignVCenter | Qt::AlignLeft,
+                       QStringLiteral("◀ Reverse source time"));
+        }
+    }
 }
 
 TimelineWidget::GraphHit TimelineWidget::graph_hit_test(const QPoint &pos) const

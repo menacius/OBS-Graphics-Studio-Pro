@@ -8,10 +8,10 @@ cmake=read("CMakeLists.txt"); build=read("src/core/build-info.h"); schema=read("
 runtime=read("src/effects/effect-runtime.cpp"); defaults=read("src/effects/effect-preset-catalog.cpp")
 shader=read("data/effect-transitions/shaders/noise/noise.effect"); panel=read("src/effects/effects-panel.cpp")
 loader=read("src/core/title-data.cpp"); manifest=json.loads(read("tests/test-suite-manifest.json"))
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 221:' in schema and 'case 224:' in schema and 'case 225:' in schema
-assert manifest["development_version"] == 239
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 221:' in schema and 'case 224:' in schema and 'case 225:' in schema
+assert manifest["development_version"] == 243
 assert '"bgl.builtin.noise"' in runtime and 'true, 4, LayerEffectSpace::LayerSpace' in runtime
 assert 'effect.effect_profile = 3; /* Clouds / fBM */' in defaults and 'case LayerEffectType::Grain:' in defaults
 for profile in ("Fine Grain","Film Grain","Digital Sensor","Clouds / fBM","Turbulence","Ridged","Cellular","Blue-noise Dither"):

@@ -1,5 +1,6 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
+uniform texture2d artifactTexture;
 uniform float4 layerUvRect;
 uniform float2 layerUvOrigin;
 uniform float2 layerUvAxisX;
@@ -30,6 +31,7 @@ uniform int temporalStability;
 
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 sampler_state pointSampler { Filter = Point; AddressU = Clamp; AddressV = Clamp; };
+sampler_state artifactSampler { Filter = Linear; AddressU = Wrap; AddressV = Wrap; };
 
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
@@ -67,6 +69,19 @@ float hash1(float2 p)
 float signed_hash(float2 p)
 {
     return hash1(p) * 2.0 - 1.0;
+}
+
+float4 sample_artifact_texture(float2 uv, float2 px, float frame, float profile_offset)
+{
+    float2 drift = noiseOffset * 0.00073 + float2(frame * 0.013 + seed * 0.017,
+                                                  frame * 0.007 - seed * 0.011);
+    float2 tiled = uv * max(1.0, scale * 0.052) + drift + profile_offset;
+    float4 tex = artifactTexture.Sample(artifactSampler, tiled);
+    float luma = dot(tex.rgb, float3(0.299, 0.587, 0.114));
+    float detail = abs(luma - 0.5) * 2.0;
+    float edge = dot(artifactTexture.Sample(pointSampler, tiled + float2(1.0 / 512.0, 0.0)).rgb, float3(0.299, 0.587, 0.114));
+    tex.a = saturate(max(detail, abs(edge - luma) * 3.0));
+    return tex;
 }
 
 float gate(float value, float threshold, float soft)
@@ -194,14 +209,15 @@ float4 composite_film(VertDataOut v_in, float2 luv, float2 px, float strength)
     float alpha = src.a;
     float3 rgb = straight_rgb(src);
 
-    float scratches = 0.0;
+    float4 artifact = sample_artifact_texture(luv, px, frame, float2(0.0, 0.0));
+    float scratches = artifact.r * 0.55;
     scratches += film_vertical_scratch(luv, px, frame, 2.0, strength);
     scratches += film_vertical_scratch(luv, px, frame, 7.0, strength) * 0.7;
     scratches += film_vertical_scratch(luv, px, frame, 13.0, strength) * 0.45;
     scratches = saturate(scratches);
     float fiber = film_hair_fiber(luv, px, frame, strength);
-    float dust = film_dust_blob(luv, px, frame, strength);
-    float blotch = film_blotch(luv, frame, strength);
+    float dust = saturate(film_dust_blob(luv, px, frame, strength) + artifact.g * artifact.a * 0.75);
+    float blotch = saturate(film_blotch(luv, frame, strength) + artifact.b * artifact.a * 0.55);
     float emulsion_grain = (organic_noise(px / max(1.0, scale * 1.25) + frame * 0.17, 4.0) - 0.5) * 0.25 * strength;
     float flicker = signed_hash(float2(frame, seed + 19.0)) * 0.20 * strength +
                     sin(phase * 6.28318 * 0.71 + seed) * 0.045 * strength;
@@ -253,8 +269,9 @@ float4 composite_analog(VertDataOut v_in, float2 luv, float2 px, float strength)
 {
     float phase = phase_value();
     float frame = floor(phase * 29.97);
+    float4 artifact = sample_artifact_texture(luv, px, frame, float2(0.23, 0.41));
     float row = floor(px.y / max(2.0, scale * 0.45));
-    float sync = gate(hash1(float2(row, floor(frame * 0.7) + seed)), 0.78 - strength * 0.36, 0.025 + softness * 0.08);
+    float sync = saturate(gate(hash1(float2(row, floor(frame * 0.7) + seed)), 0.78 - strength * 0.36, 0.025 + softness * 0.08) + artifact.r * artifact.a * 0.65);
     float fine_wobble = sin(luv.y * (18.0 + complexity * 3.0) + phase * 6.28318) * (0.0015 + 0.006 * strength);
     float slow_wobble = sin(luv.y * (3.2 + falloff * 6.0) + phase * 2.2 + seed) * (0.002 + 0.012 * strength);
     float head_switch = tracking_band(luv, px, frame, strength) * (0.012 + 0.065 * strength);
@@ -272,9 +289,9 @@ float4 composite_analog(VertDataOut v_in, float2 luv, float2 px, float strength)
 
     float scanline = 0.84 + 0.16 * sin(px.y * 3.14159265);
     float interlace = (frac((px.y + floor(frame)) * 0.5) < 0.5) ? 0.92 : 1.04;
-    float dropout = analog_dropout(px, frame, strength);
-    float static_fine = (grain_hash(px * float2(0.73, 0.91) + frame + seed) - 0.5) * 0.32 * strength;
-    float chroma_crawl = sin(px.x * 0.19 + frame * 0.75 + seed) * 0.035 * strength;
+    float dropout = saturate(analog_dropout(px, frame, strength) + artifact.g * artifact.a * 0.85);
+    float static_fine = ((artifact.b - 0.5) * 0.55 + (grain_hash(px * float2(0.73, 0.91) + frame + seed) - 0.5) * 0.32) * strength;
+    float chroma_crawl = (sin(px.x * 0.19 + frame * 0.75 + seed) * 0.035 + (artifact.r - artifact.b) * 0.045) * strength;
 
     rgb *= lerp(1.0, scanline * interlace, saturate(strength * 0.95 + softness * 0.5));
     rgb.r += chroma_crawl;
@@ -310,13 +327,14 @@ float4 composite_digital(VertDataOut v_in, float2 luv, float2 px, float strength
 {
     float phase = phase_value();
     float frame = floor(phase * 18.0);
+    float4 artifact = sample_artifact_texture(luv, px, frame, float2(0.61, 0.17));
     float block_px = max(4.0, scale * (0.7 + softness * 1.8));
     float2 block_count = max(float2(4.0, 4.0), layerPixelSize / block_px);
     float2 block = floor(luv * block_count + noiseOffset * 0.001);
     float2 block_local = frac(luv * block_count + noiseOffset * 0.001);
-    float glitch = digital_block_mask(block, frame, strength);
+    float glitch = saturate(digital_block_mask(block, frame, strength) + artifact.r * artifact.a * 0.95);
     float row = floor(px.y / max(4.0, block_px * 0.75));
-    float row_glitch = gate(hash1(float2(row, floor(frame * 0.63) + seed * 5.0)), 0.78 - strength * 0.26, 0.025 + softness * 0.06);
+    float row_glitch = saturate(gate(hash1(float2(row, floor(frame * 0.63) + seed * 5.0)), 0.78 - strength * 0.26, 0.025 + softness * 0.06) + artifact.g * artifact.a * 0.75);
     float2 packet_jump = float2(signed_hash(block + float2(seed, frame)) * 0.040,
                                 signed_hash(block + float2(frame, seed)) * 0.015) * strength * max(glitch, row_glitch);
     packet_jump.x += signed_hash(float2(row, frame + seed)) * row_glitch * 0.055 * strength;
@@ -338,8 +356,8 @@ float4 composite_digital(VertDataOut v_in, float2 luv, float2 px, float strength
     rgb += digital_ringing(v_in.uv + packet_jump, luv, block_count, strength) * max(glitch, row_glitch);
     rgb -= edge_line;
 
-    float packet = gate(hash1(block + float2(seed * 2.0, frame * 7.0)), 0.86 - strength * 0.28, 0.018 + softness * 0.06);
-    float sparkle = signed_hash(px * 0.37 + float2(frame, seed)) * packet * strength * 0.20;
+    float packet = saturate(gate(hash1(block + float2(seed * 2.0, frame * 7.0)), 0.86 - strength * 0.28, 0.018 + softness * 0.06) + artifact.b * artifact.a * 0.85);
+    float sparkle = ((artifact.r + artifact.g + artifact.b) / 3.0 - 0.5 + signed_hash(px * 0.37 + float2(frame, seed)) * 0.5) * packet * strength * 0.24;
     rgb += sparkle;
     rgb = lerp(rgb, effectColor.rgb, packet * strength * 0.28);
     rgb = lerp(rgb, secondaryColor.rgb, glitch * strength * 0.12);

@@ -276,21 +276,37 @@ static bool layer_uses_image_cue_value(const std::shared_ptr<Layer> &layer)
     return layer && layer->type == LayerType::Image;
 }
 
-static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &target, const std::string &value)
+static void apply_live_cue_layer_value(
+    Title &title, const std::shared_ptr<Layer> &target, int cue_row,
+    const std::string &value)
 {
     if (!target)
         return;
     target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && value.empty();
+    apply_live_text_cue_style_to_layer(title, *target, cue_row);
     if (target->type == LayerType::Image) {
         bgs::apply_exposed_image_cue_value(*target, value);
         return;
     }
+    if (!target->expose_text)
+        return;
 
     target->text_content = value;
     if (target->rich_text.empty())
         target->rich_text = rich_text_document_from_layer_defaults(*target);
     RichTextCharFormat insertion_format =
         rich_text_effective_typing_format(target->rich_text);
+    if (target->expose_fill_color) {
+        insertion_format.fill.type = 0;
+        insertion_format.fill.color = live_text_cue_effective_color(title, *target, cue_row, false);
+    }
+    if (target->expose_stroke_color) {
+        insertion_format.stroke.enabled = target->outline_enabled || target->stroke_width > 0.0f;
+        insertion_format.stroke.width = target->stroke_width;
+        insertion_format.stroke.opacity = target->outline_opacity;
+        insertion_format.stroke.fill.type = 0;
+        insertion_format.stroke.fill.color = live_text_cue_effective_color(title, *target, cue_row, true);
+    }
     rich_text_document_replace_text(target->rich_text, target->text_content, insertion_format,
                                         target->rich_text.has_typing_format
                                             ? target->rich_text.typing_format_mask : 0);
@@ -841,13 +857,21 @@ public:
         button_->setIcon(obs_icon("import.svg", palette().color(QPalette::ButtonText)));
         button_->setToolTip(bgl_tr("OBSTitles.Browse"));
         button_->setFixedSize(22, 22);
+        clear_button_ = new QToolButton(this);
+        clear_button_->setAutoRaise(true);
+        clear_button_->setCursor(Qt::ArrowCursor);
+        clear_button_->setText(QStringLiteral("×"));
+        clear_button_->setToolTip(QStringLiteral("Clear image"));
+        clear_button_->setFixedSize(22, 22);
 
         layout->addWidget(label_, 1);
         layout->addWidget(button_, 0);
+        layout->addWidget(clear_button_, 0);
 
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         label_->installEventFilter(this);
         button_->installEventFilter(this);
+        clear_button_->installEventFilter(this);
         set_path(path);
         connect(button_, &QToolButton::clicked, this, [this]() {
             const QString initial_dir = path_.isEmpty()
@@ -862,6 +886,11 @@ public:
             if (path_changed)
                 path_changed(selected);
         });
+        connect(clear_button_, &QToolButton::clicked, this, [this]() {
+            set_path(QString());
+            if (path_changed)
+                path_changed(QString());
+        });
     }
 
     QString path() const { return path_; }
@@ -871,6 +900,8 @@ public:
         read_only_ = read_only;
         if (button_)
             button_->setVisible(!read_only_);
+        if (clear_button_)
+            clear_button_->setVisible(!read_only_);
         setProperty("externalTableReadOnly", read_only_);
     }
 
@@ -899,7 +930,7 @@ protected:
 
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if ((watched == label_ || watched == button_) &&
+        if ((watched == label_ || watched == button_ || watched == clear_button_) &&
             event && event->type() == QEvent::ToolTip)
             return show_preview_tooltip(static_cast<QHelpEvent *>(event));
         return QWidget::eventFilter(watched, event);

@@ -920,7 +920,7 @@ void CanvasPreview::resume_inline_text_edit_after_gradient()
     update();
 }
 
-void CanvasPreview::commit_text_edit(bool accept_changes)
+void CanvasPreview::commit_text_edit(bool accept_changes, bool emit_commit_signal)
 {
     if (committing_inline_text_ || !inline_text_editor_ || inline_text_layer_id_.empty()) return;
     committing_inline_text_ = true;
@@ -960,7 +960,8 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
                     : QStringLiteral("<none>"))
         .arg(QString::fromStdString(layer_id))
         .arg(accept_changes ? 1 : 0));
-    emit text_edit_committed(layer_id);
+    if (emit_commit_signal)
+        emit text_edit_committed(layer_id);
 }
 
 bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
@@ -971,10 +972,36 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
         }
         if (event->type() == QEvent::KeyPress) {
             auto *key_event = static_cast<QKeyEvent *>(event);
+            const Qt::KeyboardModifiers history_modifiers =
+                key_event->modifiers() &
+                (Qt::ControlModifier | Qt::ShiftModifier |
+                 Qt::AltModifier | Qt::MetaModifier);
+            const bool undo_shortcut = key_event->key() == Qt::Key_Z &&
+                history_modifiers == Qt::ControlModifier;
+            const bool redo_shortcut =
+                (key_event->key() == Qt::Key_Z &&
+                 history_modifiers ==
+                     (Qt::ControlModifier | Qt::ShiftModifier)) ||
+                (key_event->key() == Qt::Key_Y &&
+                 history_modifiers == Qt::ControlModifier);
+            if (undo_shortcut && inline_text_editor_->document() &&
+                inline_text_editor_->document()->availableUndoSteps() == 0) {
+                emit title_undo_requested();
+                key_event->accept();
+                return true;
+            }
+            if (redo_shortcut && inline_text_editor_->document() &&
+                inline_text_editor_->document()->availableRedoSteps() == 0) {
+                emit title_redo_requested();
+                key_event->accept();
+                return true;
+            }
             auto apply_canonical_char_format = [this](uint32_t mask, auto mutate) {
                 if (!title_ || inline_text_layer_id_.empty()) return;
+                const std::string layer_id = inline_text_layer_id_;
+                emit text_property_change_started(layer_id);
                 sync_inline_text_layer(false);
-                auto layer = title_->find_layer(inline_text_layer_id_);
+                auto layer = title_->find_layer(layer_id);
                 if (!layer) return;
                 RichTextCharFormatSummary summary = summarize_rich_text_char_format(
                     *layer, true, std::max(0.0, playhead_ - layer->in_time));
@@ -985,7 +1012,12 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
                 apply_rich_text_format_to_layer_range(*layer, format, mask, true);
                 apply_active_text_char_format(layer->id, format, mask);
                 dirty_ = true;
-                emit text_edit_changed(layer->id);
+                /* Formatting is a canonical property transaction, not a text
+                 * insertion transaction. Do not emit text_edit_changed here:
+                 * that signal intentionally marks unsnapshotted typing and
+                 * would cancel the property transaction before its post-state
+                 * enters title-level Undo/Redo. */
+                emit text_property_change_committed(layer->id);
             };
             if (key_event->key() == Qt::Key_B && key_event->modifiers().testFlag(Qt::ControlModifier)) {
                 apply_canonical_char_format(RichTextCharBold,

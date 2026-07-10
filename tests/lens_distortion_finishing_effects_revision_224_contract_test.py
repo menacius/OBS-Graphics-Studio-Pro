@@ -21,10 +21,10 @@ registry = read("src/rendering/title-effect-registry.cpp")
 loader = read("src/core/title-data.cpp")
 manifest = json.loads(read("tests/test-suite-manifest.json"))
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 224:' in schema and 'case 225:' in schema
-assert manifest["development_version"] == 239
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 224:' in schema and 'case 225:' in schema
+assert manifest["development_version"] == 243
 
 # The repaired 222/223 effects must use the actual auxiliary Gaussian output.
 for effect in ("Sharpen", "UnsharpMask", "HighPass", "Clarity", "BilateralSharpen", "Glare", "Halation"):

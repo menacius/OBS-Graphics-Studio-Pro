@@ -47,7 +47,15 @@ float4 PSMotionBlur(VertDataOut v_in) : TARGET
     }
 
     float4 blurred = weight > 0.0 ? sum / weight : center;
-    return lerp(center, blurred, clamp(opacity, 0.0, 1.0));
+    float mix_amount = clamp(opacity, 0.0, 1.0);
+    float4 result = lerp(center, blurred, mix_amount);
+
+    // Development Version 250: preserve the current pixel alpha so applying
+    // Motion Blur does not make the object itself semi-transparent.  Pixels
+    // outside the original coverage can still receive the blurred trail.
+    result.a = max(center.a, result.a);
+    result.rgb = min(result.rgb, result.a.xxx);
+    return result;
 }
 
 technique Draw

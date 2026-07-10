@@ -40,10 +40,10 @@ def test_3d_preview_and_bounds_invalidation_are_not_transform_only():
 
 
 def test_version_229_manifest():
-    assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in read('CMakeLists.txt')
-    assert '#define BGL_DEVELOPMENT_VERSION "239"' in read('src/core/build-info.h')
+    assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in read('CMakeLists.txt')
+    assert '#define BGL_DEVELOPMENT_VERSION "243"' in read('src/core/build-info.h')
     manifest = read('tests/test-suite-manifest.json')
-    assert '"development_version": 239' in manifest
+    assert '"development_version": 243' in manifest
     assert 'video_layer_performance_ui_3d_revision_229_contract_test.py' in manifest
 
 if __name__ == '__main__':

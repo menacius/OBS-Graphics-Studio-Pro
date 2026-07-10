@@ -24,6 +24,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QSlider>
+#include <QProgressBar>
 #include <QPointF>
 #include <QPoint>
 #include <QRectF>
@@ -60,6 +61,8 @@ public:
     void refresh_media_range_controls();
     void set_title(std::shared_ptr<Title> t);
     void set_active_text_edit_layer(const std::string &layer_id);
+    void set_undo_redo_available(bool undo_available, bool redo_available);
+    void set_text_style_editor_mode(bool enabled);
 
 public slots:
     void apply_anchor_preset(int index);
@@ -74,6 +77,10 @@ signals:
     void audio_property_changed(bool commit_undo = false);
     void live_visual_changed();
     void runtime_visual_changed();
+    /* Emitted before a canonical inline character/paragraph mutation. The
+     * editor uses it to checkpoint text typed since the last title snapshot,
+     * so Undo reverses the property edit without also discarding that typing. */
+    void text_property_change_started(const std::string &layer_id);
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     void gradient_editor_active_changed(bool active);
     void gradient_model_refresh_requested();
@@ -81,6 +88,8 @@ signals:
     void recent_colors_changed();
     void color_library_add_requested(const QColor &color);
     void asset_overrides_requested(const std::string &layer_id);
+    void undo_requested();
+    void redo_requested();
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);
@@ -95,9 +104,11 @@ private:
     void notify_text_animator_changed(bool rebuild = true);
 
     void load_values();
+    void apply_text_style_editor_mode_visibility();
     void update_asset_playback_controls_visibility();
     void update_ticker_runtime_button();
     void update_transform_dimension_ui(bool supports_3d, LayerDimensionMode mode);
+    Q_INVOKABLE void reset_panel_defaults(const QString &panel_key);
 
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
@@ -107,24 +118,44 @@ private:
     bool loading_values_ = false;
     QTimer *ticker_status_timer_ = nullptr;
     bool numeric_label_dragging_ = false;
+    bool text_style_editor_mode_ = false;
+    QWidget *properties_history_row_ = nullptr;
     std::string active_text_edit_layer_id_;
+    QToolButton     *btn_properties_undo_ = nullptr;
+    QToolButton     *btn_properties_redo_ = nullptr;
     std::string external_gradient_layer_id_;
     int external_gradient_stop_index_ = -1;
     bool external_gradient_stroke_ = false;
 
     QGroupBox       *video_box_    = nullptr;
+    QGroupBox       *live_playback_box_ = nullptr;
     QDoubleSpinBox  *spn_video_in_ = nullptr;
     QDoubleSpinBox  *spn_video_out_ = nullptr;
+    QComboBox       *cmb_video_playback_ = nullptr;
+    QCheckBox       *chk_video_time_remap_ = nullptr;
+    QComboBox       *cmb_video_interpolation_ = nullptr;
+    QComboBox       *cmb_video_time_remap_audio_ = nullptr;
+    QCheckBox       *chk_video_optical_flow_ = nullptr;
+    QLabel          *lbl_video_optical_flow_status_ = nullptr;
+    QLabel          *lbl_video_loading_status_ = nullptr;
+    QProgressBar    *bar_video_loading_ = nullptr;
 
     QGroupBox       *audio_box_    = nullptr;
     QLineEdit       *edt_audio_source_ = nullptr;
+    QWidget         *row_audio_source_ = nullptr;
+    QWidget         *row_audio_preview_ = nullptr;
+    QWidget         *row_audio_range_ = nullptr;
+    QWidget         *row_audio_range_tools_ = nullptr;
     QToolButton     *btn_audio_browse_ = nullptr;
+    QToolButton     *btn_audio_clear_ = nullptr;
     QDoubleSpinBox  *spn_audio_in_ = nullptr;
     QDoubleSpinBox  *spn_audio_out_ = nullptr;
     QPushButton     *btn_audio_set_in_ = nullptr;
     QPushButton     *btn_audio_set_out_ = nullptr;
     QLabel          *lbl_audio_range_preview_ = nullptr;
     QLabel          *lbl_audio_range_feedback_ = nullptr;
+    QLabel          *lbl_audio_waveform_status_ = nullptr;
+    QProgressBar    *bar_audio_waveform_ = nullptr;
     QDoubleSpinBox  *spn_audio_volume_ = nullptr;
     QDoubleSpinBox  *spn_audio_pan_ = nullptr;
     QSlider         *sld_audio_volume_ = nullptr;
@@ -186,6 +217,7 @@ private:
     /* Text controls */
     QTextEdit       *txt_content_  = nullptr;
     QToolButton     *btn_text_external_binding_ = nullptr;
+    QComboBox       *cmb_clock_preset_ = nullptr;
     QComboBox       *cmb_font_     = nullptr;
     QComboBox       *cmb_font_style_ = nullptr;
     QSpinBox        *spn_size_     = nullptr;
@@ -231,6 +263,10 @@ private:
     QCheckBox       *chk_expose_text_ = nullptr;
     QCheckBox       *chk_exposed_hide_if_empty_ = nullptr;
     QCheckBox       *chk_exposed_single_value_ = nullptr;
+    QCheckBox       *chk_expose_fill_ = nullptr;
+    QCheckBox       *chk_exposed_fill_single_value_ = nullptr;
+    QCheckBox       *chk_expose_stroke_ = nullptr;
+    QCheckBox       *chk_exposed_stroke_single_value_ = nullptr;
     QCheckBox       *chk_ignore_persistence_ = nullptr;
     QButtonGroup    *grp_text_align_ = nullptr;
     QButtonGroup    *grp_text_valign_ = nullptr;
@@ -325,7 +361,7 @@ private:
     QDoubleSpinBox  *spn_corner_bevel_roundness_ = nullptr;
     QComboBox       *cmb_shape_type_ = nullptr;
     QButtonGroup    *grp_shape_type_ = nullptr;
-    QPushButton     *btn_shape_defaults_ = nullptr;
+    QToolButton     *btn_shape_defaults_ = nullptr;
     QCheckBox       *chk_size_lock_ = nullptr;
     QSpinBox        *spn_shape_points_ = nullptr;
     QSpinBox        *spn_shape_sides_ = nullptr;
@@ -375,6 +411,7 @@ private:
     QLineEdit       *edit_image_path_ = nullptr;
     QToolButton     *btn_image_external_binding_ = nullptr;
     QPushButton     *btn_pick_image_ = nullptr;
+    QToolButton     *btn_clear_image_ = nullptr;
     QComboBox       *cmb_image_scale_filter_ = nullptr;
     QComboBox       *cmb_image_box_mode_ = nullptr;
     QCheckBox       *chk_image_crop_when_outside_box_ = nullptr;
@@ -450,7 +487,7 @@ private:
     QPushButton     *btn_kf_appearance_stroke_ = nullptr;
     QPushButton     *btn_kf_appearance_opacity_ = nullptr;
     QPushButton     *btn_anchor_grid_ = nullptr;
-    QPushButton     *btn_transform_defaults_ = nullptr;
+    QToolButton     *btn_transform_defaults_ = nullptr;
     QGroupBox       *shadow_box_ = nullptr;
     QCheckBox       *chk_shadow_enabled_ = nullptr;
     QComboBox       *cmb_shadow_preset_ = nullptr;

@@ -95,7 +95,8 @@ public:
         bool editor_3d_normals_visible = false;
     };
 
-    void set_title(std::shared_ptr<Title> t, bool preserve_view = false);
+    void set_title(std::shared_ptr<Title> t, bool preserve_view = false,
+                   bool commit_active_text = true);
     ViewState view_state() const;
     void restore_view_state(const ViewState &state);
     void set_playhead(double t, bool playback_frame = false);
@@ -124,7 +125,7 @@ public:
     void set_snap_to_canvas_bounds(bool enabled);
     void set_snap_to_spacing(bool enabled);
     void refresh_preview();
-    int last_render_cost_ms() const { return last_full_quality_render_cost_ms_; }
+    int last_render_cost_ms() const { return last_render_cost_ms_; }
     double average_render_cost_ms() const { return average_render_cost_ms_; }
     struct DiagnosticsSample {
         double average_render_ms = 0.0;
@@ -219,6 +220,16 @@ signals:
     void text_edit_changed(const std::string &layer_id);
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
+    /* Canonical formatting shortcuts (Ctrl+B/I/U) do not belong to the
+     * QTextDocument undo stack. Bracket them explicitly in title history. */
+    void text_property_change_started(const std::string &layer_id);
+    void text_property_change_committed(const std::string &layer_id);
+    /* Inline QTextEdit keeps its native undo stack for actual typing.  When
+     * that stack is empty (for example after a canonical Properties-panel
+     * format edit rebuilt the adapter), route history to the title-wide
+     * authoritative snapshot stack instead. */
+    void title_undo_requested();
+    void title_redo_requested();
     void color_picker_previewed(const QColor &color);
     void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
@@ -559,7 +570,8 @@ private:
     void draw_snap_cursor_indicator(QPainter &p);
     void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
-    void commit_text_edit(bool accept_changes = true);
+    void commit_text_edit(bool accept_changes = true,
+                          bool emit_commit_signal = true);
     void position_text_editor();
     void configure_inline_text_editor(const Layer &layer);
     bool sync_inline_text_layer(bool mark_dirty);
@@ -664,6 +676,8 @@ private:
     bool force_live_full_quality_render_ = false;
     double frame_image_preview_scale_ = 1.0;
     int last_full_quality_render_cost_ms_ = 0;
+    int last_adaptive_render_cost_ms_ = 0;
+    int last_render_cost_ms_ = 0;
     qint64 render_cost_accumulator_ns_ = 0;
     int render_cost_sample_count_ = 0;
     double average_render_cost_ms_ = 0.0;

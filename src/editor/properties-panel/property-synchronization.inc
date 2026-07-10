@@ -705,24 +705,28 @@ void PropertiesPanel::refresh_media_range_controls()
         spin->setValue(value);
     };
 
-    if (layer_->type == LayerType::Video) {
+    const bool is_video = layer_->type == LayerType::Video;
+    const bool is_audio = layer_->type == LayerType::Audio;
+    if (is_video) {
         set_double(spn_video_in_, layer_->video_in_point);
         set_double(spn_video_out_, layer_->video_out_point);
-        return;
     }
 
-    if (layer_->type == LayerType::Audio) {
-        set_double(spn_audio_in_, layer_->audio_in_point);
-        set_double(spn_audio_out_, layer_->audio_out_point);
+    // if (is_audio) { legacy contract boundary; video audio now reuses the same controls.
+    if (is_video || is_audio) {
+        const double media_in = is_video ? layer_->video_in_point : layer_->audio_in_point;
+        const double media_out = is_video ? layer_->video_out_point : layer_->audio_out_point;
+        set_double(spn_audio_in_, media_in);
+        set_double(spn_audio_out_, media_out);
         const double clip_span = std::max(0.0, layer_->out_time - layer_->in_time);
         const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0, clip_span);
-        const double media_at_playhead = layer_->audio_in_point + clip_local;
+        const double media_at_playhead = media_in + clip_local;
         const bool inside = playhead_ >= layer_->in_time && playhead_ <= layer_->out_time;
         if (lbl_audio_range_preview_) {
             lbl_audio_range_preview_->setText(QStringLiteral(
                 "Preview In %1 s  |  Out %2 s  |  Strip %3 s")
-                .arg(layer_->audio_in_point, 0, 'f', 2)
-                .arg(layer_->audio_out_point, 0, 'f', 2)
+                .arg(media_in, 0, 'f', 2)
+                .arg(media_out, 0, 'f', 2)
                 .arg(clip_span, 0, 'f', 2));
         }
         if (lbl_audio_range_feedback_) {
@@ -1001,6 +1005,7 @@ void PropertiesPanel::load_values()
     if (!layer_) {
         if (transform_box_) transform_box_->setVisible(false);
         if (video_box_) video_box_->setVisible(false);
+        if (live_playback_box_) live_playback_box_->setVisible(false);
         if (audio_box_) audio_box_->setVisible(false);
         if (asset_box_) asset_box_->setVisible(false);
         if (appearance_box_) appearance_box_->setVisible(false);
@@ -1194,29 +1199,130 @@ void PropertiesPanel::load_values()
     const bool is_video = layer_->type == LayerType::Video;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
     const bool supports_outline = is_text_like || is_rect || is_image;
+    const bool video_has_audio = is_video && title_ && std::any_of(title_->layers.begin(), title_->layers.end(),
+        [this](const std::shared_ptr<Layer> &candidate) {
+            return candidate && candidate->type == LayerType::Audio &&
+                   candidate->linked_media_stream &&
+                   candidate->linked_media_layer_id == layer_->id;
+        });
+    const bool show_audio_controls = is_audio || video_has_audio;
+    auto set_form_row_visible = [](QWidget *field, bool visible) {
+        if (!field)
+            return;
+        field->setVisible(visible);
+        for (QWidget *cursor = field; cursor; cursor = cursor->parentWidget()) {
+            QWidget *parent = cursor->parentWidget();
+            if (!parent)
+                continue;
+            if (auto *form = qobject_cast<QFormLayout *>(parent->layout())) {
+                cursor->setVisible(visible);
+                if (QWidget *label = form->labelForField(cursor))
+                    label->setVisible(visible);
+                break;
+            }
+        }
+    };
+
+    const bool show_fill_expose = (is_text_like || is_rect) && !is_scene_mask_layer;
+    const bool show_stroke_expose = (is_text_like || is_rect) && supports_outline;
+    const bool show_fill_single_value = show_fill_expose && layer_->expose_fill_color;
+    const bool show_stroke_single_value = show_stroke_expose && layer_->expose_stroke_color;
+    set_form_row_visible(chk_expose_fill_, show_fill_expose);
+    if (chk_exposed_fill_single_value_)
+        chk_exposed_fill_single_value_->setEnabled(show_fill_single_value);
+    set_form_row_visible(chk_exposed_fill_single_value_, show_fill_single_value);
+    set_form_row_visible(chk_expose_stroke_, show_stroke_expose);
+    if (chk_exposed_stroke_single_value_)
+        chk_exposed_stroke_single_value_->setEnabled(show_stroke_single_value);
+    set_form_row_visible(chk_exposed_stroke_single_value_, show_stroke_single_value);
+
     if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer && !is_audio);
     if (video_box_) video_box_->setVisible(is_video);
-    if (audio_box_) audio_box_->setVisible(is_audio);
+    if (live_playback_box_) live_playback_box_->setVisible(false);
+    if (audio_box_) {
+        audio_box_->setVisible(show_audio_controls);
+        audio_box_->setTitle(is_video ? QStringLiteral("Video Audio") : bgl_tr("OBSTitles.AudioLayer"));
+    }
+    if (btn_audio_browse_) btn_audio_browse_->setVisible(is_audio);
     if (asset_box_) asset_box_->setVisible(is_asset);
     if (is_video) {
         normalize_layer_media_range_to_timeline_span(*layer_, false);
         if (spn_video_in_) spn_video_in_->setValue(layer_->video_in_point);
         if (spn_video_out_) spn_video_out_->setValue(layer_->video_out_point);
+        if (cmb_video_playback_) {
+            const int i = cmb_video_playback_->findData(std::clamp(layer_->video_playback_mode, 0, 1));
+            cmb_video_playback_->setCurrentIndex(i >= 0 ? i : 0);
+        }
+        if (chk_video_time_remap_) {
+            QSignalBlocker block(chk_video_time_remap_);
+            chk_video_time_remap_->setChecked(layer_->video_time_remap_enabled);
+        }
+        if (cmb_video_interpolation_) {
+            QSignalBlocker block(cmb_video_interpolation_);
+            const int i = cmb_video_interpolation_->findData((int)layer_->video_frame_interpolation);
+            cmb_video_interpolation_->setCurrentIndex(i >= 0 ? i : 0);
+        }
+        if (cmb_video_time_remap_audio_) {
+            QSignalBlocker block(cmb_video_time_remap_audio_);
+            const int i = cmb_video_time_remap_audio_->findData((int)layer_->video_time_remap_audio_mode);
+            cmb_video_time_remap_audio_->setCurrentIndex(i >= 0 ? i : 1);
+        }
+        if (chk_video_optical_flow_) {
+            QSignalBlocker block(chk_video_optical_flow_);
+            chk_video_optical_flow_->setChecked(layer_->video_optical_flow_enabled);
+        }
+        if (lbl_video_optical_flow_status_) {
+            const bool needs_analysis = layer_->video_frame_interpolation == VideoFrameInterpolationMode::MotionCompensated &&
+                layer_->video_optical_flow_enabled;
+            const int progress = bgl::video::FrameRuntime::instance().optical_flow_progress_for_layer(*layer_);
+            lbl_video_optical_flow_status_->setText(needs_analysis
+                ? QStringLiteral("Background analysis %1% · draft preview until ready").arg(progress)
+                : QStringLiteral("Nearest/frame-blend modes do not require optical-flow analysis"));
+        }
+        const bgl::video::VideoFrameLoadingStatus video_status =
+            bgl::video::FrameRuntime::instance().loading_status_for_layer(*layer_);
+        if (lbl_video_loading_status_) {
+            QString label = QString::fromStdString(video_status.label);
+            if (video_status.proxy_stale)
+                label += QStringLiteral(" · proxy stale");
+            lbl_video_loading_status_->setText(label);
+        }
+        if (bar_video_loading_) {
+            bar_video_loading_->setValue(std::clamp(video_status.progress_percent, 0, 100));
+            bar_video_loading_->setVisible(video_status.progress_percent < 100 ||
+                                           video_status.proxy_generating ||
+                                           video_status.decode_pending);
+        }
     }
-    if (is_audio) {
+    // if (is_audio) { legacy contract boundary; video audio now reuses the same controls.
+    if (show_audio_controls) {
         normalize_layer_media_range_to_timeline_span(*layer_, false);
-        if (edt_audio_source_) edt_audio_source_->setText(QString::fromStdString(layer_->audio_source));
-        if (spn_audio_in_) spn_audio_in_->setValue(layer_->audio_in_point);
-        if (spn_audio_out_) spn_audio_out_->setValue(layer_->audio_out_point);
+        const double media_in = is_video ? layer_->video_in_point : layer_->audio_in_point;
+        const double media_out = is_video ? layer_->video_out_point : layer_->audio_out_point;
+        const std::string media_source = is_video ? layer_->video_source : layer_->audio_source;
+        if (edt_audio_source_) edt_audio_source_->setText(QString::fromStdString(media_source));
+        /* Development Version 250: for a selected Video layer, the Video
+         * section owns source/range/time controls and the unified Live
+         * Properties section owns synchronized/independent transport. Do not
+         * repeat those controls in Video Audio; keep this block focused on
+         * waveform, gain/pan/fade, mute/solo and audio effects. */
+        set_form_row_visible(row_audio_source_, !is_video);
+        set_form_row_visible(row_audio_preview_, !is_video);
+        set_form_row_visible(row_audio_range_, !is_video);
+        set_form_row_visible(row_audio_range_tools_, !is_video);
+        set_form_row_visible(cmb_audio_playback_, !is_video);
+        set_form_row_visible(chk_audio_loop_, !is_video);
+        set_form_row_visible(chk_audio_independent_, !is_video);
+        if (spn_audio_in_) spn_audio_in_->setValue(media_in);
+        if (spn_audio_out_) spn_audio_out_->setValue(media_out);
         const double clip_span = std::max(0.0, layer_->out_time - layer_->in_time);
-        const double media_out = layer_->audio_out_point;
         const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0, clip_span);
-        const double media_at_playhead = layer_->audio_in_point + clip_local;
+        const double media_at_playhead = media_in + clip_local;
         const bool inside = playhead_ >= layer_->in_time && playhead_ <= layer_->out_time;
         if (lbl_audio_range_preview_) {
             lbl_audio_range_preview_->setText(QStringLiteral(
                 "Preview In %1 s  |  Out %2 s  |  Strip %3 s")
-                .arg(layer_->audio_in_point, 0, 'f', 2)
+                .arg(media_in, 0, 'f', 2)
                 .arg(media_out, 0, 'f', 2)
                 .arg(clip_span, 0, 'f', 2));
         }
@@ -1226,6 +1332,39 @@ void PropertiesPanel::load_values()
                 .arg(inside ? QStringLiteral("Inside") : QStringLiteral("Outside"))
                 .arg(media_at_playhead, 0, 'f', 2));
             lbl_audio_range_feedback_->setProperty("insideRange", inside);
+        }
+        const Layer *waveform_layer = layer_.get();
+        if (is_video && title_) {
+            for (const auto &candidate : title_->layers) {
+                if (candidate && candidate->type == LayerType::Audio &&
+                    candidate->linked_media_stream &&
+                    candidate->linked_media_layer_id == layer_->id) {
+                    waveform_layer = candidate.get();
+                    break;
+                }
+            }
+        }
+        if (lbl_audio_waveform_status_ && waveform_layer) {
+            const int waveform_progress = std::clamp(waveform_layer->audio_waveform_progress_percent, 0, 100);
+            QString waveform_label = QString::fromStdString(waveform_layer->audio_waveform_progress_label);
+            if (waveform_label.isEmpty()) {
+                waveform_label = waveform_layer->audio_waveform_generating
+                    ? QStringLiteral("Preparing waveform")
+                    : (waveform_layer->audio_waveform.empty()
+                        ? QStringLiteral("Waveform not generated yet")
+                        : QStringLiteral("Waveform ready"));
+            }
+            if (waveform_layer->audio_waveform_generating)
+                waveform_label += QStringLiteral(" %1%").arg(waveform_progress);
+            lbl_audio_waveform_status_->setText(waveform_label);
+        }
+        if (bar_audio_waveform_ && waveform_layer) {
+            const int waveform_progress = std::clamp(waveform_layer->audio_waveform_progress_percent, 0, 100);
+            bar_audio_waveform_->setValue(waveform_layer->audio_waveform_generating
+                ? waveform_progress
+                : (waveform_layer->audio_waveform.empty() ? 0 : 100));
+            bar_audio_waveform_->setVisible(waveform_layer->audio_waveform_generating ||
+                                            waveform_layer->audio_waveform.empty());
         }
         const double audio_local_time = std::clamp(playhead_ - layer_->in_time, 0.0,
             std::max(0.0, layer_->out_time - layer_->in_time));
@@ -1244,11 +1383,13 @@ void PropertiesPanel::load_values()
         if (spn_audio_fade_in_) spn_audio_fade_in_->setValue(layer_->audio_fade_in);
         if (spn_audio_fade_out_) spn_audio_fade_out_->setValue(layer_->audio_fade_out);
         if (cmb_audio_fade_curve_) { const int i=cmb_audio_fade_curve_->findData((int)layer_->audio_fade_curve); cmb_audio_fade_curve_->setCurrentIndex(i>=0?i:0); }
-        if (cmb_audio_playback_) { const int i=cmb_audio_playback_->findData((int)layer_->audio_playback_mode); cmb_audio_playback_->setCurrentIndex(i>=0?i:0); }
+        const AudioPlaybackMode playback_mode = is_video && layer_->video_loop
+            ? AudioPlaybackMode::Loop : layer_->audio_playback_mode;
+        if (cmb_audio_playback_) { const int i=cmb_audio_playback_->findData((int)playback_mode); cmb_audio_playback_->setCurrentIndex(i>=0?i:0); }
         if (chk_audio_mute_) chk_audio_mute_->setChecked(layer_->audio_muted);
         if (chk_audio_solo_) chk_audio_solo_->setChecked(layer_->audio_solo);
-        if (chk_audio_loop_) chk_audio_loop_->setChecked(layer_->audio_loop);
-        if (chk_audio_independent_) chk_audio_independent_->setChecked(layer_->audio_independent);
+        if (chk_audio_loop_) chk_audio_loop_->setChecked(is_video ? (layer_->video_loop || layer_->audio_loop) : layer_->audio_loop);
+        if (chk_audio_independent_) chk_audio_independent_->setChecked(is_video ? (layer_->video_playback_mode == 1 || layer_->audio_independent) : layer_->audio_independent);
     }
     if (is_asset) {
         if (lbl_asset_name_) {
@@ -1286,7 +1427,7 @@ void PropertiesPanel::load_values()
         live_edit_box_->setVisible(is_rect || is_text_like || is_image ||
                                    is_adjustment || is_color_solid);
     if (bullets_box_) bullets_box_->setVisible(false);
-    text_box_->setTitle("Character");
+    text_box_->setTitle(is_text ? QStringLiteral("Character") : QString());
     if (row_text_color_) row_text_color_->setVisible(false);
     if (btn_kf_text_color_) btn_kf_text_color_->setVisible(false);
     if (auto *char_grid = qobject_cast<QGridLayout *>(text_box_->layout())) {
@@ -1304,6 +1445,12 @@ void PropertiesPanel::load_values()
             if (auto *label = label_item->widget())
                 label->setVisible(false);
         }
+        if (auto *label_item = char_grid->itemAtPosition(8, 0)) {
+            if (auto *label = label_item->widget())
+                label->setVisible(is_clock);
+        }
+        if (cmb_clock_preset_)
+            cmb_clock_preset_->setVisible(is_clock);
     }
     txt_content_->setPlaceholderText(is_clock ? "H:i:s" : bgl_tr("OBSTitles.EnterTextPlaceholder"));
     if (cmb_auto_default_style_ && cmb_auto_rule_style_) {
@@ -1447,8 +1594,9 @@ void PropertiesPanel::load_values()
         }
     }
     if (auto *live_form = qobject_cast<QFormLayout *>(live_edit_box_ ? live_edit_box_->layout() : nullptr)) {
-        const bool show_scene_mask = is_rect || is_text_like;
+        const bool show_scene_mask = layer_type_can_be_scene_mask(layer_->type);
         const bool show_expose_to_dock = is_text || is_ticker || layer_->type == LayerType::Image;
+        const bool show_video_live_playback = layer_->type == LayerType::Video;
         const bool show_exposed_options = show_expose_to_dock && layer_->expose_text;
         const bool show_ignore_persistence = true;
         if (chk_scene_mask_) {

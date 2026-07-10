@@ -28,6 +28,19 @@ namespace {
 
 constexpr float kInfinity = 1.0e20f;
 
+struct GlyphSdfWorkspace {
+    std::vector<uint8_t> alpha;
+    std::vector<float> first_pass;
+    std::vector<float> distance_inside;
+    std::vector<float> distance_outside;
+    std::vector<float> input;
+    std::vector<float> output;
+    std::vector<int> sites;
+    std::vector<float> boundaries;
+};
+
+static thread_local GlyphSdfWorkspace glyph_sdf_workspace;
+
 void distance_transform_1d(const float *input, float *output,
                            int count, std::vector<int> &sites,
                            std::vector<float> &boundaries)
@@ -66,39 +79,44 @@ void distance_transform_1d(const float *input, float *output,
     }
 }
 
-std::vector<float> squared_distance_field(const std::vector<uint8_t> &mask,
-                                          int width, int height,
-                                          bool feature_is_inside)
+void squared_distance_field(const std::vector<uint8_t> &mask,
+                            int width, int height,
+                            bool feature_is_inside,
+                            std::vector<float> &result,
+                            GlyphSdfWorkspace &workspace)
 {
     const size_t count = static_cast<size_t>(width) * height;
-    std::vector<float> first(count, kInfinity);
-    std::vector<float> second(count, kInfinity);
+    workspace.first_pass.resize(count);
+    result.resize(count);
+    std::fill(workspace.first_pass.begin(), workspace.first_pass.end(), kInfinity);
+    std::fill(result.begin(), result.end(), kInfinity);
     const int maximum = std::max(width, height);
-    std::vector<float> input(maximum, kInfinity);
-    std::vector<float> output(maximum, kInfinity);
-    std::vector<int> sites(maximum, 0);
-    std::vector<float> boundaries(static_cast<size_t>(maximum) + 1, 0.0f);
+    workspace.input.resize(maximum);
+    workspace.output.resize(maximum);
+    workspace.sites.resize(maximum);
+    workspace.boundaries.resize(static_cast<size_t>(maximum) + 1);
 
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             const bool inside = mask[static_cast<size_t>(y) * width + x] >= 128;
-            input[x] = inside == feature_is_inside ? 0.0f : kInfinity;
+            workspace.input[x] = inside == feature_is_inside ? 0.0f : kInfinity;
         }
-        distance_transform_1d(input.data(), output.data(), width,
-                              sites, boundaries);
+        distance_transform_1d(workspace.input.data(), workspace.output.data(),
+                              width, workspace.sites, workspace.boundaries);
         for (int x = 0; x < width; ++x)
-            first[static_cast<size_t>(y) * width + x] = output[x];
+            workspace.first_pass[static_cast<size_t>(y) * width + x] =
+                workspace.output[x];
     }
 
     for (int x = 0; x < width; ++x) {
         for (int y = 0; y < height; ++y)
-            input[y] = first[static_cast<size_t>(y) * width + x];
-        distance_transform_1d(input.data(), output.data(), height,
-                              sites, boundaries);
+            workspace.input[y] =
+                workspace.first_pass[static_cast<size_t>(y) * width + x];
+        distance_transform_1d(workspace.input.data(), workspace.output.data(),
+                              height, workspace.sites, workspace.boundaries);
         for (int y = 0; y < height; ++y)
-            second[static_cast<size_t>(y) * width + x] = output[y];
+            result[static_cast<size_t>(y) * width + x] = workspace.output[y];
     }
-    return second;
 }
 
 } // namespace
@@ -138,24 +156,27 @@ std::vector<uint8_t> build_glyph_sdf(const uint8_t *source, int source_width,
         output_height = 0;
         return {};
     }
-    std::vector<uint8_t> alpha(output_width_size * output_height_size, 0);
+    GlyphSdfWorkspace &workspace = glyph_sdf_workspace;
+    const size_t pixel_count = output_width_size * output_height_size;
+    workspace.alpha.resize(pixel_count);
+    std::fill(workspace.alpha.begin(), workspace.alpha.end(), 0);
     for (int y = 0; y < source_height; ++y) {
         const uint8_t *row = source + static_cast<size_t>(y) * source_stride;
         std::copy(row, row + source_width,
-                  alpha.begin() +
+                  workspace.alpha.begin() +
                       static_cast<size_t>(y + padding) * output_width + padding);
     }
 
-    const std::vector<float> distance_inside = squared_distance_field(
-        alpha, output_width, output_height, true);
-    const std::vector<float> distance_outside = squared_distance_field(
-        alpha, output_width, output_height, false);
-    std::vector<uint8_t> sdf(alpha.size(), 0);
+    squared_distance_field(workspace.alpha, output_width, output_height, true,
+                           workspace.distance_inside, workspace);
+    squared_distance_field(workspace.alpha, output_width, output_height, false,
+                           workspace.distance_outside, workspace);
+    std::vector<uint8_t> sdf(pixel_count, 0);
     const float denominator = static_cast<float>(spread) * 2.0f;
     for (size_t i = 0; i < sdf.size(); ++i) {
-        float signed_distance = std::sqrt(distance_outside[i]) -
-                                std::sqrt(distance_inside[i]);
-        signed_distance += static_cast<float>(alpha[i]) / 255.0f - 0.5f;
+        float signed_distance = std::sqrt(workspace.distance_outside[i]) -
+                                std::sqrt(workspace.distance_inside[i]);
+        signed_distance += static_cast<float>(workspace.alpha[i]) / 255.0f - 0.5f;
         const float normalized = std::clamp(
             0.5f + signed_distance / denominator, 0.0f, 1.0f);
         sdf[i] = static_cast<uint8_t>(std::lround(normalized * 255.0f));

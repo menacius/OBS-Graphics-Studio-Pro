@@ -1972,11 +1972,12 @@ static gs_texture_t *render_gpu_session_locked(
                               entry.pending_image.isNull();
         const bool ready = upload_gpu_layer_raster(session, entry);
         if (was_pending && !ready && !retiring) {
-            if (optional_gpu_raster) {
+            if (optional_gpu_raster && entry.texture) {
                 /* GPU text and primitive rasters are accelerators. A failure
-                 * must never suppress the complete title. Their render helpers
-                 * invalidate the layer key and request a compatibility rebuild;
-                 * publish all other ready layers immediately. */
+                 * must never suppress an already-visible complete title. Their
+                 * render helpers invalidate the layer key and request a
+                 * compatibility rebuild; publish all other ready layers while
+                 * retaining the last valid optional texture. */
                 BGL_LOG_WARNING("GpuPipeline", QStringLiteral(
                     "stage=optional-raster-fail-open layer=%1 kind=%2 retainedTexture=%3")
                     .arg(QString::fromStdString(pair.first))
@@ -1984,6 +1985,11 @@ static gs_texture_t *render_gpu_session_locked(
                                           : QStringLiteral("primitive"))
                     .arg(entry.texture ? 1 : 0));
             } else {
+                /* Development Version 248: on a fresh editor session there may
+                 * be no retained texture yet. Publishing anyway produces a
+                 * blank text/vector layer until some unrelated interaction
+                 * invalidates the frame. Defer first-frame publication and let
+                 * the compatibility raster rebuild run instead. */
                 all_required_rasters_ready = false;
             }
         }

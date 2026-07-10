@@ -1,6 +1,15 @@
 #include "bgl-modern-controls.h"
 
 #include <QAbstractScrollArea>
+#include <QTextEdit>
+#include <QSlider>
+#include <QPushButton>
+#include <QToolButton>
+#include <QLineEdit>
+#include <QComboBox>
+#include <QAbstractItemView>
+#include <QAbstractSpinBox>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QBoxLayout>
 #include <QDoubleSpinBox>
@@ -15,8 +24,10 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMimeData>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <QPalette>
 #include <QPixmap>
@@ -784,6 +795,7 @@ void BglCollapsiblePanel::addHeaderWidget(QWidget *widget)
     if (!widget || !header_actions_)
         return;
     widget->setParent(header_);
+    bgl_apply_transform_panel_widget_style(widget);
     widget->setMaximumHeight(kPanelHeaderHeight - 6);
     header_actions_->addWidget(widget, 0, Qt::AlignVCenter);
     header_->updateGeometry();
@@ -795,6 +807,7 @@ void BglCollapsiblePanel::addHeaderLeadingWidget(QWidget *widget)
     if (!widget || !header_leading_)
         return;
     widget->setParent(header_);
+    bgl_apply_transform_panel_widget_style(widget);
     widget->setMaximumHeight(kPanelHeaderHeight - 6);
     header_leading_->addWidget(widget, 0, Qt::AlignVCenter);
     header_->updateGeometry();
@@ -1051,6 +1064,180 @@ bool BglCollapsiblePanel::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
+
+QString bgl_transform_panel_control_style(const QPalette &palette)
+{
+    const QColor control_bg = palette.color(QPalette::Base);
+    const QColor control_text = palette.color(QPalette::Text);
+    const QColor button_bg = palette.color(QPalette::Button);
+    const QColor border = palette.color(QPalette::Mid);
+    const QColor highlight = palette.color(QPalette::Highlight);
+    const QColor hover_bg = button_bg.lightness() < 128 ? button_bg.lighter(122)
+                                                        : button_bg.darker(108);
+    return QStringLiteral(
+        "QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
+        "border:1px solid %3;border-radius:2px;padding:1px 2px;font-size:10px;"
+        "min-height:18px;max-height:20px;selection-background-color:%4;}"
+        "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}"
+        "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,"
+        "QSpinBox::up-button,QSpinBox::down-button{width:12px;background:%5;border-left:1px solid %3;}"
+        "QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover,"
+        "QSpinBox::up-button:hover,QSpinBox::down-button:hover{background:%6;}"
+        "QComboBox::drop-down{width:16px;background:%5;border-left:1px solid %3;}"
+        "QComboBox::drop-down:hover{background:%6;}"
+        "QComboBox QAbstractItemView{color:%1;background:%2;border:1px solid %3;"
+        "selection-background-color:%4;selection-color:%7;outline:0;padding:2px;}"
+        "QComboBox QAbstractItemView::item{min-height:22px;padding:4px 8px;background:%2;}"
+        "QComboBox QAbstractItemView::item:selected{background:%4;color:%7;}")
+        .arg(control_text.name(QColor::HexRgb), control_bg.name(QColor::HexRgb),
+             border.name(QColor::HexRgb), highlight.name(QColor::HexRgb),
+             button_bg.name(QColor::HexRgb), hover_bg.name(QColor::HexRgb),
+             palette.color(QPalette::HighlightedText).name(QColor::HexRgb));
+}
+
+QString bgl_transform_panel_button_style(const QPalette &palette)
+{
+    const QColor button_bg = palette.color(QPalette::Button);
+    const QColor button_text = palette.color(QPalette::ButtonText);
+    const QColor border = palette.color(QPalette::Mid);
+    const QColor highlight = palette.color(QPalette::Highlight);
+    const QColor highlighted_text = palette.color(QPalette::HighlightedText);
+    const QColor hover_bg = button_bg.lightness() < 128 ? button_bg.lighter(122)
+                                                        : button_bg.darker(108);
+    return QStringLiteral(
+        "QPushButton,QToolButton{color:%1;background:%2;border:1px solid %3;"
+        "border-radius:2px;font-size:10px;padding:1px 6px;min-height:18px;max-height:20px;}"
+        "QPushButton:hover,QToolButton:hover{background:%4;border-color:%3;}"
+        "QPushButton:pressed,QToolButton:pressed,QToolButton:checked{background:%5;color:%6;border-color:%5;}"
+        "QPushButton:disabled,QToolButton:disabled{color:%7;background:%2;border-color:%3;}")
+        .arg(button_text.name(QColor::HexRgb), button_bg.name(QColor::HexRgb),
+             border.name(QColor::HexRgb), hover_bg.name(QColor::HexRgb),
+             highlight.name(QColor::HexRgb), highlighted_text.name(QColor::HexRgb),
+             palette.color(QPalette::Disabled, QPalette::ButtonText).name(QColor::HexRgb));
+}
+
+QIcon bgl_panel_defaults_icon(const QPalette &palette)
+{
+    const QColor color = palette.color(QPalette::ButtonText);
+    QPixmap pixmap(18, 18);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    QRectF arc_rect(4.0, 4.0, 10.0, 10.0);
+    painter.drawArc(arc_rect, 35 * 16, 285 * 16);
+    QPainterPath arrow;
+    arrow.moveTo(5.2, 4.2);
+    arrow.lineTo(4.0, 8.0);
+    arrow.lineTo(7.8, 6.9);
+    painter.drawPath(arrow);
+    painter.end();
+    return QIcon(pixmap);
+}
+
+void bgl_apply_transform_panel_widget_style(QWidget *root)
+{
+    if (!root)
+        return;
+
+    const QString control_style = bgl_transform_panel_control_style(root->palette());
+    const QString button_style = bgl_transform_panel_button_style(root->palette());
+
+    auto normalize_one = [&](QWidget *widget) {
+        if (!widget || widget->property("bglSkipTransformPanelMetrics").toBool())
+            return;
+        if (qobject_cast<BglAngleControl *>(widget))
+            return;
+        if (auto *spin = qobject_cast<QAbstractSpinBox *>(widget)) {
+            spin->setFixedHeight(20);
+            spin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            spin->setStyleSheet(control_style);
+            return;
+        }
+        if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+            combo->setFixedHeight(20);
+            combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            combo->setStyleSheet(control_style);
+            combo->setMaxVisibleItems(12);
+            if (combo->view()) {
+                combo->view()->setTextElideMode(Qt::ElideRight);
+                combo->view()->setMinimumWidth(std::max(combo->width(), 220));
+                combo->view()->setAutoFillBackground(true);
+                combo->view()->viewport()->setAutoFillBackground(true);
+                combo->view()->setStyleSheet(QStringLiteral(
+                    "QAbstractItemView{color:%1;background:%2;border:1px solid %3;"
+                    "selection-background-color:%4;selection-color:%5;outline:0;padding:2px;}"
+                    "QAbstractItemView::item{min-height:22px;padding:4px 8px;background:%2;color:%1;}"
+                    "QAbstractItemView::item:hover{background:%6;color:%1;}"
+                    "QAbstractItemView::item:selected{background:%4;color:%5;}")
+                    .arg(root->palette().color(QPalette::Text).name(QColor::HexRgb),
+                         root->palette().color(QPalette::Base).name(QColor::HexRgb),
+                         root->palette().color(QPalette::Mid).name(QColor::HexRgb),
+                         root->palette().color(QPalette::Highlight).name(QColor::HexRgb),
+                         root->palette().color(QPalette::HighlightedText).name(QColor::HexRgb),
+                         root->palette().color(QPalette::Button).name(QColor::HexRgb)));
+            }
+            return;
+        }
+        if (auto *line = qobject_cast<QLineEdit *>(widget)) {
+            line->setFixedHeight(20);
+            line->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            line->setStyleSheet(control_style);
+            return;
+        }
+        if (auto *text = qobject_cast<QTextEdit *>(widget)) {
+            text->setStyleSheet(control_style);
+            return;
+        }
+        if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
+            /* Properties-panel buttons had intentional per-control metrics in
+             * Development Version 239 (for example 28x22 binding buttons,
+             * 30x24 swatches and 24x22 keyframe toggles). The shared inspector
+             * normalizer must not collapse those already-authored buttons to
+             * the Transform panel's 20x20 icon metric. Only normalize buttons
+             * that still use default metrics and default QSS. */
+            const bool has_explicit_button_style =
+                !button->styleSheet().trimmed().isEmpty() ||
+                button->property("bglPreserveButtonMetrics").toBool();
+            const bool has_fixed_button_height =
+                button->minimumHeight() > 0 &&
+                button->minimumHeight() == button->maximumHeight() &&
+                button->maximumHeight() < QWIDGETSIZE_MAX;
+            const bool has_fixed_button_width =
+                button->minimumWidth() > 0 &&
+                button->minimumWidth() == button->maximumWidth() &&
+                button->maximumWidth() < QWIDGETSIZE_MAX;
+            if (has_explicit_button_style || has_fixed_button_height ||
+                has_fixed_button_width)
+                return;
+
+            const bool has_text = !button->text().trimmed().isEmpty();
+            const bool compact_square = !has_text || qobject_cast<QToolButton *>(button);
+            if (compact_square) {
+                button->setFixedSize(20, 20);
+                button->setIconSize(QSize(14, 14));
+            } else {
+                button->setFixedHeight(20);
+            }
+            const bool preserve_custom_fill = button->property("argb").isValid() ||
+                                              button->property("buttonFillKind").isValid();
+            if (!preserve_custom_fill)
+                button->setStyleSheet(button_style);
+            return;
+        }
+        if (auto *slider = qobject_cast<QSlider *>(widget)) {
+            if (slider->orientation() == Qt::Horizontal)
+                slider->setFixedHeight(20);
+        }
+    };
+
+    normalize_one(root);
+    const auto widgets = root->findChildren<QWidget *>();
+    for (QWidget *widget : widgets)
+        normalize_one(widget);
+}
+
 QWidget *bgl_make_angle_field(QDoubleSpinBox *spin_box, QWidget *parent,
                               BglAngleControl **angle_control)
 {
@@ -1107,6 +1294,7 @@ BglCollapsiblePanel *bgl_add_panel_section(QVBoxLayout *layout, QWidget *section
     const QString persistence_key = section->property("bglPanelPersistenceKey").toString().isEmpty()
                                         ? (section->objectName().isEmpty() ? panel_title : section->objectName())
                                         : section->property("bglPanelPersistenceKey").toString();
+    bgl_apply_transform_panel_widget_style(section);
     auto *panel = new BglCollapsiblePanel(panel_title, section, parent);
     panel->setObjectName(QStringLiteral("BglCollapsiblePanel_%1")
                              .arg(normalized_panel_key(persistence_key)));
@@ -1118,6 +1306,29 @@ BglCollapsiblePanel *bgl_add_panel_section(QVBoxLayout *layout, QWidget *section
     if (!header_widget) {
         QObject *property_widget = section->property("bglPanelHeaderWidget").value<QObject *>();
         header_widget = qobject_cast<QWidget *>(property_widget);
+    }
+    if (!header_widget && section->property("bglPanelDefaultsDisabled").toBool() != true) {
+        QString defaults_key = section->property("bglPanelDefaultsKey").toString();
+        if (defaults_key.isEmpty())
+            defaults_key = persistence_key;
+        auto *defaults_button = new QToolButton(panel);
+        defaults_button->setObjectName(QStringLiteral("BglPanelDefaultsButton"));
+        defaults_button->setAutoRaise(true);
+        defaults_button->setFixedSize(22, 20);
+        defaults_button->setIcon(bgl_panel_defaults_icon(panel->palette()));
+        defaults_button->setIconSize(QSize(14, 14));
+        defaults_button->setToolTip(QObject::tr("Restore this panel to defaults"));
+        defaults_button->setStyleSheet(bgl_transform_panel_button_style(panel->palette()));
+        QObject::connect(defaults_button, &QToolButton::clicked, panel, [section, defaults_key]() {
+            for (QWidget *candidate = section; candidate; candidate = candidate->parentWidget()) {
+                const bool invoked = QMetaObject::invokeMethod(candidate, "reset_panel_defaults",
+                                                               Qt::DirectConnection,
+                                                               Q_ARG(QString, defaults_key));
+                if (invoked)
+                    return;
+            }
+        });
+        header_widget = defaults_button;
     }
     if (header_widget)
         panel->addHeaderWidget(header_widget);

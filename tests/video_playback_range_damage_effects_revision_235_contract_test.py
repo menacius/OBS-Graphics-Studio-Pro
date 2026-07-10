@@ -12,12 +12,12 @@ manifest = read('tests/test-suite-manifest.json')
 readme = read('README.md')
 changelog = read('docs/CHANGELOG.md')
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 237:' in schema
-assert '"development_version": 239' in manifest
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 237:' in schema
+assert '"development_version": 243' in manifest
+assert 'Development Version 243' in readme
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 
 video_runtime = read('src/obs/title-video-runtime.cpp')
 assert 'target + 0.0005 < last_pts' in video_runtime
@@ -68,4 +68,4 @@ hierarchy = read('src/editor/title-editor-internal/hierarchy-model.inc')
 for prop in ['offset_x', 'offset_y', 'lacunarity', 'gain', 'channel_intensity']:
     assert prop in hierarchy
 
-print('Development Version 239 video playback, range trim and damage effects contract: PASS')
+print('Development Version 243 video playback, range trim and damage effects contract: PASS')

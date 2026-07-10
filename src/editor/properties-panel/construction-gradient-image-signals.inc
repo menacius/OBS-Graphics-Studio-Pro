@@ -43,6 +43,7 @@
     add_grid_field(char_grid, 6, 1, "Baseline", with_kf(spn_baseline_shift_, btn_kf_baseline_shift_));
     row_text_color_ = with_kf(btn_text_color_, btn_kf_text_color_);
     add_full_width_field(char_grid, 7, "Fill Color", row_text_color_);
+    add_full_width_field(char_grid, 8, "Preset", cmb_clock_preset_);
     bgl_add_panel_section(vl, text_box_);
 
     /* The animator editor is a normal properties-panel section. It writes the
@@ -242,6 +243,18 @@
     chk_exposed_single_value_ = new BglSwitch(bgl_tr("OBSTitles.ExposedSingleValue"), inner);
     chk_exposed_single_value_->setToolTip(bgl_tr("OBSTitles.ExposedSingleValueTooltip"));
     style_checkbox(chk_exposed_single_value_);
+    chk_expose_fill_ = new BglSwitch(QString(), inner);
+    chk_expose_fill_->setToolTip(QStringLiteral("Expose this layer's Fill color as a live cue dock control."));
+    style_checkbox(chk_expose_fill_);
+    chk_exposed_fill_single_value_ = new BglSwitch(QString(), inner);
+    chk_exposed_fill_single_value_->setToolTip(QStringLiteral("Use one Fill value for all live cue rows."));
+    style_checkbox(chk_exposed_fill_single_value_);
+    chk_expose_stroke_ = new BglSwitch(QString(), inner);
+    chk_expose_stroke_->setToolTip(QStringLiteral("Expose this layer's Stroke color as a live cue dock control."));
+    style_checkbox(chk_expose_stroke_);
+    chk_exposed_stroke_single_value_ = new BglSwitch(QString(), inner);
+    chk_exposed_stroke_single_value_->setToolTip(QStringLiteral("Use one Stroke value for all live cue rows."));
+    style_checkbox(chk_exposed_stroke_single_value_);
     chk_ignore_persistence_ = new BglSwitch(bgl_tr("OBSTitles.IgnorePersistence"), inner);
     chk_ignore_persistence_->setToolTip(bgl_tr("OBSTitles.IgnorePersistenceTooltip"));
     style_checkbox(chk_ignore_persistence_);
@@ -613,8 +626,8 @@
     dialog_layout->addWidget(dialog_buttons);
     bgl_add_panel_section(vl, auto_style_box_);
 
-    /* ── Live Edit ── */
-    live_edit_box_ = new QGroupBox(bgl_tr("OBSTitles.LiveEdit"), inner);
+    /* ── Live Properties ── */
+    live_edit_box_ = new QGroupBox(QStringLiteral("Live Properties"), inner);
     live_edit_box_->setStyleSheet(QStringLiteral(
         "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
@@ -623,19 +636,44 @@
     auto *live_edit_form = new QFormLayout(live_edit_box_);
     style_form(live_edit_form);
     live_edit_form->setContentsMargins(7, 5, 7, 6);
-    live_edit_form->setHorizontalSpacing(5);
+    live_edit_form->setHorizontalSpacing(12);
     live_edit_form->setVerticalSpacing(6);
-    chk_scene_mask_->setText(bgl_tr("OBSTitles.SetAsSceneMask"));
+    chk_scene_mask_->setText(QString());
     chk_scene_mask_->setToolTip(bgl_tr("OBSTitles.LiveSceneMaskTooltip"));
     chk_scene_mask_->setFixedHeight(20);
     chk_scene_mask_->setStyleSheet(checkbox_style);
-    chk_expose_text_->setText(bgl_tr("OBSTitles.ExposeToDock"));
+    chk_expose_text_->setText(QString());
     chk_expose_text_->setToolTip(bgl_tr("OBSTitles.ExposeInDockTooltip"));
-    add_form_row(live_edit_form, bgl_tr("OBSTitles.SceneMask"), chk_scene_mask_);
-    add_form_row(live_edit_form, bgl_tr("OBSTitles.DockEditing"), chk_expose_text_);
-    add_form_row(live_edit_form, QString(), chk_exposed_hide_if_empty_);
-    add_form_row(live_edit_form, QString(), chk_exposed_single_value_);
-    add_form_row(live_edit_form, bgl_tr("OBSTitles.Persistence"), chk_ignore_persistence_);
+    if (chk_exposed_hide_if_empty_) chk_exposed_hide_if_empty_->setText(QString());
+    if (chk_exposed_single_value_) chk_exposed_single_value_->setText(QString());
+    if (chk_ignore_persistence_) chk_ignore_persistence_->setText(QString());
+    if (chk_expose_fill_) chk_expose_fill_->setText(QString());
+    if (chk_exposed_fill_single_value_) chk_exposed_fill_single_value_->setText(QString());
+    if (chk_expose_stroke_) chk_expose_stroke_->setText(QString());
+    if (chk_exposed_stroke_single_value_) chk_exposed_stroke_single_value_->setText(QString());
+    auto compact_live_field = [this](QWidget *field) {
+        auto *row = new QWidget(live_edit_box_);
+        row->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(8);
+        layout->addWidget(field, 0, Qt::AlignLeft | Qt::AlignVCenter);
+        layout->addStretch(1);
+        return row;
+    };
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.SetAsSceneMask"), compact_live_field(chk_scene_mask_));
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.ExposeToDock"), compact_live_field(chk_expose_text_));
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.ExposedHideIfEmpty"), compact_live_field(chk_exposed_hide_if_empty_));
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.ExposedSingleValue"), compact_live_field(chk_exposed_single_value_));
+    add_form_row(live_edit_form, QStringLiteral("Expose Fill"), compact_live_field(chk_expose_fill_));
+    add_form_row(live_edit_form, QStringLiteral("Fill single value"), compact_live_field(chk_exposed_fill_single_value_));
+    add_form_row(live_edit_form, QStringLiteral("Expose Stroke"), compact_live_field(chk_expose_stroke_));
+    add_form_row(live_edit_form, QStringLiteral("Stroke single value"), compact_live_field(chk_exposed_stroke_single_value_));
+    if (cmb_video_playback_) {
+        cmb_video_playback_->setParent(live_edit_box_);
+        add_form_row(live_edit_form, bgl_tr("OBSTitles.AssetPlayback"), cmb_video_playback_);
+    }
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.Persistence"), compact_live_field(chk_ignore_persistence_));
     bgl_add_panel_section(vl, live_edit_box_);
 
     /* ── Bullets and Numbering ── */
@@ -658,12 +696,14 @@
     shape_layout->setContentsMargins(7, 5, 7, 6);
     shape_layout->setSpacing(8);
 
-    btn_shape_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), rect_box_);
-    btn_shape_defaults_->setFixedHeight(20);
-    btn_shape_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    btn_shape_defaults_->setIconSize(QSize(12, 12));
+    btn_shape_defaults_ = new QToolButton(rect_box_);
+    btn_shape_defaults_->setObjectName(QStringLiteral("BglPanelDefaultsButton"));
+    btn_shape_defaults_->setAutoRaise(true);
+    btn_shape_defaults_->setFixedSize(22, 20);
+    btn_shape_defaults_->setIcon(bgl_panel_defaults_icon(palette()));
+    btn_shape_defaults_->setIconSize(QSize(14, 14));
     btn_shape_defaults_->setToolTip(bgl_tr("OBSTitles.RestoreShapeDefaults"));
-    btn_shape_defaults_->setStyleSheet(push_button_style);
+    btn_shape_defaults_->setStyleSheet(bgl_transform_panel_button_style(palette()));
 
     auto *shape_types_row = new QWidget(rect_box_);
     shape_types_row->setObjectName(QStringLiteral("OBSTitlesShapeTypeButtonsRow"));

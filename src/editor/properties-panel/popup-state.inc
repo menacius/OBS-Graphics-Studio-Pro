@@ -190,6 +190,106 @@ static QString auto_style_join_ids(const std::vector<std::string> &ids)
 }
 
 
+void PropertiesPanel::set_undo_redo_available(bool undo_available, bool redo_available)
+{
+    if (btn_properties_undo_)
+        btn_properties_undo_->setEnabled(undo_available);
+    if (btn_properties_redo_)
+        btn_properties_redo_->setEnabled(redo_available);
+}
+
+
+void PropertiesPanel::set_text_style_editor_mode(bool enabled)
+{
+    text_style_editor_mode_ = enabled;
+    apply_text_style_editor_mode_visibility();
+}
+
+void PropertiesPanel::apply_text_style_editor_mode_visibility()
+{
+    if (!text_style_editor_mode_)
+        return;
+
+    auto set_section_visible = [](QWidget *section, bool visible) {
+        if (!section)
+            return;
+        section->setVisible(visible);
+        if (auto *panel = bgl_panel_for_content(section))
+            panel->setVisible(visible);
+    };
+
+    /* A text style is edited through the exact same inspector sections and
+     * controls as an ordinary text layer. Hide only document/runtime-specific
+     * sections; do not maintain a second style-editor implementation. */
+    set_section_visible(video_box_, false);
+    set_section_visible(live_playback_box_, false);
+    set_section_visible(audio_box_, false);
+    set_section_visible(asset_box_, false);
+    set_section_visible(transform_box_, false);
+    set_section_visible(rect_box_, true);
+    set_section_visible(image_box_, false);
+    set_section_visible(text_animators_box_, false);
+    set_section_visible(dynamic_text_box_, true);
+    set_section_visible(auto_style_box_, false);
+    set_section_visible(live_edit_box_, false);
+    set_section_visible(bullets_box_, false);
+    set_section_visible(outline_box_, false);
+    set_section_visible(shadow_box_, false);
+    set_section_visible(background_gradient_box_, false);
+
+    set_section_visible(text_box_, true);
+    set_section_visible(type_options_box_, true);
+    set_section_visible(paragraph_box_, true);
+    set_section_visible(appearance_box_, true);
+
+    /* Keep the shared Text Box panel for its auto-size and maximum-size
+     * controls, but remove geometry controls that are layer layout rather than
+     * reusable typography. */
+    for (QWidget *widget : {static_cast<QWidget *>(btn_kf_width_),
+                            shape_size_label_, shape_size_field_w_,
+                            shape_size_field_h_, static_cast<QWidget *>(chk_size_lock_),
+                            row_shape_scale_options_, row_rect_corners_,
+                            static_cast<QWidget *>(chk_corner_lock_),
+                            static_cast<QWidget *>(spn_corner_bevel_roundness_),
+                            static_cast<QWidget *>(btn_shape_defaults_)}) {
+        if (widget)
+            widget->setVisible(false);
+    }
+    if (grp_shape_type_)
+        for (auto *button : grp_shape_type_->buttons())
+            button->setVisible(false);
+    if (rect_box_) {
+        if (auto *shape_types = rect_box_->findChild<QWidget *>(
+                QStringLiteral("OBSTitlesShapeTypeButtonsRow")))
+            shape_types->setVisible(false);
+    }
+
+    /* Preview text belongs to the dialog header. Font, type, paragraph,
+     * fill/stroke and every NumericDragLabel remain the shared widgets. */
+    if (text_box_) {
+        if (auto *grid = qobject_cast<QGridLayout *>(text_box_->layout())) {
+            for (int column = 0; column < grid->columnCount(); ++column) {
+                if (auto *item = grid->itemAtPosition(0, column))
+                    if (auto *widget = item->widget())
+                        widget->setVisible(false);
+            }
+        }
+    }
+
+    for (QWidget *button : {static_cast<QWidget *>(btn_kf_font_size_),
+                            static_cast<QWidget *>(btn_kf_char_scale_x_),
+                            static_cast<QWidget *>(btn_kf_char_scale_y_),
+                            static_cast<QWidget *>(btn_kf_char_tracking_),
+                            static_cast<QWidget *>(btn_kf_baseline_shift_),
+                            static_cast<QWidget *>(btn_kf_text_color_),
+                            static_cast<QWidget *>(btn_kf_appearance_fill_),
+                            static_cast<QWidget *>(btn_kf_appearance_stroke_),
+                            static_cast<QWidget *>(btn_kf_appearance_opacity_)}) {
+        if (button)
+            button->setVisible(false);
+    }
+}
+
 PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 {
     setWidgetResizable(true);
@@ -227,6 +327,36 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vl->setContentsMargins(2, 2, 2, 2);
     vl->setSpacing(3);
 
+    /* Keep the editor history visible while working in the inspector.  The
+     * buttons delegate to the title editor's canonical snapshot stack; they do
+     * not maintain a second, properties-only history. */
+    properties_history_row_ = new QWidget(inner);
+    auto *history_row = properties_history_row_;
+    history_row->setObjectName(QStringLiteral("BroadcastGraphicsLivePropertiesHistory"));
+    auto *history_layout = new QHBoxLayout(history_row);
+    history_layout->setContentsMargins(4, 2, 4, 2);
+    history_layout->setSpacing(3);
+    auto *history_label = new QLabel(bgl_tr("OBSTitles.Properties"), history_row);
+    history_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    btn_properties_undo_ = new QToolButton(history_row);
+    btn_properties_undo_->setIcon(obs_icon("undo.svg"));
+    btn_properties_undo_->setToolTip(bgl_tr("OBSTitles.Undo"));
+    btn_properties_undo_->setAccessibleName(bgl_tr("OBSTitles.Undo"));
+    btn_properties_undo_->setAutoRaise(true);
+    btn_properties_undo_->setEnabled(false);
+    btn_properties_redo_ = new QToolButton(history_row);
+    btn_properties_redo_->setIcon(obs_icon("redo.svg"));
+    btn_properties_redo_->setToolTip(bgl_tr("OBSTitles.Redo"));
+    btn_properties_redo_->setAccessibleName(bgl_tr("OBSTitles.Redo"));
+    btn_properties_redo_->setAutoRaise(true);
+    btn_properties_redo_->setEnabled(false);
+    history_layout->addWidget(history_label);
+    history_layout->addWidget(btn_properties_undo_);
+    history_layout->addWidget(btn_properties_redo_);
+    vl->addWidget(history_row);
+    connect(btn_properties_undo_, &QToolButton::clicked, this, &PropertiesPanel::undo_requested);
+    connect(btn_properties_redo_, &QToolButton::clicked, this, &PropertiesPanel::redo_requested);
+
     const QString section_style =
         QStringLiteral("QGroupBox{color:%1;background:%2;border:none;"
         "border-radius:0;margin-top:14px;font-size:10px;font-weight:bold;}"
@@ -237,11 +367,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             .arg(section_bg_name)
             .arg(border_name)
             .arg(subtle_text_name);
-    const QString control_style =
-        QStringLiteral("QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
-        "border:1px solid %3;border-radius:2px;padding:1px 3px;selection-background-color:%4;}"
-        "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}")
-            .arg(control_text_name, control_bg_name, border_name, highlight_name);
+    const QString control_style = bgl_transform_panel_control_style(pal);
     const QString menu_style =
         QStringLiteral("QMenu{color:%1;background:%2;border:1px solid %3;}"
         "QMenu::item{padding:5px 22px;}"
@@ -441,12 +567,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     tform_layout->setContentsMargins(7, 5, 7, 6);
     tform_layout->setSpacing(8);
 
-    btn_transform_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), transform_box_);
-    btn_transform_defaults_->setFixedHeight(20);
-    btn_transform_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    btn_transform_defaults_->setIconSize(QSize(12, 12));
+    btn_transform_defaults_ = new QToolButton(transform_box_);
+    btn_transform_defaults_->setObjectName(QStringLiteral("BglPanelDefaultsButton"));
+    btn_transform_defaults_->setAutoRaise(true);
+    btn_transform_defaults_->setFixedSize(22, 20);
+    btn_transform_defaults_->setIcon(bgl_panel_defaults_icon(palette()));
+    btn_transform_defaults_->setIconSize(QSize(14, 14));
     btn_transform_defaults_->setToolTip(bgl_tr("OBSTitles.RestoreTransformDefaults"));
-    btn_transform_defaults_->setStyleSheet(push_button_style);
+    btn_transform_defaults_->setStyleSheet(bgl_transform_panel_button_style(palette()));
 
     transform_grid_ = new QGridLayout();
     auto *transform_grid = transform_grid_;
@@ -741,7 +869,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bgl_add_panel_section(vl, transform_box_, bgl_tr("OBSTitles.Transform"), btn_transform_defaults_);
 
     /* ── Video Layer ── */
-    video_box_ = new QGroupBox(QStringLiteral("Video Layer"), inner);
+    video_box_ = new QGroupBox(QStringLiteral("Video Timing & Loading"), inner);
     video_box_->setStyleSheet(section_style);
     auto *video_form = new QFormLayout(video_box_);
     style_form(video_form);
@@ -766,8 +894,55 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     video_range_layout->addWidget(spn_video_in_, 1);
     video_range_layout->addWidget(spn_video_out_, 1);
     add_form_row(video_form, QStringLiteral("Range"), video_range_row);
+
+    lbl_video_loading_status_ = new QLabel(QStringLiteral("Waiting for first video frame"), video_box_);
+    lbl_video_loading_status_->setWordWrap(true);
+    bar_video_loading_ = new QProgressBar(video_box_);
+    bar_video_loading_->setRange(0, 100);
+    bar_video_loading_->setTextVisible(true);
+    bar_video_loading_->setFixedHeight(18);
+    add_form_row(video_form, QStringLiteral("Loading"), lbl_video_loading_status_);
+    add_form_row(video_form, QString(), bar_video_loading_);
+
+    chk_video_time_remap_ = new QCheckBox(QStringLiteral("Enable Time Remap"), video_box_);
+    add_form_row(video_form, QStringLiteral("Time Remap"), chk_video_time_remap_);
+
+    cmb_video_interpolation_ = new QComboBox(video_box_);
+    cmb_video_interpolation_->addItem(QStringLiteral("Nearest frame"), (int)VideoFrameInterpolationMode::NearestFrame);
+    cmb_video_interpolation_->addItem(QStringLiteral("Frame blend"), (int)VideoFrameInterpolationMode::FrameBlend);
+    cmb_video_interpolation_->addItem(QStringLiteral("Motion compensated"), (int)VideoFrameInterpolationMode::MotionCompensated);
+    cmb_video_interpolation_->setFixedHeight(20);
+    cmb_video_interpolation_->setStyleSheet(control_style);
+    add_form_row(video_form, QStringLiteral("Interpolation"), cmb_video_interpolation_);
+
+    cmb_video_time_remap_audio_ = new QComboBox(video_box_);
+    cmb_video_time_remap_audio_->addItem(QStringLiteral("Preserve linear clip audio"), (int)VideoTimeRemapAudioMode::PreserveLinearClipAudio);
+    cmb_video_time_remap_audio_->addItem(QStringLiteral("Follow source time"), (int)VideoTimeRemapAudioMode::FollowSourceTime);
+    cmb_video_time_remap_audio_->addItem(QStringLiteral("Mute reverse/freeze"), (int)VideoTimeRemapAudioMode::MuteReverseOrFreeze);
+    cmb_video_time_remap_audio_->setFixedHeight(20);
+    cmb_video_time_remap_audio_->setStyleSheet(control_style);
+    add_form_row(video_form, QStringLiteral("Remap Audio"), cmb_video_time_remap_audio_);
+
+    chk_video_optical_flow_ = new QCheckBox(QStringLiteral("Background optical-flow analysis"), video_box_);
+    add_form_row(video_form, QStringLiteral("Optical Flow"), chk_video_optical_flow_);
+    lbl_video_optical_flow_status_ = new QLabel(QStringLiteral("Draft preview until analysis is ready"), video_box_);
+    lbl_video_optical_flow_status_->setWordWrap(true);
+    add_form_row(video_form, QStringLiteral("Analysis"), lbl_video_optical_flow_status_);
     video_box_->setVisible(false);
     bgl_add_panel_section(vl, video_box_);
+
+    /* ── Live Playback transport ──
+     * Development Version 250: live/runtime controls must live in one single
+     * inspector panel.  Create the Video playback combo early so the existing
+     * signal wiring below stays intact, but do not expose a standalone
+     * "Live Playback" panel.  The control is reparented into Live Properties
+     * when that panel is constructed. */
+    live_playback_box_ = nullptr;
+    cmb_video_playback_ = new QComboBox(inner);
+    cmb_video_playback_->addItem(bgl_tr("OBSTitles.AssetPlaybackSynchronized"), 0);
+    cmb_video_playback_->addItem(bgl_tr("OBSTitles.AssetPlaybackIndependent"), 1);
+    cmb_video_playback_->setFixedHeight(20);
+    cmb_video_playback_->setStyleSheet(control_style);
 
     auto video_changed = [this](bool commit = false) {
         if (loading_values_ || !title_ || !layer_ || layer_->type != LayerType::Video)
@@ -800,6 +975,62 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 }
                 video_changed(false);
             });
+    connect(cmb_video_playback_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, video_changed](int) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                layer_->video_playback_mode = cmb_video_playback_->currentData().toInt();
+                layer_->audio_independent = layer_->video_playback_mode == 1;
+                if (chk_audio_independent_) {
+                    QSignalBlocker block(chk_audio_independent_);
+                    chk_audio_independent_->setChecked(layer_->audio_independent);
+                }
+                video_changed(true);
+            });
+    connect(chk_video_time_remap_, &QCheckBox::toggled,
+            this, [this, video_changed](bool enabled) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                layer_->video_time_remap_enabled = enabled;
+                if (enabled && layer_->video_source_time.keyframes.empty()) {
+                    layer_->video_source_time.static_value = layer_->video_in_point;
+                    layer_->video_source_time.keyframes = {
+                        Keyframe{0.0, layer_->video_in_point, EasingType::Linear},
+                        Keyframe{std::max(0.0, layer_->video_out_point - layer_->video_in_point),
+                                 layer_->video_out_point, EasingType::Linear}
+                    };
+                }
+                layer_->video_time_remap_curve_fingerprint = bgl::video::time_remap_curve_fingerprint_for_layer(*layer_);
+                layer_->video_optical_flow_cache_fingerprint.clear();
+                bgl::video::FrameRuntime::instance().cancel_optical_flow_analysis_for_layer(layer_->id);
+                video_changed(true);
+            });
+    connect(cmb_video_interpolation_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, video_changed](int) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                layer_->video_frame_interpolation =
+                    (VideoFrameInterpolationMode)cmb_video_interpolation_->currentData().toInt();
+                if (layer_->video_frame_interpolation == VideoFrameInterpolationMode::MotionCompensated &&
+                    layer_->video_optical_flow_enabled)
+                    bgl::video::FrameRuntime::instance().ensure_optical_flow_analysis_for_layer(*layer_);
+                video_changed(true);
+            });
+    connect(cmb_video_time_remap_audio_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, video_changed](int) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                layer_->video_time_remap_audio_mode =
+                    (VideoTimeRemapAudioMode)cmb_video_time_remap_audio_->currentData().toInt();
+                video_changed(true);
+            });
+    connect(chk_video_optical_flow_, &QCheckBox::toggled,
+            this, [this, video_changed](bool enabled) {
+                if (!layer_ || loading_values_ || layer_->type != LayerType::Video) return;
+                layer_->video_optical_flow_enabled = enabled;
+                layer_->video_optical_flow_cache_fingerprint.clear();
+                if (enabled && layer_->video_frame_interpolation == VideoFrameInterpolationMode::MotionCompensated)
+                    bgl::video::FrameRuntime::instance().ensure_optical_flow_analysis_for_layer(*layer_);
+                else
+                    bgl::video::FrameRuntime::instance().cancel_optical_flow_analysis_for_layer(layer_->id);
+                video_changed(true);
+            });
     /* ── Audio Layer ── */
     audio_box_ = new QGroupBox(bgl_tr("OBSTitles.AudioLayer"), inner);
     audio_box_->setStyleSheet(section_style);
@@ -812,10 +1043,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_audio_browse_ = new QToolButton(audio_box_);
     btn_audio_browse_->setText(QStringLiteral("…"));
     btn_audio_browse_->setToolTip(QStringLiteral("Choose replacement audio file"));
+    btn_audio_clear_ = new QToolButton(audio_box_);
+    btn_audio_clear_->setText(QStringLiteral("×"));
+    btn_audio_clear_->setToolTip(QStringLiteral("Clear selected audio file"));
+    btn_audio_clear_->setFixedSize(24, 22);
+    btn_audio_clear_->setStyleSheet(bgl_transform_panel_button_style(palette()));
     auto *source_row = new QWidget(audio_box_);
     auto *source_layout = new QHBoxLayout(source_row);
     source_layout->setContentsMargins(0,0,0,0); source_layout->setSpacing(4);
-    source_layout->addWidget(edt_audio_source_, 1); source_layout->addWidget(btn_audio_browse_);
+    source_layout->addWidget(edt_audio_source_, 1);
+    source_layout->addWidget(btn_audio_browse_);
+    source_layout->addWidget(btn_audio_clear_);
 
     spn_audio_in_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_in_->setSuffix(QStringLiteral(" s"));
     spn_audio_out_ = mk_dspin(0.0, 86400.0, 0.01); spn_audio_out_->setSuffix(QStringLiteral(" s"));
@@ -890,17 +1128,29 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_audio_loop_ = new BglSwitch(QString(), audio_box_);
     chk_audio_independent_ = new BglSwitch(QString(), audio_box_);
     for (auto *box : {chk_audio_mute_, chk_audio_solo_, chk_audio_loop_, chk_audio_independent_}) style_checkbox(box);
-    auto *audio_range_tools = new QWidget(audio_box_);
+    row_audio_range_tools_ = new QWidget(audio_box_);
+    auto *audio_range_tools = row_audio_range_tools_;
     auto *audio_range_tools_layout = new QHBoxLayout(audio_range_tools);
     audio_range_tools_layout->setContentsMargins(0, 0, 0, 0);
     audio_range_tools_layout->setSpacing(5);
     audio_range_tools_layout->addWidget(btn_audio_set_in_);
     audio_range_tools_layout->addWidget(btn_audio_set_out_);
     audio_range_tools_layout->addWidget(lbl_audio_range_feedback_, 1);
-    add_form_row(audio_form, QStringLiteral("Source"), source_row);
-    add_form_row(audio_form, QStringLiteral("Preview"), lbl_audio_range_preview_);
-    add_form_row(audio_form, QStringLiteral("Range"), make_audio_pair_row(QStringLiteral("In"), spn_audio_in_, QStringLiteral("Out"), spn_audio_out_));
-    add_form_row(audio_form, QStringLiteral("Range tools"), audio_range_tools);
+    row_audio_source_ = source_row;
+    row_audio_preview_ = lbl_audio_range_preview_;
+    row_audio_range_ = make_audio_pair_row(QStringLiteral("In"), spn_audio_in_, QStringLiteral("Out"), spn_audio_out_);
+    add_form_row(audio_form, QStringLiteral("Source"), row_audio_source_);
+    add_form_row(audio_form, QStringLiteral("Preview"), row_audio_preview_);
+    add_form_row(audio_form, QStringLiteral("Range"), row_audio_range_);
+    add_form_row(audio_form, QStringLiteral("Range tools"), row_audio_range_tools_);
+    lbl_audio_waveform_status_ = new QLabel(QStringLiteral("Waveform not generated"), audio_box_);
+    lbl_audio_waveform_status_->setWordWrap(true);
+    bar_audio_waveform_ = new QProgressBar(audio_box_);
+    bar_audio_waveform_->setRange(0, 100);
+    bar_audio_waveform_->setTextVisible(true);
+    bar_audio_waveform_->setFixedHeight(18);
+    add_form_row(audio_form, QStringLiteral("Waveform"), lbl_audio_waveform_status_);
+    add_form_row(audio_form, QString(), bar_audio_waveform_);
     add_form_row(audio_form, QStringLiteral("Volume"), make_slider_row(spn_audio_volume_, sld_audio_volume_, btn_kf_audio_volume_));
     add_form_row(audio_form, QStringLiteral("Pan"), make_slider_row(spn_audio_pan_, sld_audio_pan_, btn_kf_audio_pan_));
     add_form_row(audio_form, QStringLiteral("Fade"), make_audio_pair_row(QStringLiteral("In"), spn_audio_fade_in_, QStringLiteral("Out"), spn_audio_fade_out_));
@@ -914,8 +1164,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     bgl_add_panel_section(vl, audio_box_);
 
     auto audio_changed = [this](bool commit = false) {
-        if (!loading_values_ && layer_ && layer_->type == LayerType::Audio)
+        if (loading_values_ || !layer_)
+            return;
+        if (layer_->type == LayerType::Video && title_)
+            synchronize_video_audio_streams(*title_, layer_->id);
+        if (layer_->type == LayerType::Audio || layer_->type == LayerType::Video) {
             emit audio_property_changed(commit);
+            emit property_changed(commit);
+        }
     };
     connect(btn_audio_browse_, &QToolButton::clicked, this, [this, audio_changed]() {
         if (!layer_ || layer_->type != LayerType::Audio) return;
@@ -940,41 +1196,66 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
          * the new asset without waiting for focus loss or editor save. */
         audio_changed(true);
     });
-    connect(spn_audio_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){
-        if (layer_ && !loading_values_ && layer_->type == LayerType::Audio) {
+    connect(btn_audio_clear_, &QToolButton::clicked, this, [this, audio_changed]() {
+        if (!layer_ || layer_->type != LayerType::Audio || loading_values_) return;
+        layer_->audio_source.clear();
+        layer_->audio_waveform.clear();
+        layer_->audio_waveform_duration = 0.0;
+        layer_->audio_waveform_progress_percent = 0;
+        layer_->audio_waveform_generating = false;
+        layer_->audio_waveform_progress_label.clear();
+        layer_->audio_in_point = 0.0;
+        layer_->audio_out_point = 0.0;
+        if (edt_audio_source_) edt_audio_source_->clear();
+        audio_changed(true);
+    });
+    auto is_audio_control_layer = [this]() {
+        return layer_ && (layer_->type == LayerType::Audio || layer_->type == LayerType::Video);
+    };
+    auto media_in_value = [this]() {
+        return layer_ && layer_->type == LayerType::Video ? layer_->video_in_point :
+               (layer_ ? layer_->audio_in_point : 0.0);
+    };
+    auto media_out_value = [this]() {
+        return layer_ && layer_->type == LayerType::Video ? layer_->video_out_point :
+               (layer_ ? layer_->audio_out_point : 0.0);
+    };
+    auto refresh_audio_range_spins = [this, media_in_value, media_out_value]() {
+        QSignalBlocker blockIn(spn_audio_in_);
+        QSignalBlocker blockOut(spn_audio_out_);
+        if (spn_audio_in_) spn_audio_in_->setValue(media_in_value());
+        if (spn_audio_out_) spn_audio_out_->setValue(media_out_value());
+        if (layer_ && layer_->type == LayerType::Video) {
+            QSignalBlocker blockVideoIn(spn_video_in_);
+            QSignalBlocker blockVideoOut(spn_video_out_);
+            if (spn_video_in_) spn_video_in_->setValue(layer_->video_in_point);
+            if (spn_video_out_) spn_video_out_->setValue(layer_->video_out_point);
+        }
+    };
+    connect(spn_audio_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed, is_audio_control_layer, refresh_audio_range_spins](double v){
+        if (is_audio_control_layer() && !loading_values_) {
             set_layer_media_range_in_point(*layer_, v);
-            QSignalBlocker blockIn(spn_audio_in_);
-            QSignalBlocker blockOut(spn_audio_out_);
-            spn_audio_in_->setValue(layer_->audio_in_point);
-            spn_audio_out_->setValue(layer_->audio_out_point);
+            refresh_audio_range_spins();
             audio_changed(false);
         }
     });
-    connect(spn_audio_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){
-        if (layer_ && !loading_values_ && layer_->type == LayerType::Audio) {
+    connect(spn_audio_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed, is_audio_control_layer, refresh_audio_range_spins](double v){
+        if (is_audio_control_layer() && !loading_values_) {
             set_layer_media_range_out_point(*layer_, v);
-            QSignalBlocker blockIn(spn_audio_in_);
-            QSignalBlocker blockOut(spn_audio_out_);
-            spn_audio_in_->setValue(layer_->audio_in_point);
-            spn_audio_out_->setValue(layer_->audio_out_point);
+            refresh_audio_range_spins();
             audio_changed(false);
         }
     });
-    auto set_audio_range_from_playhead = [this, audio_changed](bool set_in) {
-        if (!layer_ || loading_values_ || layer_->type != LayerType::Audio) return;
+    auto set_audio_range_from_playhead = [this, audio_changed, is_audio_control_layer, media_in_value, refresh_audio_range_spins](bool set_in) {
+        if (!is_audio_control_layer() || loading_values_) return;
         const double clip_local = std::clamp(playhead_ - layer_->in_time, 0.0,
             std::max(0.0, layer_->out_time - layer_->in_time));
-        const double media_time = std::max(0.0, layer_->audio_in_point + clip_local);
+        const double media_time = std::max(0.0, media_in_value() + clip_local);
         if (set_in)
             set_layer_media_range_in_point(*layer_, media_time);
         else
             set_layer_media_range_out_point(*layer_, media_time);
-        {
-            QSignalBlocker blockIn(spn_audio_in_);
-            QSignalBlocker blockOut(spn_audio_out_);
-            if (spn_audio_in_) spn_audio_in_->setValue(layer_->audio_in_point);
-            if (spn_audio_out_) spn_audio_out_->setValue(layer_->audio_out_point);
-        }
+        refresh_audio_range_spins();
         audio_changed(true);
     };
     connect(btn_audio_set_in_, &QPushButton::clicked, this,
@@ -990,11 +1271,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(spn_audio_fade_in_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_fade_in=v; audio_changed(false); }});
     connect(spn_audio_fade_out_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_fade_out=v; audio_changed(false); }});
     connect(cmb_audio_fade_curve_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, audio_changed](int){ if (layer_ && !loading_values_) { layer_->audio_fade_curve=(AudioFadeCurve)cmb_audio_fade_curve_->currentData().toInt(); audio_changed(true); }});
-    connect(cmb_audio_playback_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, audio_changed](int){ if (layer_ && !loading_values_) { layer_->audio_playback_mode=(AudioPlaybackMode)cmb_audio_playback_->currentData().toInt(); audio_changed(true); }});
+    connect(cmb_audio_playback_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, audio_changed](int){ if (layer_ && !loading_values_) { layer_->audio_playback_mode=(AudioPlaybackMode)cmb_audio_playback_->currentData().toInt(); if (layer_->type == LayerType::Video) layer_->video_loop = layer_->audio_playback_mode == AudioPlaybackMode::Loop; audio_changed(true); }});
     connect(chk_audio_mute_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_muted=v; audio_changed(true); }});
     connect(chk_audio_solo_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_solo=v; audio_changed(true); }});
-    connect(chk_audio_loop_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_loop=v; audio_changed(true); }});
-    connect(chk_audio_independent_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_independent=v; audio_changed(true); }});
+    connect(chk_audio_loop_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_loop=v; if (layer_->type == LayerType::Video) layer_->video_loop = v; audio_changed(true); }});
+    connect(chk_audio_independent_, &QCheckBox::toggled, this, [this, audio_changed](bool v){ if (layer_ && !loading_values_) { layer_->audio_independent=v; if (layer_->type == LayerType::Video) layer_->video_playback_mode = v ? 1 : 0; if (cmb_video_playback_ && layer_->type == LayerType::Video) { QSignalBlocker block(cmb_video_playback_); const int i = cmb_video_playback_->findData(layer_->video_playback_mode); cmb_video_playback_->setCurrentIndex(i >= 0 ? i : 0); } audio_changed(true); }});
     for (auto *spin : {spn_audio_in_, spn_audio_out_, spn_audio_volume_, spn_audio_pan_, spn_audio_fade_in_, spn_audio_fade_out_})
         connect(spin, &QDoubleSpinBox::editingFinished, this, [audio_changed]() { audio_changed(true); });
 
@@ -1087,11 +1368,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     auto *appearance_grid = new QGridLayout();
     appearance_grid->setContentsMargins(0, 4, 0, 0);
-    appearance_grid->setHorizontalSpacing(5);
+    appearance_grid->setHorizontalSpacing(12);
     appearance_grid->setVerticalSpacing(4);
     appearance_grid->setColumnMinimumWidth(0, 24);
-    appearance_grid->setColumnMinimumWidth(1, 82);
-    appearance_grid->setColumnMinimumWidth(2, 48);
+    appearance_grid->setColumnMinimumWidth(1, 112);
+    appearance_grid->setColumnMinimumWidth(2, 42);
     appearance_grid->setColumnMinimumWidth(3, 32);
     appearance_grid->setColumnMinimumWidth(4, 86);
     appearance_grid->setColumnStretch(5, 1);
@@ -1286,6 +1567,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_text_external_binding_->setStyleSheet(QStringLiteral(
         "QToolButton{border:1px solid palette(mid);border-radius:3px;}"
         "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
+
+    cmb_clock_preset_ = new QComboBox(inner);
+    cmb_clock_preset_->setFixedHeight(20);
+    cmb_clock_preset_->setStyleSheet(control_style);
+    cmb_clock_preset_->setToolTip(QStringLiteral("Choose a clock date/time preset, or use Custom and edit the format directly."));
+    cmb_clock_preset_->addItem(QStringLiteral("Time — HH:MM:SS"), QStringLiteral("H:i:s"));
+    cmb_clock_preset_->addItem(QStringLiteral("Time — HH:MM"), QStringLiteral("H:i"));
+    cmb_clock_preset_->addItem(QStringLiteral("Date — DD/MM/YYYY"), QStringLiteral("d/m/Y"));
+    cmb_clock_preset_->addItem(QStringLiteral("Date — YYYY-MM-DD"), QStringLiteral("Y-m-d"));
+    cmb_clock_preset_->addItem(QStringLiteral("Date + Time"), QStringLiteral("d/m/Y H:i"));
+    cmb_clock_preset_->addItem(QStringLiteral("Day + Date"), QStringLiteral("D d M Y"));
+    cmb_clock_preset_->addItem(QStringLiteral("Full Date"), QStringLiteral("l d F Y"));
+    cmb_clock_preset_->addItem(QStringLiteral("Unix Timestamp"), QStringLiteral("U"));
+    cmb_clock_preset_->addItem(QStringLiteral("Custom"), QStringLiteral("__custom__"));
 
     cmb_font_ = new QComboBox(inner);
     cmb_font_->setFixedHeight(20);

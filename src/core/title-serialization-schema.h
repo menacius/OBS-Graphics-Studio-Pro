@@ -18,7 +18,7 @@ using json = nlohmann::json;
  * schema/development identity therefore lives on every title object. Template
  * exports additionally expose the same values on their object root. */
 inline constexpr int kCurrentTitleSchemaVersion = 6;
-inline constexpr int kCurrentDevelopmentVersion = 239;
+inline constexpr int kCurrentDevelopmentVersion = 264;
 inline constexpr int kFirstAuditedDevelopmentVersion = 144;
 inline constexpr int kCurrentProxyManifestSchemaVersion = 2;
 inline constexpr int kCurrentDockSettingsSchemaVersion = 2;
@@ -65,6 +65,9 @@ inline double safe_number(const json &object, const char *key, double fallback)
     const double value = it->get<double>();
     return std::isfinite(value) ? value : fallback;
 }
+
+inline json animated_scalar_default(double value);
+inline json animated_discrete_default(const std::string &value);
 
 inline bool title_has_layer_type(const json &title, int type)
 {
@@ -169,6 +172,7 @@ inline void migrate_external_data(json &title, MigrationReport &report)
     recover_array_member(title, "external_data_sources", report);
     recover_array_member(title, "live_text_external_bindings", report);
     recover_array_member(title, "live_text_table_bindings", report);
+    recover_array_member(title, "live_text_cue_style_overrides", report);
 
     if (title.contains("external_data_sources") &&
         title["external_data_sources"].is_array()) {
@@ -232,6 +236,124 @@ inline void migrate_audio_layers(json &title, MigrationReport &report)
                 {"keyframes", json::array()}};
         }
     }
+}
+
+inline void validate_recover_title_shape(json &title, MigrationReport &report);
+
+inline bool json_string_nonempty(const json &object, const char *key)
+{
+    if (!object.is_object())
+        return false;
+    const auto it = object.find(key);
+    return it != object.end() && it->is_string() && !it->get<std::string>().empty();
+}
+
+inline bool json_truthy(const json &object, const char *key)
+{
+    if (!object.is_object())
+        return false;
+    const auto it = object.find(key);
+    if (it == object.end())
+        return false;
+    if (it->is_boolean())
+        return it->get<bool>();
+    if (it->is_number_integer())
+        return it->get<int>() != 0;
+    return false;
+}
+
+inline void migrate_serialization_audit_244(json &title, MigrationReport &report)
+{
+    validate_recover_title_shape(title, report);
+    if (!title.contains("layers") || !title["layers"].is_array())
+        return;
+
+    for (auto &layer : title["layers"]) {
+        if (!layer.is_object())
+            continue;
+
+        recover_array_member(layer, "effects", report);
+        recover_array_member(layer, "audio_effects", report);
+
+        if (safe_integer(layer, "type", -1) == 12 || layer.contains("video_source")) {
+            if (!layer.contains("video_source_relative") && json_string_nonempty(layer, "video_source")) {
+                const std::string source = layer["video_source"].get<std::string>();
+                const bool looks_absolute = source.size() > 1 &&
+                    (source[0] == '/' || source[0] == '\\' ||
+                     (source.size() > 2 && source[1] == ':'));
+                layer[looks_absolute ? "video_source_absolute" : "video_source_relative"] = source;
+            }
+            if (!layer.contains("video_selected_streams"))
+                layer["video_selected_streams"] = json::object();
+            if (!layer.contains("video_audio_stream_index"))
+                layer["video_audio_stream_index"] = -1;
+            if (!layer.contains("video_color_primaries"))
+                layer["video_color_primaries"] = "";
+            if (!layer.contains("video_color_transfer"))
+                layer["video_color_transfer"] = "";
+            if (!layer.contains("video_color_matrix"))
+                layer["video_color_matrix"] = "";
+            if (!layer.contains("video_color_range"))
+                layer["video_color_range"] = "";
+            if (!layer.contains("video_decode_settings"))
+                layer["video_decode_settings"] = json::object();
+            if (!layer.contains("video_prefer_hardware_decode"))
+                layer["video_prefer_hardware_decode"] = true;
+            if (!layer.contains("video_allow_hardware_fallback"))
+                layer["video_allow_hardware_fallback"] = true;
+            if (!layer.contains("video_decode_cache_policy"))
+                layer["video_decode_cache_policy"] = "auto";
+            if (!layer.contains("video_time_remap_enabled"))
+                layer["video_time_remap_enabled"] = false;
+            if (!layer.contains("video_source_time"))
+                layer["video_source_time"] = animated_scalar_default(safe_number(layer, "video_in_point", 0.0));
+        }
+
+        if (layer.contains("effects") && layer["effects"].is_array()) {
+            for (auto &effect : layer["effects"]) {
+                if (!effect.is_object())
+                    continue;
+                const int type = safe_integer(effect, "type", -1);
+                if (!effect.contains("effect_id")) {
+                    if (json_string_nonempty(effect, "extension_id"))
+                        effect["effect_id"] = effect["extension_id"];
+                    else
+                        effect["effect_id"] = std::string("builtin-type-") + std::to_string(type);
+                }
+                if (!effect.contains("extension_id") && effect.contains("effect_id"))
+                    effect["extension_id"] = effect["effect_id"];
+                if (!effect.contains("extension_loaded_schema_version"))
+                    effect["extension_loaded_schema_version"] =
+                        std::max(1, safe_integer(effect, "extension_schema_version", 1));
+                if (!effect.contains("extension_runtime_schema_version"))
+                    effect["extension_runtime_schema_version"] =
+                        std::max(1, safe_integer(effect, "extension_schema_version", 1));
+                if (!effect.contains("extension_explicit_migration"))
+                    effect["extension_explicit_migration"] = false;
+                if (!effect.contains("extension_parameters"))
+                    effect["extension_parameters"] = json::object();
+                if (!effect.contains("extension_keyframes"))
+                    effect["extension_keyframes"] = json::object();
+                if (!effect.contains("extension_binary_state"))
+                    effect["extension_binary_state"] = json::object();
+                if (!effect.contains("missing_plugin_placeholder"))
+                    effect["missing_plugin_placeholder"] = false;
+                if (!effect.contains("effect_preset_schema_version"))
+                    effect["effect_preset_schema_version"] = 0;
+
+                /* Legacy Glow and Noise must not opt into revised runtime
+                 * implementations silently. They keep the loaded schema version
+                 * and parameters unless an explicit migration flag exists. */
+                if ((type == 7 || type == 16) &&
+                    !json_truthy(effect, "extension_explicit_migration")) {
+                    effect["extension_runtime_schema_version"] =
+                        effect["extension_loaded_schema_version"];
+                }
+            }
+        }
+    }
+
+    report.recoveries.emplace_back("audited effect/plugin/video serialization envelope for Development Version 244");
 }
 
 inline void migrate_stinger_metadata(json &title, MigrationReport &report)
@@ -308,6 +430,7 @@ inline void validate_recover_title_shape(json &title, MigrationReport &report)
     recover_array_member(title, "live_text_column_order", report);
     recover_array_member(title, "live_text_external_bindings", report);
     recover_array_member(title, "live_text_table_bindings", report);
+    recover_array_member(title, "live_text_cue_style_overrides", report);
 
     /* Invalid children are dropped individually so one damaged layer/source
      * never prevents the rest of the title from opening. Existing IDs and all
@@ -328,6 +451,7 @@ inline void validate_recover_title_shape(json &title, MigrationReport &report)
     remove_non_objects("external_data_sources");
     remove_non_objects("live_text_external_bindings");
     remove_non_objects("live_text_table_bindings");
+    remove_non_objects("live_text_cue_style_overrides");
 }
 
 
@@ -853,6 +977,69 @@ inline void apply_development_migration(int target_version, json &title,
         /* Motion blur sample-density tuning and the organic damage shader
          * revision are runtime/effect implementation changes. Serialized
          * effect ids and parameters remain stable; keep media validation. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 240:
+        /* Inspector widget unification is an editor-only styling/metrics pass.
+         * No serialized title data changes; keep the latest media validation
+         * path for projects opened from older development builds. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 241:
+        /* Properties button metrics and parented/direct-image color-overlay
+         * raster invalidation are editor/runtime fixes only. Serialized title
+         * data remains compatible with Development Version 240 projects. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 242:
+        /* Video proxy/cache/hardware-decode integration adds advisory runtime
+         * proxy metadata and decode policy only. Existing Video/Audio layer
+         * JSON remains valid; media rows are revalidated so stale/missing
+         * source files cannot poison proxy relink or decoder cache state. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 243:
+        /* Video time-remap and interpolation adds source-time animation,
+         * loop-segment metadata, interpolation mode and optical-flow cache
+         * state. Old projects default to the exact linear 242 mapping. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 244:
+        /* Serialization/migration audit for effects, external plugins and
+         * Video layers. Missing media/plugins are placeholders; old built-in
+         * Glow/Noise state stays preserve-by-default; explicit migration is
+         * required before a revised implementation may rewrite state. */
+        migrate_serialization_audit_244(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 245:
+    case 246:
+    case 247:
+    case 248:
+    case 249:
+    case 250:
+    case 251:
+    case 252:
+    case 253:
+    case 254:
+    case 255:
+    case 256:
+    case 257:
+    case 258:
+    case 259:
+    case 260:
+    case 261:
+    case 262:
+    case 263:
+    case 264:
+        /* Development deliveries 245-264 are UI/runtime/effect-library
+         * updates. They do not reshape persisted title JSON; keep the current
+         * recovery and media-row validation paths contiguous. */
         validate_recover_title_shape(title, report);
         migrate_audio_layers(title, report);
         break;

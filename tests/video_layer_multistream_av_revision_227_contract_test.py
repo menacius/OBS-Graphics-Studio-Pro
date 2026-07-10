@@ -37,12 +37,12 @@ for field in (
     "video_pixel_width", "video_pixel_height", "video_has_alpha",
 ):
     assert field in model and f'j["{field}"]' in data
-assert "kCurrentDevelopmentVersion = 239" in schema and "case 228:" in schema
+assert "kCurrentDevelopmentVersion = 243" in schema and "case 228:" in schema
 assert "title_has_layer_type(title, 12)" in schema
 
 assert "src/obs/title-video-runtime.cpp" in cmake
 assert "libswscale" in cmake and "BGL_HAVE_FFMPEG=1" in cmake
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
 assert "std::vector<AudioStreamInfo> audio_streams" in video_h
 assert "FrameRuntime : public QObject" in video_h and "frameReady" in video_h
 assert "AVMEDIA_TYPE_VIDEO" in video_cpp and "AVMEDIA_TYPE_AUDIO" in video_cpp
@@ -97,8 +97,8 @@ assert "synchronize_video_audio_streams(*title_)" in canvas_pointer
 assert "protected_layer->linked_media_stream" in data
 assert "removing_video" in data and "l->linked_media_layer_id == lid" in data
 
-assert manifest["development_version"] == 239
+assert manifest["development_version"] == 243
 assert "tests/video_layer_multistream_av_revision_227_contract_test.py" in manifest["areas"]["audio_transport"]["python"]
-assert "Development Version 239" in readme
-assert changelog.startswith("# v0.8.11-alpha — Development Version 239")
+assert "Development Version 243" in readme
+assert changelog.startswith("# v0.8.11-alpha — Development Version 243")
 print("Development Version 231 Video layer and multistream A/V contract passed")

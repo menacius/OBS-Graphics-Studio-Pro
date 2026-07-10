@@ -1399,7 +1399,10 @@ static const char *embedded_effect_source(LayerEffectType type)
     case LayerEffectType::FilmDistortion:
     case LayerEffectType::AnalogDistortion:
     case LayerEffectType::DigitalDistortion:
-        return kEmbeddedDamageDistortionEffect;
+        /* Development Version 260: damage effects depend on packaged artifact
+         * textures, so compile the installed shader asset rather than the
+         * embedded procedural fallback. */
+        return nullptr;
     case LayerEffectType::RoughenEdges: return kEmbeddedRoughenEdgesEffect;
     case LayerEffectType::Sharpen:
     case LayerEffectType::UnsharpMask:

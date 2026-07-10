@@ -25,7 +25,7 @@ assert "Scene B starts below Scene A" in core
 assert "stinger_transition_input_has_legacy_point_opacity" in core
 assert "obsolete automatic point-cut opacity curves" in core
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build_info
 
 print("Stinger A/B visibility, surface, and timeline-duration regression contract passed")

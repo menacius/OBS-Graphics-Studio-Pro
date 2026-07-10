@@ -27,10 +27,10 @@ loader = read("src/core/title-data.cpp")
 shader = read("data/effect-transitions/shaders/source-effects/source-effects.effect")
 manifest = json.loads(read("tests/test-suite-manifest.json"))
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 226:' in schema
-assert manifest["development_version"] == 239
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 226:' in schema
+assert manifest["development_version"] == 243
 
 assert re.search(r"\bLightWrap\s*=\s*43\b", enum)
 assert re.search(r"\bDisplacementMap\s*=\s*44\b", enum)

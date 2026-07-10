@@ -10,11 +10,11 @@ schema = (ROOT / 'src/core/title-serialization-schema.h').read_text()
 cmake = (ROOT / 'CMakeLists.txt').read_text()
 manifest = (ROOT / 'tests/test-suite-manifest.json').read_text()
 
-# Development Version 239 metadata and migration continuity.
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'kCurrentDevelopmentVersion = 239' in schema
+# Development Version 243 metadata and migration continuity.
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'kCurrentDevelopmentVersion = 243' in schema
 assert 'case 232:' in schema
-assert '"development_version": 239' in manifest
+assert '"development_version": 243' in manifest
 
 # Scene-mask placeholders are editor-only base rasters shaped like their layer content, not overlay rectangles.
 assert 'add_scene_mask_placeholder_path' in compat
@@ -60,4 +60,4 @@ assert 'range length follows strip' in sync and 'media %2 s' in sync
 assert 'lbl_audio_range_feedback_' in sync
 assert 'if (video_box_) video_box_->setVisible(is_video)' in sync
 
-print('Development Version 239 video/audio range, scene-mask placeholder and FX-strip contract: PASS')
+print('Development Version 243 video/audio range, scene-mask placeholder and FX-strip contract: PASS')

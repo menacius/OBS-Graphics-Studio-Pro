@@ -66,8 +66,8 @@ int main(int argc, char **argv)
     ok &= require_contains(gpu, "page.mark_dirty", "glyph atlas dirty rectangle");
     ok &= require_contains(gpu, "gs_texture_map", "partial dynamic atlas upload");
     ok &= require_contains(gpu, "strokeAntialias", "stroke antialias property reaches shader");
-    ok &= require_contains(gpu, "Miter/bevel inline text joins require the compatibility raster path",
-                           "unsupported join modes use exact compatibility renderer");
+    ok &= require_absent(gpu, "Miter/bevel inline text joins require the compatibility raster path",
+                         "scaled text must not fall back because of stroke join mode");
     ok &= require_contains(gpu, "cluster_slices[cluster_index]",
                            "mixed underline/strike ranges follow cluster paint slices");
     ok &= require_contains(gpu, "raw.boundingRect(glyph_id)",
@@ -153,9 +153,13 @@ int main(int argc, char **argv)
         ok &= require_contains(qt_adapter, property,
                                "paragraph property Qt round-trip mapping");
 
-    ok &= require_contains(layout_qt, "font.setStretch(scale.horizontal_stretch_percent)",
-                           "independent horizontal character scale");
-    ok &= require_contains(layout_qt, "run_format.baseline_shift",
+    ok &= require_contains(layout_qt, "font.setStretch(100);",
+                           "font matching is independent from character scale");
+    ok &= require_contains(layout_qt, "apply_line_horizontal_character_scale",
+                           "independent horizontal character geometry");
+    ok &= require_contains(layout_qt, "glyph.scale_x = std::clamp(glyph.scale_x * factor",
+                           "horizontal fit scales glyph quads, not only advances");
+    ok &= require_contains(layout_qt, "glyph_format.baseline_shift",
                            "baseline shift reaches shaped glyph geometry");
     ok &= require_contains(layout_qt, "font.setFeature(\"liga\"",
                            "ligature OpenType feature");

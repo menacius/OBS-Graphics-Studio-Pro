@@ -56,6 +56,12 @@ int main(int argc, char **argv)
            std::string::npos);
     assert(compatibility_text.find("painter.setClipRect(QRectF(render_bounds))") !=
            std::string::npos);
+    assert(compatibility_text.find("bool clip_required = false") !=
+           std::string::npos);
+    assert(compatibility_text.find("continuous_path.addPath(piece.path)") !=
+           std::string::npos);
+    assert(compatibility_text.find("if (piece.clip_required)") !=
+           std::string::npos);
 
     assert(title_data.find("migrate_legacy_text_transitions") != std::string::npos);
     assert(title_data.find("text_animators") != std::string::npos);
@@ -86,9 +92,16 @@ int main(int argc, char **argv)
            std::string::npos);
     assert(lifecycle.find("resolved_text_transition_animator_stack") !=
            std::string::npos);
-    assert(gpu_text.find("text_animator_stack_has_managed_transition") !=
+    /* Transition-managed animators use the same GPU glyph path as ordinary
+     * animators. Routing them through QTextDocument reintroduced the
+     * platform-dependent H/V Scale width-face threshold. */
+    assert(gpu_text.find("text_animator_stack_has_managed_transition") ==
            std::string::npos);
-    assert(gpu_text.find("return false;") != std::string::npos);
+    assert(gpu_text.find("layer.type == LayerType::Text") !=
+           std::string::npos);
+    assert(gpu_text.find(
+        "!text_animator_stack_has_enabled_animators(layer.text_animators)") !=
+        std::string::npos);
 
     /* The generic animator adapters must be complete before the layer-raster
      * module starts. v136 accidentally left the tail of the removed legacy
@@ -98,13 +111,20 @@ int main(int argc, char **argv)
     assert(layer_raster.rfind("static void render_layer_text", 0) == 0);
     assert(layer_raster.find("animated_text_blur_radius") == std::string::npos);
     assert(layer_raster.find("active_text_layer_transition") == std::string::npos);
-    const auto raster_first = layer_raster.find(
-        "bool applied = apply_unified_text_animator_raster");
+    const auto animator_block = layer_raster.find(
+        "if (use_unified_text_animator)");
+    assert(animator_block != std::string::npos);
+    const auto exact_adapter = layer_raster.find(
+        "&exact_rich_text", animator_block);
+    const auto qt_adapter = layer_raster.find(
+        "apply_unified_text_animator_raster", exact_adapter);
     const auto flattened_fallback = layer_raster.find(
-        "applied = apply_unified_text_animator_flattened", raster_first);
-    assert(raster_first != std::string::npos);
+        "apply_unified_text_animator_flattened", qt_adapter);
+    assert(exact_adapter != std::string::npos);
+    assert(qt_adapter != std::string::npos);
     assert(flattened_fallback != std::string::npos);
-    assert(raster_first < flattened_fallback);
+    assert(exact_adapter < qt_adapter);
+    assert(qt_adapter < flattened_fallback);
     assert(layer_raster.find("text_raster_ink_gutter") !=
            std::string::npos);
     /* Paint runs intentionally do not duplicate shaping fields. The glyph

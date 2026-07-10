@@ -361,6 +361,7 @@ struct TitleSourceData {
     bool        editor_transport_controlled = false; /* real editor preview follows the editor playhead/direction exactly */
     bool        editor_playback_reverse = false;
     std::atomic<double> editor_transport_time {0.0};
+    std::atomic<double> editor_audio_speed {1.0};
     std::atomic<bool> editor_transport_reverse {false};
     std::mutex editor_title_mutex;
     std::shared_ptr<Title> editor_title_snapshot;
@@ -471,7 +472,7 @@ static void unregister_title_source_instance(TitleSourceData *data)
 }
 
 void title_source_set_editor_transport(obs_source_t *source, double time,
-                                       bool reverse)
+                                       bool reverse, double audio_speed)
 {
     if (!source)
         return;
@@ -482,6 +483,8 @@ void title_source_set_editor_transport(obs_source_t *source, double time,
         return;
     it->second->editor_transport_time.store(std::max(0.0, time),
                                             std::memory_order_release);
+    it->second->editor_audio_speed.store(
+        std::clamp(audio_speed, 0.02, 4.0), std::memory_order_release);
     it->second->editor_transport_reverse.store(reverse,
                                                std::memory_order_release);
 }
@@ -505,6 +508,27 @@ void title_source_set_editor_title_snapshot(obs_source_t *source,
     data->source_audio_active_known = false;
     data->seen_audio_membership_revision = std::numeric_limits<uint64_t>::max();
     data->dirty = true;
+}
+
+bool title_source_get_audio_levels(obs_source_t *source, float *left,
+                                   float *right, uint64_t *last_update_ns)
+{
+    if (left)
+        *left = 0.0f;
+    if (right)
+        *right = 0.0f;
+    if (last_update_ns)
+        *last_update_ns = 0;
+    if (!source)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+    const auto it = g_title_source_instances.find(source);
+    if (it == g_title_source_instances.end() || !it->second ||
+        !it->second->audio_runtime)
+        return false;
+    it->second->audio_runtime->current_levels(left, right, last_update_ns);
+    return true;
 }
 
 static std::shared_ptr<Title> editor_title_snapshot_for_source(TitleSourceData *data)
@@ -928,7 +952,7 @@ static std::vector<std::shared_ptr<Layer>> scene_mask_layers(const std::shared_p
     std::vector<std::shared_ptr<Layer>> masks;
     if (!title) return masks;
     for (const auto &layer : title->layers) {
-        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
+        if (layer && layer->use_as_scene_mask && layer_type_can_be_scene_mask(layer->type))
             masks.push_back(layer);
     }
     return masks;
@@ -938,7 +962,7 @@ static std::vector<const Layer *> scene_mask_layers(const Title &title)
 {
     std::vector<const Layer *> masks;
     for (const auto &layer : title.layers) {
-        if (layer && layer->use_as_scene_mask && layer->type != LayerType::Video)
+        if (layer && layer->use_as_scene_mask && layer_type_can_be_scene_mask(layer->type))
             masks.push_back(layer.get());
     }
     return masks;
@@ -1150,7 +1174,9 @@ static int exposed_text_layer_index(const std::vector<std::shared_ptr<Layer>> &e
 
 
 
-static void replace_layer_text_preserving_rich_rules(const std::shared_ptr<Layer> &layer, const std::string &text)
+static void replace_layer_text_preserving_rich_rules(
+    const std::shared_ptr<Layer> &layer, const std::string &text,
+    const Title *title = nullptr, int cue_row = -1)
 {
     if (!layer)
         return;
@@ -1161,22 +1187,40 @@ static void replace_layer_text_preserving_rich_rules(const std::shared_ptr<Layer
         rich_text_document_ensure_canonical(*layer);
 
     RichTextCharFormat insertion_format = rich_text_effective_typing_format(layer->rich_text);
+    if (title && cue_row >= 0) {
+        if (layer->expose_fill_color) {
+            insertion_format.fill.type = 0;
+            insertion_format.fill.color = live_text_cue_effective_color(*title, *layer, cue_row, false);
+        }
+        if (layer->expose_stroke_color) {
+            insertion_format.stroke.enabled = layer->outline_enabled || layer->stroke_width > 0.0f;
+            insertion_format.stroke.width = layer->stroke_width;
+            insertion_format.stroke.opacity = layer->outline_opacity;
+            insertion_format.stroke.fill.type = 0;
+            insertion_format.stroke.fill.color = live_text_cue_effective_color(*title, *layer, cue_row, true);
+        }
+    }
     rich_text_document_replace_text_canonical(
         layer->rich_text, text, insertion_format,
         layer->rich_text.has_typing_format
             ? layer->rich_text.typing_format_mask : 0);
 }
 
-static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, const std::string &value)
+static void apply_live_cue_layer_value(
+    Title &title, const std::shared_ptr<Layer> &layer, int cue_row,
+    const std::string &value)
 {
     if (!layer)
         return;
     layer->live_cue_hidden_if_empty = layer->exposed_hide_if_empty && value.empty();
+    apply_live_text_cue_style_to_layer(title, *layer, cue_row);
     if (layer->type == LayerType::Image) {
         bgs::apply_exposed_image_cue_value(*layer, value);
         return;
     }
-    replace_layer_text_preserving_rich_rules(layer, value);
+    if (!layer->expose_text)
+        return;
+    replace_layer_text_preserving_rich_rules(layer, value, &title, cue_row);
 }
 
 static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
@@ -1227,7 +1271,7 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
                               ExternalDataValue::string(cue_value));
                 return stream.str();
             });
-        apply_live_cue_layer_value(target, cue_value);
+        apply_live_cue_layer_value(*title, target, row, cue_value);
     }
 }
 
@@ -1276,7 +1320,7 @@ static ImmutableTextLayout source_text_layout_for_metrics(const Layer &layer,
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(model);
         rich_text_document_replace_text_canonical(
-            model, fitted.toStdString(), insertion_format,
+            model, fitted.toUtf8().toStdString(), insertion_format,
             model.has_typing_format ? model.typing_format_mask : 0);
     }
     TextLayoutRequest request;

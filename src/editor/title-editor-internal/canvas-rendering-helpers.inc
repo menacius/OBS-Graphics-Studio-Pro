@@ -194,7 +194,7 @@ static ImmutableTextLayout editor_text_layout_for_metrics(const Layer &layer,
     QString display_text = display_text_for_style(layer);
     if (overflow_mode == 2)
         display_text = overflow_layout_text(display_text, layer);
-    const std::string display_utf8 = display_text.toStdString();
+    const std::string display_utf8 = display_text.toUtf8().toStdString();
     if (model.plain_text != display_utf8) {
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(model);
@@ -305,10 +305,13 @@ static int eval_channel(const AnimatedProperty &prop, double fallback, double t)
 
 static uint32_t eval_text_color(const Layer &layer, double t)
 {
-    return ((uint32_t)eval_channel(layer.text_color_a, (layer.text_color >> 24) & 0xFF, t) << 24) |
-           ((uint32_t)eval_channel(layer.text_color_r, (layer.text_color >> 16) & 0xFF, t) << 16) |
-           ((uint32_t)eval_channel(layer.text_color_g, (layer.text_color >> 8) & 0xFF, t) << 8) |
-           (uint32_t)eval_channel(layer.text_color_b, layer.text_color & 0xFF, t);
+    const uint32_t authored = !layer.rich_text.empty()
+        ? layer.rich_text.default_format.fill.color
+        : layer.text_color;
+    return ((uint32_t)eval_channel(layer.text_color_a, (authored >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.text_color_r, (authored >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.text_color_g, (authored >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.text_color_b, authored & 0xFF, t);
 }
 
 static uint32_t eval_fill_color(const Layer &layer, double t)

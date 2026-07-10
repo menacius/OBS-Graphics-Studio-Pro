@@ -20,6 +20,7 @@
 
     ensure_live_text_row_ids(*title);
     const int row_count = static_cast<int>(title->live_text_rows.size());
+    const auto exposed_layers = bgs::live_text::exposed_text_layers(title);
     QSet<QString> current_ids;
     QHash<QString, int> index_by_id;
     QHash<QString, QString> current_fingerprints;
@@ -32,6 +33,30 @@
             const QByteArray bytes = QByteArray::fromStdString(cell);
             hash.addData(bytes);
             hash.addData("\0", 1);
+        }
+        /* Per-row Fill/Stroke controls affect rendered pixels even when the
+         * text/image value stored in live_text_rows is unchanged. Include the
+         * effective exposed cue colors in the row fingerprint so cache states
+         * and cue-transition variants are invalidated when a row swatch changes
+         * or when a single-value swatch changes all rows. */
+        for (const auto &layer : exposed_layers) {
+            if (!layer)
+                continue;
+            hash.addData("layer", 5);
+            hash.addData(QByteArray::fromStdString(layer->id));
+            hash.addData("\0", 1);
+            if (layer->expose_fill_color) {
+                hash.addData("fill", 4);
+                hash.addData(QByteArray::number(
+                    static_cast<qulonglong>(live_text_cue_effective_color(*title, *layer, row, false)), 16));
+                hash.addData("\0", 1);
+            }
+            if (layer->expose_stroke_color) {
+                hash.addData("stroke", 6);
+                hash.addData(QByteArray::number(
+                    static_cast<qulonglong>(live_text_cue_effective_color(*title, *layer, row, true)), 16));
+                hash.addData("\0", 1);
+            }
         }
         current_fingerprints.insert(row_id, QString::fromLatin1(hash.result().toHex()));
     }
@@ -366,8 +391,11 @@ LiveCueCacheStats CacheManager::liveCueStats() const
 
 void CacheManager::setPlaybackSettings(const CachePlaybackSettings &settings)
 {
-    QMutexLocker lock(&playback_settings_mutex_);
-    playback_settings_ = settings;
+    {
+        QMutexLocker lock(&playback_settings_mutex_);
+        playback_settings_ = settings;
+    }
+    emit playbackSettingsChanged();
 }
 
 void CacheManager::abandonJobState(const RenderQueueManager::Job &job,

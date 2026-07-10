@@ -21,8 +21,8 @@ schema = read("src/core/title-serialization-schema.h")
 shader = read("data/effect-transitions/shaders/keying/keying.effect")
 manifest = json.loads(read("tests/test-suite-manifest.json"))
 
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 225:' in schema
-assert manifest["development_version"] == 239
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 225:' in schema
+assert manifest["development_version"] == 243
 
 ids = {
     "ChromaKey": 38,

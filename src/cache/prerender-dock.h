@@ -10,6 +10,8 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QTimer;
+class QVBoxLayout;
+class QWidget;
 
 class PrerenderDock : public QWidget {
     Q_OBJECT
@@ -30,10 +32,15 @@ private:
 
     std::shared_ptr<Title> title_;
     double playhead_ = 0.0;
+    void setCacheControlsVisible(bool visible);
+
     QLabel *status_ = nullptr;
     QComboBox *start_mode_ = nullptr;
     QComboBox *playback_mode_ = nullptr;
+    QComboBox *cadence_mode_ = nullptr;
     QCheckBox *cached_only_ = nullptr;
+    QWidget *cache_section_ = nullptr;
+    QVBoxLayout *cache_section_layout_ = nullptr;
     QPushButton *pause_resume_ = nullptr;
     QPushButton *cache_work_area_ = nullptr;
     QPushButton *cache_timeline_ = nullptr;

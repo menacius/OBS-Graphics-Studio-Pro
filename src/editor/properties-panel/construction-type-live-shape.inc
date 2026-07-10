@@ -57,7 +57,7 @@
 
         auto update_main_swatch = [this, stroke, text_fill, text_edit_active, current_text_char_format]() {
             if (stroke) {
-                const bool inline_stroke = text_edit_active() && layer_ &&
+                const bool inline_stroke = layer_ &&
                     (layer_->type == LayerType::Text || layer_->type == LayerType::Clock ||
                      layer_->type == LayerType::Ticker);
                 if (inline_stroke) {
@@ -84,7 +84,7 @@
                 btn_appearance_stroke_color_->setText(QString());
                 if (btn_outline_color_) style_color_button(btn_outline_color_, layer_->stroke_color);
             } else {
-                if (text_fill && text_edit_active()) {
+                if (text_fill) {
                     const RichTextCharFormat fmt = current_text_char_format();
                     if (fmt.fill.type == 1)
                         style_gradient_button(btn_appearance_fill_color_,
@@ -118,7 +118,7 @@
             if (!layer_ || loading_values_ || !color.isValid()) return;
             const uint32_t argb = argb_from_color(color);
             if (stroke) {
-                const bool inline_stroke = text_edit_active() &&
+                const bool inline_stroke =
                     (layer_->type == LayerType::Text || layer_->type == LayerType::Clock ||
                      layer_->type == LayerType::Ticker);
                 if (inline_stroke) {
@@ -137,17 +137,12 @@
                 }
             } else {
                 if (text_fill) {
-                    if (text_edit_active()) {
-                        RichTextCharFormat fmt = current_text_char_format();
-                        fmt.fill.type = 0;
-                        fmt.fill.color = argb;
-                        apply_text_char_format(fmt, RichTextCharFillColor);
-                    } else {
-                        layer_->fill_type = 0;
-                        layer_->text_color = argb;
+                    RichTextCharFormat fmt = current_text_char_format();
+                    fmt.fill.type = 0;
+                    fmt.fill.color = argb;
+                    if (!text_edit_active())
                         set_color_channels_at(*layer_, true, local_time(), argb);
-                        apply_text_fill_format();
-                    }
+                    apply_text_char_format(fmt, RichTextCharFillColor);
                 } else {
                     layer_->fill_type = 0;
                     layer_->fill_color = argb;

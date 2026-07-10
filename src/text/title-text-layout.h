@@ -117,6 +117,12 @@ struct TextLayoutGlyph {
     float ink_y = 0.0f;
     float ink_width = 0.0f;
     float ink_height = 0.0f;
+    /* Effective per-glyph character scaling. These values are copied from the
+     * exact rich-text format at the glyph's logical cluster, rather than being
+     * inferred later from a QGlyphRun. This keeps mixed-style runs and Qt
+     * backend run coalescing from losing H/V Scale before GPU emission. */
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
 };
 
 struct TextLayoutCluster {

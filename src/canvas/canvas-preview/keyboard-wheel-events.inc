@@ -227,7 +227,13 @@ void CanvasPreview::render_to_frame()
     const qint64 cost_ns = std::max<qint64>(1, render_cost.nsecsElapsed());
     const double cost_ms_exact = double(cost_ns) / 1000000.0;
     const int cost_ms = std::max(1, static_cast<int>(std::ceil(cost_ms_exact)));
-    last_full_quality_render_cost_ms_ = cost_ms;
+    last_render_cost_ms_ = cost_ms;
+    /* Auto quality uses a stable full-resolution reference. Reduced-quality
+     * samples must not feed back into the selector and oscillate cache keys. */
+    if (frame_image_preview_scale_ >= 0.999)
+        last_full_quality_render_cost_ms_ = cost_ms;
+    else
+        last_adaptive_render_cost_ms_ = cost_ms;
     render_cost_accumulator_ns_ += cost_ns;
     ++render_cost_sample_count_;
     BGL_LOG_TRACE("Performance", QStringLiteral(
@@ -275,9 +281,11 @@ void CanvasPreview::render_dirty_frame_if_due()
         editor_camera_transform_only_pending_ || canvas_transform_drag;
     const bool priority_edit_frame = realtime_transform ||
                                      interactive_settle_pending_;
-    const int editing_cadence_ms = priority_edit_frame
+    const int base_editing_cadence_ms = priority_edit_frame
         ? std::max(1, display_refresh_interval_ms_)
         : std::max(display_refresh_interval_ms_, render_interval_ms_);
+    /* Reduced resolution is a workload reduction, not an implicit 10 fps mode. */
+    const int editing_cadence_ms = base_editing_cadence_ms;
     const int cadence_ms = playback_frame_pending_ ? 0 : editing_cadence_ms;
 
     if ((!gpu_render_session_ && frame_image_.isNull()) || elapsed >= cadence_ms) {

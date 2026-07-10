@@ -6,14 +6,39 @@
             if (auto *label = live_form->labelForField(chk_exposed_single_value_))
                 label->setVisible(show_exposed_options);
         }
-        if (chk_ignore_persistence_) {
+        if (cmb_video_playback_) {
+            cmb_video_playback_->setVisible(show_video_live_playback);
+            if (auto *label = live_form->labelForField(cmb_video_playback_))
+                label->setVisible(show_video_live_playback);
+        }
+    
+    if (chk_expose_fill_) {
+        QSignalBlocker block(chk_expose_fill_);
+        chk_expose_fill_->setChecked(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+    }
+    if (chk_exposed_fill_single_value_) {
+        QSignalBlocker block(chk_exposed_fill_single_value_);
+        chk_exposed_fill_single_value_->setEnabled(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+        chk_exposed_fill_single_value_->setChecked(layer_->exposed_fill_single_value);
+    }
+    if (chk_expose_stroke_) {
+        QSignalBlocker block(chk_expose_stroke_);
+        chk_expose_stroke_->setChecked(layer_->expose_stroke_color);
+    }
+    if (chk_exposed_stroke_single_value_) {
+        QSignalBlocker block(chk_exposed_stroke_single_value_);
+        chk_exposed_stroke_single_value_->setEnabled(layer_->expose_stroke_color);
+        chk_exposed_stroke_single_value_->setChecked(layer_->exposed_stroke_single_value);
+    }
+    if (chk_ignore_persistence_) {
             chk_ignore_persistence_->setVisible(show_ignore_persistence);
             if (auto *label = live_form->labelForField(chk_ignore_persistence_))
                 label->setVisible(show_ignore_persistence);
         }
         if (live_edit_box_)
             live_edit_box_->setVisible(!is_fixed_canvas_layer &&
-                                       (show_scene_mask || show_expose_to_dock || show_ignore_persistence));
+                                       (show_scene_mask || show_expose_to_dock ||
+                                        show_video_live_playback || show_ignore_persistence));
     }
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
@@ -135,6 +160,34 @@
     }
     image_box_->setVisible(is_image);
     if (image_box_size_box_) image_box_size_box_->setVisible(is_image);
+    if (is_image) {
+        if (auto *panel = bgl_panel_for_content(image_box_)) {
+            panel->setTitle(layer_->type == LayerType::Video
+                ? QStringLiteral("Video Source")
+                : QStringLiteral("Image Source"));
+        }
+        /* Box size now lives inside Image Source/Video Source, so there is no
+         * separate collapsible panel title to update here. */
+        if (auto *image_form = image_box_ ? image_box_->findChild<QFormLayout *>() : nullptr) {
+            const bool video_labels = layer_->type == LayerType::Video;
+            if (auto *label = qobject_cast<QLabel *>(image_form->labelForField(cmb_image_box_mode_)))
+                label->setText(video_labels
+                    ? QStringLiteral("Video Box Mode")
+                    : bgl_tr("OBSTitles.ImageBoxMode"));
+            if (auto *label = qobject_cast<QLabel *>(image_form->labelForField(btn_image_anchor_grid_)))
+                label->setText(video_labels
+                    ? QStringLiteral("Video Anchor")
+                    : bgl_tr("OBSTitles.ImageBoxAnchor"));
+            if (auto *label = qobject_cast<QLabel *>(image_form->labelForField(cmb_image_scale_filter_)))
+                label->setText(video_labels
+                    ? QStringLiteral("Video Filtering")
+                    : bgl_tr("OBSTitles.Filtering"));
+        }
+        if (btn_pick_image_)
+            btn_pick_image_->setText(layer_->type == LayerType::Video
+                ? QStringLiteral("Replace Video")
+                : bgl_tr("OBSTitles.Browse"));
+    }
     if (shadow_box_) shadow_box_->setVisible(false);
 
     double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
@@ -203,14 +256,17 @@
     if (spn_appearance_opacity_) spn_appearance_opacity_->setValue(spn_opacity_->value() * 100.0);
     const bool supports_fill_appearance = is_text_like || is_rect;
     if (btn_appearance_fill_color_) {
-        if (layer_->fill_type == 1)
+        if (is_scene_mask_layer) {
+            style_scene_mask_placeholder_button(btn_appearance_fill_color_);
+        } else if (layer_->fill_type == 1) {
             style_gradient_button(btn_appearance_fill_color_,
                                   layer_->gradient_start_color,
                                   layer_->gradient_end_color,
                                   layer_->gradient_type);
-        else
+        } else {
             style_color_button(btn_appearance_fill_color_,
                                is_text_like ? eval_text_color(*layer_, lt) : eval_fill_color(*layer_, lt));
+        }
         btn_appearance_fill_color_->setText(QString());
         btn_appearance_fill_color_->setEnabled(supports_fill_appearance && fill_controls_enabled);
     }
@@ -354,7 +410,10 @@
         btn_image_anchor_grid_->update();
     }
     style_color_button(btn_text_color_, eval_text_color(*layer_, lt));
-    style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
+    if (is_scene_mask_layer)
+        style_scene_mask_placeholder_button(btn_fill_color_);
+    else
+        style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
     if (cmb_fill_type_) {
         int fill_idx = cmb_fill_type_->findData(layer_->fill_type);
         cmb_fill_type_->setCurrentIndex(fill_idx >= 0 ? fill_idx : 0);
@@ -499,6 +558,14 @@
         restored.setPosition(std::clamp(previous_position, 0, text_length),
                              QTextCursor::KeepAnchor);
         txt_content_->setTextCursor(restored);
+    }
+    if (cmb_clock_preset_) {
+        const QString clock_format = QString::fromStdString(layer_->clock_format.empty() ? std::string("H:i:s") : layer_->clock_format);
+        int preset_index = cmb_clock_preset_->findData(clock_format);
+        if (preset_index < 0)
+            preset_index = cmb_clock_preset_->findData(QStringLiteral("__custom__"));
+        QSignalBlocker preset_blocker(cmb_clock_preset_);
+        cmb_clock_preset_->setCurrentIndex(std::max(0, preset_index));
     }
     if (cmb_ticker_playback_mode_) {
         const int playback_idx = cmb_ticker_playback_mode_->findData(layer_->ticker_playback_mode);
@@ -782,6 +849,25 @@
         chk_exposed_single_value_->setEnabled(layer_->expose_text);
         chk_exposed_single_value_->setChecked(layer_->exposed_single_value);
     }
+
+    if (chk_expose_fill_) {
+        QSignalBlocker block(chk_expose_fill_);
+        chk_expose_fill_->setChecked(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+    }
+    if (chk_exposed_fill_single_value_) {
+        QSignalBlocker block(chk_exposed_fill_single_value_);
+        chk_exposed_fill_single_value_->setEnabled(layer_->expose_fill_color && !layer_->use_as_scene_mask);
+        chk_exposed_fill_single_value_->setChecked(layer_->exposed_fill_single_value);
+    }
+    if (chk_expose_stroke_) {
+        QSignalBlocker block(chk_expose_stroke_);
+        chk_expose_stroke_->setChecked(layer_->expose_stroke_color);
+    }
+    if (chk_exposed_stroke_single_value_) {
+        QSignalBlocker block(chk_exposed_stroke_single_value_);
+        chk_exposed_stroke_single_value_->setEnabled(layer_->expose_stroke_color);
+        chk_exposed_stroke_single_value_->setChecked(layer_->exposed_stroke_single_value);
+    }
     if (chk_ignore_persistence_) {
         const bool can_ignore_persistence = !layer_->expose_text;
         QSignalBlocker block(chk_ignore_persistence_);
@@ -791,7 +877,7 @@
             ? bgl_tr("OBSTitles.IgnorePersistenceTooltip")
             : bgl_tr("OBSTitles.IgnorePersistenceDisabledTooltip"));
     }
-    if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_->type != LayerType::Video &&
+    if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_type_can_be_scene_mask(layer_->type) &&
                                                        layer_->use_as_scene_mask);
     RichTextParagraphFormat displayed_paragraph;
     RichTextParagraphFormatSummary paragraph_summary;

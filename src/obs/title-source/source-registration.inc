@@ -25,6 +25,89 @@
     return true;
 }
 
+
+static uint32_t argb_with_alpha_byte(uint32_t argb, uint8_t alpha)
+{
+    return (argb & 0x00FFFFFFu) | (static_cast<uint32_t>(alpha) << 24);
+}
+
+static void make_rich_text_strokes_enabled(RichTextDocument &doc, bool enabled)
+{
+    doc.default_format.stroke.enabled = enabled;
+    if (!enabled) {
+        doc.default_format.stroke.width = 0.0f;
+        doc.default_format.stroke.opacity = 0.0f;
+    }
+    if (doc.has_typing_format) {
+        doc.typing_format.stroke.enabled = enabled;
+        if (!enabled) {
+            doc.typing_format.stroke.width = 0.0f;
+            doc.typing_format.stroke.opacity = 0.0f;
+        }
+    }
+    for (RichTextRange &range : doc.ranges) {
+        range.format.stroke.enabled = enabled;
+        if (!enabled) {
+            range.format.stroke.width = 0.0f;
+            range.format.stroke.opacity = 0.0f;
+        }
+    }
+}
+
+static void make_rich_text_fill_transparent(RichTextDocument &doc)
+{
+    auto clear_fill = [](RichTextFill &fill) {
+        fill.type = 0;
+        fill.color = argb_with_alpha_byte(fill.color, 0);
+        fill.gradient_start_color = argb_with_alpha_byte(fill.gradient_start_color, 0);
+        fill.gradient_end_color = argb_with_alpha_byte(fill.gradient_end_color, 0);
+        fill.gradient_start_opacity = 0.0f;
+        fill.gradient_end_opacity = 0.0f;
+        fill.gradient_opacity = 0.0f;
+    };
+    clear_fill(doc.default_format.fill);
+    if (doc.has_typing_format)
+        clear_fill(doc.typing_format.fill);
+    for (RichTextRange &range : doc.ranges)
+        clear_fill(range.format.fill);
+}
+
+static Layer scene_mask_fill_matte_layer(const Layer &layer)
+{
+    Layer fill = layer;
+    fill.outline_enabled = false;
+    fill.stroke_width = 0.0f;
+    fill.outline_opacity = 0.0f;
+    fill.stroke_fill_type = 0;
+    fill.background_stroke_width = 0.0f;
+    fill.background_stroke_opacity = 0.0f;
+    fill.background_stroke_width_prop = AnimatedProperty("background_stroke_width", 0.0);
+    fill.background_stroke_opacity_prop = AnimatedProperty("background_stroke_opacity", 0.0);
+    make_rich_text_strokes_enabled(fill.rich_text, false);
+    return fill;
+}
+
+static Layer scene_mask_stroke_composite_layer(const Layer &layer)
+{
+    Layer stroke = layer;
+    stroke.use_as_scene_mask = false;
+    stroke.effects.clear();
+    stroke.fill_type = 0;
+    stroke.fill_color = argb_with_alpha_byte(stroke.fill_color, 0);
+    stroke.text_color = argb_with_alpha_byte(stroke.text_color, 0);
+    stroke.gradient_start_color = argb_with_alpha_byte(stroke.gradient_start_color, 0);
+    stroke.gradient_end_color = argb_with_alpha_byte(stroke.gradient_end_color, 0);
+    stroke.gradient_start_opacity = 0.0f;
+    stroke.gradient_end_opacity = 0.0f;
+    stroke.gradient_opacity = 0.0f;
+    stroke.background_enabled = false;
+    stroke.background_opacity = 0.0f;
+    stroke.background_enabled_prop = AnimatedProperty("background_enabled", 0.0);
+    stroke.background_opacity_prop = AnimatedProperty("background_opacity", 0.0);
+    make_rich_text_fill_transparent(stroke.rich_text);
+    return stroke;
+}
+
 static void title_gpu_render_session_prepare_auxiliary_layers(
     TitleGpuRenderSession *session, const Title &title, double time,
     uint64_t model_revision, const std::vector<std::string> &layer_ids)
@@ -105,11 +188,17 @@ static void title_gpu_render_session_prepare_auxiliary_layers(
             nullptr, session->title, *layer, layer_time,
             std::max(1, session->title.width),
             std::max(1, session->title.height), false, true) +
-            "|gpu-scene-mask";
+            "|gpu-scene-mask-fill-only-v259";
         if (layer->type == LayerType::Clock)
             key += "|clock=" + std::to_string(clock_second);
         else if (layer->type == LayerType::Ticker)
             key += "|ticker=" + std::to_string(QDateTime::currentMSecsSinceEpoch());
+        else if (layer->type == LayerType::Video) {
+            key += "|" + bgl::video::FrameRuntime::instance()
+                .frame_cache_key_for_layer(
+                    *layer, layer_time,
+                    1.0 / std::max(1e-6, source_frame_duration()));
+        }
 
         auto &entry = session->layers[gpu_scene_mask_raster_id(id)];
         if (entry.key == key)
@@ -118,8 +207,9 @@ static void title_gpu_render_session_prepare_auxiliary_layers(
          * compatibility raster for unsupported source semantics, but it is
          * never converted into a CPU alpha/luma mask; all mask extraction and
          * composition happen after upload in the GPU mask graph. */
+        const Layer fill_matte_layer = scene_mask_fill_matte_layer(*layer);
         const MotionBaseRaster raster = render_gpu_layer_base_raster(
-            session->title, *layer, layer_time);
+            session->title, fill_matte_layer, layer_time);
         entry.key = std::move(key);
         entry.gpu_text = false;
         entry.gpu_primitive = false;
@@ -165,7 +255,7 @@ static gs_texture_t *title_gpu_render_session_render_auxiliary_layer(
     // A scene-mask layer's effects belong to the final masked scene, not to
     // the alpha/luma matte itself. Build a geometry/track-matte-only mask here
     // and apply the layer effect stack after the OBS scene has been clipped.
-    Layer matte_layer = *layer;
+    Layer matte_layer = scene_mask_fill_matte_layer(*layer);
     matte_layer.effects.clear();
     return render_gpu_mask_graph_texture(
         session, session->title, matte_layer, title_time,
@@ -1006,6 +1096,68 @@ static bool apply_scene_mask_backdrop_effects_over_current_target(
         session, frame, output_width, output_height, true);
 }
 
+
+static void render_scene_mask_stroke_over_current_target(
+    TitleSourceData *data, const Title &title, const Layer &mask_layer,
+    double title_time, bool apply_chain_opacity = true)
+{
+    if (!data || !data->gpu_render_session)
+        return;
+    const double layer_time = gpu_layer_render_time(title, mask_layer, title_time);
+    const double local_time = std::max(0.0, layer_time - mask_layer.in_time);
+    const bool has_outline = eval_outline_width(mask_layer, local_time) > 0.0 &&
+        (mask_layer.stroke_fill_type == 2 ||
+         ((eval_outline_color(mask_layer, local_time) >> 24) & 0xFF) > 0);
+    const bool rich_text_like = mask_layer.type == LayerType::Text ||
+        mask_layer.type == LayerType::Clock || mask_layer.type == LayerType::Ticker;
+    const bool has_rich_stroke = rich_text_like &&
+        max_rich_text_stroke_width(mask_layer, local_time) > 0.0;
+    const bool has_background_stroke = eval_background_stroke_width(mask_layer, local_time) > 0.0;
+    if (!has_outline && !has_rich_stroke && !has_background_stroke)
+        return;
+
+    Layer stroke_layer = scene_mask_stroke_composite_layer(mask_layer);
+    MotionBaseRaster raster = render_gpu_layer_base_raster(
+        title, stroke_layer, layer_time, 1.0,
+        false, bgl::video::VideoDecodeClient::LiveOutput);
+    if (raster.image.isNull())
+        return;
+
+    TitleGpuRenderSession::LayerRaster entry;
+    entry.pending_image = raster.image;
+    entry.origin = raster.origin;
+    entry.logical_width = raster.logical_width > 0.0
+        ? raster.logical_width : raster.image.width();
+    entry.logical_height = raster.logical_height > 0.0
+        ? raster.logical_height : raster.image.height();
+    entry.base_box_width = std::max(0.0001, eval_box_width(stroke_layer, local_time));
+    entry.base_box_height = std::max(0.0001, eval_box_height(stroke_layer, local_time));
+    entry.layer_box_rect = raster.layer_box_rect;
+    entry.image_clip_rect = raster.image_clip_rect;
+    entry.pending_upload = true;
+
+    if (!upload_gpu_layer_raster(data->gpu_render_session, entry) || !entry.texture)
+        return;
+
+    const float opacity = apply_chain_opacity
+        ? static_cast<float>(std::clamp(
+              gpu_layer_chain_opacity(title, mask_layer, title_time), 0.0, 1.0))
+        : 1.0f;
+    gs_blend_state_push();
+    gs_enable_blending(true);
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+    draw_gpu_layer_texture(data->gpu_render_session, &entry, title, stroke_layer,
+                           entry.texture, entry.origin, entry.width, entry.height,
+                           entry.logical_width, entry.logical_height,
+                           entry.image_clip_rect, entry.base_box_width,
+                           entry.base_box_height, title_time, opacity);
+    gs_blend_state_pop();
+    if (entry.texture)
+        gs_texture_destroy(entry.texture);
+    if (entry.transform_grid)
+        gs_vertexbuffer_destroy(entry.transform_grid);
+}
+
 static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, double title_time)
 {
     if (!data || data->scene_masks.empty() || data->active_scene_mask_scenes.empty())
@@ -1022,7 +1174,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
     for (std::size_t layer_index = 0; layer_index < title.layers.size(); ++layer_index) {
         const auto &layer_ptr = title.layers[layer_index];
         const Layer *layer = layer_ptr.get();
-        if (!layer || !layer->use_as_scene_mask || layer->type == LayerType::Video ||
+        if (!layer || !layer->use_as_scene_mask || !layer_type_can_be_scene_mask(layer->type) ||
             !gpu_layer_chain_visible(title, *layer, title_time))
             continue;
         const auto *cfg = scene_mask_config_for_layer(*data, layer->id);
@@ -1117,6 +1269,15 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                 while (gs_effect_loop(effect, "Draw"))
                     gs_draw_sprite(scene_texture, 0, data->tex_w, data->tex_h);
                 gs_matrix_pop();
+
+                /* Composite the mask object's stroke into the matted scene before
+                 * the layer effect stack runs. This keeps effects visually uniform
+                 * across the filled scene artwork and the authored stroke. Opacity
+                 * is applied later to the combined texture, so avoid applying the
+                 * layer chain opacity twice here. */
+                render_scene_mask_stroke_over_current_target(
+                    data, title, *layer, title_time, false);
+
                 gs_texrender_end(data->scene_mask_matted_texrender);
                 gs_projection_pop();
                 gs_viewport_pop();
@@ -1157,7 +1318,8 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                  * position without drawing upper layers repeatedly. */
                 std::size_t next_scene_mask = title.layers.size();
                 for (std::size_t next = layer_index + 1; next < title.layers.size(); ++next) {
-                    if (title.layers[next] && title.layers[next]->use_as_scene_mask && title.layers[next]->type != LayerType::Video &&
+                    if (title.layers[next] && title.layers[next]->use_as_scene_mask &&
+                        layer_type_can_be_scene_mask(title.layers[next]->type) &&
                         gpu_layer_chain_visible(title, *title.layers[next], title_time)) {
                         next_scene_mask = next;
                         break;
@@ -1199,7 +1361,8 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
     bool rendered = false;
     std::size_t first_scene_mask = title->layers.size();
     for (std::size_t i = 0; i < title->layers.size(); ++i) {
-        if (title->layers[i] && title->layers[i]->use_as_scene_mask && title->layers[i]->type != LayerType::Video &&
+        if (title->layers[i] && title->layers[i]->use_as_scene_mask &&
+            layer_type_can_be_scene_mask(title->layers[i]->type) &&
             gpu_layer_chain_visible(*title, *title->layers[i], data->playhead)) {
             first_scene_mask = i;
             break;

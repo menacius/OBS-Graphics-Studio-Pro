@@ -141,6 +141,8 @@
     uint32_t stage_height = 0;
     float preview_quality_scale = 1.0f;
     bool editor_draft = false;
+    bgl::video::VideoDecodeClient video_decode_client =
+        bgl::video::VideoDecodeClient::LiveOutput;
     std::string last_error_storage;
     const char *last_error = nullptr;
 };
@@ -258,11 +260,24 @@ static bool layer_can_use_direct_gpu_image_raster(const Layer &layer,
     }
     if (transition_blur_padding > 0)
         return false;
+
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const bool grouped_or_parented = !layer.parent_id.empty() ||
+                                     !layer.transform_parent_id.empty();
+    if (grouped_or_parented) {
+        const bool has_color_overlay = std::any_of(
+            layer.effects.begin(), layer.effects.end(),
+            [t](const LayerEffect &effect) {
+                return effect.type == LayerEffectType::ColorOverlay &&
+                       eval_effect_enabled(effect, t);
+            });
+        if (has_color_overlay)
+            return false;
+    }
     if (layer_has_any_gpu_pixel_effects(layer) &&
         !video_effects_can_use_direct_gpu_base_raster(layer, title_time))
         return false;
 
-    const double t = std::max(0.0, title_time - layer.in_time);
     const bool has_rounded_corners =
         layer.corner_radius_tl > 0.01f || layer.corner_radius_tr > 0.01f ||
         layer.corner_radius_br > 0.01f || layer.corner_radius_bl > 0.01f;
@@ -409,7 +424,9 @@ static bool direct_gpu_image_geometry(const Layer &layer, double title_time,
 
 static MotionBaseRaster render_gpu_image_layer_base_raster_direct(
     const Title &title, const Layer &layer, double title_time,
-    double raster_scale = 1.0)
+    double raster_scale = 1.0,
+    bgl::video::VideoDecodeClient video_decode_client =
+        bgl::video::VideoDecodeClient::LiveOutput)
 {
     MotionBaseRaster result;
     const double t = std::max(0.0, title_time - layer.in_time);
@@ -437,8 +454,22 @@ static MotionBaseRaster render_gpu_image_layer_base_raster_direct(
     if (layer.type == LayerType::Video) {
         const bgl::video::VideoFrame frame =
             bgl::video::FrameRuntime::instance().frame_for_layer(
-                layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()));
+                layer, title_time, 1.0 / std::max(1e-6, source_frame_duration()),
+                video_decode_client);
+        result.video_frame = true;
+        result.video_exact_frame = frame.exact_requested_frame;
+        result.video_frame_number = frame.frame_number;
+        result.video_requested_frame_number = frame.requested_frame_number;
         raster = frame.image;
+        if (raster.isNull()) {
+            const bgl::video::VideoFrameLoadingStatus status =
+                bgl::video::FrameRuntime::instance().loading_status_for_layer(layer);
+            raster = make_video_loading_placeholder_raster(title, layer, title_time, status);
+            result.video_exact_frame = false;
+            result.video_frame_number = -1;
+            result.video_requested_frame_number = frame.requested_frame_number;
+            result.video_loading_progress_percent = status.progress_percent;
+        }
     } else {
         raster = load_cached_layer_image(image_path, sample_size);
     }
@@ -476,7 +507,9 @@ static MotionBaseRaster render_gpu_layer_base_raster(const Title &title,
                                                        const Layer &layer,
                                                        double title_time,
                                                        double raster_scale = 1.0,
-                                                       bool scene_mask_placeholder_preview = false)
+                                                       bool scene_mask_placeholder_preview = false,
+                                                       bgl::video::VideoDecodeClient video_decode_client =
+                                                           bgl::video::VideoDecodeClient::LiveOutput)
 {
     MotionBaseRaster result;
     const int canvas_w = std::max(1, title.width);
@@ -487,7 +520,8 @@ static MotionBaseRaster render_gpu_layer_base_raster(const Title &title,
         layer_can_use_direct_gpu_image_raster(layer, title_time,
                                               transition_blur_padding)) {
         return render_gpu_image_layer_base_raster_direct(title, layer,
-                                                         title_time, raster_scale);
+                                                         title_time, raster_scale,
+                                                         video_decode_client);
     }
     QRect surface_rect = clipped_effect_surface_rect(layer, local_time,
                                                       canvas_w, canvas_h);
@@ -527,6 +561,7 @@ static MotionBaseRaster render_gpu_layer_base_raster(const Title &title,
     ScopedGpuReadbackContract no_intermediate_readback(GpuReadbackContract::FinalFrameOnly);
     ScopedSceneMaskPlaceholderPreview scene_mask_preview_scope(
         base_layer.use_as_scene_mask && scene_mask_placeholder_preview);
+    ScopedRasterVideoDecodeClient video_decode_scope(video_decode_client);
     render_layer_unmasked(layer_cr.get(), title, base_layer, title_time,
                           canvas_w, canvas_h);
     layer_cr.reset();
@@ -597,11 +632,14 @@ static QRect gpu_text_surface_rect(const Title &title, const Layer &layer,
     const double box_width = std::max(0.0, eval_box_width(layer, local_time));
     const double box_height = std::max(0.0, eval_box_height(layer, local_time));
     const int inline_stroke_pad = static_cast<int>(std::ceil(
-        std::max(0.0, max_rich_text_stroke_width(layer, local_time)))) + 2;
+        std::max(0.0, max_rich_text_stroke_width(layer, local_time)))) + 6;
     const int animator_pad = static_cast<int>(std::ceil(
         text_animator_stack_visual_padding(layer.text_animators,
                                            box_width, box_height)));
-    const int visual_pad = std::max(inline_stroke_pad, animator_pad);
+    const int character_scale_pad = static_cast<int>(std::ceil(
+        std::max(0.0, max_rich_text_scale_overhang_hint(layer, local_time)))) + 3;
+    const int visual_pad = std::max({inline_stroke_pad, animator_pad,
+                                     character_scale_pad});
     if (visual_pad > 2) {
         surface = surface.adjusted(-visual_pad, -visual_pad,
                                    visual_pad, visual_pad);
@@ -613,27 +651,37 @@ static QRect gpu_text_surface_rect(const Title &title, const Layer &layer,
     return surface;
 }
 
+/* Every ordinary text-like layer uses one shaped glyph pipeline. H/V Scale is
+ * stored on the immutable glyph and applied to its baseline-relative GPU quad;
+ * the same TextAnimatorEvaluation is consumed for manually-authored animators
+ * and transition-managed animators. Do not route managed transitions through
+ * QTextDocument: its font-size/stretch compensation has platform-dependent
+ * width-face thresholds (for example a visible jump between V Scale 89% and
+ * 90% on DirectWrite) and reintroduces the old tracking-like H Scale. */
 static bool layer_can_use_gpu_text_raster(const Layer &layer,
                                           double title_time,
                                           bool backend_available)
 {
     if (!backend_available)
         return false;
-    if (layer.type != LayerType::Text && layer.type != LayerType::Clock &&
-        layer.type != LayerType::Ticker)
+
+    const bool text_like = layer.type == LayerType::Text ||
+                           layer.type == LayerType::Clock ||
+                           layer.type == LayerType::Ticker;
+    if (!text_like)
         return false;
-    /* Transition-managed animators currently use the compatibility raster
-     * compositor deliberately. It consumes the same TextAnimatorEvaluation as
-     * the SDF renderer, but preserves the proven BGL transition behaviour while
-     * the per-glyph GPU path is validated independently. This is not a legacy
-     * transition evaluator: descriptors have already been converted to the
-     * generic animator stack before reaching this branch. */
-    if (text_animator_stack_has_managed_transition(layer.text_animators))
+
+    /* Static stroked text uses the exact compatibility compositor, which can
+     * merge all same-style glyph outlines into one continuous stroke. Animated
+     * text must remain on the unified per-glyph GPU path: the compatibility
+     * flattened adapter samples the complete precomposed text image through
+     * overlapping rectangular unit clips, so neighbouring glyphs can travel
+     * with the wrong unit and legacy text transitions visibly break. */
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    if (max_rich_text_stroke_width(layer, local_time) > 0.0001 &&
+        !text_animator_stack_has_enabled_animators(layer.text_animators))
         return false;
-    /* Legacy project/preset data is converted before rendering. There is no
-     * legacy text-transition runtime fallback; all text animation reaches this
-     * shared shaped-layout/TextAnimator path. */
-    (void)title_time;
+
     return true;
 }
 
@@ -678,7 +726,7 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(model);
         rich_text_document_replace_text_canonical(
-            model, ticker_text.toStdString(), insertion_format,
+            model, ticker_text.toUtf8().toStdString(), insertion_format,
             model.has_typing_format ? model.typing_format_mask : 0);
     } else if (ticker_layer && layer.ticker_style == 1) {
         const QFont ticker_font = font_for_layer(layer, local_time);
@@ -696,7 +744,7 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(model);
         rich_text_document_replace_text_canonical(
-            model, lines.value(index).toStdString(), insertion_format,
+            model, lines.value(index).toUtf8().toStdString(), insertion_format,
             model.has_typing_format ? model.typing_format_mask : 0);
     } else if (layer.text_overflow_mode == 2) {
         const QString fitted = overflow_layout_text(
@@ -704,7 +752,7 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         const RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(model);
         rich_text_document_replace_text_canonical(
-            model, fitted.toStdString(), insertion_format,
+            model, fitted.toUtf8().toStdString(), insertion_format,
             model.has_typing_format ? model.typing_format_mask : 0);
     }
 
@@ -722,13 +770,9 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
     request.overflow_mode = ticker_layer
         ? (layer.ticker_style == 2 ? layer.text_overflow_mode : 1)
         : layer.text_overflow_mode;
-    /* LayerRaster already owns the last prepared editor layer and calls this
-     * function only after its model key changes.  Keeping every intermediate
-     * typed string in the process-wide layout cache provided no editor reuse
-     * and retained hundreds of obsolete glyph/cluster vectors. */
-    const ImmutableTextLayout layout = session->editor_draft
-        ? build_text_layout(request)
-        : cached_text_layout(request);
+    /* Preview resolution never changes shaping geometry. Reuse the bounded
+     * layout cache in adaptive mode instead of rebuilding Qt shaping each frame. */
+    const ImmutableTextLayout layout = cached_text_layout(request);
     if (!layout || !layout->valid)
         return false;
 
@@ -769,8 +813,14 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         -eval_origin_y(layer, local_time) * box_height - surface_rect.y();
     const double text_offset_x = box_local_x + style_rect.x() + ticker_offset_x;
     const double text_offset_y = box_local_y + style_rect.y() + ticker_offset_y;
-    const double clip_pad =
-        std::max(0.0, max_rich_text_stroke_width(layer, local_time)) + 2.0;
+    /* The text box controls wrapping/alignment, but it is not an ink mask.
+     * Scaled glyphs, italic overhang and inline stroke are allowed to extend
+     * beyond its logical rectangle just as they do in the Text Style preview.
+     * In v273 the GPU quad was correct but the fixed box clip cut V Scale above
+     * 100%, producing a second apparently different scaling behaviour. */
+    const double clip_pad = std::max(
+        std::max(0.0, max_rich_text_stroke_width(layer, local_time)) + 6.0,
+        std::max(0.0, max_rich_text_scale_overhang_hint(layer, local_time)) + 3.0);
     const QRectF target_bounds(0.0, 0.0, surface_rect.width(),
                                surface_rect.height());
     const QRectF text_clip = QRectF(text_offset_x, text_offset_y,

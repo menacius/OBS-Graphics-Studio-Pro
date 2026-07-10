@@ -214,14 +214,7 @@ void TitleDock::on_add()
     auto *layout = new QVBoxLayout(&dialog);
     auto *form = new QFormLayout;
     auto *name_edit = new QLineEdit(bgl_tr("OBSTitles.NewTitle"), &dialog);
-    auto *type_combo = new QComboBox(&dialog);
-    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeTitle"), static_cast<int>(TitleGraphicType::Title));
-    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeGraphic"), static_cast<int>(TitleGraphicType::Graphic));
-    type_combo->addItem(bgl_tr("OBSTitles.GraphicTypeMask"), static_cast<int>(TitleGraphicType::Mask));
-    type_combo->addItem(obs_icon("stinger.svg"), bgl_tr("OBSTitles.GraphicTypeStinger"),
-                        static_cast<int>(TitleGraphicType::Stinger));
     form->addRow(bgl_tr("OBSTitles.TitleNamePrompt"), name_edit);
-    form->addRow(bgl_tr("OBSTitles.GraphicTypeLabel"), type_combo);
     layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -234,22 +227,10 @@ void TitleDock::on_add()
         return;
 
     auto title = TitleDataStore::instance().create_title(name_edit->text().trimmed().toStdString());
-    title->graphic_type = static_cast<TitleGraphicType>(std::clamp(type_combo->currentData().toInt(), 0, 3));
-    if (title->graphic_type == TitleGraphicType::Stinger) {
-        title->duration = 2.0;
-        title->stinger_transition_point = 1.0;
-        title->stinger_audio_enabled = true;
-        title->stinger_alpha_output = true;
-        title->stinger_render_mode = StingerRenderMode::ProceduralLive;
-        title->stinger_switch_mode = StingerSwitchMode::SwitchAtPoint;
-        title->stinger_editor_background = StingerEditorBackground::FollowSwitchPoint;
-        title->playback_mode = 0;
-        title->cue_end_behavior = 1;
-        for (auto &layer : title->layers) {
-            if (layer)
-                layer->out_time = title->duration;
-        }
-    }
+    /* Blank titles are element-defined. With no exposed text or scene-mask
+     * elements yet, the neutral starting type is Graphic; Stinger-specific
+     * setup remains available from Graphic Properties after creation. */
+    title->graphic_type = TitleGraphicType::Graphic;
     title->preview_screenshot_png_base64 = title_screenshot_png_base64(title_screenshot_image(*title)).toStdString();
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();

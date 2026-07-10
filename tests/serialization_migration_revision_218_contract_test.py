@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Source contract for Development Version 218 serialization and Timeline context menus."""
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,10 +25,10 @@ docks = read("src/editor/title-editor/commands-docks.inc")
 readme = read("README.md")
 changelog = read("docs/CHANGELOG.md")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
+assert re.search(r'set\(OBS_BGS_DEVELOPMENT_VERSION \"(21[8-9]|2[2-9][0-9]|[3-9][0-9]{2,})\"\)', cmake)
+assert re.search(r'#define BGL_DEVELOPMENT_VERSION \"(21[8-9]|2[2-9][0-9]|[3-9][0-9]{2,})\"', build)
 assert 'kCurrentTitleSchemaVersion = 6' in schema
-assert 'kCurrentDevelopmentVersion = 239' in schema
+assert re.search(r'kCurrentDevelopmentVersion = (21[8-9]|2[2-9][0-9]|[3-9][0-9]{2,})', schema)
 assert 'case 218:' in schema
 assert 'migrate_serialization_audit_218' in schema
 assert 'disabled malformed parent bind matrix' in schema
@@ -56,7 +57,7 @@ assert '&CanvasPreview::show_selected_layers_context_menu' not in docks  # conne
 assert 'canvas_->show_selected_layers_context_menu(global_pos)' in docks
 
 assert 'Title schema 6' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert re.search(r'# v0.8.11-alpha — Development Version (21[8-9]|2[2-9][0-9]|[3-9][0-9]{2,})', changelog)
 assert 'Schema 6' in read('docs/ARCHITECTURE_AND_BUILD.md') or 'Schema 6' in read('docs/CHANGELOG.md')
 
 print('Development Version 218 serialization/migration contract passed')

@@ -159,10 +159,19 @@ QWidget *TitleEditor::create_styles_panel()
                         inline_style.font_italic = summary.format.italic;
                         inline_style.text_underline = summary.format.underline;
                         inline_style.text_strikethrough = summary.format.strikethrough;
+                        inline_style.font_kerning = summary.format.kerning;
+                        inline_style.kerning_mode = summary.format.kerning_mode;
+                        inline_style.manual_kerning = summary.format.manual_kerning;
                         inline_style.char_tracking = summary.format.tracking;
                         inline_style.char_scale_x = summary.format.scale_x;
                         inline_style.char_scale_y = summary.format.scale_y;
                         inline_style.baseline_shift = summary.format.baseline_shift;
+                        inline_style.text_style = summary.format.text_style;
+                        inline_style.text_ligatures = summary.format.ligatures;
+                        inline_style.text_stylistic_alternates = summary.format.stylistic_alternates;
+                        inline_style.text_fractions = summary.format.fractions;
+                        inline_style.text_opentype_features = summary.format.opentype_features;
+                        inline_style.text_language = summary.format.language;
                         inline_style.fill_type = summary.format.fill.type;
                         inline_style.text_color = summary.format.fill.color;
                         inline_style.fill_color = summary.format.fill.color;
@@ -181,6 +190,30 @@ QWidget *TitleEditor::create_styles_panel()
                         inline_style.gradient_scale = summary.format.fill.gradient_scale;
                         inline_style.gradient_focal_x = summary.format.fill.gradient_focal_x;
                         inline_style.gradient_focal_y = summary.format.fill.gradient_focal_y;
+                        inline_style.outline_enabled = summary.format.stroke.enabled;
+                        inline_style.stroke_width = summary.format.stroke.width;
+                        inline_style.outline_opacity = summary.format.stroke.opacity;
+                        inline_style.outline_on_front = summary.format.stroke.on_front;
+                        inline_style.outline_alignment = summary.format.stroke.alignment;
+                        inline_style.outline_antialias = summary.format.stroke.antialias;
+                        inline_style.outline_join_style = summary.format.stroke.join_style;
+                        inline_style.stroke_fill_type = summary.format.stroke.fill.type == 1 ? 2 : 1;
+                        inline_style.stroke_color = summary.format.stroke.fill.color;
+                        inline_style.stroke_gradient_type = summary.format.stroke.fill.gradient_type;
+                        inline_style.stroke_gradient_spread = summary.format.stroke.fill.gradient_spread;
+                        inline_style.stroke_gradient_start_color = summary.format.stroke.fill.gradient_start_color;
+                        inline_style.stroke_gradient_end_color = summary.format.stroke.fill.gradient_end_color;
+                        inline_style.stroke_gradient_start_pos = summary.format.stroke.fill.gradient_start_pos;
+                        inline_style.stroke_gradient_end_pos = summary.format.stroke.fill.gradient_end_pos;
+                        inline_style.stroke_gradient_start_opacity = summary.format.stroke.fill.gradient_start_opacity;
+                        inline_style.stroke_gradient_end_opacity = summary.format.stroke.fill.gradient_end_opacity;
+                        inline_style.stroke_gradient_opacity = summary.format.stroke.fill.gradient_opacity;
+                        inline_style.stroke_gradient_angle = summary.format.stroke.fill.gradient_angle;
+                        inline_style.stroke_gradient_center_x = summary.format.stroke.fill.gradient_center_x;
+                        inline_style.stroke_gradient_center_y = summary.format.stroke.fill.gradient_center_y;
+                        inline_style.stroke_gradient_scale = summary.format.stroke.fill.gradient_scale;
+                        inline_style.stroke_gradient_focal_x = summary.format.stroke.fill.gradient_focal_x;
+                        inline_style.stroke_gradient_focal_y = summary.format.stroke.fill.gradient_focal_y;
                         return obsbgs::StylePresetLibrary::makeTextPreset(inline_style, name, category);
                     }
                 }
@@ -191,56 +224,55 @@ QWidget *TitleEditor::create_styles_panel()
     });
     text_styles->setApplyPresetCallback([this](const obsbgs::StylePreset &preset) {
         if (!title_ || sel_layer_id_.empty()) return;
-        if (auto layer = title_->find_layer(sel_layer_id_)) {
-            if (layer->type != LayerType::Text && layer->type != LayerType::Clock && layer->type != LayerType::Ticker)
-                return;
-            push_undo_snapshot();
-            const bool apply_inline = active_text_edit_layer_id_ == layer->id;
-            if (apply_inline) {
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
-                if (!obsbgs::StylePresetLibrary::textPresetToCharFormat(preset, fmt))
-                    return;
-                const uint32_t mask = obsbgs::StylePresetLibrary::textPresetCharMask();
-                apply_rich_text_format_to_layer_range(*layer, fmt, mask, true);
-                if (canvas_) canvas_->apply_active_text_char_format(layer->id, fmt, mask);
-                on_title_modified(false);
-                update_layer_panels(layer, playhead_);
-                if (layers_) layers_->refresh();
-                if (canvas_) canvas_->update();
-                return;
-            }
-            RichTextCharFormat preset_char = layer_char_format_for_editor(*layer);
-            if (!obsbgs::StylePresetLibrary::textPresetToCharFormat(preset, preset_char))
-                return;
-            RichTextParagraphFormat preset_paragraph = layer_paragraph_format_for_editor(*layer);
-            const auto payload = preset.payload;
-            preset_paragraph.align_h = payload.value(QStringLiteral("alignH")).toInt(preset_paragraph.align_h);
-            preset_paragraph.align_v = std::clamp(
-                payload.value(QStringLiteral("alignV")).toInt(preset_paragraph.align_v), 0, 3);
-            preset_paragraph.line_spacing = float(payload.value(QStringLiteral("leading")).toDouble(preset_paragraph.line_spacing));
-            preset_paragraph.space_before = float(payload.value(QStringLiteral("paragraphBefore")).toDouble(preset_paragraph.space_before));
-            preset_paragraph.space_after = float(payload.value(QStringLiteral("paragraphAfter")).toDouble(preset_paragraph.space_after));
-            preset_paragraph.indent_left = float(payload.value(QStringLiteral("paragraphLeft")).toDouble(preset_paragraph.indent_left));
-            preset_paragraph.indent_right = float(payload.value(QStringLiteral("paragraphRight")).toDouble(preset_paragraph.indent_right));
-            preset_paragraph.indent_first_line = float(payload.value(QStringLiteral("paragraphFirst")).toDouble(preset_paragraph.indent_first_line));
-            if (obsbgs::StylePresetLibrary::applyTextPreset(preset, *layer)) {
-                apply_rich_text_format_to_layer_range(
-                    *layer, preset_char,
-                    obsbgs::StylePresetLibrary::textPresetCharMask(), false);
-                apply_rich_text_paragraph_format_to_layer(
-                    *layer, preset_paragraph,
-                    RichTextParagraphAlignH | RichTextParagraphAlignV |
-                        RichTextParagraphLineSpacing | RichTextParagraphSpaceBefore |
-                        RichTextParagraphSpaceAfter | RichTextParagraphIndentLeft |
-                        RichTextParagraphIndentRight | RichTextParagraphIndentFirstLine,
-                    false);
-                on_title_modified(false);
-                update_layer_panels(layer, playhead_);
-                if (layers_) layers_->refresh();
-                if (canvas_) canvas_->update();
-            }
+        auto layer = title_->find_layer(sel_layer_id_);
+        if (!layer || (layer->type != LayerType::Text &&
+                       layer->type != LayerType::Clock &&
+                       layer->type != LayerType::Ticker)) {
+            return;
         }
+
+        const bool apply_inline = active_text_edit_layer_id_ == layer->id;
+        if (apply_inline) {
+            RichTextCharFormat character = layer_char_format_for_editor(*layer);
+            RichTextParagraphFormat paragraph =
+                layer_paragraph_format_for_editor(*layer);
+            if (!obsbgs::StylePresetLibrary::textPresetToCharFormat(
+                    preset, character) ||
+                !obsbgs::StylePresetLibrary::textPresetToParagraphFormat(
+                    preset, paragraph)) {
+                return;
+            }
+            /* Rebuilding the QTextDocument adapter clears its local history.
+             * Persist pending typed text first, then store one canonical post-state
+             * snapshot for the complete preset operation. */
+            if (inline_text_changed_since_undo_snapshot_) {
+                push_undo_snapshot();
+                inline_text_changed_since_undo_snapshot_ = false;
+            }
+            apply_rich_text_format_to_layer_range(
+                *layer, character,
+                obsbgs::StylePresetLibrary::textPresetCharMask(), true);
+            apply_rich_text_paragraph_format_to_layer(
+                *layer, paragraph,
+                obsbgs::StylePresetLibrary::textPresetParagraphMask(), true);
+            if (canvas_) {
+                canvas_->apply_active_text_char_format(
+                    layer->id, character,
+                    obsbgs::StylePresetLibrary::textPresetCharMask());
+            }
+        } else if (!obsbgs::StylePresetLibrary::applyTextPreset(preset, *layer)) {
+            return;
+        }
+
+        text_property_transaction_active_ = false;
+        text_property_transaction_layer_id_.clear();
+        force_next_title_visual_update();
+        on_title_modified(true);
+        update_layer_panels(layer, playhead_);
+        if (layers_) layers_->refresh();
+        if (canvas_) canvas_->update();
     });
+
 
     auto *gradient_styles = new obsbgs::StylePresetPanel(obsbgs::StylePresetKind::Gradient, tabs);
     gradient_styles->setCreatePresetCallback([this](const QString &name, const QString &category) {
@@ -282,47 +314,46 @@ QWidget *TitleEditor::create_styles_panel()
     });
     gradient_styles->setApplyPresetCallback([this](const obsbgs::StylePreset &preset) {
         if (!title_ || sel_layer_id_.empty()) return;
-        if (auto layer = title_->find_layer(sel_layer_id_)) {
-            push_undo_snapshot();
-            const bool apply_inline = active_text_edit_layer_id_ == layer->id &&
-                                      (layer->type == LayerType::Text || layer->type == LayerType::Clock || layer->type == LayerType::Ticker);
-            if (apply_inline) {
-                RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
-                if (!obsbgs::StylePresetLibrary::gradientPresetToCharFormat(preset, fmt))
-                    return;
-                const uint32_t mask = obsbgs::StylePresetLibrary::gradientPresetCharMask();
-                apply_rich_text_format_to_layer_range(*layer, fmt, mask, true);
-                if (canvas_) canvas_->apply_active_text_char_format(layer->id, fmt, mask);
-                on_title_modified(false);
-                update_layer_panels(layer, playhead_);
-                update_sidebar_color_swatches(layer);
-                if (layers_) layers_->refresh();
-                if (canvas_) canvas_->update();
+        auto layer = title_->find_layer(sel_layer_id_);
+        if (!layer) return;
+
+        const bool rich_text_layer = layer->type == LayerType::Text ||
+                                     layer->type == LayerType::Clock ||
+                                     layer->type == LayerType::Ticker;
+        const bool apply_inline = rich_text_layer &&
+                                  active_text_edit_layer_id_ == layer->id;
+        if (apply_inline) {
+            RichTextCharFormat character = layer_char_format_for_editor(*layer);
+            if (!obsbgs::StylePresetLibrary::gradientPresetToCharFormat(
+                    preset, character)) {
                 return;
             }
-            const bool rich_text_layer = layer->type == LayerType::Text ||
-                                         layer->type == LayerType::Clock ||
-                                         layer->type == LayerType::Ticker;
-            RichTextCharFormat preset_fill;
-            if (rich_text_layer) {
-                preset_fill = layer_char_format_for_editor(*layer);
-                if (!obsbgs::StylePresetLibrary::gradientPresetToCharFormat(preset, preset_fill))
-                    return;
+            if (inline_text_changed_since_undo_snapshot_) {
+                push_undo_snapshot();
+                inline_text_changed_since_undo_snapshot_ = false;
             }
-            if (obsbgs::StylePresetLibrary::applyGradientPreset(preset, *layer)) {
-                if (rich_text_layer) {
-                    apply_rich_text_format_to_layer_range(
-                        *layer, preset_fill,
-                        obsbgs::StylePresetLibrary::gradientPresetCharMask(), false);
-                }
-                on_title_modified(false);
-                update_layer_panels(layer, playhead_);
-                update_sidebar_color_swatches(layer);
-                if (layers_) layers_->refresh();
-                if (canvas_) canvas_->update();
-            }
+            const uint32_t mask =
+                obsbgs::StylePresetLibrary::gradientPresetCharMask();
+            apply_rich_text_format_to_layer_range(
+                *layer, character, mask, true);
+            if (canvas_)
+                canvas_->apply_active_text_char_format(
+                    layer->id, character, mask);
+        } else if (!obsbgs::StylePresetLibrary::applyGradientPreset(
+                       preset, *layer)) {
+            return;
         }
+
+        text_property_transaction_active_ = false;
+        text_property_transaction_layer_id_.clear();
+        force_next_title_visual_update();
+        on_title_modified(true);
+        update_layer_panels(layer, playhead_);
+        update_sidebar_color_swatches(layer);
+        if (layers_) layers_->refresh();
+        if (canvas_) canvas_->update();
     });
+
 
 
     auto *assets = new obsbgs::AssetLibraryPanel(false, tabs, false);

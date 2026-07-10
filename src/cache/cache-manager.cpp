@@ -7,6 +7,7 @@
 #include "title-snapshot.h"
 #include "title-localization.h"
 #include "title-source.h"
+#include "title-video-runtime.h"
 #include "title-preferences.h"
 #include "title-logger.h"
 #include "external-data.h"

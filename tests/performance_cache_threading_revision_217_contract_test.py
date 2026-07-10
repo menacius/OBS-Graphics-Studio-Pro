@@ -28,9 +28,9 @@ readme = read("README.md")
 changelog = read("docs/CHANGELOG.md")
 doc = read("docs/RENDERING_AND_CACHE.md")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema
 assert 'case 217:' in schema
 
 # Graph toggle color is authored from the exact same component palette as curves.
@@ -88,7 +88,7 @@ assert 'Counter::UiNotificationsCoalesced' in notifications
 assert 'Counter::UiNotificationFlushes' in notifications
 
 assert 'indexed and batched state reads' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 assert 'Timeline/cache paint audit' in doc
 assert 'Threading and lifetime contract' in doc
 

@@ -1090,6 +1090,8 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     gs_eparam_t *clip_rect = bgl_effect_param(session->copy_effect, "imageClipRect");
     gs_eparam_t *corner_radii = bgl_effect_param(session->copy_effect, "imageCornerRadii");
     gs_eparam_t *logical_size = bgl_effect_param(session->copy_effect, "imageLogicalSize");
+    gs_eparam_t *source_texel_size = bgl_effect_param(session->copy_effect, "sourceTexelSize");
+    gs_eparam_t *image_scale_filter = bgl_effect_param(session->copy_effect, "imageScaleFilter");
     gs_eparam_t *projected_mask = bgl_effect_param(
         session->copy_effect, "postProjectionMask");
     gs_eparam_t *projected_mask_enabled = bgl_effect_param(
@@ -1097,11 +1099,20 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     gs_eparam_t *projected_mask_mode_param = bgl_effect_param(
         session->copy_effect, "postProjectionMaskMode");
     if (!image || !weight_param || !clip_enabled || !clip_rect ||
-        !corner_radii || !logical_size || !projected_mask ||
+        !corner_radii || !logical_size || !source_texel_size ||
+        !image_scale_filter || !projected_mask ||
         !projected_mask_enabled || !projected_mask_mode_param)
         return false;
     gs_effect_set_texture(image, texture);
     gs_effect_set_float(weight_param, weight);
+    struct vec2 source_texel_value;
+    vec2_set(&source_texel_value,
+             1.0f / static_cast<float>(std::max(1u, texture_width)),
+             1.0f / static_cast<float>(std::max(1u, texture_height)));
+    gs_effect_set_vec2(source_texel_size, &source_texel_value);
+    gs_effect_set_int(image_scale_filter, layer_type_is_image_like(layer.type)
+        ? static_cast<int>(layer.scale_filter)
+        : static_cast<int>(ImageScaleFilter::Bilinear));
     const bool use_projected_mask = post_projection_mask &&
         post_projection_mask_mode != MaskMode::None;
     gs_effect_set_texture(projected_mask, use_projected_mask
@@ -1455,6 +1466,11 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                                        sample_cap);
         const double mix = std::clamp(static_cast<double>(motion.effect_opacity),
                                       0.0, 1.0);
+        const double sharp_preserve = std::clamp(
+            mix * (image_or_video_motion ? 0.35 : 0.20), 0.0, mix);
+        const double blur_mix = std::max(0.0, mix - sharp_preserve);
+        const double sharp_mix = std::clamp((1.0 - mix) + sharp_preserve,
+                                            0.0, 1.0);
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
         if (travel < 0.01) {
@@ -1464,14 +1480,14 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                                    draw_clip_rect, draw_base_box_width, draw_base_box_height,
                                    title_time, static_cast<float>(current_opacity));
         } else {
-            if (mix < 1.0)
+            if (sharp_mix > 0.0)
                 draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
                                        draw_origin, source_width, source_height,
                                        draw_logical_width, draw_logical_height,
                                        draw_clip_rect, draw_base_box_width, draw_base_box_height,
                                        title_time,
                                        static_cast<float>(current_opacity *
-                                                          (1.0 - mix)));
+                                                          sharp_mix));
 
             std::vector<double> visible_samples;
             visible_samples.reserve(static_cast<std::size_t>(samples));
@@ -1490,8 +1506,8 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
              * transparent samples. Divide by the requested sample count, not
              * by visible_samples.size(); renormalizing only the visible samples
              * caused the final blur frame to pop to a different opacity. */
-            const float sample_weight = static_cast<float>(
-                current_opacity * mix / static_cast<double>(samples));
+            const float sample_weight = blur_mix > 0.0 ? static_cast<float>(
+                current_opacity * blur_mix / static_cast<double>(samples)) : 0.0f;
             for (double sample_time : visible_samples) {
                 draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
                                        draw_origin, source_width,

@@ -40,9 +40,9 @@ changelog = read("docs/CHANGELOG.md")
 three_d = read("docs/EDITOR_WORKFLOW.md")
 
 # Version and migration continuity.
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*243", schema)
 assert "case 207:" in schema and "migrate_camera_timeline_animation" in schema
 
 # Discrete Hold-keyframe primitive used by switches and assignments.

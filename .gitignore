@@ -5,8 +5,8 @@
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-.bgl-update
 compile_commands.json
+.bgl-update
 
 # Compiled binaries and packages
 *.dll

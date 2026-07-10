@@ -1,332 +1,70 @@
 # Broadcast Graphics Live
 
-<img width="1920" height="1044" alt="Screenshot 2026-07-05 173016" src="https://github.com/user-attachments/assets/90ae9318-dd42-47d9-b958-b5a6cebc5ce0" />
+**Broadcast Graphics Live (BGL)** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered 2D/3D editor, rich text, live data and cueing, audio/video layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
 
-**Broadcast Graphics Live** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered 2D/3D motion-graphics editor, live text and image cueing, audio layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
+**Current source build:** `v0.8.12-alpha` · `Development Version 281`
 
-**Current build:** `v0.8.11-alpha` · `Development Version 239`
+Development Version 281 continues the `v0.8.12-alpha` series. It fixes the Development Version 280 stroked-text regression by removing advance-box clipping from ordinary exact glyphs, composing same-style static outlines as one continuous path, and restoring all transition-managed and manually animated text to the unified GPU animator pipeline. Static stroked text therefore keeps continuous cross-glyph outlines without borrowing neighbouring glyphs into rectangular animation crops, while text transitions retain their previous per-glyph timing and transforms.
 
-Development Version 239 fixes Motion Blur image/video posterization by raising bitmap/video shutter sample density while keeping vector/text budgets controlled, and replaces the damage shader with more organic layered Film/Analog/Digital artifacts based on film scratches/dust/flicker/gate weave, VHS chroma bleed/scanlines/tracking/head-switching and digital macroblock/packet/ringing damage. All blur effects continue to use the existing fast Gaussian blur backend.
+## What changed since v0.8.11-alpha Development Version 239
 
-## What is new in v0.8.11-alpha
+Development Version 239 is the public repository baseline for this comparison. Development Versions 240–281 added or completed:
 
-This release consolidates the work completed since `v0.8.9-alpha` Development Version 189.
+- unified inspector widgets, drag-label editing, compact property rows, reset/default actions and dock/UI consistency;
+- video proxies, decode cache and hardware acceleration policy, time remapping, freeze sections, interpolation, serialization/migration audit and editor decode stability;
+- editor audio monitoring, synchronized playback/cache modes, varispeed **Play Every Frame**, Clock presets and cache-dependent UI visibility;
+- expanded Live Properties and cue rows for fill/stroke, per-row appearance, source clearing, provider-neutral external data and table-to-cue mapping;
+- direct GPU image/video filtering and box-size interaction without CPU resample/upload churn;
+- scene masks across visual layer types with alpha-shaped editor placeholders;
+- effect-library cleanup and textured Film/Analog/Digital damage effects;
+- editable Text Styles using the same Text Properties controls, live preview, stroke/gradients and drag-label behavior;
+- canonical rich text with sparse overlapping multi-property ranges and title-level Undo/Redo;
+- exact per-glyph H/V Scale for normal and multistyle text, shared selection/caret geometry, post-scale center/right/justify alignment, and axis-specific auto-size disable on manual bounding-box resize;
+- Development Version 281 removes ordinary glyph advance clipping, merges static same-style strokes into continuous paths, and keeps animated/transition text on the unified GPU glyph pipeline so neighbouring glyph boxes cannot contaminate transitions.
 
-### Video layers and synchronized multistream audio
+## Core features
 
-Development Version 230 ensures different FPS is handled through deterministic source-frame duplicate/drop mapping, so mixed 23.976/25/30/50/60fps media stays frame-accurate without timeline drift.
+### Native OBS integration
 
-Development Version 228 fixes the first Video layer polish pass: Video no longer draws the empty Image placeholder hatch over decoded frames, visual/video effects and presets can be applied directly to the Video row, and the decoder/cache path now keys GPU uploads by the actually decoded media frame instead of the advancing requested playhead frame. This keeps the last decoded texture resident while the async decoder catches up, reduces redundant texture uploads, and avoids the poor playback performance caused by rebuilding the same frame under a new cache key every tick.
+- Native OBS sources and Stinger transitions.
+- Dockable **Titles and Graphics** panel.
+- Add saved titles to scenes and rebind existing BGL sources.
+- Automatic OBS Audio Mixer visibility for titles that contain audio.
+- OBS theme integration and persistent editor layout.
 
-Development Version 227 adds Video as a first-class visual layer that uses the complete Image layer geometry, crop, anchor, transforms, masks, effects and 2D/3D presentation path. Every embedded audio stream is discovered through FFmpeg and exposed as its own child track with an independent waveform, mute, gain, pan and audio-effect stack. The Video row keeps separate picture visibility and master mute controls, while all picture and audio streams resolve trim, seek, loop, reverse playback and timeline position from the same title transport clock so they cannot drift apart.
+### Layer-based editor
 
-The 227 playback hotfix makes Video layers time-varying GPU rasters, refreshes the canvas as soon as asynchronous video frames arrive, feeds the private editor monitor source from the current in-memory editor title, and keeps audio visibility separate from mute/solo so decoded streams start playing immediately instead of waiting for waveform completion or an unrelated mute/unmute UI change.
+- Text, Clock, Ticker, Shape, Image, Video, Audio, Asset, Group, Adjustment and Stinger Scene A/B layers.
+- Layer ordering, visibility, locking, parenting, grouping, masks and mattes.
+- Free Transform, corner pinning, vector editing, snapping, rulers, guides and safe areas.
+- Timeline, keyframes, Graph Editor, motion paths and reusable assets.
 
-### Effects UI, presets and source-aware animation
+### 3D layers and cameras
 
-Development Version 226 adds Light Wrap and Displacement Map with layer/composition source selection, hidden-source dependency rendering, alpha-aware edge extraction, independent displacement channels, signed X/Y amounts, wrap modes and source/composition mapping. The Effects panel now scales through categorized search, Favorites, Recently Used, generated thumbnails and GPU/CPU/HDR/plugin/screen-space/cache-breaking badges. Effects and complete stacks can be copied, pasted, replaced, reset, duplicated and saved/imported/exported as presets. The effect stack, Layer List and Timeline share one parent/parameter hierarchy, with meaningful numeric parameters exposed to keyframes and the Graph Editor, unified color controls, continuous angles and non-wrapping evolution.
+- Opt-in planar 3D while legacy 2D projects retain their original path.
+- Position, Scale, Anchor, Rotation and Orientation XYZ.
+- Perspective/orthographic cameras, animated switching, editor views, navigation and transform gizmos.
+- Depth testing, culling, transparent sorting, camera-aware motion blur and projected effect bounds.
 
-### Keying, matte and spill suppression
+### Text and typography
 
-Development Version 225 adds Chroma Key, Luma Key, Color Range, Spill Suppression and Matte Choker. The effects use a shared GPU keying core with premultiplied-alpha-safe output, key-color-aware spill removal, invertible mattes, feathering and bounded matte contraction/expansion. They are integrated with the editor, Timeline, serialization and frame cache and expose no legacy modes.
+- Multiple independent styles and properties inside one text box.
+- Direct inline editing with shared selection/caret geometry.
+- Font, size, H/V Scale, tracking, baseline, OpenType, fill, gradient and stroke controls.
+- Paragraph alignment, justification, indents, spacing, vertical alignment, wrapping and auto-size.
+- Text Styles, automatic formatting rules, Text Animators, Clock and Ticker layers.
 
-### Unified effects runtime and render performance baseline
+### Effects, media and playout
 
-All built-in effects now share one canonical descriptor and runtime evaluation layer across the editor, extension catalog, cache, compatibility compositor and 2D/3D GPU renderer. Stable effect IDs, schema versions, parameter metadata, execution space, HDR/color/alpha contracts, bounds expansion and dirty scope come from the same registry. Per-frame effect evaluation no longer copies strings or keyframe vectors, built-in shaders use constant-time cached lookup, GPU pass lists reuse session storage, and the compatibility compositor reuses dimension-aware upload, ping-pong and staging resources instead of allocating them for every call. Debug builds expose effect-resolution, shader-cache, pass-time, bounds and resource-pool counters while existing project serialization and visual output remain compatible.
+- Searchable effect browser, favorites, recent items, presets and extension SDK.
+- Keying, matte, spill suppression, blur/detail, optical, distortion, damage and finishing effects.
+- Video layers with embedded multistream audio, trim/loop/reverse/time-remap/proxy workflows.
+- RAM/disk prerendering, live fallback, cue/uncue behavior and synchronized editor monitoring.
 
-### Complete planar 3D workflow and animated cameras
+## Building and documentation
 
-Compatible visual layers can now be promoted from the unchanged legacy 2D path to a full planar 3D workflow with Position, Scale, Anchor, Rotation and Orientation XYZ channels, perspective or orthographic cameras, per-layer camera assignment, depth testing and writing, backface culling, double-sided rendering, transparent depth ordering, and hardware Z-buffer compositing. The editor adds Active Camera and orthographic/custom views, orbit/pan/dolly navigation, Frame Selected/All, and Move, Rotate and Scale gizmos with Local, Parent and World orientation. Cameras are first-class animated timeline objects with keyframeable transforms, focal length, FOV, zoom, clipping, projection, switching and assignment.
+The project uses CMake and vcpkg. See [INSTALL.txt](INSTALL.txt) and [docs/ARCHITECTURE_AND_BUILD.md](docs/ARCHITECTURE_AND_BUILD.md).
 
-### 3D motion paths, Graph Editor and timeline completion
+Canonical documentation is indexed in [docs/README.md](docs/README.md), including the user guide, editor workflow, text/live-data guide, rendering/cache guide, effects/extensions guide, changelog and Visual Effects SDK.
 
-Position animation supports complete XYZ spatial Bezier paths, independent tangents, roving keyframes and direct on-canvas editing through transformed parent hierarchies and cameras. Layer List, Timeline and Graph Editor share one expanded Vector3 row model, including X/Y/Z and four-channel properties, color-matched channel toggles, sub-frame keyframe movement, compatible Vector2/Vector3 clipboard redirection, collision-safe paste, and unified context menus. Camera switches and projection changes remain discrete Hold tracks while participating in the standard copy, cut, paste, delete and undo workflow.
-
-### Keyframe-safe hierarchy, compositing and motion blur
-
-Grouping, ungrouping, transform-parent changes and parent deletion preserve authored animation through a static parent-bind matrix instead of sampling or baking transform tracks. Masks, mattes, blend modes, groups and effects now follow a defined 3D execution contract, with projected bounds for glow, shadow, blur and outline, near-plane-safe overlays, and camera-aware motion blur that includes parent motion, Z travel, rotation, perspective deformation and animated cameras without smearing stationary transparent artwork.
-
-### Performance, migration and automated release gates
-
-Cache and Timeline inspection use indexed and batched state reads, projected gizmo geometry is reused between hit-testing and painting, editor frame pacing and selection synchronization are more deterministic, and render diagnostics expose queue, cache, readback, grouping and background-work costs. Title schema 6 adds a contiguous migration and recovery path that preserves unknown future fields throughout nested cameras, keyframes, effects, transitions, audio effects, proxy metadata and external providers. A single automated suite now provides source, smoke, full and stress profiles with manifest validation, bounded timeouts, CTest integration and JSON reports. The Development Version 218 render regression was removed by keeping opaque future-schema payloads in immutable shared storage and outside render-fingerprint parsing.
-
-### Procedural Noise and detail enhancement
-
-Noise now uses a single modern procedural engine with visually distinct grain, sensor, fractal, turbulence, ridged, cellular and blue-noise profiles. The effects stack also adds Sharpen, Unsharp Mask, High Pass, Clarity / Local Contrast and Bilateral Sharpen, with GPU processing, alpha protection and keyframeable controls. Effects whose internal schema changes reopen with the new defaults instead of exposing legacy modes.
-
-### Functional optical, lens, distortion and finishing effects
-
-The detail and optical paths now execute their required auxiliary passes instead of falling through the generic single-texture compositor: sharpening effects receive a Gaussian low-pass input, Halation receives thresholded warm highlight diffusion, and Real Glare uses its own source-driven streak and dispersion shader rather than reusing Lens Flare. Development Version 224 also adds Lens Distortion, Chromatic Aberration, Directional Blur, Zoom Blur, Radial Blur, Ripple, Wave Warp, Pixelate, Edge Detect, Posterize, Threshold and Scanlines, each with dedicated editor controls, current-schema defaults and fail-open GPU execution.
-
-## Features
-
-### Native OBS Integration
-
-* Native C++/Qt plugin for OBS Studio.
-* Native OBS title sources without browser sources or an external playout application.
-* Native OBS Stinger transitions with synchronized video and audio.
-* Dockable **Titles and Graphics** control panel.
-* Add saved titles directly to OBS scenes.
-* Rebind an existing OBS source to another saved title.
-* Automatic OBS Audio Mixer visibility only for titles containing audio layers.
-* OBS theme integration and persistent editor layout.
-
-### Layer-Based Motion Graphics Editor
-
-* Layered canvas and timeline workflow inspired by professional motion-graphics applications.
-* Text, clock, ticker, shape, image, audio, asset, group, adjustment and Stinger Scene A/B layers.
-* Layer reordering, duplication, locking, visibility and hierarchy controls.
-* Independent parenting and grouping with keyframe-safe world-transform preservation.
-* Free Transform, corner pinning and direct vector editing.
-* External text and image drag-and-drop.
-* Canvas rulers, guides, snapping, origins and safe areas.
-* Persistent layer, panel and workspace state.
-
-### 3D Layers and Cameras
-
-* Opt-in planar 3D mode while legacy 2D projects retain their original rendering path.
-* Position, Scale, Anchor, Rotation and Orientation XYZ properties.
-* Perspective and orthographic cameras with Position, Point of Interest, Rotation, Orientation, focal length, FOV, zoom and clipping controls.
-* Animated active-camera switching, camera assignment and projection changes.
-* Active Camera, Front, Back, Left, Right, Top, Bottom and Custom Perspective editor views.
-* Orbit, pan, dolly, Frame Selected and Frame All navigation.
-* Move, Rotate and Scale gizmos with Local, Parent and World axes, snapping and hover highlighting.
-* Hardware depth testing/writing, transparent far-to-near ordering, backface culling and double-sided rendering.
-* 3D-aware masks, mattes, blend modes, groups, effects and projected effect bounds.
-
-### Text and Typography
-
-* Rich-text layers with multiple styles inside the same text box.
-* Direct inline editing on the canvas.
-* Character and paragraph formatting.
-* Font size, scale, tracking, baseline and paragraph-spacing controls.
-* Text style and gradient presets.
-* Automatic text-formatting rules.
-* Learned formatting and structural-text recognition.
-* Unicode-aware text processing.
-* Clock and ticker layers.
-* Unified Text Animators with range, procedural, text-based, wiggly and staggered selectors.
-* Animated per-character properties and reusable text-animation presets.
-
-### Animation and Timeline
-
-* Keyframeable layer, camera, text, effect and audio properties.
-* Linear, Hold, Auto Bezier, Continuous Bezier and Manual Bezier interpolation.
-* Easy Ease, Easy Ease In and Easy Ease Out.
-* AE-style **Value Graph** and **Speed Graph** editors.
-* Manual speed and influence handles and numeric Keyframe Velocity editing.
-* Multi-keyframe selection, relative editing and sub-frame temporal movement.
-* Unified X/Y/Z/W and A/R/G/B component rows across Layer List, Timeline and Graph Editor.
-* Full 3D spatial motion paths with complete XYZ Bezier editing directly on the canvas.
-* Roving keyframes and independent spatial tangents.
-* Layer transitions with editable timing handles.
-* Play Once, Pause, Loop and Ping-Pong playback modes.
-* Authored intros, outros and configurable end-of-cue behavior.
-
-### Masks and Compositing
-
-* Layer masks and scene masks.
-* Alpha and Luma track mattes.
-* Inverted and clipping mattes.
-* Parent/child transform inheritance.
-* Groups as composited containers with internal 3D depth resolution.
-* Blend modes.
-* Mask-aware effects.
-* Per-layer persistence controls.
-* Scene A and Scene B compositing for manually animated Stinger transitions.
-
-### Effects and Presets
-
-* Collapsible, reorderable and bypassable effect stacks.
-* Duplicate, remove and reorder individual effects.
-* Keyframeable effect parameters.
-* On-canvas controls for position-based effect properties.
-* FX indicators in the layer list, including a struck-through state when the complete stack is disabled.
-* Stable layer-space, post-transform and screen-space execution in 2D and 3D.
-* Canonical versioned descriptors for IDs, parameters, backend, HDR, color, alpha, bounds, dirty scope and render-pass requirements.
-* Allocation-free evaluated effect snapshots and cached built-in shader lookup.
-* Built-in effects including:
-  * Background and generated fills
-  * Outlines and shadows
-  * Blur effects
-  * Glow and inner glow
-  * Inner shadow
-  * Brightness and contrast
-  * Saturation and color overlays
-  * Procedural noise, grain and vignette
-  * Sharpen, Unsharp Mask, High Pass, Clarity and Bilateral Sharpen
-  * Emboss, Lens Flare, Real Glare and Halation
-  * Lens Distortion, Chromatic Aberration and optical warping
-  * Directional, Zoom and Radial Blur
-  * Ripple, Wave Warp, Pixelate, Edge Detect, Posterize, Threshold and Scanlines
-  * Camera-aware motion blur
-  * Generated and four-color gradients
-* Reusable effect and transition presets.
-* Portable shader-based effect extensions.
-* Optional native effect-extension API.
-* Compound effect graphs with animatable parameters.
-
-### Live Text and Image Cues
-
-* Expose selected text and image properties to the OBS dock.
-* Multiple cue rows with independent values.
-* Immediate cue and uncue controls.
-* Clear queued, active and outgoing states.
-* Live cue timers and title thumbnails.
-* Cue snapshots that remain stable while rows are edited.
-* Cue persistence across keyframes and transitions.
-* Manual uncue without transition replay.
-* Per-layer **Ignore Persistence** support.
-* Table-generated cue rows.
-* Managed and manually editable external-data cells.
-* Stable row IDs for synchronized datasets.
-
-### External Data
-
-* Provider-neutral external-data system.
-* JSON, CSV, HTTP, WebSocket and text providers.
-* Asynchronous network and file updates.
-* Automatic field and table discovery.
-* External field binding to exposed title properties.
-* Table-column mapping to Live Text Cue columns.
-* Replace, append and synchronize modes.
-* Live result preview.
-* Formatting and transformation pipeline.
-* Diagnostics and external-data logging.
-* Coalesced updates without blocking the UI or render thread.
-
-### Video and Audio Layers
-
-* Video files as first-class visual layers with the same geometry, crop, transforms, masks and effects as Image layers.
-* Video picture and embedded audio streams share one timeline strip by default; each stream draws its waveform as an embedded lane.
-* One synchronized audio stream record and waveform for every embedded audio stream.
-* Independent picture visibility, Video master mute and per-stream mute controls.
-* Audio files as first-class timeline layers.
-* Audio playback is published as soon as PCM decode is ready; waveform generation runs independently with realtime per-track progress.
-* Timeline range and trim controls.
-* Draggable fade-in and fade-out handles with visible curves.
-* Gain, pan, mute and solo controls.
-* Looping and independent playback.
-* Keyframeable mix properties.
-* Reorderable audio-effect stack.
-* Synchronized editor monitoring.
-* Sample-accurate forward playback.
-* True reverse audio during reverse and Ping-Pong playback.
-* Audio synchronized with title and Stinger playback.
-* Dynamic OBS Audio Mixer integration.
-
-### Native Stinger Transitions
-
-* Titles can operate as native OBS Stinger transitions.
-* Synchronized graphics and audio.
-* Authored transition point and pre-roll/post-roll regions.
-* **Switch at Point** and **Manual Scene Animation** modes.
-* Animatable Scene A and Scene B input layers.
-* Scene inputs support transforms, masks, mattes, parenting, grouping, blend modes, transitions and effects.
-* Proxy validation and safe live-render fallback.
-* Configurable mixing with outgoing and incoming scene audio.
-
-### Assets, Templates and Libraries
-
-* Reusable title templates.
-* Reusable static and animated assets.
-* Independent or timeline-synchronized asset playback.
-* Asset trimming, looping and pause controls.
-* Direct asset editing from the canvas or Asset Library.
-* Static bounds covering the complete asset animation.
-* Unified libraries for assets, styles, effects and transitions.
-* Import and export of reusable presets and title content.
-
-### Cache and Prerender
-
-* RAM frame cache using rendered frame data.
-* Optional compressed disk cache.
-* Background title and Live Cue prerendering.
-* Per-title and per-cue-row cache progress.
-* Persistent-state prerendering.
-* Dirty-region and targeted invalidation.
-* Batched cache scheduling and an urgent realtime lane.
-* Indexed and batched Timeline cache-state inspection.
-* Asynchronous disk loading and writing.
-* Constant-time RAM-cache lookup and LRU management.
-* Background caching that yields to editing, cueing and live playback.
-* Cache exclusions for real-time clock and non-cacheable ticker behavior.
-* Persistent cache between editor sessions.
-* Configurable RAM limit, disk location and cleanup behavior.
-
-### Performance and Reliability
-
-* GPU-accelerated 2D/3D rendering with editor/OBS parity.
-* Reusable effect-pass storage and dimension-aware compatibility GPU resource pooling.
-* Debug counters for effect evaluation, shader-cache efficiency, bounds calculation, pass time and resource-pool reuse.
-* Monitor-refresh-rate editor presentation and project-frame-rate authored playback.
-* Optimized dense-text and group rendering.
-* Responsive editing during background prerendering.
-* Background decoding, networking, compression and disk operations.
-* Coalesced UI and progress updates.
-* Safe cancellation of background jobs when titles close.
-* Versioned project serialization, contiguous migrations and malformed-entry recovery.
-* Unknown extension and future property preservation without render-hot-path copying.
-* Automated source, smoke, full and stress test profiles.
-* Windows and Linux compatibility.
-
-## Build and install
-
-Requirements are listed in [INSTALL.txt](INSTALL.txt). The build must use an OBS/libobs SDK and Qt toolchain compatible with the target OBS installation.
-
-### Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
-```
-
-### Incremental update, build, and package
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\update-and-build.ps1
-```
-
-A development source package follows this naming scheme:
-
-```text
-Broadcast_Graphics_Live_v0.8.11-alpha_development-version-239.zip
-```
-
-## Documentation
-
-Documentation is consolidated into maintained thematic guides instead of per-development-version notes:
-
-- [Documentation index](docs/README.md)
-- [User guide](docs/USER_GUIDE.md)
-- [Editor and 3D workflow](docs/EDITOR_WORKFLOW.md)
-- [Text, Text Animators, and live data](docs/TEXT_AND_LIVE_DATA.md)
-- [Effects and extensions](docs/EFFECTS_AND_EXTENSIONS.md)
-- [Rendering, audio, and cache](docs/RENDERING_AND_CACHE.md)
-- [Architecture, build, serialization, and testing](docs/ARCHITECTURE_AND_BUILD.md)
-- [Development changelog](docs/CHANGELOG.md)
-
-## Tests and audits
-
-Run `python tools/run_automated_test_suite.py --profile source` for source-only validation. Native `smoke`, `full`, and `stress` profiles require a configured build with `OBS_BGS_BUILD_TESTS=ON`. Architecture, packaging and regression audits live under `tools/`; C++ and Python contracts live under `tests/`.
-
-<p align="center">
-  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
-</p>
-
-<p align="center"><strong>Developed by: omniatv</strong></p>
-<p align="center">
-  <a href="https://omniatv.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
-      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
-    </picture>
-  </a>
-</p>
-
-## Support
-
-Broadcast Graphics Live is free and open source. Development can be supported through [OmniaTV](https://omniatv.com/en/support/).
-
-## License
-
-Broadcast Graphics Live is distributed under the terms in [LICENSE](LICENSE). Third-party dependencies and optional extension packages retain their own compatible licenses.
+BGL is alpha software. Source-level and standalone native contracts are included, but every release should also be built and visually tested in the target Windows OBS/Qt/MSVC environment before production use.

@@ -110,10 +110,26 @@ struct LayerEffect {
     OpaqueSerializationPassthrough serialization_passthrough_json;
 
     /* Stable extension identity. Empty means use the built-in ID mapped from type.
-     * Unknown IDs and their parameter payload survive project round-trips. */
+     * Unknown IDs and their parameter payload survive project round-trips.
+     * Development Version 244 audits the complete effect/plugin serialization
+     * envelope: effect_id/extension_id remain stable, schema versions are
+     * preserved independently from runtime implementation versions, and missing
+     * external plugins reopen as inert placeholders instead of deleting opaque
+     * parameter/binary state. */
     std::string extension_id;
     std::string extension_parameters_json = "{}";
     uint32_t extension_schema_version = 1;
+    uint32_t extension_loaded_schema_version = 1;
+    uint32_t extension_runtime_schema_version = 1;
+    bool extension_explicit_migration = false;
+    bool missing_plugin_placeholder = false;
+    std::string extension_provider_id;
+    std::string extension_provider_version;
+    std::string extension_plugin_binary_id;
+    std::string extension_binary_state_json = "{}";
+    std::string extension_binary_state_base64;
+    std::string effect_preset_id;
+    uint32_t effect_preset_schema_version = 0;
     /* Host-owned animation tracks for extension parameters. JSON object keyed by
      * parameter path (for example "intensity" or "elements.0.opacity"). */
     std::string extension_keyframes_json = "{}";

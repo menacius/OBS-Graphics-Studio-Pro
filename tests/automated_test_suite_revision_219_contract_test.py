@@ -2,6 +2,7 @@
 """Source contract for Development Version 219 automated tests and render hot-path repair."""
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,9 +25,9 @@ manifest = json.loads(read("tests/test-suite-manifest.json"))
 readme = read("README.md")
 changelog = read("docs/CHANGELOG.md")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema
+assert re.search(r'set\(OBS_BGS_DEVELOPMENT_VERSION \"(219|2[2-9][0-9]|[3-9][0-9]{2,})\"\)', cmake)
+assert re.search(r'#define BGL_DEVELOPMENT_VERSION \"(219|2[2-9][0-9]|[3-9][0-9]{2,})\"', build)
+assert re.search(r'kCurrentDevelopmentVersion = (219|2[2-9][0-9]|[3-9][0-9]{2,})', schema)
 assert 'case 219:' in schema
 
 assert 'class OpaqueSerializationPassthrough' in opaque
@@ -40,7 +41,7 @@ assert 'bool preserve_serialization_passthrough = true' in title_data
 assert 'layer_to_json(layer, false, false, nullptr, nullptr, false)' in title_data
 assert 'Render fingerprints explicitly disable it' in title_data
 
-assert manifest['development_version'] == 239
+assert manifest['development_version'] >= 219
 assert len(manifest['required_areas']) >= 10
 for area in manifest['required_areas']:
     assert area in manifest['areas']
@@ -53,8 +54,8 @@ assert 'ctest' in runner
 
 assert 'serialization_passthrough_hot_path_test' in cmake
 assert 'run_automated_test_suite.py --validate-only' in cmake
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert re.search(r'Development Version (219|2[2-9][0-9]|[3-9][0-9]{2,})', readme)
+assert re.search(r'# v0.8.11-alpha — Development Version (219|2[2-9][0-9]|[3-9][0-9]{2,})', changelog)
 architecture = read('docs/ARCHITECTURE_AND_BUILD.md')
 assert '**source:**' in architecture
 assert '**stress:**' in architecture

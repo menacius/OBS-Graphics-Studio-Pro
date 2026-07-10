@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QCheckBox>
+#include <QIcon>
 #include <QPointer>
 #include <QToolButton>
 #include <QWidget>
@@ -11,6 +12,7 @@ class QDragLeaveEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QHBoxLayout;
+class QPalette;
 class QResizeEvent;
 class QVBoxLayout;
 
@@ -160,6 +162,14 @@ private:
     QString persistence_key_;
     int drop_indicator_edge_ = 0; // -1 top, +1 bottom, 0 none
 };
+
+/* Shared compact inspector styling derived from the Transform panel. Use these
+ * for every editor inspector/effects panel so equivalent controls keep the same
+ * 20 px height, border, padding, spin-button width and theme colors. */
+QString bgl_transform_panel_control_style(const QPalette &palette);
+QString bgl_transform_panel_button_style(const QPalette &palette);
+QIcon bgl_panel_defaults_icon(const QPalette &palette);
+void bgl_apply_transform_panel_widget_style(QWidget *root);
 
 /* Creates an AE-like angle field: a circular direction widget plus the exact
  * numeric spin box. The spin box remains the authoritative value/control. */

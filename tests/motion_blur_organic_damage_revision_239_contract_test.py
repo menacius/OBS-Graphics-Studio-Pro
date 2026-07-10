@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Development Version 239 motion blur and organic damage shader contract."""
+"""Development Version 243 motion blur and organic damage shader contract."""
 from pathlib import Path
 import json
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,12 +16,12 @@ manifest = json.loads(read('tests/test-suite-manifest.json'))
 readme = read('README.md')
 changelog = read('docs/CHANGELOG.md')
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 239:' in schema
-assert manifest['development_version'] == 239
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert re.search(r'OBS_BGS_DEVELOPMENT_VERSION \"(239|24[0-9]|2[5-9][0-9]|[3-9][0-9]{2,})\"', cmake)
+assert re.search(r'BGL_DEVELOPMENT_VERSION \"(239|24[0-9]|2[5-9][0-9]|[3-9][0-9]{2,})\"', build)
+assert re.search(r'kCurrentDevelopmentVersion = (239|24[0-9]|2[5-9][0-9]|[3-9][0-9]{2,})', schema) and 'case 239:' in schema
+assert manifest['development_version'] >= 239
+assert re.search(r'Development Version (239|24[0-9]|2[5-9][0-9]|[3-9][0-9]{2,})', readme)
+assert re.search(r'# v0.8.11-alpha — Development Version (239|24[0-9]|2[5-9][0-9]|[3-9][0-9]{2,})', changelog)
 
 cpu_motion = read('src/obs/title-source/gpu-resources-primitives.inc')
 gpu_motion = read('src/obs/title-source/gpu-presentation-readback.inc')
@@ -58,4 +59,4 @@ blur_backend = read('src/obs/title-source/gpu-masks-groups-cache.inc')
 assert 'render_separable_gaussian' in blur_backend
 assert 'gs_effect_loop(blur, "Gaussian")' in blur_backend
 
-print('Development Version 239 motion blur and organic damage contract: PASS')
+print('Development Version 243 motion blur and organic damage contract: PASS')

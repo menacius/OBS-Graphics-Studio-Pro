@@ -33,9 +33,9 @@ guide = text("docs/EFFECTS_AND_EXTENSIONS.md")
 effects_guide = text("docs/EFFECTS_AND_EXTENSIONS.md")
 serialization = text("src/core/title-data.cpp")
 
-assert 'set(OBS_BGS_DEVELOPMENT_VERSION "239")' in cmake
-assert '#define BGL_DEVELOPMENT_VERSION "239"' in build
-assert re.search(r"kCurrentDevelopmentVersion\s*=\s*239", schema)
+assert 'set(OBS_BGS_DEVELOPMENT_VERSION "243")' in cmake
+assert '#define BGL_DEVELOPMENT_VERSION "243"' in build
+assert re.search(r"kCurrentDevelopmentVersion\s*=\s*243", schema)
 
 # Effect placement is an explicit runtime contract derived from existing data,
 # so old projects need no new serialized field.

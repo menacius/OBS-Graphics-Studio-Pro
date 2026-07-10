@@ -461,8 +461,7 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
     std::vector<std::shared_ptr<Layer>> exposed;
     for (const auto &layer : cue_title->layers) {
         if (!layer) continue;
-        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
-            layer->expose_text)
+        if (bgs::live_text::is_exposed_cue_layer(layer))
             exposed.push_back(layer);
     }
     if (!cue_title->live_text_column_order.empty()) {
@@ -498,6 +497,7 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
             continue;
         const std::string cue_value = cue_title->live_text_rows[value_row][col];
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
+        apply_live_text_cue_style_to_layer(*cue_title, *target, row);
         if (target->type == LayerType::Image) {
             bgs::apply_exposed_image_cue_value(*target, cue_value);
             continue;
@@ -507,6 +507,17 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
             target->rich_text = rich_text_document_from_layer_defaults(*target);
         RichTextCharFormat insertion_format =
             rich_text_effective_typing_format(target->rich_text);
+        if (target->expose_fill_color) {
+            insertion_format.fill.type = 0;
+            insertion_format.fill.color = live_text_cue_effective_color(*cue_title, *target, row, false);
+        }
+        if (target->expose_stroke_color) {
+            insertion_format.stroke.enabled = target->outline_enabled || target->stroke_width > 0.0f;
+            insertion_format.stroke.width = target->stroke_width;
+            insertion_format.stroke.opacity = target->outline_opacity;
+            insertion_format.stroke.fill.type = 0;
+            insertion_format.stroke.fill.color = live_text_cue_effective_color(*cue_title, *target, row, true);
+        }
         rich_text_document_replace_text(target->rich_text, cue_value, insertion_format,
                                         target->rich_text.has_typing_format
                                             ? target->rich_text.typing_format_mask : 0);
@@ -552,8 +563,7 @@ QVector<std::shared_ptr<Title>> CacheManager::liveCueTransitionVariants(
             return result;
         std::vector<std::shared_ptr<Layer>> exposed;
         for (const auto &layer : candidate->layers) {
-            if (layer && (layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
-                layer->expose_text)
+            if (bgs::live_text::is_exposed_cue_layer(layer))
                 exposed.push_back(layer);
         }
         if (!candidate->live_text_column_order.empty()) {

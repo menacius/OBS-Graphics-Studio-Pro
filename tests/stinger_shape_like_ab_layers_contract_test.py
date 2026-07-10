@@ -45,7 +45,7 @@ assert "|runtime-input=" in mask_graph
 
 assert "layer_is_editor_visible" in canvas_geometry
 assert "StingerSwitchMode::ManualSceneAnimation" in canvas_geometry
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build_info
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build_info
 
 print("Shape-like Stinger Scene A/B layer contract passed")

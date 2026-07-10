@@ -20,12 +20,12 @@ video_runtime = read('src/obs/title-video-runtime.cpp')
 playback = read('src/editor/title-editor/layout-template-tools.inc')
 effects_panel = read('src/effects/effects-panel.cpp')
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert 'kCurrentDevelopmentVersion = 239' in schema and 'case 234:' in schema
-assert '"development_version": 239' in manifest
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert 'kCurrentDevelopmentVersion = 243' in schema and 'case 234:' in schema
+assert '"development_version": 243' in manifest
+assert 'Development Version 243' in readme
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 
 video_section = popup[popup.index('/* ── Video Layer ── */'):popup.index('/* ── Audio Layer ── */')]
 assert 'add_form_row(video_form, QStringLiteral("Range"), video_range_row);' in video_section
@@ -90,4 +90,4 @@ for needle in [
 ]:
     assert needle in popup, needle
 
-print('Development Version 239 range inspector, video decode, playback and effect animation preset contract: PASS')
+print('Development Version 243 range inspector, video decode, playback and effect animation preset contract: PASS')

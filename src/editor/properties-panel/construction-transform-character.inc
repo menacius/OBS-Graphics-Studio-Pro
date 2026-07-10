@@ -1,5 +1,6 @@
     auto *image_form_widget = new QWidget(image_content);
     image_form_widget->setStyleSheet(QStringLiteral("background:transparent;"));
+    image_form_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *image_form = new QFormLayout(image_form_widget);
     style_form(image_form);
     edit_image_path_ = new QLineEdit(image_form_widget);
@@ -19,6 +20,12 @@
     image_path_layout->setSpacing(4);
     image_path_layout->addWidget(edit_image_path_, 1);
     image_path_layout->addWidget(btn_image_external_binding_);
+    btn_clear_image_ = new QToolButton(image_form_widget);
+    btn_clear_image_->setText(QStringLiteral("×"));
+    btn_clear_image_->setFixedSize(24, 22);
+    btn_clear_image_->setToolTip(QStringLiteral("Clear selected media"));
+    btn_clear_image_->setStyleSheet(bgl_transform_panel_button_style(palette()));
+    image_path_layout->addWidget(btn_clear_image_);
     btn_pick_image_ = new QPushButton(bgl_tr("OBSTitles.Browse"), image_form_widget);
     style_push_button(btn_pick_image_);
     spn_layer_w_->setToolTip(bgl_tr("OBSTitles.ImageWidthTooltip"));
@@ -51,27 +58,20 @@
     add_form_row(image_form, QString(), chk_image_crop_when_outside_box_);
     add_form_row(image_form, bgl_tr("OBSTitles.ImageBoxAnchor"), btn_image_anchor_grid_);
     add_form_row(image_form, bgl_tr("OBSTitles.Filtering"), cmb_image_scale_filter_);
-    image_content_layout->addWidget(image_form_widget, 1);
-    image_layout->addWidget(image_content);
-    BglCollapsiblePanel *shape_panel = bgl_panel_for_content(rect_box_);
-    const int image_index = shape_panel ? vl->indexOf(shape_panel) : -1;
-    bgl_add_panel_section(vl, image_box_, bgl_tr("OBSTitles.Image"), nullptr, image_index);
-
-    image_box_size_box_ = new QWidget(inner);
-    image_box_size_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
+    image_box_size_box_ = new QWidget(image_content);
+    image_box_size_box_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *image_box_size_layout = new QVBoxLayout(image_box_size_box_);
-    image_box_size_layout->setContentsMargins(7, 5, 7, 6);
-    image_box_size_layout->setSpacing(8);
+    image_box_size_layout->setContentsMargins(0, 0, 0, 0);
+    image_box_size_layout->setSpacing(0);
     auto *image_box_size_grid = new QGridLayout();
     image_box_size_grid->setContentsMargins(0, 0, 0, 0);
     image_box_size_grid->setHorizontalSpacing(5);
     image_box_size_grid->setVerticalSpacing(4);
     image_box_size_grid->setColumnMinimumWidth(0, 24);
-    image_box_size_grid->setColumnMinimumWidth(1, 82);
+    image_box_size_grid->setColumnMinimumWidth(1, 90);
     image_box_size_grid->setColumnMinimumWidth(2, 90);
-    image_box_size_grid->setColumnMinimumWidth(3, 90);
-    image_box_size_grid->setColumnMinimumWidth(4, 20);
-    image_box_size_grid->setColumnStretch(5, 1);
+    image_box_size_grid->setColumnMinimumWidth(3, 20);
+    image_box_size_grid->setColumnStretch(4, 1);
     auto make_image_box_size_field = [&](const QString &label, QDoubleSpinBox *spin) {
         auto *field = new QWidget(image_box_size_box_);
         field->setObjectName(QStringLiteral("OBSTitlesShapeNumericField"));
@@ -104,18 +104,18 @@
     chk_image_box_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
     chk_image_box_size_lock_->setFixedSize(20, 20);
     chk_image_box_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *image_box_size_label = new QLabel(bgl_tr("OBSTitles.Size"), image_box_size_box_);
-    image_box_size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(panel_text_name));
     image_box_size_grid->addWidget(btn_kf_image_box_size_, 0, 0, Qt::AlignCenter);
-    image_box_size_grid->addWidget(image_box_size_label, 0, 1);
-    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 2);
-    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 3);
-    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 4, Qt::AlignCenter);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 1);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 2);
+    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 3, Qt::AlignCenter);
     image_box_size_layout->addLayout(image_box_size_grid);
-    BglCollapsiblePanel *image_panel = bgl_panel_for_content(image_box_);
-    const int image_box_size_index = image_panel ? vl->indexOf(image_panel) + 1 : -1;
-    bgl_add_panel_section(vl, image_box_size_box_, bgl_tr("OBSTitles.ImageBoxSize"), nullptr,
-                          image_box_size_index);
+    add_form_row(image_form, QStringLiteral("Box size"), image_box_size_box_);
+
+    image_content_layout->addWidget(image_form_widget, 1, Qt::AlignTop);
+    image_layout->addWidget(image_content);
+    BglCollapsiblePanel *shape_panel = bgl_panel_for_content(rect_box_);
+    const int image_index = shape_panel ? vl->indexOf(shape_panel) : -1;
+    bgl_add_panel_section(vl, image_box_, bgl_tr("OBSTitles.Image"), nullptr, image_index);
 
     vl->addStretch();
     setWidget(inner);
@@ -129,6 +129,8 @@
     auto apply_text_char_format = [this](const RichTextCharFormat &format, uint32_t mask) {
         if (!layer_ || loading_values_) return;
         const bool active = active_text_edit_layer_id_ == layer_->id;
+        if (active)
+            emit text_property_change_started(layer_->id);
         apply_rich_text_format_to_layer_range(*layer_, format, mask, active);
         emit text_char_format_changed(layer_->id, format, mask);
     };
@@ -154,6 +156,8 @@
                                               bool force_object_level = false) {
         if (!layer_ || loading_values_) return;
         const bool active = !force_object_level && active_text_edit_layer_id_ == layer_->id;
+        if (active)
+            emit text_property_change_started(layer_->id);
         apply_rich_text_paragraph_format_to_layer(*layer_, format, mask, active);
         /* Reuse the canonical text-adapter refresh signal; mask 0 means the
          * paragraph model changed without a character-style mutation. */
@@ -665,7 +669,7 @@
                 load_values();
                 emit_change();
             });
-    connect(btn_transform_defaults_, &QPushButton::clicked,
+    connect(btn_transform_defaults_, &QToolButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 const double t = local_time();
@@ -701,6 +705,14 @@
                 std::string value = txt_content_->toPlainText().toStdString();
                 if (layer_->type == LayerType::Clock) {
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
+                    if (cmb_clock_preset_) {
+                        const QString format = QString::fromStdString(layer_->clock_format);
+                        int preset_index = cmb_clock_preset_->findData(format);
+                        if (preset_index < 0)
+                            preset_index = cmb_clock_preset_->findData(QStringLiteral("__custom__"));
+                        QSignalBlocker blocker(cmb_clock_preset_);
+                        cmb_clock_preset_->setCurrentIndex(std::max(0, preset_index));
+                    }
                 } else {
                     rich_text_document_ensure_canonical(*layer_);
                     const RichTextCharFormat insertion_format =
@@ -710,6 +722,21 @@
                     rich_text_document_replace_text(layer_->rich_text, value,
                                                     insertion_format, insertion_mask);
                     rich_text_document_sync_layer_mirrors(*layer_);
+                }
+                emit_change();
+            });
+    connect(cmb_clock_preset_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int index) {
+                if (!can_edit() || layer_->type != LayerType::Clock || index < 0) return;
+                const QString format = cmb_clock_preset_->itemData(index).toString();
+                if (format.isEmpty() || format == QStringLiteral("__custom__"))
+                    return;
+                if (layer_->clock_format == format.toStdString())
+                    return;
+                layer_->clock_format = format.toStdString();
+                if (txt_content_ && txt_content_->toPlainText() != format) {
+                    QSignalBlocker blocker(txt_content_);
+                    txt_content_->setPlainText(format);
                 }
                 emit_change();
             });
@@ -760,10 +787,8 @@
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, local_time, emit_change, apply_text_char_format, current_text_char_format](int v){
                 if (!can_edit()) return;
-                if (!text_edit_active()) {
-                    layer_->font_size = v;
+                if (!text_edit_active())
                     set_animated_value(layer_->font_size_prop, local_time(), v);
-                }
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.font_size = v;
                 apply_text_char_format(fmt, RichTextCharFontSize);
@@ -807,10 +832,8 @@
     connect(spn_char_tracking_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
                 if (!can_edit()) return;
-                if (!text_edit_active()) {
-                    layer_->char_tracking = (float)v;
+                if (!text_edit_active())
                     set_animated_value(layer_->char_tracking_prop, local_time(), v);
-                }
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.tracking = (float)v;
                 apply_text_char_format(fmt, RichTextCharTracking);
@@ -819,10 +842,8 @@
     connect(spn_char_scale_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
                 if (!can_edit()) return;
-                if (!text_edit_active()) {
-                    layer_->char_scale_x = (float)(v / 100.0);
+                if (!text_edit_active())
                     set_animated_value(layer_->char_scale_x_prop, local_time(), v / 100.0);
-                }
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.scale_x = (float)(v / 100.0);
                 apply_text_char_format(fmt, RichTextCharScaleX);
@@ -831,10 +852,8 @@
     connect(spn_char_scale_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
                 if (!can_edit()) return;
-                if (!text_edit_active()) {
-                    layer_->char_scale_y = (float)(v / 100.0);
+                if (!text_edit_active())
                     set_animated_value(layer_->char_scale_y_prop, local_time(), v / 100.0);
-                }
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.scale_y = (float)(v / 100.0);
                 apply_text_char_format(fmt, RichTextCharScaleY);
@@ -843,10 +862,8 @@
     connect(spn_baseline_shift_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
                 if (!can_edit()) return;
-                if (!text_edit_active()) {
-                    layer_->baseline_shift = (float)v;
+                if (!text_edit_active())
                     set_animated_value(layer_->baseline_shift_prop, local_time(), v);
-                }
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.baseline_shift = (float)v;
                 apply_text_char_format(fmt, RichTextCharBaselineShift);
@@ -976,6 +993,39 @@
                     emit_change();
                 }
             });
+
+    connect(chk_expose_fill_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->expose_fill_color = v && !layer_->use_as_scene_mask;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_exposed_fill_single_value_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->exposed_fill_single_value = v;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_expose_stroke_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->expose_stroke_color = v;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_exposed_stroke_single_value_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->exposed_stroke_single_value = v;
+                    load_values();
+                    emit_change();
+                }
+            });
     connect(chk_ignore_persistence_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) {
@@ -987,7 +1037,13 @@
     connect(chk_scene_mask_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) {
-                    layer_->use_as_scene_mask = v && layer_->type != LayerType::Video;
+                    layer_->use_as_scene_mask = v && layer_type_can_be_scene_mask(layer_->type);
+                    if (layer_->use_as_scene_mask) {
+                        layer_->expose_fill_color = false;
+                        layer_->exposed_fill_single_value = false;
+                        if (title_)
+                            prune_live_text_cue_style_overrides(*title_);
+                    }
                     load_values();
                     emit_change();
                 }

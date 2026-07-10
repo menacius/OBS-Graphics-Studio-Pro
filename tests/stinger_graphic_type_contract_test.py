@@ -90,7 +90,7 @@ for token in (
 assert 'stinger_transition_register();' in plugin
 assert 'src/obs/stinger-transition.cpp' in cmake
 assert 'src/obs/stinger-transition.h' in cmake
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
 
 for key in (
     'OBSTitles.GraphicTypeStinger=',

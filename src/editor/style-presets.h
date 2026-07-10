@@ -76,6 +76,8 @@ public:
      * canonical RichTextCharFormatMask values, so the Styles dock and the
      * editor/core cannot silently drift to different bit layouts. */
     static bool textPresetToCharFormat(const StylePreset &preset, RichTextCharFormat &format);
+    static bool textPresetToParagraphFormat(const StylePreset &preset, RichTextParagraphFormat &format);
+    static uint32_t textPresetParagraphMask();
     static bool gradientPresetToCharFormat(const StylePreset &preset, RichTextCharFormat &format);
     static uint32_t textPresetCharMask();
     static uint32_t gradientPresetCharMask();
@@ -101,6 +103,7 @@ private slots:
     void refreshList();
     void addCurrentAsPreset();
     void applySelectedPreset();
+    void editSelectedPreset();
     void deleteSelectedPreset();
     void importPresets();
     void exportPresets();
@@ -117,6 +120,7 @@ private:
     QListWidget *list_ = nullptr;
     QToolButton *add_button_ = nullptr;
     QToolButton *apply_button_ = nullptr;
+    QToolButton *edit_button_ = nullptr;
     QToolButton *delete_button_ = nullptr;
     QToolButton *import_button_ = nullptr;
     QToolButton *export_button_ = nullptr;

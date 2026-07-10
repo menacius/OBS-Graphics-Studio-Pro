@@ -201,7 +201,6 @@ void EffectsPresetsPanel::reload()
 
     const QString root_path = bgs::effects::effect_presets_root_path();
     const QStringList root_categories = {
-        QStringLiteral("Animation Presets"),
         QStringLiteral("Transitions"),
         QStringLiteral("Effects"),
         QStringLiteral("Audio Effects"),
@@ -214,6 +213,7 @@ void EffectsPresetsPanel::reload()
         PresetKind kind = PresetKind::None;
     };
     QVector<PresetEntry> entries;
+    QSet<QString> seen_preset_keys;
 
     if (!root_path.isEmpty()) {
         const QStringList filters = {
@@ -251,8 +251,29 @@ void EffectsPresetsPanel::reload()
                 entry.category_path = descriptor.category_path;
                 entry.kind = PresetKind::Transition;
             }
-            if (!entry.category_path.isEmpty())
+            if (!entry.category_path.isEmpty()) {
+                if (entry.category_path.value(0).compare(QStringLiteral("Animation Presets"),
+                                                        Qt::CaseInsensitive) == 0)
+                    continue;
+                for (QString &part : entry.category_path) {
+                    if (part.compare(QStringLiteral("Light and Optical"), Qt::CaseInsensitive) == 0)
+                        part = QStringLiteral("Light & Optical");
+                    else if (part.compare(QStringLiteral("Noise & Grain"), Qt::CaseInsensitive) == 0)
+                        part = QStringLiteral("Noise and Grain");
+                }
+                QStringList normalized_category = entry.category_path;
+                for (QString &part : normalized_category) {
+                    part = part.trimmed().toLower();
+                    part.replace(QStringLiteral(" & "), QStringLiteral(" and "));
+                }
+                const QString key = QString::number(static_cast<int>(entry.kind)) + QLatin1Char('|') +
+                    normalized_category.join(QLatin1Char('/')) + QLatin1Char('|') +
+                    entry.display_name.trimmed().toLower();
+                if (seen_preset_keys.contains(key))
+                    continue;
+                seen_preset_keys.insert(key);
                 entries.push_back(entry);
+            }
         }
     }
 

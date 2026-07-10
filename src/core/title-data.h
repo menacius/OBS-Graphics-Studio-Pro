@@ -212,6 +212,15 @@ struct TitleProxyMetadata {
     bool complete = false;
 };
 
+struct LiveTextCueStyleOverride {
+    std::string row_id;
+    std::string layer_id;
+    bool fill_color_set = false;
+    uint32_t fill_color = 0xFFFFFFFF;
+    bool stroke_color_set = false;
+    uint32_t stroke_color = 0xFF000000;
+};
+
 struct StingerValidationResult {
     std::vector<std::string> errors;
     std::vector<std::string> warnings;
@@ -295,6 +304,7 @@ struct Title {
     std::vector<std::string> live_text_column_order; /* exposed text layer IDs by logical cue column */
     std::vector<LiveTextExternalBinding> live_text_external_bindings; /* optional provider bindings keyed by stable row/layer IDs */
     std::vector<LiveTextTableBinding> live_text_table_bindings; /* source-managed table-to-cue row mappings */
+    std::vector<LiveTextCueStyleOverride> live_text_cue_style_overrides; /* per-row exposed Fill/Stroke overrides keyed by stable row/layer IDs */
     std::string live_text_header_state; /* base64-encoded dock header layout */
     std::string preview_screenshot_png_base64; /* manually captured title-list thumbnail */
     bool external_data_enabled = false; /* live text cue external data source toggle */
@@ -357,10 +367,17 @@ LiveCueRuntimeSnapshot live_cue_runtime_state(const std::string &title_id);
 
 void ensure_live_text_row_ids(Title &title);
 std::string live_text_row_id(const Title &title, int row);
+void prune_live_text_cue_style_overrides(Title &title);
+bool live_text_cue_color_override(const Title &title, const Layer &layer, int row, bool stroke, uint32_t *out_argb);
+uint32_t live_text_cue_effective_color(const Title &title, const Layer &layer, int row, bool stroke);
+void set_live_text_cue_color_override(Title &title, const Layer &layer, int row, bool stroke, uint32_t argb);
+void clear_live_text_cue_color_override(Title &title, const Layer &layer, int row, bool stroke);
+void apply_live_text_cue_style_to_layer(Title &title, Layer &layer, int row);
 /* Stable fingerprint of raster-affecting layer data. Transform, visibility,
  * parenting, masks and compositing state are intentionally excluded so the
  * GPU compositor can reuse a layer texture across matrix-only edits. */
 std::string layer_render_fingerprint(const Layer &layer);
+
 
 struct TitleImportDiagnostics {
     std::vector<std::string> missing_effects;
@@ -469,6 +486,11 @@ private:
     mutable std::recursive_mutex         mutex_;
     std::vector<std::shared_ptr<Title>>  titles_;
     std::string                          loaded_path_;
+    /* Development Version 244: never rewrite an existing scene-collection
+     * titles file into the new schema unless the previous on-disk payload
+     * loaded or cleanly initialized. Parse/read failures keep saving disabled
+     * for that collection, preventing accidental empty/new-format overwrite. */
+    bool                                 persistence_ready_for_save_ = false;
     struct ChangeObserver {
         uint64_t id = 0;
         ChangeCallback callback;

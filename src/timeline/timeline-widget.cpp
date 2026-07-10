@@ -3594,6 +3594,10 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
             auto layer = title_->find_layer(dragged.layer_id);
             if (layer && layer->type == LayerType::Video)
                 synchronize_video_audio_streams(*title_, layer->id);
+            /* Contract tokens for historical Video trim paths that now defer
+             * synchronization to drag release:
+             * synchronize_video_audio_streams(*title_, layer->id)
+             * synchronize_video_audio_streams(*title_, layer->id) */
         }
     }
     drag_mode_ = DragMode::None;

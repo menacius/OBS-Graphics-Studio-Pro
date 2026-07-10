@@ -160,6 +160,23 @@ static void style_color_button(QPushButton *button, uint32_t argb)
         .arg(c.name(QColor::HexArgb)));
 }
 
+
+static void style_scene_mask_placeholder_button(QPushButton *button)
+{
+    if (!button) return;
+    button->setText(QString());
+    button->setToolTip(bgl_tr("OBSTitles.UseAsSceneMask"));
+    button->setStyleSheet(QStringLiteral(
+        "QPushButton{"
+        "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+        "stop:0 #ff00c8,stop:0.24 #ff00c8,"
+        "stop:0.25 #242424,stop:0.49 #242424,"
+        "stop:0.50 #ff00c8,stop:0.74 #ff00c8,"
+        "stop:0.75 #242424,stop:1 #242424);"
+        "border:1px dashed #ff66d9;border-radius:3px;padding:3px 8px;}"));
+    button->setProperty("buttonFillKind", QStringLiteral("scene-mask-placeholder"));
+}
+
 static void style_gradient_button(QPushButton *button, uint32_t start_argb, uint32_t end_argb, int gradient_type)
 {
     if (!button) return;
@@ -1346,6 +1363,14 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
          EasingType::Linear, {}, &layer.camera_assignment}
     };
     props.insert(props.end(), common_props.begin(), common_props.end());
+    if (layer.type == LayerType::Video) {
+        /* Development Version 243: source-time is a first-class scalar
+         * animation track. Selecting it opens the same Graph Editor in
+         * source-time value view or speed view, where negative speed is the
+         * clear authoring indication for reverse sections. */
+        props.push_back({&layer.video_source_time, nullptr, nullptr, QString(),
+                         std::string("video_source_time")});
+    }
 
     auto add_effect_props = [&](LayerEffect &effect, size_t effect_index) {
         QString effect_title = effect_type_name(effect.type);
@@ -2292,6 +2317,8 @@ static QString timeline_property_channel_label(
         static const char *argb_names[] = {"A", "R", "G", "B"};
         return QString::fromLatin1(argb_names[std::clamp(component, 0, 3)]);
     }
+    if (property_name == QStringLiteral("video_source_time"))
+        return component == 0 ? QStringLiteral("Source Time") : QStringLiteral("Speed");
     static const char *axis_names[] = {"X", "Y", "Z", "W"};
     return QString::fromLatin1(axis_names[std::clamp(component, 0, 3)]);
 }

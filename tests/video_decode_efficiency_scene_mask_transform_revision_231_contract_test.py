@@ -21,13 +21,13 @@ readme = read('README.md')
 changelog = read('docs/CHANGELOG.md')
 manifest = read('tests/test-suite-manifest.json')
 
-assert 'OBS_BGS_DEVELOPMENT_VERSION "239"' in cmake
-assert 'BGL_DEVELOPMENT_VERSION "239"' in build
-assert re.search(r'kCurrentDevelopmentVersion\s*=\s*239', schema)
+assert 'OBS_BGS_DEVELOPMENT_VERSION "243"' in cmake
+assert 'BGL_DEVELOPMENT_VERSION "243"' in build
+assert re.search(r'kCurrentDevelopmentVersion\s*=\s*243', schema)
 assert 'case 231:' in schema
-assert '"development_version": 239' in manifest
-assert 'Development Version 239' in readme
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
+assert '"development_version": 243' in manifest
+assert 'Development Version 243' in readme
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
 
 # Video decode efficiency: reuse decoded frames for frame stepping/FPS duplicate mapping.
 assert 'decoded_frame_cache' in video

@@ -17,10 +17,15 @@ namespace bgs::live_text {
 
 inline bool is_exposed_cue_layer(const std::shared_ptr<Layer> &layer)
 {
-    return layer && layer->expose_text &&
-           (layer->type == LayerType::Text ||
-            layer->type == LayerType::Ticker ||
-            layer->type == LayerType::Image);
+    if (!layer || layer->use_as_scene_mask)
+        return false;
+
+    const bool exposes_value = layer->expose_text &&
+        (layer->type == LayerType::Text ||
+         layer->type == LayerType::Ticker ||
+         layer->type == LayerType::Image);
+    const bool exposes_color = layer->expose_fill_color || layer->expose_stroke_color;
+    return exposes_value || exposes_color;
 }
 
 inline std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
@@ -78,9 +83,9 @@ inline std::string live_cue_layer_value(
 {
     if (!layer)
         return {};
-    return layer->type == LayerType::Image
-        ? layer->image_path
-        : layer->text_content;
+    if (layer->type == LayerType::Image)
+        return layer->image_path;
+    return layer->expose_text ? layer->text_content : std::string{};
 }
 
 inline void normalize_live_text_rows(
@@ -145,6 +150,7 @@ inline void normalize_live_text_rows(
         }
     }
     ensure_live_text_row_ids(*title);
+    prune_live_text_cue_style_overrides(*title);
 
     /* new_order has already been moved into live_text_column_order above.
      * Never validate bindings against the moved-from local vector: on the

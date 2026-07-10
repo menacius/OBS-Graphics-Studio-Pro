@@ -16,12 +16,12 @@ changelog = (ROOT / 'docs/CHANGELOG.md').read_text()
 def require(text, needle, label):
     assert needle in text, f'missing {label}: {needle}'
 
-# Development Version 239 metadata is the new current release.
-require((ROOT / 'CMakeLists.txt').read_text(), 'OBS_BGS_DEVELOPMENT_VERSION "239"', 'CMake version')
-require((ROOT / 'src/core/build-info.h').read_text(), 'BGL_DEVELOPMENT_VERSION "239"', 'runtime version')
-require((ROOT / 'src/core/title-serialization-schema.h').read_text(), 'kCurrentDevelopmentVersion = 239', 'schema version')
-assert changelog.startswith('# v0.8.11-alpha — Development Version 239')
-require(readme, 'Development Version 239 audits and unifies the BGL effect pipeline', 'README current summary')
+# Development Version 243 metadata is the new current release.
+require((ROOT / 'CMakeLists.txt').read_text(), 'OBS_BGS_DEVELOPMENT_VERSION "243"', 'CMake version')
+require((ROOT / 'src/core/build-info.h').read_text(), 'BGL_DEVELOPMENT_VERSION "243"', 'runtime version')
+require((ROOT / 'src/core/title-serialization-schema.h').read_text(), 'kCurrentDevelopmentVersion = 243', 'schema version')
+assert changelog.startswith('# v0.8.11-alpha — Development Version 243')
+require(readme, 'Development Version 243 fixes parented/direct-image Color Overlay raster invalidation', 'README current summary')
 
 # Strip-length locked Video/Audio range workflow.
 for needle in [
@@ -101,4 +101,4 @@ for rel in [
 ]:
     assert (ROOT / rel).exists(), f'missing SDK artifact {rel}'
 
-print('Development Version 239 media range and Modular Visual Effects SDK contract: PASS')
+print('Development Version 243 media range and Modular Visual Effects SDK contract: PASS')

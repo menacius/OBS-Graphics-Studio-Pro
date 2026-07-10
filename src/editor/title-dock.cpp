@@ -46,6 +46,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QInputDialog>
+#include <QLabel>
 #include <QIODevice>
 #include <QItemSelectionModel>
 #include <QMenu>
@@ -107,6 +108,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QColorDialog>
 #include <QEvent>
 #include <QRegularExpression>
 #include <memory>
