@@ -1,0 +1,35 @@
+Broadcast Graphics Live v0.8.13-alpha - Development Version 394
+================================================================
+
+Delivery type
+-------------
+Complete source delivery. No prebuilt plugin binary is included.
+
+Development Version 394 scope
+-----------------------------
+- Starts the v0.8.13-alpha series and advances the development identifier to 394.
+- Synchronizes current CMake, runtime header, OBS plugin header, vcpkg,
+  documentation, installer example, package metadata and automated branding
+  audits.
+- Rebuilds README.md as a consolidated overview of the functionality added
+  since Development Version 281.
+- Preserves historical changelog labels and retains all Development Version 393
+  rendering behavior and fixes.
+
+Retained rendering scope
+------------------------
+- Motion Blur and active text transitions render without the session-mutex
+  deadlock fixed in Development Version 393.
+- Compositor and temporal-sample exception containment from Development Version
+  392 remains enabled.
+- Point, Spot and Parallel shadow paths remain active.
+- Shadowmap Size remains 256–4096 px with 2048 px as the default.
+
+Validation target
+-----------------
+- Version and documentation contract for Development Version 394.
+- Test-suite manifest and package identity synchronization.
+- Existing Development Versions 393, 392, 391 and 390 rendering contracts.
+- Source presentation lifecycle and packaging/update audits.
+
+A full native Windows OBS/Qt/MSVC build remains required before production use.

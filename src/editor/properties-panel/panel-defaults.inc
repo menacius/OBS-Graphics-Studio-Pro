@@ -213,6 +213,36 @@ void PropertiesPanel::reset_panel_defaults(const QString &panel_key)
         layer_->asset_pause_duration = defaults.asset_pause_duration;
         layer_->asset_loop_count = defaults.asset_loop_count;
         layer_->asset_loop = defaults.asset_loop;
+    } else if (key.contains(QStringLiteral("material"))) {
+        layer_->material_accepts_lights = defaults.material_accepts_lights;
+        layer_->material_casts_shadows = defaults.material_casts_shadows;
+        layer_->material_accepts_shadows = defaults.material_accepts_shadows;
+        layer_->material_appears_in_reflections =
+            defaults.material_appears_in_reflections;
+        set_animated_value(layer_->material_ambient, t,
+                           defaults.material_ambient.evaluate(0.0));
+        set_animated_value(layer_->material_diffuse, t,
+                           defaults.material_diffuse.evaluate(0.0));
+        set_animated_value(layer_->material_specular, t,
+                           defaults.material_specular.evaluate(0.0));
+        set_animated_value(layer_->material_shininess, t,
+                           defaults.material_shininess.evaluate(0.0));
+        set_animated_value(layer_->material_metallic, t,
+                           defaults.material_metallic.evaluate(0.0));
+        set_animated_value(layer_->material_roughness, t,
+                           defaults.material_roughness.evaluate(0.0));
+        set_animated_value(layer_->material_reflection_intensity, t,
+                           defaults.material_reflection_intensity.evaluate(0.0));
+    } else if (key.contains(QStringLiteral("geometry"))) {
+        layer_->geometry_extrusion_enabled = defaults.geometry_extrusion_enabled;
+        set_animated_value(layer_->geometry_extrusion_depth, t,
+                           defaults.geometry_extrusion_depth.evaluate(0.0));
+        set_animated_value(layer_->geometry_bevel_depth, t,
+                           defaults.geometry_bevel_depth.evaluate(0.0));
+        layer_->geometry_extrusion_segments = defaults.geometry_extrusion_segments;
+        layer_->geometry_bevel_segments = defaults.geometry_bevel_segments;
+        layer_->geometry_bevel_front = defaults.geometry_bevel_front;
+        layer_->geometry_bevel_back = defaults.geometry_bevel_back;
     } else if (key.contains(QStringLiteral("appearance"))) {
         if (text_like) {
             begin_text_property_change();
@@ -233,8 +263,29 @@ void PropertiesPanel::reset_panel_defaults(const QString &panel_key)
                                defaults.fill_color_g.evaluate(0.0));
             set_animated_value(layer_->fill_color_b, t,
                                defaults.fill_color_b.evaluate(0.0));
+            set_animated_value(layer_->stroke_color_a, t,
+                               defaults.stroke_color_a.evaluate(0.0));
+            set_animated_value(layer_->stroke_color_r, t,
+                               defaults.stroke_color_r.evaluate(0.0));
+            set_animated_value(layer_->stroke_color_g, t,
+                               defaults.stroke_color_g.evaluate(0.0));
+            set_animated_value(layer_->stroke_color_b, t,
+                               defaults.stroke_color_b.evaluate(0.0));
         }
+        layer_->stroke_offset = defaults.stroke_offset;
+        set_animated_value(layer_->stroke_offset_prop, t, defaults.stroke_offset);
         set_animated_value(layer_->opacity, t, defaults.opacity.evaluate(0.0));
+        set_animated_value(layer_->material_emissive_color_a, t,
+                           defaults.material_emissive_color_a.evaluate(0.0));
+        set_animated_value(layer_->material_emissive_color_r, t,
+                           defaults.material_emissive_color_r.evaluate(0.0));
+        set_animated_value(layer_->material_emissive_color_g, t,
+                           defaults.material_emissive_color_g.evaluate(0.0));
+        set_animated_value(layer_->material_emissive_color_b, t,
+                           defaults.material_emissive_color_b.evaluate(0.0));
+        mirror_material_emissive_color(*layer_, t);
+        set_animated_value(layer_->material_emissive_intensity, t,
+                           defaults.material_emissive_intensity.evaluate(0.0));
     } else if (key.contains(QStringLiteral("animator"))) {
         layer_->text_animators = TextAnimatorStack();
     } else {

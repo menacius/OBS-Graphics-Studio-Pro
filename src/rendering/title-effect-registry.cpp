@@ -627,7 +627,6 @@ technique Draw
 }
 )BGLFX";
 static constexpr const char *kEmbeddedNoiseEffect = R"BGLFX(uniform float4x4 ViewProj;
-uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float4 layerUvRect;
 uniform float2 layerUvOrigin;
@@ -1489,6 +1488,23 @@ void TitleEffectRegistry::reset()
     extensions_.clear();
 }
 
+
+gs_effect_t *TitleEffectRegistry::find(LayerEffectType type) const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    const std::size_t index = static_cast<std::size_t>(type);
+    if (index >= builtins_.size())
+        return nullptr;
+    return builtins_[index];
+}
+
+gs_effect_t *TitleEffectRegistry::find(const std::string &stable_id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    const auto existing = extensions_.find(stable_id);
+    return existing == extensions_.end() ? nullptr : existing->second;
+}
+
 gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -1508,8 +1524,12 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
         bgl::perf::add(bgl::perf::Counter::EffectShaderCacheHits);
         return builtins_[index];
     }
+    if (def->backend == EffectExecutionBackend::Cpu ||
+        !def->relative_path || !*def->relative_path) {
+        last_error_ = "CPU/geometry effects do not compile a GPU shader.";
+        return nullptr;
+    }
     bgl::perf::add(bgl::perf::Counter::EffectShaderCacheMisses);
-
 
     /* Shader compilation is registry-owned and happens only on the first use.
      * Render passes receive an already compiled handle and never compile or

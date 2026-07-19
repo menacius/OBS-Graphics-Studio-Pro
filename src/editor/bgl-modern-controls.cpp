@@ -1,4 +1,5 @@
 #include "bgl-modern-controls.h"
+#include "title-assets.h"
 
 #include <QAbstractScrollArea>
 #include <QTextEdit>
@@ -20,6 +21,7 @@
 #include <QDropEvent>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -44,6 +46,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <utility>
 
 namespace {
 constexpr int kSwitchTrackWidth = 28;
@@ -53,12 +57,17 @@ constexpr int kSwitchSpacing = 7;
 constexpr int kPanelHeaderHeight = 28;
 constexpr int kPanelHandleWidth = 23;
 constexpr int kPanelCaretWidth = 24;
-constexpr int kPanelContentLeft = 10;
-constexpr int kPanelContentTop = 8;
-constexpr int kPanelContentRight = 10;
-constexpr int kPanelContentBottom = 10;
+/* Match the 3D Camera form's compact content inset. */
+constexpr int kPanelContentLeft = 5;
+constexpr int kPanelContentTop = 4;
+constexpr int kPanelContentRight = 5;
+constexpr int kPanelContentBottom = 5;
 constexpr char kPanelMimeType[] = "application/x-bgl-collapsible-panel";
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kKeyframeButtonExtent = 18;
+constexpr int kKeyframeIconExtent = 12;
+constexpr int kKeyframeCaretWidth = 10;
+constexpr int kKeyframeCaretHeight = 14;
 
 QPointF mouse_position(QMouseEvent *event)
 {
@@ -241,11 +250,227 @@ void restore_panel_order(QBoxLayout *layout, const QString &group)
 }
 } // namespace
 
+namespace {
+
+class BglKeyframeControls final : public QWidget {
+public:
+    BglKeyframeControls(QAbstractButton *diamond, QWidget *parent,
+                        BglKeyframeTimesProvider times_provider,
+                        BglCurrentTimeProvider current_time_provider,
+                        BglKeyframeNavigateCallback navigate_callback)
+        : QWidget(parent), diamond_(diamond),
+          times_provider_(std::move(times_provider)),
+          current_time_provider_(std::move(current_time_provider)),
+          navigate_callback_(std::move(navigate_callback))
+    {
+        auto *layout = new QHBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+
+        previous_ = make_navigation_button(false);
+        next_ = make_navigation_button(true);
+        layout->addWidget(previous_);
+        if (diamond_) {
+            diamond_->setParent(this);
+            bgl_style_keyframe_button(diamond_);
+            layout->addWidget(diamond_);
+            diamond_->installEventFilter(this);
+            connect(diamond_, &QAbstractButton::clicked, this,
+                    [this]() { QTimer::singleShot(0, this, [this]() { refresh(); }); });
+            diamond_->setProperty("bglKeyframeControls",
+                                  QVariant::fromValue<qulonglong>(
+                                      reinterpret_cast<quintptr>(this)));
+        }
+        layout->addWidget(next_);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        if (diamond_ && diamond_->isHidden())
+            hide();
+        refresh();
+    }
+
+    void refresh()
+    {
+        std::vector<double> times = times_provider_ ? times_provider_()
+                                                    : std::vector<double>{};
+        std::sort(times.begin(), times.end());
+        times.erase(std::unique(times.begin(), times.end(), [](double a, double b) {
+            return std::abs(a - b) <= 1.0e-7;
+        }), times.end());
+        const double current = current_time_provider_ ? current_time_provider_() : 0.0;
+        constexpr double epsilon = 1.0e-7;
+        previous_time_.reset();
+        next_time_.reset();
+        for (double time : times) {
+            if (time < current - epsilon)
+                previous_time_ = time;
+            else if (time > current + epsilon && !next_time_)
+                next_time_ = time;
+        }
+        const bool diamond_enabled = diamond_ && diamond_->isEnabled();
+        previous_->setEnabled(diamond_enabled && previous_time_.has_value());
+        next_->setEnabled(diamond_enabled && next_time_.has_value());
+        previous_->setAccessibleDescription(times.empty()
+            ? tr("No keyframes exist for this property")
+            : tr("Moves to the previous keyframe for this property"));
+        next_->setAccessibleDescription(times.empty()
+            ? tr("No keyframes exist for this property")
+            : tr("Moves to the next keyframe for this property"));
+    }
+
+private:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == diamond_ && event &&
+            (event->type() == QEvent::Show || event->type() == QEvent::Hide ||
+             event->type() == QEvent::ShowToParent || event->type() == QEvent::HideToParent ||
+             event->type() == QEvent::EnabledChange)) {
+            QTimer::singleShot(0, this, [this]() {
+                if (!diamond_)
+                    return;
+                setVisible(!diamond_->isHidden());
+                refresh();
+            });
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+    QToolButton *make_navigation_button(bool next)
+    {
+        auto *button = new QToolButton(this);
+        button->setObjectName(next
+            ? QStringLiteral("BglNextPropertyKeyframeButton")
+            : QStringLiteral("BglPreviousPropertyKeyframeButton"));
+        button->setAutoRaise(true);
+        button->setFixedSize(kKeyframeCaretWidth, kKeyframeCaretHeight);
+        button->setArrowType(next ? Qt::RightArrow : Qt::LeftArrow);
+        button->setStyleSheet(QStringLiteral(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+            "QToolButton:hover{background:palette(button);border:none;}"
+            "QToolButton:pressed{background:palette(highlight);border:none;}"
+            "QToolButton:disabled{background:transparent;border:none;}"));
+        button->setToolTip(next ? tr("Next keyframe") : tr("Previous keyframe"));
+        button->setAccessibleName(button->toolTip());
+        button->setFocusPolicy(Qt::StrongFocus);
+        connect(button, &QToolButton::clicked, this, [this, next]() {
+            refresh();
+            const std::optional<double> target = next ? next_time_ : previous_time_;
+            if (target && navigate_callback_)
+                navigate_callback_(*target);
+        });
+        return button;
+    }
+
+    QPointer<QAbstractButton> diamond_;
+    QToolButton *previous_ = nullptr;
+    QToolButton *next_ = nullptr;
+    BglKeyframeTimesProvider times_provider_;
+    BglCurrentTimeProvider current_time_provider_;
+    BglKeyframeNavigateCallback navigate_callback_;
+    std::optional<double> previous_time_;
+    std::optional<double> next_time_;
+};
+
+} // namespace
+
+void bgl_style_keyframe_button(QAbstractButton *button)
+{
+    if (!button)
+        return;
+    button->setObjectName(QStringLiteral("BglKeyframeDiamondButton"));
+    button->setFixedSize(kKeyframeButtonExtent, kKeyframeButtonExtent);
+    button->setIconSize(QSize(kKeyframeIconExtent, kKeyframeIconExtent));
+    button->setText(QString());
+    button->setProperty("bglPreserveButtonMetrics", true);
+    if (auto *tool = qobject_cast<QToolButton *>(button))
+        tool->setAutoRaise(true);
+
+    const QPalette palette = button->palette();
+    const QColor hover = palette.color(QPalette::Button).lightness() < 128
+        ? palette.color(QPalette::Button).lighter(125)
+        : palette.color(QPalette::Button).darker(108);
+    QColor marked = palette.color(QPalette::Highlight);
+    marked.setAlpha(44);
+    button->setStyleSheet(QStringLiteral(
+        "QPushButton,QToolButton{background:transparent;border:none;border-radius:2px;padding:0;}"
+        "QPushButton:hover,QToolButton:hover{background:%1;}"
+        "QPushButton:pressed,QToolButton:pressed{background:%2;}"
+        "QPushButton[outlined=\"true\"],QToolButton[outlined=\"true\"],"
+        "QPushButton[active=\"true\"],QToolButton[active=\"true\"]{background:%3;}"
+        "QPushButton:disabled,QToolButton:disabled{background:transparent;}")
+        .arg(hover.name(QColor::HexRgb),
+             palette.color(QPalette::Highlight).name(QColor::HexRgb),
+             marked.name(QColor::HexArgb)));
+}
+
+QColor bgl_keyframe_color()
+{
+    return QColor(0xff, 0xd2, 0x3f);
+}
+
+QIcon bgl_keyframe_diamond_icon(bool active, bool outlined)
+{
+    const QColor keyframe_color = bgl_keyframe_color();
+    if (active)
+        return bgl_icon("keyframe-active.svg", keyframe_color);
+    if (outlined)
+        return bgl_icon("keyframe-outline.svg", keyframe_color);
+    return bgl_icon("keyframe-inactive.svg");
+}
+
+QWidget *bgl_make_keyframe_controls(
+    QAbstractButton *diamond, QWidget *parent,
+    BglKeyframeTimesProvider times_provider,
+    BglCurrentTimeProvider current_time_provider,
+    BglKeyframeNavigateCallback navigate_callback)
+{
+    return new BglKeyframeControls(diamond, parent, std::move(times_provider),
+                                   std::move(current_time_provider),
+                                   std::move(navigate_callback));
+}
+
+void bgl_refresh_keyframe_navigation(QAbstractButton *diamond)
+{
+    if (!diamond)
+        return;
+    const quintptr address = static_cast<quintptr>(
+        diamond->property("bglKeyframeControls").toULongLong());
+    if (address != 0)
+        reinterpret_cast<BglKeyframeControls *>(address)->refresh();
+}
+
+void bgl_apply_editor_field_style(QWidget *widget)
+{
+    if (!widget || widget->property("bglSkipEditorFieldMetrics").toBool())
+        return;
+    if (widget->property("bglEditorFieldStyled").toBool())
+        return;
+    if (auto *line = qobject_cast<QLineEdit *>(widget)) {
+        if (qobject_cast<QAbstractSpinBox *>(line->parentWidget()))
+            return;
+        line->setProperty("bglEditorFieldStyled", true);
+        line->setFixedHeight(20);
+        line->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        line->setStyleSheet(bgl_transform_panel_control_style(line->palette()));
+        return;
+    }
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(widget)) {
+        spin->setProperty("bglEditorFieldStyled", true);
+        spin->setFixedHeight(20);
+        spin->setStyleSheet(bgl_transform_panel_control_style(spin->palette()));
+        return;
+    }
+    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        combo->setProperty("bglEditorFieldStyled", true);
+        combo->setFixedHeight(20);
+        combo->setStyleSheet(bgl_transform_panel_control_style(combo->palette()));
+    }
+}
+
 BglSwitch::BglSwitch(QWidget *parent)
     : QCheckBox(parent)
 {
     setCursor(Qt::PointingHandCursor);
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setMinimumHeight(19);
 }
 
@@ -1076,7 +1301,7 @@ QString bgl_transform_panel_control_style(const QPalette &palette)
                                                         : button_bg.darker(108);
     return QStringLiteral(
         "QDoubleSpinBox,QSpinBox,QComboBox,QLineEdit,QTextEdit{color:%1;background:%2;"
-        "border:1px solid %3;border-radius:2px;padding:1px 2px;font-size:10px;"
+        "border:1px solid %3;border-radius:2px;padding:1px 3px;font-size:10px;"
         "min-height:18px;max-height:20px;selection-background-color:%4;}"
         "QDoubleSpinBox:focus,QSpinBox:focus,QComboBox:focus,QLineEdit:focus,QTextEdit:focus{border-color:%4;}"
         "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button,"
@@ -1143,6 +1368,8 @@ void bgl_apply_transform_panel_widget_style(QWidget *root)
 
     const QString control_style = bgl_transform_panel_control_style(root->palette());
     const QString button_style = bgl_transform_panel_button_style(root->palette());
+    const bool responsive_fields =
+        root->property("bglResponsivePropertyFields").toBool();
 
     auto normalize_one = [&](QWidget *widget) {
         if (!widget || widget->property("bglSkipTransformPanelMetrics").toBool())
@@ -1151,18 +1378,26 @@ void bgl_apply_transform_panel_widget_style(QWidget *root)
             return;
         if (auto *spin = qobject_cast<QAbstractSpinBox *>(widget)) {
             spin->setFixedHeight(20);
-            spin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            spin->setMinimumWidth(0);
+            spin->setMaximumWidth(QWIDGETSIZE_MAX);
+            spin->setSizePolicy(responsive_fields ? QSizePolicy::Ignored
+                                                  : QSizePolicy::Expanding,
+                                QSizePolicy::Fixed);
             spin->setStyleSheet(control_style);
             return;
         }
         if (auto *combo = qobject_cast<QComboBox *>(widget)) {
             combo->setFixedHeight(20);
-            combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            combo->setMinimumWidth(0);
+            combo->setMaximumWidth(QWIDGETSIZE_MAX);
+            combo->setSizePolicy(responsive_fields ? QSizePolicy::Ignored
+                                                   : QSizePolicy::Expanding,
+                                 QSizePolicy::Fixed);
             combo->setStyleSheet(control_style);
             combo->setMaxVisibleItems(12);
             if (combo->view()) {
                 combo->view()->setTextElideMode(Qt::ElideRight);
-                combo->view()->setMinimumWidth(std::max(combo->width(), 220));
+                combo->view()->setMinimumWidth(std::max(0, combo->width()));
                 combo->view()->setAutoFillBackground(true);
                 combo->view()->viewport()->setAutoFillBackground(true);
                 combo->view()->setStyleSheet(QStringLiteral(
@@ -1182,7 +1417,11 @@ void bgl_apply_transform_panel_widget_style(QWidget *root)
         }
         if (auto *line = qobject_cast<QLineEdit *>(widget)) {
             line->setFixedHeight(20);
-            line->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            line->setMinimumWidth(0);
+            line->setMaximumWidth(QWIDGETSIZE_MAX);
+            line->setSizePolicy(responsive_fields ? QSizePolicy::Ignored
+                                                  : QSizePolicy::Expanding,
+                                QSizePolicy::Fixed);
             line->setStyleSheet(control_style);
             return;
         }
@@ -1236,6 +1475,18 @@ void bgl_apply_transform_panel_widget_style(QWidget *root)
     const auto widgets = root->findChildren<QWidget *>();
     for (QWidget *widget : widgets)
         normalize_one(widget);
+
+    /* Match the 3D Camera inspector's exact form geometry across every
+     * Properties section. */
+    const auto forms = root->findChildren<QFormLayout *>();
+    for (QFormLayout *form : forms) {
+        form->setContentsMargins(5, 4, 5, 5);
+        form->setHorizontalSpacing(4);
+        form->setVerticalSpacing(2);
+        form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->setFormAlignment(Qt::AlignTop);
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    }
 }
 
 QWidget *bgl_make_angle_field(QDoubleSpinBox *spin_box, QWidget *parent,

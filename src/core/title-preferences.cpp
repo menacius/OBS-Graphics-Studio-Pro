@@ -10,6 +10,8 @@
 
 #include <atomic>
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
@@ -27,6 +29,7 @@ constexpr const char *kAutosaveEnabledKey = "autosaveEnabled";
 constexpr const char *kAutosaveIntervalMinutesKey = "autosaveIntervalMinutes";
 constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kCacheRamLimitMbKey = "cacheRamLimitMb";
+constexpr const char *kShadowMapSizePxKey = "shadowMapSizePx";
 constexpr const char *kCacheDiskLocationKey = "cacheDiskLocation";
 constexpr const char *kClearCacheOnExitKey = "clearCacheOnExit";
 constexpr const char *kLoggingEnabledKey = "enabled";
@@ -96,6 +99,21 @@ QString canvas_helper_color_key(TitlePreferences::CanvasHelperColorRole role)
         return QStringLiteral("graphicsSafe");
     }
     return QStringLiteral("guides");
+}
+
+int normalize_shadow_map_size_px(int pixels)
+{
+    constexpr std::array<int, 5> kAllowedSizes {{256, 512, 1024, 2048, 4096}};
+    int best = kAllowedSizes.front();
+    int best_delta = std::abs(pixels - best);
+    for (int size : kAllowedSizes) {
+        const int delta = std::abs(pixels - size);
+        if (delta < best_delta || (delta == best_delta && size > best)) {
+            best = size;
+            best_delta = delta;
+        }
+    }
+    return best;
 }
 
 } // namespace
@@ -174,6 +192,26 @@ void set_cache_ram_limit_mb(int megabytes)
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
     settings.setValue(QString::fromUtf8(kCacheRamLimitMbKey),
                       bgs::system_memory::clamp_cache_ram_mb(megabytes));
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
+int shadow_map_size_px()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    const int pixels = settings.value(QString::fromUtf8(kShadowMapSizePxKey), 2048).toInt();
+    settings.endGroup();
+    return normalize_shadow_map_size_px(pixels);
+}
+
+void set_shadow_map_size_px(int pixels)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    settings.setValue(QString::fromUtf8(kShadowMapSizePxKey),
+                      normalize_shadow_map_size_px(pixels));
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);

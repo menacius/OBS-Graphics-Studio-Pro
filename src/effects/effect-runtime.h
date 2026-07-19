@@ -151,6 +151,11 @@ struct ResolvedLayerEffect {
     bool effect_antialias = true;
     float effect_stroke_width = 0.0f;
     float effect_stroke_opacity = 1.0f;
+    float effect_trim_start = 0.0f;
+    float effect_trim_end = 100.0f;
+    float effect_trim_offset = 0.0f;
+    float effect_stroke_offset = 0.0f;
+    int effect_trim_multiple_shapes = 0;
     float effect_padding_left = 0.0f;
     float effect_padding_right = 0.0f;
     float effect_padding_top = 0.0f;

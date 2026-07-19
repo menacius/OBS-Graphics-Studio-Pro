@@ -1,6 +1,9 @@
 # Broadcast Graphics Live documentation
 
-These are the canonical documents for `v0.8.12-alpha` Development Version 281. Historical one-feature delivery notes have been merged into the thematic guides and the consolidated changelog.
+These are the canonical documents for `v0.8.13-alpha` Development Version 394. Historical one-feature delivery notes have been merged into the thematic guides and the consolidated changelog.
+
+- `PACKED-TITLE-FORMAT.md` specifies the separate `.obgp` container, manifest,
+  compression blocks and import-safety contract.
 
 | Document | Purpose |
 | --- | --- |

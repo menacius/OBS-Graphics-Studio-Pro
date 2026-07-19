@@ -55,12 +55,7 @@ void TitleEditor::next_keyframe()
 
 static bool title_has_editor_audio_clock(const std::shared_ptr<Title> &title)
 {
-    if (!title)
-        return false;
-    return std::any_of(title->layers.cbegin(), title->layers.cend(),
-                       [](const std::shared_ptr<Layer> &layer) {
-                           return layer && layer->type == LayerType::Audio;
-                       });
+    return editor_title_contains_audio_media(title);
 }
 
 
@@ -104,14 +99,19 @@ void TitleEditor::tick()
     schedule_next_playback_timer_interval();
     const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
     double dt = obs_frame_duration();
-    if (!cache_settings.play_every_frame || obs_frame_duration() < editor_playback_ui_frame_duration()) {
+    if (!cache_settings.play_every_frame) {
         dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
         if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
         dt *= std::max(0.01, cache_settings.speed_percent / 100.0);
         if (cache_settings.skip_frames > 0)
             dt += obs_frame_duration() * cache_settings.skip_frames;
-    } else if (playback_clock_.isValid()) {
-        playback_clock_.restart();
+    } else {
+        /* Play Every Frame is deterministic project-frame playback.  It must
+         * never silently become wall-clock playback when the OBS/project FPS
+         * is higher than the editor repaint cadence. */
+        dt = std::max(0.000001, obs_frame_duration());
+        if (playback_clock_.isValid())
+            playback_clock_.restart();
     }
 
     double duration = std::max(0.001, title_->duration);
@@ -119,11 +119,20 @@ void TitleEditor::tick()
     double loop_end = std::clamp(title_->loop_end, loop_start, title_->duration);
     double loop_len = std::max(0.001, loop_end - loop_start);
     double t = playhead_;
+    bool stop_after_frame = false;
+    bool loop_discontinuity = false;
 
     if (manual_reverse_playback_) {
         t = playhead_ - dt;
         if (t <= 0.0) {
             t = 0.0;
+            stop_after_frame = true;
+        }
+        const double next_playhead = snap_to_obs_frame(t);
+        if (cache_settings.cached_frames_only && canvas_ &&
+            !canvas_->prepare_cached_playback_frame(next_playhead))
+            return;
+        if (stop_after_frame) {
             playing_ = false;
             if (canvas_) canvas_->set_playback_active(false);
             manual_reverse_playback_ = false;
@@ -131,11 +140,8 @@ void TitleEditor::tick()
             play_timer_->stop();
             act_play_->setText("▶");
             act_play_->setIcon(obs_icon("play.svg"));
+            sync_editor_audio_preview(false);
         }
-        const double next_playhead = snap_to_obs_frame(t);
-        if (cache_settings.cached_frames_only && canvas_ &&
-            !canvas_->prepare_cached_playback_frame(next_playhead))
-            return;
         apply_playhead_change(next_playhead, true);
         return;
     }
@@ -144,8 +150,14 @@ void TitleEditor::tick()
     const bool preview_loop = (!follow_title_mode && cache_settings.mode == CachePlaybackMode::Loop) || full_loop_playback_;
     const bool preview_ping_pong = !follow_title_mode && cache_settings.mode == CachePlaybackMode::PingPong;
     const bool preview_play_once = !follow_title_mode && cache_settings.mode == CachePlaybackMode::PlayOnce;
+    const bool authored_ping_pong = follow_title_mode && !full_loop_playback_ &&
+        title_->playback_mode == 1 && title_->loop_type == 1;
+    if (!preview_ping_pong && !authored_ping_pong)
+        playback_reverse_ = false;
     if (preview_loop && !preview_ping_pong && full_loop_playback_) {
-        t = std::fmod(playhead_ + dt, duration);
+        const double unwrapped_time = playhead_ + dt;
+        loop_discontinuity = unwrapped_time >= duration;
+        t = std::fmod(unwrapped_time, duration);
     } else if (preview_ping_pong) {
         t += (playback_reverse_ ? -dt : dt);
         if (!playback_reverse_ && t >= duration) {
@@ -156,22 +168,22 @@ void TitleEditor::tick()
             playback_reverse_ = false;
         }
     } else if (preview_loop) {
-        t = std::fmod(playhead_ + dt, duration);
+        const double unwrapped_time = playhead_ + dt;
+        loop_discontinuity = unwrapped_time >= duration;
+        t = std::fmod(unwrapped_time, duration);
     } else if (preview_play_once) {
         t = playhead_ + dt;
         if (t >= title_->duration) {
             t = title_->duration;
-            playing_ = false;
-            if (canvas_) canvas_->set_playback_active(false);
-            play_timer_->stop();
-            act_play_->setText("▶");
-            act_play_->setIcon(obs_icon("play.svg"));
+            stop_after_frame = true;
         }
     } else {
         switch (title_->playback_mode) {
         case 1: /* Loop in/out between Loop Start and Loop End */
             if (loop_end <= loop_start + 0.0001) {
-                t = std::fmod(playhead_ + dt, duration);
+                const double unwrapped_time = playhead_ + dt;
+                loop_discontinuity = unwrapped_time >= duration;
+                t = std::fmod(unwrapped_time, duration);
             } else if (title_->loop_type == 1) {
                 t += (playback_reverse_ ? -dt : dt);
                 if (!playback_reverse_ && t >= loop_end) {
@@ -183,20 +195,26 @@ void TitleEditor::tick()
                 }
             } else {
                 t = playhead_ + dt;
-                if (t >= loop_end)
+                if (t >= loop_end) {
+                    loop_discontinuity = true;
                     t = loop_start + std::fmod(t - loop_end, loop_len);
+                }
             }
             break;
         case 2: { /* Pause at timeline position */
             double pause_time = std::clamp(title_->pause_time, 0.0, title_->duration);
             t = playhead_ + dt;
-            if (t >= pause_time) {
+            const bool approaching_pause =
+                playhead_ < pause_time - obs_frame_duration() * 0.5;
+            if (approaching_pause && t >= pause_time) {
                 t = pause_time;
-                playing_ = false;
-                if (canvas_) canvas_->set_playback_active(false);
-                play_timer_->stop();
-                act_play_->setText("▶");
-                act_play_->setIcon(obs_icon("play.svg"));
+                stop_after_frame = true;
+            } else if (!approaching_pause && t >= title_->duration) {
+                /* From Current Time can resume a held Pause title to preview
+                 * its authored outro instead of stopping forever on the same
+                 * pause frame. From Beginning still resets to zero first. */
+                t = title_->duration;
+                stop_after_frame = true;
             }
             break;
         }
@@ -204,17 +222,14 @@ void TitleEditor::tick()
             t = playhead_ + dt;
             if (t >= title_->duration) {
                 t = title_->duration;
-                playing_ = false;
-                if (canvas_) canvas_->set_playback_active(false);
-                play_timer_->stop();
-                act_play_->setText("▶");
-                act_play_->setIcon(obs_icon("play.svg"));
+                stop_after_frame = true;
             }
             break;
         }
     }
     double next_playhead = snap_to_obs_frame(t);
-    if (!cache_settings.play_every_frame && playing_ &&
+    if (!stop_after_frame && !loop_discontinuity &&
+        !cache_settings.play_every_frame && playing_ &&
         editor_audio_preview_source_ &&
         title_has_editor_audio_clock(title_)) {
         float audio_level_left = 0.0f;
@@ -249,7 +264,26 @@ void TitleEditor::tick()
          * available. */
         return;
     }
+    if (stop_after_frame) {
+        playing_ = false;
+        if (canvas_) canvas_->set_playback_active(false);
+        play_timer_->stop();
+        act_play_->setText("▶");
+        act_play_->setIcon(obs_icon("play.svg"));
+        sync_editor_audio_preview(false);
+    }
     apply_playhead_change(next_playhead, true);
+    if (loop_discontinuity && playing_) {
+        /* A restart loop jumps from the end boundary back to its start.  The
+         * monitored audio clock is still reporting the pre-wrap time during
+         * this tick, so it must neither override the wrapped playhead nor keep
+         * an ended private media source pinned at the final frame.  Publish a
+         * real discontinuity after the new playhead is installed; the audio
+         * runtime then resets its sample cursor and OBS resumes the source at
+         * the loop start. Ping-pong never enters this path because its time is
+         * continuous and only its direction changes. */
+        sync_editor_audio_preview(true);
+    }
 }
 
 static bool editor_focus_accepts_text(QWidget *widget)
@@ -309,6 +343,116 @@ void TitleEditor::show_preferences()
 void TitleEditor::show_global_preferences(QWidget *parent)
 {
     show_preferences_dialog(parent, nullptr);
+}
+
+static bool bgl_reset_remove_directory(const QString &path)
+{
+    const QString clean = QDir::cleanPath(path.trimmed());
+    if (clean.isEmpty())
+        return true;
+
+    const QFileInfo info(clean);
+    const QString absolute = info.absoluteFilePath();
+    const QString home = QDir::cleanPath(QDir::homePath());
+    const QString app_data = QDir::cleanPath(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    const QString cache = QDir::cleanPath(
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    if (QDir(absolute).isRoot() || absolute == home || absolute == app_data || absolute == cache)
+        return false;
+
+    QDir directory(absolute);
+    return !directory.exists() || directory.removeRecursively();
+}
+
+static bool bgl_reset_remove_logs(const QString &path)
+{
+    QDir directory(path);
+    if (!directory.exists())
+        return true;
+
+    bool removed = true;
+    const QStringList filters = {
+        QStringLiteral("broadcast-graphics-live*.log"),
+        QStringLiteral("broadcast_graphics_live*.log"),
+        QStringLiteral("*.bgl.log")
+    };
+    for (const QString &file : directory.entryList(filters, QDir::Files))
+        removed = directory.remove(file) && removed;
+    return removed;
+}
+
+static QStringList bgl_reset_all_user_data()
+{
+    QStringList failures;
+    const QString disk_cache = CacheManager::instance().diskCacheLocation();
+    const QString log_directory = TitlePreferences::logging_directory();
+
+    CacheManager::instance().clearAll();
+
+    const QStringList applications = {
+        QStringLiteral("Dock"),
+        QStringLiteral("Color"),
+        QStringLiteral("EditorPanels")
+    };
+    for (const QString &application : applications) {
+        for (QSettings::Format format : {QSettings::NativeFormat, QSettings::IniFormat}) {
+            QSettings settings(format, QSettings::UserScope,
+                               QStringLiteral("BroadcastGraphicsLive"), application);
+            const QString settings_file = settings.fileName();
+            settings.clear();
+            settings.sync();
+            if (settings.status() != QSettings::NoError)
+                failures << settings_file;
+            if (format == QSettings::IniFormat && QFileInfo::exists(settings_file) &&
+                !QFile::remove(settings_file))
+                failures << settings_file;
+        }
+    }
+
+#if defined(Q_OS_WIN)
+    // QSettings uses this registry subtree on Windows. Clearing the root also
+    // removes orphaned keys left by older application identifiers.
+    QSettings registry(QStringLiteral("HKEY_CURRENT_USER\\Software\\BroadcastGraphicsLive"),
+                       QSettings::NativeFormat);
+    registry.clear();
+    registry.sync();
+    if (registry.status() != QSettings::NoError)
+        failures << QStringLiteral("HKEY_CURRENT_USER\\Software\\BroadcastGraphicsLive");
+#endif
+
+    QString module_config;
+    if (char *path = obs_module_config_path("")) {
+        module_config = QString::fromUtf8(path);
+        bfree(path);
+    }
+
+    const QString app_data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString cache_root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QStringList directories = {
+        module_config,
+        disk_cache,
+        QDir(app_data).filePath(QStringLiteral("style-presets")),
+        QDir(app_data).filePath(QStringLiteral("palettes")),
+        QDir(app_data).filePath(QStringLiteral("Effects")),
+        QDir(app_data).filePath(QStringLiteral("logs")),
+        QDir(cache_root).filePath(QStringLiteral("frame-cache")),
+        QDir(cache_root).filePath(QStringLiteral("video-proxies")),
+        QDir(cache_root).filePath(QStringLiteral("video-optical-flow"))
+    };
+    directories.removeDuplicates();
+    for (const QString &directory : directories) {
+        if (!directory.trimmed().isEmpty() && !bgl_reset_remove_directory(directory))
+            failures << directory;
+    }
+
+    // A custom log location may be a shared folder, so remove only BGL logs
+    // instead of recursively deleting the user-selected directory.
+    if (!bgl_reset_remove_logs(log_directory))
+        failures << log_directory;
+
+    failures.removeDuplicates();
+    return failures;
 }
 
 void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
@@ -577,6 +721,16 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         .arg(maximum_ram_cache_mb));
     cache_form->addRow(bgl_tr("OBSTitles.RamCacheLimit"), ram_limit);
 
+    auto *shadow_map_size = new QComboBox(advanced_page);
+    for (int size : {256, 512, 1024, 2048, 4096})
+        shadow_map_size->addItem(QStringLiteral("%1 px").arg(size), size);
+    const int shadow_map_index = shadow_map_size->findData(
+        TitlePreferences::shadow_map_size_px());
+    shadow_map_size->setCurrentIndex(shadow_map_index >= 0 ? shadow_map_index : 3);
+    shadow_map_size->setToolTip(QStringLiteral(
+        "Resolution used for 3D shadow maps. Higher values improve shadow detail but use more GPU memory and time. The selected value is saved permanently for future sessions."));
+    cache_form->addRow(QStringLiteral("Shadowmap Size"), shadow_map_size);
+
     auto *disk_path_row = new QWidget(advanced_page);
     auto *disk_path_layout = new QHBoxLayout(disk_path_row);
     disk_path_layout->setContentsMargins(0, 0, 0, 0);
@@ -610,6 +764,28 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     cache_form->addRow(QString(), clear_cache_on_exit);
 
     advanced_layout->addLayout(cache_form);
+
+    auto *danger_box = new QGroupBox(QStringLiteral("Reset Broadcast Graphics Live"), advanced_page);
+    auto *danger_layout = new QVBoxLayout(danger_box);
+    danger_layout->setContentsMargins(10, 10, 10, 10);
+    danger_layout->setSpacing(8);
+    auto *danger_description = new QLabel(
+        QStringLiteral("Permanently delete all settings, registry entries and user files."),
+        danger_box);
+    danger_description->setWordWrap(true);
+    auto *reset_all_settings = new QPushButton(
+        QStringLiteral("Reset All Broadcast Graphics Live Settings…"), danger_box);
+    reset_all_settings->setObjectName(QStringLiteral("BglDangerResetButton"));
+    reset_all_settings->setCursor(Qt::PointingHandCursor);
+    reset_all_settings->setStyleSheet(QStringLiteral(
+        "QPushButton#BglDangerResetButton{background:#b42318;color:white;border:1px solid #7a271a;"
+        "border-radius:4px;padding:7px 12px;font-weight:600;}"
+        "QPushButton#BglDangerResetButton:hover{background:#d92d20;}"
+        "QPushButton#BglDangerResetButton:pressed{background:#912018;}"
+        "QPushButton#BglDangerResetButton:disabled{background:#7f1d1d;color:#d1d5db;}"));
+    danger_layout->addWidget(danger_description);
+    danger_layout->addWidget(reset_all_settings, 0, Qt::AlignLeft);
+    advanced_layout->addWidget(danger_box);
     advanced_layout->addStretch(1);
 
     auto *logging_page = new QWidget(pages);
@@ -684,7 +860,18 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     category_layout->setContentsMargins(8, 8, 8, 8);
     category_layout->setSpacing(5);
     QVector<QPair<QString, QCheckBox *>> category_checks;
+    QMap<QString, QVBoxLayout *> category_group_layouts;
     for (const TitleLogCategory &category : TitleLogger::categories()) {
+        QVBoxLayout *group_layout = category_group_layouts.value(category.group, nullptr);
+        if (!group_layout) {
+            auto *group_box = new QGroupBox(category.group, category_container);
+            group_box->setCheckable(false);
+            group_layout = new QVBoxLayout(group_box);
+            group_layout->setContentsMargins(8, 10, 8, 8);
+            group_layout->setSpacing(4);
+            category_layout->addWidget(group_box);
+            category_group_layouts.insert(category.group, group_layout);
+        }
         auto *check = new BglSwitch(category.display_name, category_container);
         check->setChecked(TitlePreferences::logging_category_enabled(
             category.key, category.default_enabled));
@@ -692,7 +879,7 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         check->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
                                  .arg(text.name(QColor::HexRgb),
                                       disabled_text.name(QColor::HexRgb)));
-        category_layout->addWidget(check);
+        group_layout->addWidget(check);
         category_checks.push_back(qMakePair(category.key, check));
     }
     category_layout->addStretch(1);
@@ -766,6 +953,18 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         BGL_LOG_INFO("Preferences", QStringLiteral("Set RAM cache limit=%1 MB").arg(value));
         CacheManager::instance().setRamCacheLimitMb(value);
     });
+    connect(shadow_map_size, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            dialog, [shadow_map_size]() {
+                const int pixels = shadow_map_size->currentData().toInt();
+                TitlePreferences::set_shadow_map_size_px(pixels);
+                BGL_LOG_INFO("Preferences", QStringLiteral("Set shadowmap size=%1 px").arg(pixels));
+                for (QWidget *widget : QApplication::topLevelWidgets()) {
+                    if (auto *open_editor = qobject_cast<TitleEditor *>(widget)) {
+                        if (open_editor->canvas_)
+                            open_editor->canvas_->refresh_preview();
+                    }
+                }
+            });
     connect(disk_path, &QLineEdit::editingFinished, dialog, [disk_path]() {
         CacheManager::instance().setDiskCacheLocation(disk_path->text());
         disk_path->setText(CacheManager::instance().diskCacheLocation());
@@ -786,6 +985,33 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     connect(clear_cache_on_exit, &QCheckBox::toggled, dialog, [](bool enabled) {
         BGL_LOG_INFO("Preferences", QStringLiteral("Set clear cache on exit=%1").arg(enabled));
         TitlePreferences::set_clear_cache_on_exit(enabled);
+    });
+    connect(reset_all_settings, &QPushButton::clicked, dialog, [dialog]() {
+        const auto answer = QMessageBox::warning(
+            dialog, QStringLiteral("Reset all Broadcast Graphics Live settings"),
+            QStringLiteral(
+                "This permanently deletes all Broadcast Graphics Live settings, Windows registry entries, "
+                "titles, layouts, presets, palettes, installed user effects, cache files and logs.\n\n"
+                "This cannot be undone and OBS must be restarted. Continue?"),
+            QMessageBox::Reset | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Reset)
+            return;
+
+        const auto final_answer = QMessageBox::critical(
+            dialog, QStringLiteral("Confirm permanent deletion"),
+            QStringLiteral("Delete all Broadcast Graphics Live settings, registry entries and files now?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (final_answer != QMessageBox::Yes)
+            return;
+
+        const QStringList failures = bgl_reset_all_user_data();
+        QMessageBox::information(
+            dialog, QStringLiteral("Reset complete"),
+            failures.isEmpty()
+                ? QStringLiteral("All Broadcast Graphics Live settings, registry entries and files were deleted. Close and restart OBS before using the plugin again.")
+                : QStringLiteral("The reset completed, but some in-use files could not be deleted. Close OBS, remove the remaining Broadcast Graphics Live files, and restart OBS.\n\nRemaining:\n%1")
+                      .arg(failures.join(QLatin1Char('\n'))));
+        dialog->close();
     });
     connect(logging_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
         TitlePreferences::set_logging_enabled(enabled);
@@ -933,6 +1159,8 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
     case QEvent::ScreenChangeInternal:
     case QEvent::Polish:
     case QEvent::Wheel:
+    case QEvent::MouseMove:
+    case QEvent::HoverMove:
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonRelease:
     case QEvent::MouseButtonDblClick:
@@ -950,8 +1178,44 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
     const bool watched_in_editor = watched_canvas_window ||
         (watched_widget &&
          (watched_widget == this || isAncestorOf(watched_widget)));
+    if (watched_in_editor && watched_widget &&
+        (type == QEvent::Polish || type == QEvent::Show))
+        bgl_apply_editor_field_style(watched_widget);
     auto *watched_dock = watched_in_editor
         ? qobject_cast<QDockWidget *>(watched_widget) : nullptr;
+
+    /* High-polling-rate mice can enqueue hundreds of passive move/hover
+     * events per second. During playback most inspector widgets only need
+     * Enter/Leave for their hover state; forwarding every intermediate move
+     * forces QSS hit testing and custom-widget paints on the same GUI thread
+     * that schedules the next canvas frame. Keep continuous pointer delivery
+     * for the canvas/timeline and for explicitly opted-in controls, while
+     * coalescing passive intermediate movement to at most 30 Hz elsewhere. Press, drag,
+     * wheel, tooltip and enter/leave events are unaffected. */
+    if (playing_ && watched_in_editor &&
+        (type == QEvent::MouseMove || type == QEvent::HoverMove) &&
+        QApplication::mouseButtons() == Qt::NoButton) {
+        const bool canvas_pointer_target = watched_widget && canvas_ &&
+            (watched_widget == canvas_ || canvas_->isAncestorOf(watched_widget));
+        const bool timeline_pointer_target = watched_widget && timeline_ &&
+            (watched_widget == timeline_ || timeline_->isAncestorOf(watched_widget));
+        const bool continuous_pointer_target = watched_widget &&
+            watched_widget->property("bglContinuousPointerDuringPlayback").toBool();
+        if (!canvas_pointer_target && !timeline_pointer_target &&
+            !continuous_pointer_target) {
+            constexpr qint64 kPassivePointerIntervalMs = 33;
+            if (playback_pointer_ui_clock_.isValid() &&
+                playback_pointer_ui_clock_.elapsed() <
+                    kPassivePointerIntervalMs) {
+                event->accept();
+                return true;
+            }
+            if (playback_pointer_ui_clock_.isValid())
+                playback_pointer_ui_clock_.restart();
+            else
+                playback_pointer_ui_clock_.start();
+        }
+    }
 
     const bool main_window_layout_transition = watched == this &&
         (type == QEvent::LayoutRequest || type == QEvent::Move ||
@@ -1142,4 +1406,3 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
             key_event->accept();
             return true;
         }
-

@@ -21,6 +21,9 @@ constexpr const char *kPlaylistHoldSecondsKey = "playlistHoldSeconds";
 constexpr const char *kBackgroundPersistenceKey = "backgroundPersistence";
 constexpr const char *kTextPersistenceKey = "textPersistence";
 constexpr const char *kLiveTextLinesPerRowKey = "liveTextLinesPerRow";
+constexpr const char *kSelectRowBeforeCueKey = "selectRowBeforeCue";
+constexpr const char *kShowCuePreviewKey = "showCuePreview";
+constexpr const char *kLegacyShowPreviewBeforeCueKey = "showPreviewBeforeCue";
 constexpr const char *kTemplateLibrarySettingsGroup = "TemplateLibrary";
 constexpr const char *kTemplateLibraryByCollectionKey = "viewByCollection";
 constexpr const char *kTemplateLibraryIconViewKey = "iconView";
@@ -47,6 +50,16 @@ constexpr int kStaticCacheColumn = 1;
 constexpr int kStaticTitleColumn = 2;
 
 static QColor live_cue_state_color(bool current, bool queued, bool ending);
+
+static bool live_cue_row_is_ending(const Title &title, int row)
+{
+    /* A row is outgoing both for an explicit uncue and for the outro half of
+     * a row-to-row hand-off.  pending_cue_row identifies the incoming row,
+     * while current_cue_row must stay active until its authored outro has
+     * completed.  Keep the outgoing row yellow for that complete interval. */
+    return row >= 0 && row == title.current_cue_row &&
+        (title.cue_uncue_requested || title.pending_cue_row >= 0);
+}
 
 enum class TitleCueVisualState : int {
     Inactive = 0,
@@ -967,4 +980,3 @@ private:
             if (label_) label_->setToolTip(preview_tooltip_);
             return;
         }
-

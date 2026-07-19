@@ -47,6 +47,38 @@ static QString editor_color_hex(const QColor &color)
         .toUpper();
 }
 
+
+void CanvasPreview::draw_shader_compile_overlay(QPainter &p, const QRectF &canvas_rect)
+{
+    if (!gpu_render_session_ || canvas_rect.isEmpty())
+        return;
+    TitleGpuShaderCompileStatus status;
+    if (!title_gpu_render_session_shader_compile_status(
+            gpu_render_session_, status))
+        return;
+
+    const uint32_t total = std::max<uint32_t>(1u, status.total_jobs);
+    const uint32_t current = std::clamp<uint32_t>(
+        status.completed_jobs + ((status.active || status.queued) ? 1u : 0u),
+        1u, total);
+    const QString headline = QStringLiteral("Compiling Shaders %1 of %2")
+        .arg(current)
+        .arg(total);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.fillRect(canvas_rect, palette().color(QPalette::Window));
+
+    QFont title_font = p.font();
+    title_font.setBold(true);
+    title_font.setPointSizeF(std::max(13.0, title_font.pointSizeF() + 4.0));
+    p.setFont(title_font);
+    p.setPen(palette().color(QPalette::WindowText));
+    p.drawText(canvas_rect.adjusted(24.0, 24.0, -24.0, -24.0),
+               Qt::AlignCenter | Qt::TextSingleLine, headline);
+    p.restore();
+}
+
 void CanvasPreview::draw_color_picker_tooltip(QPainter &p)
 {
     if (active_tool_ != CanvasTool::ColorPicker || !color_picker_tooltip_visible_)
@@ -446,6 +478,24 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
         if (!layer || !layer_is_editor_visible(*layer) ||
             layer_type_is_container(layer->type) || !layer->visible) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
+        if (layer->type == LayerType::Audio)
+            continue;
+        if (layer->type == LayerType::Light) {
+            if (!light_layer_overlay_contains(*layer, view_pt))
+                continue;
+            const Layer *target = editor_canvas_selection_target(title_, *layer);
+            if (!target || target->locked)
+                continue;
+            return title_->find_layer(target->id);
+        }
+        if (layer->type == LayerType::Empty) {
+            if (!empty_layer_overlay_contains(*layer, view_pt))
+                continue;
+            const Layer *target = editor_canvas_selection_target(title_, *layer);
+            if (!target || target->locked)
+                continue;
+            return title_->find_layer(target->id);
+        }
         const QRectF local_rect = layer_local_rect(*layer);
         if (!local_rect.isValid() || local_rect.isEmpty() ||
             !local_rect.contains(canvas_to_layer(*layer, canvas)))
@@ -1148,4 +1198,3 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                                 capture_path_corner_radii(*candidate)});
         }
     }
-

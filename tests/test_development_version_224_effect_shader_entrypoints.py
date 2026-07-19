@@ -50,5 +50,5 @@ def test_embedded_effects_are_byte_identical_to_installed_assets():
 def test_effect_cache_abi_invalidates_noop_shader_frames():
     gpu = (ROOT / "src/obs/title-source/gpu-presentation-readback.inc").read_text(encoding="utf-8")
     cache = (ROOT / "src/cache/cache-manager/visual-hash-keying.inc").read_text(encoding="utf-8")
-    assert "gpu-effects-v17-keying-matte" in gpu
-    assert "v43-obs-effect-entrypoint-fix" in cache
+    assert "gpu-effects-v26-3d-lighting-materials-shadows" in gpu
+    assert "v48-3d-lighting-materials" in cache

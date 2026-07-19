@@ -3,12 +3,13 @@ constexpr const char *kEditorLayoutSettingsGroup = "TitleEditorLayout";
 constexpr const char *kEditorGeometryKey = "geometry";
 constexpr const char *kEditorWindowStateKey = "windowState";
 constexpr const char *kEditorLayoutVersionKey = "layoutVersion";
-constexpr int kEditorLayoutVersion = 4;
+constexpr int kEditorLayoutVersion = 8;
 constexpr const char *kEditorPanelsLockedKey = "panelsLocked";
 constexpr const char *kEditorCanvasTransparencyKey = "canvasTransparency";
 constexpr const char *kEditorSafeGuidesVisibleKey = "safeGuidesVisible";
 constexpr const char *kGraphicPropertiesDockObjectName = "BroadcastGraphicsLiveGraphicPropertiesDock";
 constexpr const char *kLayerPropertiesDockObjectName = "BroadcastGraphicsLiveLayerPropertiesDock";
+constexpr const char *kThreeDSceneDockObjectName = "BroadcastGraphicsLive3DSceneDock";
 constexpr const char *kEffectsDockObjectName = "BroadcastGraphicsLiveEffectsDock";
 constexpr const char *kEffectsPresetsDockObjectName = "BroadcastGraphicsLiveEffectsPresetsDock";
 constexpr const char *kStylesDockObjectName = "BroadcastGraphicsLiveStylesDock";
@@ -460,43 +461,6 @@ private:
     double drag_start_value_ = 0.0;
 };
 
-class TransformLockCheckBox : public QCheckBox {
-public:
-    explicit TransformLockCheckBox(QWidget *parent = nullptr) : QCheckBox(parent)
-    {
-        setCheckable(true);
-        setCursor(Qt::PointingHandCursor);
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        const QRectF r = rect().adjusted(1, 1, -1, -1);
-        const QColor bg = underMouse() ? QColor(48, 48, 48) : QColor(36, 36, 36);
-        const QColor border = isChecked() ? QColor(111, 143, 196) : QColor(58, 58, 58);
-        const QColor fg = isChecked() ? QColor(215, 226, 248) : QColor(170, 170, 170);
-        p.setPen(QPen(border, 1));
-        p.setBrush(bg);
-        p.drawRoundedRect(r, 2, 2);
-
-        p.setPen(QPen(fg, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.setBrush(Qt::NoBrush);
-        if (isChecked())
-            p.drawArc(QRectF(width() / 2.0 - 5.0, height() / 2.0 - 8.0, 10.0, 12.0), 0, 180 * 16);
-        else
-            p.drawArc(QRectF(width() / 2.0 - 1.0, height() / 2.0 - 8.0, 10.0, 12.0), 30 * 16, 150 * 16);
-
-        const QRectF body(width() / 2.0 - 5.0, height() / 2.0 - 1.0, 10.0, 8.0);
-        p.setBrush(fg);
-        p.drawRoundedRect(body, 1.5, 1.5);
-        p.setPen(bg);
-        p.drawPoint(QPointF(width() / 2.0, height() / 2.0 + 3.0));
-    }
-};
-
 class AnchorGridButton : public QPushButton {
 public:
     explicit AnchorGridButton(QWidget *parent = nullptr) : QPushButton(parent)
@@ -887,4 +851,3 @@ protected:
         }
         QWidget::mouseDoubleClickEvent(event);
     }
-

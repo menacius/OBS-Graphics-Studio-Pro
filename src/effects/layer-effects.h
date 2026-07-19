@@ -76,6 +76,7 @@ enum class LayerEffectType {
     FilmDistortion = 46,
     AnalogDistortion = 47,
     DigitalDistortion = 48,
+    TrimPaths = 49,
 };
 
 enum class EffectBlendMode {
@@ -95,8 +96,9 @@ enum class EffectBlendMode {
  * LayerSpace    : evaluated on the padded transform-neutral layer raster, then
  *                 projected into 2D/3D. Shadows, glow, blur and outline belong
  *                 here and therefore rotate/scale with the plane.
- * PostTransform : evaluated from projected samples. Motion Blur belongs here
- *                 because camera/parent motion changes the sample positions.
+ * PostTransform : evaluated as a final per-layer temporal pass. Motion Blur
+ *                 samples the complete effected/transitioned projection because
+ *                 camera/parent motion and source geometry can both change.
  * ScreenSpace   : reads or modifies the already composited background.
  *                 Affect-layers-behind effects belong here.
  */
@@ -206,6 +208,11 @@ struct LayerEffect {
     uint32_t effect_stroke_color = 0x00000000;
     float effect_stroke_width = 0.0f;
     float effect_stroke_opacity = 1.0f;
+    float effect_trim_start = 0.0f;
+    float effect_trim_end = 100.0f;
+    float effect_trim_offset = 0.0f;
+    float effect_stroke_offset = 0.0f;
+    int effect_trim_multiple_shapes = 0; /* 0=simultaneously, 1=individually */
     float effect_padding_left = 0.0f;
     float effect_padding_right = 0.0f;
     float effect_padding_top = 0.0f;
@@ -252,6 +259,10 @@ struct LayerEffect {
     AnimatedProperty evolution_prop { "effect_evolution", 0.0 };
     AnimatedProperty stroke_width_prop { "effect_stroke_width", 0.0 };
     AnimatedProperty stroke_opacity_prop { "effect_stroke_opacity", 1.0 };
+    AnimatedProperty trim_start_prop { "effect_trim_start", 0.0 };
+    AnimatedProperty trim_end_prop { "effect_trim_end", 100.0 };
+    AnimatedProperty trim_offset_prop { "effect_trim_offset", 0.0 };
+    AnimatedProperty stroke_offset_prop { "effect_stroke_offset", 0.0 };
     AnimatedProperty padding_left_prop { "effect_padding_left", 0.0 };
     AnimatedProperty padding_right_prop { "effect_padding_right", 0.0 };
     AnimatedProperty padding_top_prop { "effect_padding_top", 0.0 };

@@ -22,6 +22,7 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QImage>
+#include <QStringList>
 #include <QMimeData>
 #include <QStandardPaths>
 #include <QTimer>

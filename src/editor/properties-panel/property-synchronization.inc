@@ -26,6 +26,85 @@
         load_values();
         emit_change();
     });
+    connect(btn_kf_appearance_stroke_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
+                if (active_text_edit_layer_id_ == layer_->id &&
+                    (layer_->type == LayerType::Text ||
+                     layer_->type == LayerType::Clock ||
+                     layer_->type == LayerType::Ticker))
+                    return;
+                const double t = local_time();
+                const uint32_t color = eval_stroke_color(*layer_, t);
+                if (any_keyframe_at_time(
+                        {&layer_->stroke_color_a, &layer_->stroke_color_r,
+                         &layer_->stroke_color_g, &layer_->stroke_color_b}, t)) {
+                    remove_keyframe_at(layer_->stroke_color_a, t);
+                    remove_keyframe_at(layer_->stroke_color_r, t);
+                    remove_keyframe_at(layer_->stroke_color_g, t);
+                    remove_keyframe_at(layer_->stroke_color_b, t);
+                } else {
+                    add_or_replace_keyframe(layer_->stroke_color_a, t,
+                                            (color >> 24) & 0xFF);
+                    add_or_replace_keyframe(layer_->stroke_color_r, t,
+                                            (color >> 16) & 0xFF);
+                    add_or_replace_keyframe(layer_->stroke_color_g, t,
+                                            (color >> 8) & 0xFF);
+                    add_or_replace_keyframe(layer_->stroke_color_b, t,
+                                            color & 0xFF);
+                }
+                load_values();
+                emit_change();
+            });
+    auto connect_material_keyframe = [this, can_edit, local_time, emit_change](
+                                         QPushButton *button,
+                                         AnimatedProperty Layer::*member,
+                                         QDoubleSpinBox *spin) {
+        connect(button, &QPushButton::clicked, this,
+                [this, can_edit, local_time, emit_change, member, spin]() {
+                    if (!can_edit()) return;
+                    AnimatedProperty &property = layer_.get()->*member;
+                    toggle_keyframe(property, local_time(), spin->value());
+                    load_values();
+                    emit_change();
+                });
+    };
+    connect_material_keyframe(btn_kf_material_ambient_, &Layer::material_ambient, spn_material_ambient_);
+    connect_material_keyframe(btn_kf_material_diffuse_, &Layer::material_diffuse, spn_material_diffuse_);
+    connect_material_keyframe(btn_kf_material_specular_, &Layer::material_specular, spn_material_specular_);
+    connect_material_keyframe(btn_kf_material_shininess_, &Layer::material_shininess, spn_material_shininess_);
+    connect_material_keyframe(btn_kf_material_metallic_, &Layer::material_metallic, spn_material_metallic_);
+    connect_material_keyframe(btn_kf_material_roughness_, &Layer::material_roughness, spn_material_roughness_);
+    connect_material_keyframe(btn_kf_material_reflection_, &Layer::material_reflection_intensity, spn_material_reflection_);
+    connect_material_keyframe(btn_kf_material_emissive_intensity_, &Layer::material_emissive_intensity, spn_material_emissive_intensity_);
+    connect_material_keyframe(btn_kf_geometry_extrusion_depth_, &Layer::geometry_extrusion_depth, spn_geometry_extrusion_depth_);
+    connect_material_keyframe(btn_kf_geometry_bevel_depth_, &Layer::geometry_bevel_depth, spn_geometry_bevel_depth_);
+
+    connect(btn_kf_material_emissive_color_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
+                const double t = local_time();
+                const uint32_t color = evaluated_material_emissive_color(*layer_, t);
+                if (any_keyframe_at_time(
+                        {&layer_->material_emissive_color_a,
+                         &layer_->material_emissive_color_r,
+                         &layer_->material_emissive_color_g,
+                         &layer_->material_emissive_color_b}, t)) {
+                    remove_keyframe_at(layer_->material_emissive_color_a, t);
+                    remove_keyframe_at(layer_->material_emissive_color_r, t);
+                    remove_keyframe_at(layer_->material_emissive_color_g, t);
+                    remove_keyframe_at(layer_->material_emissive_color_b, t);
+                } else {
+                    add_or_replace_keyframe(layer_->material_emissive_color_a, t, (color >> 24) & 0xFF);
+                    add_or_replace_keyframe(layer_->material_emissive_color_r, t, (color >> 16) & 0xFF);
+                    add_or_replace_keyframe(layer_->material_emissive_color_g, t, (color >> 8) & 0xFF);
+                    add_or_replace_keyframe(layer_->material_emissive_color_b, t, color & 0xFF);
+                }
+                mirror_material_emissive_color(*layer_, t);
+                load_values();
+                emit_change();
+            });
+
     connect(btn_kf_fill_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit()) return;
         double t = local_time();
@@ -620,6 +699,39 @@
     connect(ticker_status_timer_, &QTimer::timeout, this,
             &PropertiesPanel::update_ticker_runtime_button);
     ticker_status_timer_->start();
+
+    /* Keep every late-created Properties field/form on the exact compact
+     * metrics used by the 3D Camera inspector. */
+    bgl_apply_transform_panel_widget_style(inner);
+
+    /* The camera inspector is the canonical Properties typography.  Apply it
+     * once after every section has been built so nested/legacy section style
+     * sheets cannot leave labels (including switch text such as Lock Scale)
+     * with different sizes or colours. */
+    QFont property_label_font = inner->font();
+    property_label_font.setPixelSize(10);
+    property_label_font.setBold(false);
+    const QString property_label_style = QStringLiteral(
+        "QLabel{color:%1;font-size:10px;font-weight:normal;"
+        "background:transparent;padding:0;}").arg(subtle_text_name);
+    for (QLabel *label : inner->findChildren<QLabel *>()) {
+        label->setFont(property_label_font);
+        label->setStyleSheet(property_label_style);
+        QPalette label_palette = label->palette();
+        label_palette.setColor(QPalette::WindowText, subtle_text);
+        label_palette.setColor(QPalette::Text, subtle_text);
+        label->setPalette(label_palette);
+    }
+    for (BglSwitch *toggle : inner->findChildren<BglSwitch *>()) {
+        toggle->setFont(property_label_font);
+        toggle->setStyleSheet(QStringLiteral(
+            "QCheckBox{color:%1;font-size:10px;font-weight:normal;"
+            "background:transparent;padding:0;}").arg(subtle_text_name));
+        QPalette toggle_palette = toggle->palette();
+        toggle_palette.setColor(QPalette::WindowText, subtle_text);
+        toggle_palette.setColor(QPalette::Text, subtle_text);
+        toggle->setPalette(toggle_palette);
+    }
 }
 
 void PropertiesPanel::apply_anchor_preset(int index)
@@ -780,6 +892,33 @@ void PropertiesPanel::update_playhead(double t)
         button->setProperty("buttonFillKind", QStringLiteral("color"));
         button->setProperty("argb", argb);
     };
+    if (layer_->type == LayerType::Light && light_options_box_) {
+        const TitleLight &light = layer_->light;
+        set_color_button(btn_light_color_,
+                         evaluated_light_color(light, playhead_));
+        if (btn_light_color_)
+            btn_light_color_->setText(QString());
+        set_double(spn_light_intensity_,
+                   light.intensity.evaluate(playhead_));
+        set_double(spn_light_source_size_,
+                   light.source_size.evaluate(playhead_));
+        set_double(spn_light_falloff_distance_,
+                   light.falloff_distance.evaluate(playhead_));
+        set_double(spn_light_cone_angle_,
+                   light.cone_angle.evaluate(playhead_));
+        set_double(spn_light_cone_feather_,
+                   light.cone_feather.evaluate(playhead_));
+        const Vec3Value target = light.target.evaluate(playhead_);
+        set_double(spn_light_target_x_, target.x);
+        set_double(spn_light_target_y_, target.y);
+        set_double(spn_light_target_z_, target.z);
+        set_double(spn_light_shadow_darkness_,
+                   light.shadow_darkness.evaluate(playhead_));
+        set_double(spn_light_shadow_softness_,
+                   light.shadow_softness.evaluate(playhead_));
+        set_double(spn_light_shadow_bias_,
+                   light.shadow_bias.evaluate(playhead_));
+    }
     auto set_gradient_button = [](QPushButton *button, uint32_t start_argb,
                                   uint32_t end_argb, int gradient_type) {
         if (!button)
@@ -799,12 +938,13 @@ void PropertiesPanel::update_playhead(double t)
     auto set_kf_icon = [](QPushButton *button, bool active, bool has_keyframes) {
         if (!button)
             return;
+        bgl_refresh_keyframe_navigation(button);
         const bool outlined = has_keyframes && !active;
         if (button->property("active").isValid() &&
             button->property("active").toBool() == active &&
             button->property("outlined").toBool() == outlined)
             return;
-        button->setIcon(keyframe_diamond_icon(active, outlined));
+        button->setIcon(bgl_keyframe_diamond_icon(active, outlined));
         button->setProperty("active", active);
         button->setProperty("outlined", outlined);
         button->style()->unpolish(button);
@@ -956,6 +1096,23 @@ void PropertiesPanel::update_playhead(double t)
     set_prop_kf_icon(btn_kf_orientation_y_, layer_->orientation_y);
     set_prop_kf_icon(btn_kf_orientation_z_, layer_->orientation_z);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
+    set_prop_kf_icon(btn_kf_material_ambient_, layer_->material_ambient);
+    set_prop_kf_icon(btn_kf_material_diffuse_, layer_->material_diffuse);
+    set_prop_kf_icon(btn_kf_material_specular_, layer_->material_specular);
+    set_prop_kf_icon(btn_kf_material_shininess_, layer_->material_shininess);
+    set_prop_kf_icon(btn_kf_material_metallic_, layer_->material_metallic);
+    set_prop_kf_icon(btn_kf_material_roughness_, layer_->material_roughness);
+    set_prop_kf_icon(btn_kf_material_reflection_, layer_->material_reflection_intensity);
+    set_group_kf_icon(btn_kf_material_emissive_color_,
+                      {&layer_->material_emissive_color_a,
+                       &layer_->material_emissive_color_r,
+                       &layer_->material_emissive_color_g,
+                       &layer_->material_emissive_color_b});
+    set_prop_kf_icon(btn_kf_material_emissive_intensity_,
+                     layer_->material_emissive_intensity);
+    set_prop_kf_icon(btn_kf_geometry_extrusion_depth_,
+                     layer_->geometry_extrusion_depth);
+    set_prop_kf_icon(btn_kf_geometry_bevel_depth_, layer_->geometry_bevel_depth);
     set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
@@ -979,6 +1136,9 @@ void PropertiesPanel::update_playhead(double t)
     else if (is_rect)
         set_group_kf_icon(btn_kf_appearance_fill_, {&layer_->fill_color_a, &layer_->fill_color_r,
                                                     &layer_->fill_color_g, &layer_->fill_color_b});
+    set_group_kf_icon(btn_kf_appearance_stroke_,
+                      {&layer_->stroke_color_a, &layer_->stroke_color_r,
+                       &layer_->stroke_color_g, &layer_->stroke_color_b});
 }
 
 void PropertiesPanel::update_ticker_runtime_button()
@@ -1008,6 +1168,11 @@ void PropertiesPanel::load_values()
         if (live_playback_box_) live_playback_box_->setVisible(false);
         if (audio_box_) audio_box_->setVisible(false);
         if (asset_box_) asset_box_->setVisible(false);
+        if (light_options_box_) {
+            light_options_box_->setVisible(false);
+            if (auto *panel = bgl_panel_for_content(light_options_box_))
+                panel->setVisible(false);
+        }
         if (appearance_box_) appearance_box_->setVisible(false);
         if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(false);
         if (btn_anchor_grid_) { btn_anchor_grid_->setProperty("active_index", 4); btn_anchor_grid_->update(); }
@@ -1172,7 +1337,7 @@ void PropertiesPanel::load_values()
                         btn_kf_width_, btn_kf_transform_size_,
                         btn_kf_text_color_, btn_kf_fill_color_}) {
             if (!b) continue;
-            b->setIcon(keyframe_diamond_icon(false));
+            b->setIcon(bgl_keyframe_diamond_icon(false));
             b->setProperty("active", false);
             b->setProperty("outlined", false);
             b->style()->unpolish(b);
@@ -1197,6 +1362,8 @@ void PropertiesPanel::load_values()
     const bool is_asset = layer_->type == LayerType::Asset;
     const bool is_audio = layer_->type == LayerType::Audio;
     const bool is_video = layer_->type == LayerType::Video;
+    const bool is_empty = layer_->type == LayerType::Empty;
+    const bool is_light = layer_->type == LayerType::Light;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
     const bool supports_outline = is_text_like || is_rect || is_image;
     const bool video_has_audio = is_video && title_ && std::any_of(title_->layers.begin(), title_->layers.end(),
@@ -1237,11 +1404,23 @@ void PropertiesPanel::load_values()
     set_form_row_visible(chk_exposed_stroke_single_value_, show_stroke_single_value);
 
     if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer && !is_audio);
+    if (light_options_box_) {
+        light_options_box_->setVisible(is_light);
+        if (auto *panel = bgl_panel_for_content(light_options_box_))
+            panel->setVisible(is_light);
+    }
     if (video_box_) video_box_->setVisible(is_video);
     if (live_playback_box_) live_playback_box_->setVisible(false);
     if (audio_box_) {
         audio_box_->setVisible(show_audio_controls);
-        audio_box_->setTitle(is_video ? QStringLiteral("Video Audio") : bgl_tr("OBSTitles.AudioLayer"));
+        /* The collapsible panel owns the only visible section title. Keeping
+         * the inner QGroupBox untitled avoids the duplicated heading below it. */
+        audio_box_->setTitle(QString());
+        if (auto *panel = bgl_panel_for_content(audio_box_)) {
+            panel->setTitle(is_video ? bgl_tr("OBSTitles.VideoAudio")
+                                     : bgl_tr("OBSTitles.AudioLayer"));
+            panel->setVisible(show_audio_controls);
+        }
     }
     if (btn_audio_browse_) btn_audio_browse_->setVisible(is_audio);
     if (asset_box_) asset_box_->setVisible(is_asset);
@@ -1304,12 +1483,13 @@ void PropertiesPanel::load_values()
         /* Development Version 250: for a selected Video layer, the Video
          * section owns source/range/time controls and the unified Live
          * Properties section owns synchronized/independent transport. Do not
-         * repeat those controls in Video Audio; keep this block focused on
-         * waveform, gain/pan/fade, mute/solo and audio effects. */
+         * repeat those controls in Video Audio. Audio Layer no longer exposes
+         * the redundant Preview and Range Tools rows; Range itself remains the
+         * direct editable media trim. */
         set_form_row_visible(row_audio_source_, !is_video);
-        set_form_row_visible(row_audio_preview_, !is_video);
+        set_form_row_visible(row_audio_preview_, false);
         set_form_row_visible(row_audio_range_, !is_video);
-        set_form_row_visible(row_audio_range_tools_, !is_video);
+        set_form_row_visible(row_audio_range_tools_, false);
         set_form_row_visible(cmb_audio_playback_, !is_video);
         set_form_row_visible(chk_audio_loop_, !is_video);
         set_form_row_visible(chk_audio_independent_, !is_video);
@@ -1344,6 +1524,7 @@ void PropertiesPanel::load_values()
                 }
             }
         }
+        const bool show_audio_waveform_rows = is_video;
         if (lbl_audio_waveform_status_ && waveform_layer) {
             const int waveform_progress = std::clamp(waveform_layer->audio_waveform_progress_percent, 0, 100);
             QString waveform_label = QString::fromStdString(waveform_layer->audio_waveform_progress_label);
@@ -1357,29 +1538,37 @@ void PropertiesPanel::load_values()
             if (waveform_layer->audio_waveform_generating)
                 waveform_label += QStringLiteral(" %1%").arg(waveform_progress);
             lbl_audio_waveform_status_->setText(waveform_label);
+            set_form_row_visible(lbl_audio_waveform_status_,
+                                 show_audio_waveform_rows);
         }
         if (bar_audio_waveform_ && waveform_layer) {
             const int waveform_progress = std::clamp(waveform_layer->audio_waveform_progress_percent, 0, 100);
             bar_audio_waveform_->setValue(waveform_layer->audio_waveform_generating
                 ? waveform_progress
                 : (waveform_layer->audio_waveform.empty() ? 0 : 100));
-            bar_audio_waveform_->setVisible(waveform_layer->audio_waveform_generating ||
-                                            waveform_layer->audio_waveform.empty());
+            set_form_row_visible(
+                bar_audio_waveform_,
+                show_audio_waveform_rows &&
+                    (waveform_layer->audio_waveform_generating ||
+                     waveform_layer->audio_waveform.empty()));
         }
         const double audio_local_time = std::clamp(playhead_ - layer_->in_time, 0.0,
             std::max(0.0, layer_->out_time - layer_->in_time));
-        const double volume_value = layer_->audio_volume_prop.evaluate(audio_local_time) * 100.0;
+        const double volume_value = audio_gain_to_db(
+            layer_->audio_volume_prop.evaluate(audio_local_time));
         const double pan_value = layer_->audio_pan_prop.evaluate(audio_local_time) * 100.0;
         if (spn_audio_volume_) spn_audio_volume_->setValue(volume_value);
-        if (sld_audio_volume_) sld_audio_volume_->setValue(qRound(volume_value));
+        if (sld_audio_volume_) sld_audio_volume_->setValue(audio_db_to_slider(volume_value));
         if (spn_audio_pan_) spn_audio_pan_->setValue(pan_value);
         if (sld_audio_pan_) sld_audio_pan_->setValue(qRound(pan_value));
-        if (btn_kf_audio_volume_) btn_kf_audio_volume_->setIcon(keyframe_diamond_icon(
+        if (btn_kf_audio_volume_) btn_kf_audio_volume_->setIcon(bgl_keyframe_diamond_icon(
             std::any_of(layer_->audio_volume_prop.keyframes.begin(), layer_->audio_volume_prop.keyframes.end(),
                 [audio_local_time](const Keyframe &k){ return std::abs(k.time-audio_local_time)<0.0001; })));
-        if (btn_kf_audio_pan_) btn_kf_audio_pan_->setIcon(keyframe_diamond_icon(
+        if (btn_kf_audio_pan_) btn_kf_audio_pan_->setIcon(bgl_keyframe_diamond_icon(
             std::any_of(layer_->audio_pan_prop.keyframes.begin(), layer_->audio_pan_prop.keyframes.end(),
                 [audio_local_time](const Keyframe &k){ return std::abs(k.time-audio_local_time)<0.0001; })));
+        bgl_refresh_keyframe_navigation(btn_kf_audio_volume_);
+        bgl_refresh_keyframe_navigation(btn_kf_audio_pan_);
         if (spn_audio_fade_in_) spn_audio_fade_in_->setValue(layer_->audio_fade_in);
         if (spn_audio_fade_out_) spn_audio_fade_out_->setValue(layer_->audio_fade_out);
         if (cmb_audio_fade_curve_) { const int i=cmb_audio_fade_curve_->findData((int)layer_->audio_fade_curve); cmb_audio_fade_curve_->setCurrentIndex(i>=0?i:0); }
@@ -1415,7 +1604,10 @@ void PropertiesPanel::load_values()
         if (chk_asset_loop_) chk_asset_loop_->setChecked(layer_->asset_loop);
         update_asset_playback_controls_visibility();
     }
-    if (appearance_box_) appearance_box_->setVisible(!is_adjustment && !is_audio);
+    if (appearance_box_) appearance_box_->setVisible(
+        !is_adjustment && !is_audio && !is_empty && !is_light);
+    if (auto *panel = bgl_panel_for_content(appearance_box_))
+        panel->setVisible(!is_adjustment && !is_audio && !is_empty && !is_light);
     if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(!is_fixed_canvas_layer);
     text_box_->setVisible(is_text_like);
     if (type_options_box_) type_options_box_->setVisible(is_text_like);
@@ -1598,7 +1790,7 @@ void PropertiesPanel::load_values()
         const bool show_expose_to_dock = is_text || is_ticker || layer_->type == LayerType::Image;
         const bool show_video_live_playback = layer_->type == LayerType::Video;
         const bool show_exposed_options = show_expose_to_dock && layer_->expose_text;
-        const bool show_ignore_persistence = true;
+        const bool show_ignore_persistence = !is_empty;
         if (chk_scene_mask_) {
             chk_scene_mask_->setVisible(show_scene_mask);
             if (auto *label = live_form->labelForField(chk_scene_mask_))

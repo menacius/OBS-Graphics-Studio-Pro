@@ -24,7 +24,7 @@ namespace bgs::transform3d {
  *   +Z: away from the active camera
  *
  * Local transform order (right-most operation is applied first):
- *   parent * T(position) * Rz * Ry * Rx * Orientation * Scale * T(-anchorZ)
+ *   parent * T(position) * Orientation * Rz * Ry * Rx * Scale * T(-anchorZ)
  * XY anchor/origin remains the existing normalized origin_prop and is applied
  * by the raster/presentation code exactly as it was in the 2D pipeline.
  */

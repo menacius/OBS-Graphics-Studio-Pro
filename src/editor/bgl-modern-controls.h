@@ -6,6 +6,11 @@
 #include <QToolButton>
 #include <QWidget>
 
+#include <functional>
+#include <vector>
+
+class QAbstractButton;
+class QColor;
 class QDoubleSpinBox;
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -170,6 +175,27 @@ QString bgl_transform_panel_control_style(const QPalette &palette);
 QString bgl_transform_panel_button_style(const QPalette &palette);
 QIcon bgl_panel_defaults_icon(const QPalette &palette);
 void bgl_apply_transform_panel_widget_style(QWidget *root);
+
+/* Canonical keyframe control used by every inspector.  The shared wrapper
+ * keeps the previous/diamond/next order, the compact 18 px metrics and the
+ * enabled state in sync with the authored keyframes for that property. */
+using BglKeyframeTimesProvider = std::function<std::vector<double>()>;
+using BglCurrentTimeProvider = std::function<double()>;
+using BglKeyframeNavigateCallback = std::function<void(double)>;
+
+void bgl_style_keyframe_button(QAbstractButton *button);
+QColor bgl_keyframe_color();
+QIcon bgl_keyframe_diamond_icon(bool active, bool outlined = false);
+QWidget *bgl_make_keyframe_controls(
+    QAbstractButton *diamond, QWidget *parent,
+    BglKeyframeTimesProvider times_provider,
+    BglCurrentTimeProvider current_time_provider,
+    BglKeyframeNavigateCallback navigate_callback);
+void bgl_refresh_keyframe_navigation(QAbstractButton *diamond);
+
+/* Applies the 3D Camera inspector's field metrics to ordinary editor input
+ * fields without flattening multiline document editors or bespoke buttons. */
+void bgl_apply_editor_field_style(QWidget *widget);
 
 /* Creates an AE-like angle field: a circular direction widget plus the exact
  * numeric spin box. The spin box remains the authoritative value/control. */

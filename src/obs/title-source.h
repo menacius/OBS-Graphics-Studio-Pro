@@ -18,6 +18,19 @@
 
 struct Title;
 
+/* Runtime transport state shared by program sources and the private cue
+ * preview source. PreviewReady is deliberately distinct from Paused: it means
+ * the selected deterministic frame and its resources have been prepared, but
+ * the program cue state machine has not been entered. */
+enum class TitlePlaybackState : uint8_t {
+    Idle = 0,
+    PreviewReady,
+    Queued,
+    Playing,
+    Paused,
+    Stopped,
+};
+
 /* Registers the source type with OBS. Call once from obs_module_load(). */
 void title_source_register();
 void release_title_gpu_render_resources();
@@ -44,7 +57,56 @@ bool title_source_get_audio_levels(obs_source_t *source, float *left,
                                    float *right,
                                    uint64_t *last_update_ns = nullptr);
 
+/* Private-source preview API. These calls never mutate TitleDataStore cue
+ * state, never increment cue_revision and never route the snapshot to Program.
+ * The source must have been created with editor_transport_controlled=true. */
+bool enterPreview(obs_source_t *source, const std::shared_ptr<Title> &title,
+                  double preview_time);
+void leavePreview(obs_source_t *source);
+bool isPreviewReady(obs_source_t *source);
+
 struct TitleGpuRenderSession;
+
+struct TitleGpuShaderCompileStatus {
+    bool active = false;
+    bool queued = false;
+    int progress_percent = 100;
+    uint32_t completed_jobs = 0;
+    uint32_t total_jobs = 0;
+    std::string label;
+};
+
+/* Development Version 307 correlated render diagnostics. This snapshot is
+ * read-only and intentionally contains only scalar/session counters so the
+ * editor can log GPU state without exposing render-thread-owned textures. */
+struct TitleGpuRenderDiagnostics {
+    bool valid = false;
+    double session_time = 0.0;
+    double last_published_time = 0.0;
+    uint64_t update_serial = 0;
+    uint64_t render_serial = 0;
+    uint64_t publish_serial = 0;
+    uint64_t presentation_generation = 0;
+    uint64_t model_revision = 0;
+    uint64_t published_model_revision = 0;
+    bool frame_dirty = false;
+    bool last_draw_deferred = false;
+    bool state_transaction_pending = false;
+    bool has_published_frame = false;
+    bool force_compatibility_raster_rebuild = false;
+    bool use_submitted_final = false;
+    bool use_gpu_cached_final = false;
+    bool use_base_frame = false;
+    std::size_t raster_count = 0;
+    std::size_t pending_raster_count = 0;
+    std::size_t gpu_text_raster_count = 0;
+    std::size_t gpu_primitive_raster_count = 0;
+    std::size_t extrusion_layer_count = 0;
+    std::size_t visible_light_layer_count = 0;
+    std::size_t hardware_depth_run_count = 0;
+    std::size_t hardware_depth_layer_count = 0;
+    std::size_t extrusion_pass_count = 0;
+};
 
 /* Phase 14 asynchronous final-frame readback ticket. The GPU render and the
  * staging copy are submitted together; CPU mapping is deliberately deferred so
@@ -68,6 +130,10 @@ void title_gpu_render_session_update(TitleGpuRenderSession *session, const Title
                                      bool transform_only_update = false);
 void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session,
                                                    double scale, bool editor_draft);
+void title_gpu_render_session_set_realtime_output(
+    TitleGpuRenderSession *session, bool realtime_output);
+bool title_gpu_render_session_is_realtime_output(
+    const TitleGpuRenderSession *session);
 void title_gpu_render_session_set_editor_video_decode_client(
     TitleGpuRenderSession *session, bool editor_client);
 void title_gpu_render_session_set_transition_input_preview(
@@ -109,6 +175,12 @@ bool title_gpu_render_session_draw_over_current_target(
     uint32_t output_height);
 bool title_requires_destination_compositing(const Title &title);
 std::string title_gpu_render_session_last_error(TitleGpuRenderSession *session);
+bool title_gpu_render_session_last_draw_deferred(
+    TitleGpuRenderSession *session);
+bool title_gpu_render_session_shader_compile_status(
+    TitleGpuRenderSession *session, TitleGpuShaderCompileStatus &status);
+bool title_gpu_render_session_get_diagnostics(
+    TitleGpuRenderSession *session, TitleGpuRenderDiagnostics &diagnostics);
 QImage title_gpu_render_session_readback(TitleGpuRenderSession *session);
 
 /* Submit/resolve a final-frame-only triple-buffered readback. The readback is

@@ -14,6 +14,84 @@ static bool layer_has_non_rigid_transition_during_shutter(
     return false;
 }
 
+/* Development Version 288: temporal effects must only enter the expensive
+ * full-pipeline sampler when the shutter interval actually intersects content
+ * that changes below Motion Blur. Merely having an in/out transition descriptor
+ * used to force 14-96 complete layer renders on every frame of the title. */
+static bool motion_shutter_overlaps_transition(
+    const LayerTransition &transition, const Layer &layer,
+    double start_time, double end_time)
+{
+    if (!transition.enabled || transition.duration <= 0.000001)
+        return false;
+    const double layer_duration = std::max(0.0, layer.out_time - layer.in_time);
+    const double duration = std::clamp(
+        transition.duration, 0.000001, std::max(0.000001, layer_duration));
+    const double window_start = transition.edge == LayerTransitionEdge::In
+        ? layer.in_time : layer.out_time - duration;
+    const double window_end = transition.edge == LayerTransitionEdge::In
+        ? layer.in_time + duration : layer.out_time;
+    const double lo = std::min(start_time, end_time);
+    const double hi = std::max(start_time, end_time);
+    return hi >= window_start - 0.000001 && lo <= window_end + 0.000001;
+}
+
+static bool layer_has_text_transition_during_shutter(
+    const Title &title, const Layer &layer,
+    double start_time, double end_time)
+{
+    const double resolved_start = gpu_layer_render_time(title, layer, start_time);
+    const double resolved_end = gpu_layer_render_time(title, layer, end_time);
+    for (const LayerTransition &transition : layer.transitions) {
+        if (layer_transition_type_is_text(transition.type) &&
+            motion_shutter_overlaps_transition(
+                transition, layer, resolved_start, resolved_end))
+            return true;
+    }
+    return false;
+}
+
+static bool layer_has_general_blur_during_shutter(
+    const Title &title, const Layer &layer,
+    double start_time, double end_time)
+{
+    const std::array<double, 5> times = {
+        start_time,
+        start_time + (end_time - start_time) * 0.25,
+        (start_time + end_time) * 0.5,
+        start_time + (end_time - start_time) * 0.75,
+        end_time};
+    for (double time : times) {
+        const LayerTransitionVisualState state = evaluate_layer_general_transitions(
+            layer.transitions, layer.in_time, layer.out_time,
+            gpu_layer_transition_time(title, layer, time));
+        if (state.active && state.blur > 0.01)
+            return true;
+    }
+    return false;
+}
+
+static bool layer_has_screen_space_effect_during_shutter(
+    const Title &title, const Layer &layer,
+    double start_time, double end_time)
+{
+    const std::array<double, 3> times = {
+        start_time, (start_time + end_time) * 0.5, end_time};
+    for (const LayerEffect &effect : layer.effects) {
+        if (effect.type == LayerEffectType::MotionBlur ||
+            effect.type == LayerEffectType::TrimPaths ||
+            effect_execution_space(effect) != LayerEffectSpace::ScreenSpace)
+            continue;
+        for (double time : times) {
+            const double resolved = gpu_layer_render_time(title, layer, time);
+            const double local = std::max(0.0, resolved - layer.in_time);
+            if (eval_effect_enabled(effect, local))
+                return true;
+        }
+    }
+    return false;
+}
+
 /* The editor/cache renderer is still Cairo-based, but temporal samples no
  * longer need to be composited in Cairo.  A transform-only layer is uploaded
  * once, drawn at every shutter time into one GPU accumulation target, and
@@ -57,6 +135,12 @@ float4 PSTemporalAccumulate(VertDataOut v_in) : TARGET
     return image.Sample(textureSampler, v_in.uv) * weight;
 }
 
+float4 PSTemporalCoverage(VertDataOut v_in) : TARGET
+{
+    float alpha = saturate(image.Sample(textureSampler, v_in.uv).a * weight);
+    return float4(0.0, 0.0, 0.0, alpha);
+}
+
 technique Draw
 {
     pass
@@ -65,11 +149,21 @@ technique Draw
         pixel_shader = PSTemporalAccumulate(v_in);
     }
 }
+
+technique Coverage
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSTemporalCoverage(v_in);
+    }
+}
 )";
 
 struct TemporalGpuResources {
     gs_texture_t *source = nullptr;
     gs_texrender_t *target = nullptr;
+    gs_texrender_t *coverage_target = nullptr;
     gs_stagesurf_t *stage = nullptr;
     gs_effect_t *effect = nullptr;
     uint32_t source_w = 0;
@@ -94,6 +188,8 @@ static void destroy_temporal_gpu_resources_locked()
         gs_texture_destroy(g_temporal_gpu.source);
     if (g_temporal_gpu.target)
         gs_texrender_destroy(g_temporal_gpu.target);
+    if (g_temporal_gpu.coverage_target)
+        gs_texrender_destroy(g_temporal_gpu.coverage_target);
     if (g_temporal_gpu.stage)
         gs_stagesurface_destroy(g_temporal_gpu.stage);
     if (g_temporal_gpu.effect)
@@ -117,6 +213,8 @@ static bool prepare_temporal_gpu_resources(const QImage &upload,
     }
     if (!g_temporal_gpu.target)
         g_temporal_gpu.target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    if (!g_temporal_gpu.coverage_target)
+        g_temporal_gpu.coverage_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
     if (!g_temporal_gpu.stage || g_temporal_gpu.stage_w != canvas_w ||
         g_temporal_gpu.stage_h != canvas_h) {
         if (g_temporal_gpu.stage)
@@ -130,12 +228,103 @@ static bool prepare_temporal_gpu_resources(const QImage &upload,
             kTemporalAccumulateEffect, "obs-bgs-temporal-accumulate.effect", nullptr);
     }
     if (!g_temporal_gpu.source || !g_temporal_gpu.target ||
-        !g_temporal_gpu.stage || !g_temporal_gpu.effect)
+        !g_temporal_gpu.coverage_target || !g_temporal_gpu.stage ||
+        !g_temporal_gpu.effect)
         return false;
 
     gs_texture_set_image(g_temporal_gpu.source, upload.constBits(),
                          static_cast<uint32_t>(upload.bytesPerLine()), false);
     return true;
+}
+
+/* Development Version 297: temporal color and alpha are resolved from the
+ * same normalized shutter exposure, but alpha is not replaced by the per-pixel
+ * max sample coverage. Max coverage is only the authored-alpha ceiling. The
+ * exposure-to-coverage ratio is temporal occupancy; a smooth optical-density
+ * lift keeps the overlapped moving body solid while preserving translucent
+ * outer trails. This avoids both regressions seen in the prior resolves: a
+ * uniformly translucent layer and fully opaque historical copies. */
+static QImage resolve_motion_blur_coverage(const QImage &exposure_image,
+                                           const QImage &coverage_image,
+                                           const QImage &current_frame_image,
+                                           double exposure_mix)
+{
+    if (exposure_image.isNull() || coverage_image.isNull() ||
+        current_frame_image.isNull() ||
+        exposure_image.size() != coverage_image.size() ||
+        exposure_image.size() != current_frame_image.size())
+        return QImage();
+
+    QImage exposure = exposure_image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage coverage = coverage_image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage current = current_frame_image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage result(exposure.size(), QImage::Format_ARGB32_Premultiplied);
+    if (exposure.isNull() || coverage.isNull() || current.isNull() || result.isNull())
+        return QImage();
+
+    const double mix = std::clamp(exposure_mix, 0.0, 1.0);
+    const double dry = 1.0 - mix;
+    for (int y = 0; y < result.height(); ++y) {
+        const QRgb *exposure_row = reinterpret_cast<const QRgb *>(exposure.constScanLine(y));
+        const QRgb *coverage_row = reinterpret_cast<const QRgb *>(coverage.constScanLine(y));
+        const QRgb *current_row = reinterpret_cast<const QRgb *>(current.constScanLine(y));
+        QRgb *out_row = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < result.width(); ++x) {
+            const QRgb ep = exposure_row[x];
+            const QRgb cp = current_row[x];
+            const double exposure_alpha = qAlpha(ep) / 255.0;
+            const double coverage_alpha = qAlpha(coverage_row[x]) / 255.0;
+            const double current_alpha = qAlpha(cp) / 255.0;
+            /* A shutter exposure is an average over time, not a stack of
+             * opaque historical copies. Use the normalized exposure alpha
+             * directly. The prior optical-density lift expanded even sparse
+             * occupancy toward max coverage, which produced the opaque,
+             * stepped bands visible at the trail edge. Coverage remains a
+             * safety ceiling for malformed/premultiplication edge cases. */
+            const double wet_alpha = std::clamp(
+                exposure_alpha, 0.0, coverage_alpha);
+            const double result_alpha = std::clamp(
+                current_alpha * dry + wet_alpha * mix, 0.0, 1.0);
+
+            auto wet_premultiplied_channel = [&](int exposure_channel) {
+                if (exposure_alpha <= 1e-8 || wet_alpha <= 1e-8)
+                    return 0.0;
+                const double straight = std::clamp(
+                    (exposure_channel / 255.0) / exposure_alpha, 0.0, 1.0);
+                return straight * wet_alpha;
+            };
+            auto resolve_channel = [&](int current_channel, int exposure_channel) {
+                const double channel = (current_channel / 255.0) * dry +
+                    wet_premultiplied_channel(exposure_channel) * mix;
+                return std::clamp(
+                    static_cast<int>(std::lround(channel * 255.0)), 0,
+                    static_cast<int>(std::lround(result_alpha * 255.0)));
+            };
+            const int alpha = std::clamp(
+                static_cast<int>(std::lround(result_alpha * 255.0)), 0, 255);
+            out_row[x] = qRgba(
+                resolve_channel(qRed(cp), qRed(ep)),
+                resolve_channel(qGreen(cp), qGreen(ep)),
+                resolve_channel(qBlue(cp), qBlue(ep)),
+                alpha);
+        }
+    }
+    return result;
+}
+
+static void accumulate_motion_coverage_max(QImage &coverage,
+                                           const QImage &sample)
+{
+    if (coverage.isNull() || sample.isNull() || coverage.size() != sample.size())
+        return;
+    for (int y = 0; y < coverage.height(); ++y) {
+        QRgb *coverage_row = reinterpret_cast<QRgb *>(coverage.scanLine(y));
+        const QRgb *sample_row = reinterpret_cast<const QRgb *>(sample.constScanLine(y));
+        for (int x = 0; x < coverage.width(); ++x) {
+            const int alpha = std::max(qAlpha(coverage_row[x]), qAlpha(sample_row[x]));
+            coverage_row[x] = qRgba(0, 0, 0, alpha);
+        }
+    }
 }
 
 static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
@@ -158,8 +347,13 @@ static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
 
     std::lock_guard<std::mutex> lock(g_temporal_gpu_mutex);
 
-    bool mapped = false;
     QImage exposure;
+    QImage coverage;
+    const double current_opacity = gpu_layer_chain_visible(
+        title, layer, title_time)
+        ? std::clamp(gpu_layer_chain_opacity(title, layer, title_time),
+                     0.0, 1.0)
+        : 0.0;
 
     obs_enter_graphics();
     const uint32_t output_w = static_cast<uint32_t>(canvas_w);
@@ -167,113 +361,134 @@ static bool gpu_accumulate_motion_raster(cairo_t *cr, const Title &title,
     bool ok = prepare_temporal_gpu_resources(upload, output_w, output_h);
     gs_texture_t *source = g_temporal_gpu.source;
     gs_texrender_t *target = g_temporal_gpu.target;
+    gs_texrender_t *coverage_target = g_temporal_gpu.coverage_target;
     gs_stagesurf_t *stage = g_temporal_gpu.stage;
     gs_effect_t *effect = g_temporal_gpu.effect;
+
+    gs_eparam_t *image_param = ok ? bgl_effect_param(effect, "image") : nullptr;
+    gs_eparam_t *weight_param = ok ? bgl_effect_param(effect, "weight") : nullptr;
+    ok = ok && image_param && weight_param;
     if (ok) {
+        gs_effect_set_texture(image_param, source);
         gs_viewport_push();
         gs_projection_push();
-        gs_blend_state_push();
-        gs_texrender_reset(target);
-        ok = gs_texrender_begin(target, static_cast<uint32_t>(canvas_w),
-                                static_cast<uint32_t>(canvas_h));
-        if (ok) {
-            gs_ortho(0.0f, static_cast<float>(canvas_w), 0.0f,
-                     static_cast<float>(canvas_h), -100.0f, 100.0f);
-            struct vec4 clear;
-            vec4_zero(&clear);
-            gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
-            gs_enable_blending(true);
-            gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
 
-            gs_eparam_t *image_param = bgl_effect_param(effect, "image");
-            gs_eparam_t *weight_param = bgl_effect_param(effect, "weight");
-            if (!image_param || !weight_param) {
-                ok = false;
-            } else {
-                gs_effect_set_texture(image_param, source);
-                const double current_opacity = gpu_layer_chain_visible(title, layer, title_time)
-                    ? std::clamp(gpu_layer_chain_opacity(title, layer, title_time), 0.0, 1.0)
-                    : 0.0;
-                /* Development Version 250: motion blur must never reduce the
-                 * opacity of the displayed object.  The authored layer remains
-                 * fully present at the current frame; the temporal samples are
-                 * an additional shutter trail controlled by the effect amount.
-                 * The previous normalized mix replaced part of the sharp layer
-                 * with alpha-weighted samples, which made text, shapes and
-                 * parented/grouped objects look semi-transparent. */
-                const double sharp_mix = 1.0;
-                const double blur_mix = mix;
-                const double sample_weight = blur_mix / static_cast<double>(sample_times.size());
-                auto draw_at_time = [&](double sample_time, double weight) {
-                    /* Temporal blur integrates geometry over the shutter interval,
-                     * but opacity is evaluated once at the displayed frame. Sampling
-                     * opacity over time creates a final opacity-only tail after motion
-                     * has stopped and is especially visible at cue/outro boundaries. */
-                    if (current_opacity <= 0.0)
-                        return;
-                    const float resolved_weight = static_cast<float>(weight * current_opacity);
-                    if (resolved_weight <= 0.0f)
-                        return;
-                    gs_effect_set_float(weight_param, resolved_weight);
-                    gs_matrix_push();
-                    gs_matrix_identity();
-                    apply_layer_world_transform_gs(title, layer, sample_time, 0);
-                    gs_matrix_translate3f(static_cast<float>(origin.x()),
-                                          static_cast<float>(origin.y()), 0.0f);
-                    while (gs_effect_loop(effect, "Draw"))
-                        gs_draw_sprite(source, 0,
-                                       static_cast<uint32_t>(upload.width()),
-                                       static_cast<uint32_t>(upload.height()));
-                    gs_matrix_pop();
-                };
-
-                if (sharp_mix > 0.0)
-                    draw_at_time(title_time, sharp_mix);
-                if (blur_mix > 0.0) {
-                    for (double sample_time : sample_times)
-                        draw_at_time(sample_time, sample_weight);
+        auto render_samples = [&](gs_texrender_t *draw_target,
+                                  const char *technique,
+                                  float weight,
+                                  enum gs_blend_op_type blend_op) -> bool {
+            gs_blend_state_push();
+            gs_texrender_reset(draw_target);
+            bool pass_ok = gs_texrender_begin(
+                draw_target, static_cast<uint32_t>(canvas_w),
+                static_cast<uint32_t>(canvas_h));
+            if (pass_ok) {
+                gs_enable_color(true, true, true, true);
+                gs_enable_depth_test(false);
+                gs_depth_function(GS_LEQUAL);
+                gs_set_cull_mode(GS_NEITHER);
+                gs_enable_blending(false);
+                gs_ortho(0.0f, static_cast<float>(canvas_w), 0.0f,
+                         static_cast<float>(canvas_h), -100.0f, 100.0f);
+                struct vec4 clear;
+                vec4_zero(&clear);
+                gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
+                gs_enable_blending(true);
+                gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
+                gs_blend_op(blend_op);
+                gs_effect_set_float(weight_param, weight);
+                if (current_opacity > 0.0 && weight > 0.0f) {
+                    for (double sample_time : sample_times) {
+                        gs_matrix_push();
+                        gs_matrix_identity();
+                        apply_layer_world_transform_gs(title, layer, sample_time, 0);
+                        gs_matrix_translate3f(static_cast<float>(origin.x()),
+                                              static_cast<float>(origin.y()), 0.0f);
+                        while (gs_effect_loop(effect, technique))
+                            gs_draw_sprite(source, 0,
+                                           static_cast<uint32_t>(upload.width()),
+                                           static_cast<uint32_t>(upload.height()));
+                        gs_matrix_pop();
+                    }
                 }
+                gs_texrender_end(draw_target);
             }
-            gs_texrender_end(target);
+            gs_blend_state_pop();
+            return pass_ok;
+        };
+
+        const float exposure_weight = static_cast<float>(
+            current_opacity / static_cast<double>(sample_times.size()));
+        ok = render_samples(target, "Draw", exposure_weight, GS_BLEND_OP_ADD);
+        if (ok) {
+            const float coverage_weight = static_cast<float>(current_opacity);
+            ok = render_samples(coverage_target, "Coverage", coverage_weight,
+                                GS_BLEND_OP_MAX);
         }
-        gs_blend_state_pop();
         gs_projection_pop();
         gs_viewport_pop();
     }
 
-    if (ok) {
-        gs_texture_t *result = gs_texrender_get_texture(target);
-        ok = result != nullptr;
-        if (ok) {
-            gs_stage_texture(stage, result);
-            uint8_t *mapped_data = nullptr;
-            uint32_t linesize = 0;
-            mapped = gs_stagesurface_map(stage, &mapped_data, &linesize);
-            ok = mapped && mapped_data && linesize >= static_cast<uint32_t>(canvas_w * 4);
-            if (ok) {
-                exposure = QImage(canvas_w, canvas_h, QImage::Format_ARGB32_Premultiplied);
-                for (int y = 0; y < canvas_h; ++y) {
-                    std::memcpy(exposure.scanLine(y),
-                                mapped_data + static_cast<size_t>(y) * linesize,
-                                static_cast<size_t>(canvas_w) * 4);
-                }
+    auto read_target = [&](gs_texrender_t *read_target, QImage &image) -> bool {
+        gs_texture_t *texture = gs_texrender_get_texture(read_target);
+        if (!texture)
+            return false;
+        gs_stage_texture(stage, texture);
+        uint8_t *mapped_data = nullptr;
+        uint32_t linesize = 0;
+        const bool mapped = gs_stagesurface_map(stage, &mapped_data, &linesize);
+        bool read_ok = mapped && mapped_data &&
+            linesize >= static_cast<uint32_t>(canvas_w * 4);
+        if (read_ok) {
+            image = QImage(canvas_w, canvas_h,
+                           QImage::Format_ARGB32_Premultiplied);
+            for (int y = 0; y < canvas_h; ++y) {
+                std::memcpy(image.scanLine(y),
+                            mapped_data + static_cast<size_t>(y) * linesize,
+                            static_cast<size_t>(canvas_w) * 4);
             }
         }
-    }
+        if (mapped)
+            gs_stagesurface_unmap(stage);
+        return read_ok && !image.isNull();
+    };
 
-    if (mapped)
-        gs_stagesurface_unmap(stage);
+    if (ok)
+        ok = read_target(target, exposure);
+    if (ok)
+        ok = read_target(coverage_target, coverage);
     obs_leave_graphics();
 
-    if (!ok || exposure.isNull())
+    if (!ok || exposure.isNull() || coverage.isNull())
         return false;
 
-    auto exposure_surface = make_image_surface_for_const_qimage(exposure);
-    if (!exposure_surface)
+    QImage current_canvas(canvas_w, canvas_h,
+                          QImage::Format_ARGB32_Premultiplied);
+    current_canvas.fill(Qt::transparent);
+    if (mix < 0.999999 && current_opacity > 0.0) {
+        auto current_canvas_surface = make_image_surface_for_qimage(current_canvas);
+        auto current_canvas_cr = make_cairo_context(current_canvas_surface.get());
+        auto current_surface = make_image_surface_for_const_qimage(upload);
+        if (!current_canvas_surface || !current_canvas_cr || !current_surface)
+            return false;
+        cairo_save(current_canvas_cr.get());
+        apply_layer_world_transform(current_canvas_cr.get(), title, layer, title_time);
+        cairo_set_source_surface(current_canvas_cr.get(), current_surface.get(),
+                                 origin.x(), origin.y());
+        cairo_paint_with_alpha(current_canvas_cr.get(), current_opacity);
+        cairo_restore(current_canvas_cr.get());
+        current_canvas_cr.reset();
+        cairo_surface_flush(current_canvas_surface.get());
+    }
+
+    const QImage resolved = resolve_motion_blur_coverage(
+        exposure, coverage, current_canvas, mix);
+    auto resolved_surface = make_image_surface_for_const_qimage(resolved);
+    if (!resolved_surface)
         return false;
     cairo_save(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-    cairo_set_source_surface(cr, exposure_surface.get(), 0.0, 0.0);
+    cairo_set_source_surface(cr, resolved_surface.get(), 0.0, 0.0);
     cairo_paint(cr);
     cairo_restore(cr);
     return true;
@@ -361,11 +576,33 @@ static MotionBaseRaster render_motion_base_raster(const Title &title,
     return result;
 }
 
+/* Motion Blur quality contract restored from the pre-regression temporal
+ * sampler: the authored Samples value is a minimum quality request and motion
+ * distance may increase temporal density until the path-specific safety cap.
+ * Keeping this policy in one helper prevents editor/source/compatibility paths
+ * from silently drifting back to opposite Samples semantics. */
+static int motion_blur_quality_sample_count(int configured_samples,
+                                            double travel_pixels,
+                                            double samples_per_pixel,
+                                            int sample_cap)
+{
+    sample_cap = std::max(2, sample_cap);
+    const int authored = std::clamp(configured_samples, 2, sample_cap);
+    const int adaptive = std::max(
+        2, static_cast<int>(std::ceil(
+               std::max(0.0, travel_pixels) * std::max(0.0, samples_per_pixel))) + 1);
+    return std::clamp(std::max(authored, adaptive), 2, sample_cap);
+}
+
 static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                         double title_time, int canvas_w, int canvas_h)
 {
     const LayerEffect *motion = layer_motion_blur_effect(layer);
-    if (!motion || layer.type == LayerType::Clock)
+    /* The compatibility/cache renderer must match the live GPU path: a layer
+     * held by Background Persistence has a collapsed shutter interval and is
+     * rendered once without temporal accumulation. */
+    if (!motion || layer.type == LayerType::Clock ||
+        gpu_layer_uses_cue_persistence(title, layer))
         return false;
 
     const int configured_samples = std::clamp(motion->effect_samples, 2, 64);
@@ -383,8 +620,15 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
         0.0, title_duration);
     const bool non_rigid_transition = layer_has_non_rigid_transition_during_shutter(
         base_layer, shutter_start, shutter_end);
+    const double shutter_local_start = std::max(
+        0.0, shutter_start - base_layer.in_time);
+    const double shutter_local_end = std::max(
+        0.0, shutter_end - base_layer.in_time);
+    const bool source_changes_during_shutter =
+        layer_non_transform_animation_changes_during_interval(
+            base_layer, shutter_local_start, shutter_local_end);
     const bool reusable_transform_raster =
-        !layer_has_non_transform_animation(base_layer) &&
+        !source_changes_during_shutter &&
         !non_rigid_transition && base_layer.type != LayerType::Ticker;
 
     auto paint_fast_motion = [&](auto render_sample, auto render_original,
@@ -401,29 +645,38 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
          * accumulating the same alpha edge can expose tiny premultiplication or
          * sampling differences as a stationary horizontal halo. */
         if (travel_px < 0.01 && !visibility_changed &&
-            !layer_has_non_transform_animation(base_layer) &&
+            !source_changes_during_shutter &&
             !non_rigid_transition) {
             render_original(cr);
             return true;
         }
 
-        /* Sharp-edged bitmap/SVG layers expose low temporal sample counts as
-         * separated horizontal copies.  Scale the exposure density with the
-         * maximum transformed corner travel over the shutter interval, so
-         * rotation and scale animation receive the same treatment as position.
-         * Roughly two samples
-         * per travelled pixel gives a continuous trail while retaining the
-         * user setting as the minimum quality level. */
+        /* Restore the dense pre-regression exposure for reusable transform
+         * rasters. The dev289 2-6 sample live-source ceiling was appropriate for
+         * complete CPU rerenders, but it also throttled this cheap resident-GPU
+         * path and produced separated copies. Expensive changing rasters retain
+         * a strict cap; reusable artwork gets enough samples to look continuous. */
         const bool sharp_image_layer = layer_type_is_image_like(layer.type);
-        /* Bitmap and video layers need a much denser exposure than vector/text
-         * layers.  Low temporal sample counts look like a posterized stack of
-         * separate images, especially on high-contrast alpha edges and video
-         * frames.  Keep the existing temporal accumulation model but make the
-         * image/video path effectively continuous within the shutter. */
         const double samples_per_pixel = sharp_image_layer ? 2.25 : 1.0;
-        const int max_temporal_samples = sharp_image_layer ? 96 : 48;
-        const int adaptive_samples = (int)std::ceil(travel_px * samples_per_pixel) + 1;
-        const int samples = std::clamp(std::max(configured_samples, adaptive_samples), 2, max_temporal_samples);
+        int max_temporal_samples = sharp_image_layer ? 96 : 48;
+        const bool realtime_output = data &&
+            title_gpu_render_session_is_realtime_output(
+                data->gpu_render_session);
+        if (realtime_output) {
+            const uint64_t pixels = static_cast<uint64_t>(std::max(1, canvas_w)) *
+                static_cast<uint64_t>(std::max(1, canvas_h));
+            const int realtime_cap = reusable_transform_raster
+                ? (pixels >= 7000000ull ? (sharp_image_layer ? 32 : 20) :
+                   (pixels >= 3000000ull ? (sharp_image_layer ? 48 : 28) :
+                                           (sharp_image_layer ? 64 : 40)))
+                : (pixels >= 7000000ull ? 2 :
+                   (pixels >= 3000000ull ? 3 : 4));
+            max_temporal_samples = std::min(
+                max_temporal_samples, realtime_cap);
+        }
+        const int samples = motion_blur_quality_sample_count(
+            configured_samples, travel_px, samples_per_pixel,
+            max_temporal_samples);
 
         std::vector<double> sample_times;
         sample_times.reserve((size_t)samples);
@@ -439,49 +692,71 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
         if (sample_times.empty())
             return true;
 
-        /* Development Version 250: treat effect opacity as trail strength,
-         * not as a crossfade that replaces the layer with semi-transparent
-         * shutter samples.  The sharp current frame is always composited at
-         * full authored opacity; blur samples are additive trail energy. */
-        const double mix = std::clamp(amount, 0.0, 1.0);
-        if (gpu_accumulator && gpu_accumulator(sample_times, mix))
+        /* Build a normalized shutter exposure and resolve its temporal color
+         * against the authored current-frame coverage. Alpha is preserved
+         * independently so translucent artwork does not accumulate opacity. */
+        const double blur_mix = std::clamp(amount, 0.0, 1.0);
+        if (gpu_accumulator && gpu_accumulator(sample_times, blur_mix))
             return true;
-        const double sharp_mix = 1.0;
-        const double blur_mix = mix;
 
-        cairo_save(cr);
-        cairo_push_group(cr);
-        cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+        QImage exposure_canvas(canvas_w, canvas_h,
+                               QImage::Format_ARGB32_Premultiplied);
+        QImage coverage_canvas(canvas_w, canvas_h,
+                               QImage::Format_ARGB32_Premultiplied);
+        QImage current_canvas(canvas_w, canvas_h,
+                              QImage::Format_ARGB32_Premultiplied);
+        QImage sample_canvas(canvas_w, canvas_h,
+                             QImage::Format_ARGB32_Premultiplied);
+        exposure_canvas.fill(Qt::transparent);
+        coverage_canvas.fill(Qt::transparent);
+        current_canvas.fill(Qt::transparent);
+        sample_canvas.fill(Qt::transparent);
+        auto exposure_surface = make_image_surface_for_qimage(exposure_canvas);
+        auto current_surface = make_image_surface_for_qimage(current_canvas);
+        auto sample_surface = make_image_surface_for_qimage(sample_canvas);
+        auto exposure_cr = make_cairo_context(exposure_surface.get());
+        auto current_cr = make_cairo_context(current_surface.get());
+        auto sample_cr = make_cairo_context(sample_surface.get());
+        if (!exposure_surface || !current_surface || !sample_surface ||
+            !exposure_cr || !current_cr || !sample_cr)
+            return false;
 
-        if (sharp_mix > 0.0) {
-            cairo_push_group(cr);
-            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-            render_original(cr);
-            cairo_pop_group_to_source(cr);
-            cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
-            cairo_paint_with_alpha(cr, sharp_mix);
-        }
-
-        cairo_push_group(cr);
-        cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
         const double sample_alpha = 1.0 / (double)sample_times.size();
         for (double sample_time : sample_times) {
-            cairo_push_group(cr);
-            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+            clear_surface(sample_cr.get());
+            cairo_set_operator(sample_cr.get(), CAIRO_OPERATOR_OVER);
             if (gpu_layer_chain_visible(title, layer, sample_time))
-                render_sample(cr, sample_time);
-            cairo_pop_group_to_source(cr);
-            cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
-            cairo_paint_with_alpha(cr, sample_alpha);
-        }
-        cairo_pop_group_to_source(cr);
-        cairo_paint_with_alpha(cr, blur_mix);
+                render_sample(sample_cr.get(), sample_time);
+            cairo_surface_flush(sample_surface.get());
 
-        cairo_pop_group_to_source(cr);
+            cairo_save(exposure_cr.get());
+            cairo_set_operator(exposure_cr.get(), CAIRO_OPERATOR_ADD);
+            cairo_set_source_surface(exposure_cr.get(), sample_surface.get(), 0.0, 0.0);
+            cairo_paint_with_alpha(exposure_cr.get(), sample_alpha);
+            cairo_restore(exposure_cr.get());
+            accumulate_motion_coverage_max(coverage_canvas, sample_canvas);
+        }
+        if (blur_mix < 0.999999) {
+            cairo_set_operator(current_cr.get(), CAIRO_OPERATOR_OVER);
+            render_original(current_cr.get());
+        }
+        exposure_cr.reset();
+        current_cr.reset();
+        sample_cr.reset();
+        cairo_surface_flush(exposure_surface.get());
+        cairo_surface_flush(current_surface.get());
+        cairo_surface_flush(sample_surface.get());
+
+        const QImage resolved = resolve_motion_blur_coverage(
+            exposure_canvas, coverage_canvas, current_canvas, blur_mix);
+        auto resolved_surface = make_image_surface_for_const_qimage(resolved);
+        if (!resolved_surface)
+            return false;
+        cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_set_source_surface(cr, resolved_surface.get(), 0.0, 0.0);
         cairo_paint(cr);
         cairo_restore(cr);
-
         return true;
     };
 
@@ -533,26 +808,29 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
 
             auto cached_surface = make_image_surface_for_const_qimage(cached->image);
             if (cached_surface) {
-                auto paint_cached_sample = [&](double sample_time, double alpha) {
-                    if (!gpu_layer_chain_visible(title, base_layer, sample_time))
+                auto paint_cached_sample = [&](cairo_t *target_cr,
+                                                double sample_time,
+                                                double alpha) {
+                    if (!target_cr ||
+                        !gpu_layer_chain_visible(title, base_layer, sample_time))
                         return;
-                    cairo_save(cr);
-                    apply_layer_world_transform(cr, title, base_layer, sample_time);
-                    cairo_set_source_surface(cr, cached_surface.get(),
+                    cairo_save(target_cr);
+                    apply_layer_world_transform(target_cr, title, base_layer,
+                                                sample_time);
+                    cairo_set_source_surface(target_cr, cached_surface.get(),
                                              cached->origin.x(), cached->origin.y());
-                    cairo_paint_with_alpha(cr, alpha * std::clamp(gpu_layer_chain_opacity(title, base_layer, sample_time),
-                                                                  0.0, 1.0));
-                    cairo_restore(cr);
+                    cairo_paint_with_alpha(target_cr, alpha * std::clamp(
+                        gpu_layer_chain_opacity(title, base_layer, sample_time),
+                        0.0, 1.0));
+                    cairo_restore(target_cr);
                 };
 
                 return paint_fast_motion(
                     [&](cairo_t *sample_cr, double sample_time) {
-                        (void)sample_cr;
-                        paint_cached_sample(sample_time, 1.0);
+                        paint_cached_sample(sample_cr, sample_time, 1.0);
                     },
                     [&](cairo_t *sample_cr) {
-                        (void)sample_cr;
-                        paint_cached_sample(title_time, 1.0);
+                        paint_cached_sample(sample_cr, title_time, 1.0);
                     },
                     [&](const std::vector<double> &sample_times, double mix) {
                         return gpu_accumulate_motion_raster(
@@ -976,6 +1254,8 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     auto *data = new TitleSourceData();
     data->source = source;
     data->gpu_render_session = title_gpu_render_session_create();
+    title_gpu_render_session_set_realtime_output(
+        data->gpu_render_session, true);
     if (settings) {
         data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
         data->cue_first_row_when_active = obs_data_get_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE);
@@ -1281,4 +1561,3 @@ static void source_show(void *priv)
     sync_scene_mask_scenes_for_cue(
         data, TitleDataStore::instance().get_title(data->title_id));
 }
-

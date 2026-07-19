@@ -42,6 +42,8 @@ bool cache_enabled();
 void set_cache_enabled(bool enabled);
 int cache_ram_limit_mb();
 void set_cache_ram_limit_mb(int megabytes);
+int shadow_map_size_px();
+void set_shadow_map_size_px(int pixels);
 QString cache_disk_location();
 void set_cache_disk_location(const QString &path);
 bool clear_cache_on_exit();

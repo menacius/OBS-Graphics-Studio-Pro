@@ -13,6 +13,7 @@
 #include "effects/effect-animation-utils.h"
 #include "extensions/effect-extension-catalog.h"
 #include "properties-panel.h"
+#include "bgl-modern-controls.h"
 
 #include "title-data.h"
 #include "external-data.h"

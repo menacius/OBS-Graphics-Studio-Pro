@@ -238,6 +238,9 @@ static bool reset_effect_scalar_parameter(
     BGL_RESET_EFFECT_SCALAR(evolution_prop, effect_evolution)
     BGL_RESET_EFFECT_SCALAR(stroke_width_prop, effect_stroke_width)
     BGL_RESET_EFFECT_SCALAR(stroke_opacity_prop, effect_stroke_opacity)
+    BGL_RESET_EFFECT_SCALAR(trim_start_prop, effect_trim_start)
+    BGL_RESET_EFFECT_SCALAR(trim_end_prop, effect_trim_end)
+    BGL_RESET_EFFECT_SCALAR(trim_offset_prop, effect_trim_offset)
     BGL_RESET_EFFECT_SCALAR(padding_left_prop, effect_padding_left)
     BGL_RESET_EFFECT_SCALAR(padding_right_prop, effect_padding_right)
     BGL_RESET_EFFECT_SCALAR(padding_top_prop, effect_padding_top)
@@ -321,29 +324,12 @@ static QPushButton *make_effect_keyframe_button(QWidget *parent,
 {
     auto *button = new QPushButton(parent);
     button->setObjectName(QStringLiteral("BroadcastGraphicsLiveEffectKeyframeButton"));
-    button->setFixedSize(20, 20);
-    button->setIconSize(QSize(14, 14));
-    button->setIcon(keyframe_diamond_icon(false));
+    button->setIcon(bgl_keyframe_diamond_icon(false));
     button->setFlat(true);
     button->setFocusPolicy(Qt::StrongFocus);
     button->setToolTip(tooltip);
     button->setAccessibleName(tooltip);
-    const QPalette palette = qApp->palette();
-    const QColor hover = palette.color(QPalette::Button).lightness() < 128
-        ? palette.color(QPalette::Button).lighter(125)
-        : palette.color(QPalette::Button).darker(108);
-    QColor keyframe_background = palette.color(QPalette::Highlight);
-    keyframe_background.setAlpha(44);
-    button->setStyleSheet(QStringLiteral(
-        "QPushButton{background:transparent;border:none;border-radius:2px;padding:0;}"
-        "QPushButton:hover{background:%1;}"
-        "QPushButton:pressed{background:%2;}"
-        "QPushButton[outlined=\"true\"]{background:%3;}"
-        "QPushButton[active=\"true\"]{background:%3;}"
-        "QPushButton:disabled{background:transparent;}")
-        .arg(hover.name(QColor::HexRgb),
-             palette.color(QPalette::Highlight).name(QColor::HexRgb),
-             keyframe_background.name(QColor::HexArgb)));
+    bgl_style_keyframe_button(button);
     return button;
 }
 
@@ -354,7 +340,7 @@ static void set_effect_keyframe_button_state(QPushButton *button, bool keyed,
         return;
     button->setText(QString());
     const bool outlined = has_keyframes && !keyed;
-    button->setIcon(keyframe_diamond_icon(keyed, outlined));
+    button->setIcon(bgl_keyframe_diamond_icon(keyed, outlined));
     button->setProperty("active", keyed);
     button->setProperty("outlined", outlined);
     button->style()->unpolish(button);
@@ -364,6 +350,7 @@ static void set_effect_keyframe_button_state(QPushButton *button, bool keyed,
         : has_keyframes
             ? QObject::tr("This property is animated, but no keyframe exists at the current timeline position")
             : QObject::tr("No keyframes exist for this property"));
+    bgl_refresh_keyframe_navigation(button);
 }
 
 static bool extension_track_has_keyframe_at(const LayerEffect &effect,
@@ -371,6 +358,17 @@ static bool extension_track_has_keyframe_at(const LayerEffect &effect,
                                             double time)
 {
     return bgs::effects::animation::has_keyframe_at(effect, path, time);
+}
+
+static std::vector<double> extension_track_keyframe_times(
+    const LayerEffect &effect, const QString &path)
+{
+    std::vector<double> times;
+    const QJsonArray keys = bgs::effects::animation::track_keys(effect, path);
+    times.reserve(static_cast<size_t>(keys.size()));
+    for (const QJsonValue &value : keys)
+        times.push_back(value.toObject().value(QStringLiteral("time")).toDouble());
+    return times;
 }
 
 static uint32_t extension_json_color_to_argb(const QJsonValue &value,
@@ -439,9 +437,11 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     };
 
     auto *btn_add = add_button("add.svg", bgl_tr("OBSTitles.AddEffect"));
-    btn_stack_enabled_ = add_button("visibility.svg", tr("Enable or disable the complete effect stack"));
-    btn_stack_enabled_->setCheckable(true);
+    btn_stack_enabled_ = new BglSwitch(tr("Effect Stack"), button_bar);
+    btn_stack_enabled_->setToolTip(tr("Enable or disable the complete effect stack"));
+    btn_stack_enabled_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     btn_stack_enabled_->setChecked(true);
+    button_layout->addWidget(btn_stack_enabled_);
     btn_respect_masks_ = add_button("timeline-mask.svg", bgl_tr("OBSTitles.ApplyEffectStackAfterMask"));
     btn_respect_masks_->setCheckable(true);
     btn_respect_masks_->setToolTip(bgl_tr("OBSTitles.ApplyEffectStackAfterMaskTooltip"));
@@ -473,7 +473,7 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         emit_effect_changed();
     });
 
-    connect(btn_stack_enabled_, &QToolButton::toggled, this, [this](bool enabled) {
+    connect(btn_stack_enabled_, &QCheckBox::toggled, this, [this](bool enabled) {
         if (loading_values_ || !layer_)
             return;
         set_stack_enabled(enabled);
@@ -1370,6 +1370,28 @@ double EffectsPanel::current_local_time() const
                       std::max(0.0, layer_->out_time - layer_->in_time));
 }
 
+QWidget *EffectsPanel::make_keyframe_controls(QPushButton *button,
+                                               QWidget *parent)
+{
+    return bgl_make_keyframe_controls(
+        button, parent,
+        [this, button]() {
+            for (const KeyframeBinding &binding : keyframe_bindings_) {
+                if (binding.button != button || !binding.keyframe_times || !layer_ ||
+                    binding.effect_index < 0 ||
+                    binding.effect_index >= static_cast<int>(layer_->effects.size()))
+                    continue;
+                return binding.keyframe_times(
+                    layer_->effects[static_cast<size_t>(binding.effect_index)]);
+            }
+            return std::vector<double>{};
+        }, [this]() { return current_local_time(); },
+        [this](double local_time) {
+            if (layer_)
+                emit keyframe_navigation_requested(layer_->in_time + local_time);
+        });
+}
+
 void EffectsPanel::update_bound_controls()
 {
     if (!layer_ || loading_values_ || numeric_label_dragging_)
@@ -1852,10 +1874,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
         layout->setSpacing(4);
         layout->addWidget(field, 1);
         auto *button = make_effect_keyframe_button(row);
-        button->setFixedSize(20, 20);
         button->setToolTip(tr("Toggle keyframe at the current timeline position"));
         button->setAccessibleName(button->toolTip());
-        layout->addWidget(button);
         keyframe_bindings_.push_back({button,
             [property](const LayerEffect &effect, double time) {
                 return effect_property_has_keyframe_at(effect.*property, time);
@@ -1865,7 +1885,14 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
             },
             [property](LayerEffect &effect) {
                 (effect.*property).keyframes.clear();
+            },
+            [property](const LayerEffect &effect) {
+                std::vector<double> times;
+                for (const Keyframe &key : (effect.*property).keyframes)
+                    times.push_back(key.time);
+                return times;
             }});
+        layout->addWidget(make_keyframe_controls(button, row));
         connect(button, &QPushButton::clicked, this,
                 [this, property, current_value, field]() {
             LayerEffect *effect = selected_effect();
@@ -1918,10 +1945,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
         layout->setSpacing(4);
         layout->addWidget(field, 1);
         auto *button = make_effect_keyframe_button(row);
-        button->setFixedSize(20, 20);
         button->setToolTip(tr("Toggle color keyframe at the current timeline position"));
         button->setAccessibleName(button->toolTip());
-        layout->addWidget(button);
         keyframe_bindings_.push_back({button,
             [a, r, g, b](const LayerEffect &effect, double time) {
                 return effect_property_has_keyframe_at(effect.*a, time) ||
@@ -1938,7 +1963,16 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                 (effect.*r).keyframes.clear();
                 (effect.*g).keyframes.clear();
                 (effect.*b).keyframes.clear();
+            },
+            [a, r, g, b](const LayerEffect &effect) {
+                std::vector<double> times;
+                for (const AnimatedProperty *property : {&(effect.*a), &(effect.*r),
+                                                         &(effect.*g), &(effect.*b)})
+                    for (const Keyframe &key : property->keyframes)
+                        times.push_back(key.time);
+                return times;
             }});
+        layout->addWidget(make_keyframe_controls(button, row));
         connect(button, &QPushButton::clicked, this,
                 [this, field, a, r, g, b]() {
             LayerEffect *effect = selected_effect();
@@ -2067,10 +2101,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                     layout->setSpacing(4);
                     layout->addWidget(field, 1);
                     keyframeButton = make_effect_keyframe_button(row);
-                    keyframeButton->setFixedWidth(20);
                     keyframeButton->setToolTip(tr("Toggle extension keyframe at the current timeline position"));
                     keyframeButton->setAccessibleName(keyframeButton->toolTip());
-                    layout->addWidget(keyframeButton);
                     keyframe_bindings_.push_back({keyframeButton,
                         [key](const LayerEffect &current, double time) {
                             return extension_track_has_keyframe_at(current, key, time);
@@ -2080,7 +2112,11 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         },
                         [key](LayerEffect &current) {
                             bgs::effects::animation::write_track_keys(current, key, {});
+                        },
+                        [key](const LayerEffect &current) {
+                            return extension_track_keyframe_times(current, key);
                         }});
+                    layout->addWidget(make_keyframe_controls(keyframeButton, row));
                     valueWidget = row;
                 }
                 add_effect_row(label, valueWidget);
@@ -2155,10 +2191,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                 QPushButton *keyframeButton = nullptr;
                 if (meta.value(QStringLiteral("animatable")).toBool(false)) {
                     keyframeButton = make_effect_keyframe_button(row);
-                    keyframeButton->setFixedWidth(20);
                     keyframeButton->setToolTip(tr("Toggle extension keyframe at the current timeline position"));
                     keyframeButton->setAccessibleName(keyframeButton->toolTip());
-                    layout->addWidget(keyframeButton);
                     keyframe_bindings_.push_back({keyframeButton,
                         [key](const LayerEffect &active, double time) {
                             return extension_track_has_keyframe_at(active, key, time);
@@ -2168,7 +2202,11 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         },
                         [key](LayerEffect &active) {
                             bgs::effects::animation::write_track_keys(active, key, {});
+                        },
+                        [key](const LayerEffect &active) {
+                            return extension_track_keyframe_times(active, key);
                         }});
+                    layout->addWidget(make_keyframe_controls(keyframeButton, row));
                 }
                 add_effect_row(label, row);
                 auto writePoint = [this, key, x, y]() {
@@ -2216,10 +2254,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                     layout->setSpacing(4);
                     layout->addWidget(field, 1);
                     auto *button = make_effect_keyframe_button(row);
-                    button->setFixedSize(20, 20);
                     button->setToolTip(tr("Toggle extension color keyframe at the current timeline position"));
                     button->setAccessibleName(button->toolTip());
-                    layout->addWidget(button);
                     keyframe_bindings_.push_back({button,
                         [key](const LayerEffect &active, double time) {
                             return extension_track_has_keyframe_at(active, key, time);
@@ -2229,7 +2265,11 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         },
                         [key](LayerEffect &active) {
                             bgs::effects::animation::write_track_keys(active, key, {});
+                        },
+                        [key](const LayerEffect &active) {
+                            return extension_track_keyframe_times(active, key);
                         }});
+                    layout->addWidget(make_keyframe_controls(button, row));
                     connect(button, &QPushButton::clicked, this,
                             [this, key, field]() {
                         LayerEffect *active = selected_effect();
@@ -2264,11 +2304,9 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                     layout->setSpacing(4);
                     layout->addWidget(field, 1);
                     keyframeButton = make_effect_keyframe_button(row);
-                    keyframeButton->setFixedSize(20, 20);
                     keyframeButton->setToolTip(
                         tr("Toggle extension hold keyframe at the current timeline position"));
                     keyframeButton->setAccessibleName(keyframeButton->toolTip());
-                    layout->addWidget(keyframeButton);
                     keyframe_bindings_.push_back({keyframeButton,
                         [key](const LayerEffect &active, double time) {
                             return extension_track_has_keyframe_at(active, key, time);
@@ -2278,7 +2316,11 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         },
                         [key](LayerEffect &active) {
                             bgs::effects::animation::write_track_keys(active, key, {});
+                        },
+                        [key](const LayerEffect &active) {
+                            return extension_track_keyframe_times(active, key);
                         }});
+                    layout->addWidget(make_keyframe_controls(keyframeButton, row));
                     valueWidget = row;
                 }
                 add_effect_row(label, valueWidget);
@@ -2340,11 +2382,9 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                     layout->setSpacing(4);
                     layout->addWidget(field, 1);
                     keyframeButton = make_effect_keyframe_button(row);
-                    keyframeButton->setFixedSize(20, 20);
                     keyframeButton->setToolTip(
                         tr("Toggle extension hold keyframe at the current timeline position"));
                     keyframeButton->setAccessibleName(keyframeButton->toolTip());
-                    layout->addWidget(keyframeButton);
                     keyframe_bindings_.push_back({keyframeButton,
                         [key](const LayerEffect &active, double time) {
                             return extension_track_has_keyframe_at(active, key, time);
@@ -2354,7 +2394,11 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         },
                         [key](LayerEffect &active) {
                             bgs::effects::animation::write_track_keys(active, key, {});
+                        },
+                        [key](const LayerEffect &active) {
+                            return extension_track_keyframe_times(active, key);
                         }});
+                    layout->addWidget(make_keyframe_controls(keyframeButton, row));
                     valueWidget = row;
                 }
                 add_effect_row(label, valueWidget);
@@ -2446,10 +2490,8 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                 layout->setSpacing(4);
                 layout->addWidget(field, 1);
                 auto *button = make_effect_keyframe_button(row);
-                button->setFixedSize(20, 20);
                 button->setToolTip(tr("Toggle element keyframe at the current timeline position"));
                 button->setAccessibleName(button->toolTip());
-                layout->addWidget(button);
                 keyframe_bindings_.push_back({button,
                     [elementsList, property](const LayerEffect &effect, double time) {
                         const int index = elementsList->currentRow();
@@ -2466,7 +2508,15 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
                         if (index >= 0)
                             bgs::effects::animation::write_track_keys(
                                 effect, QStringLiteral("elements.%1.%2").arg(index).arg(property), {});
+                    },
+                    [elementsList, property](const LayerEffect &effect) {
+                        const int index = elementsList->currentRow();
+                        return index < 0 ? std::vector<double>{}
+                            : extension_track_keyframe_times(
+                                effect, QStringLiteral("elements.%1.%2")
+                                    .arg(index).arg(property));
                     }});
+                layout->addWidget(make_keyframe_controls(button, row));
                 connect(button, &QPushButton::clicked, this,
                         [this, elementsList, property, value]() {
                     LayerEffect *effect = selected_effect();
@@ -2644,6 +2694,67 @@ void EffectsPanel::build_effect_settings_panel(int effect_index)
             rebuildList(0);
             loadElement(elementsList->currentRow());
         }
+    } else if (selected_effect()->type == LayerEffectType::TrimPaths) {
+        LayerEffect *effect = selected_effect();
+        auto *start = spin(0.0, 100.0, 0.1);
+        start->setDecimals(2);
+        start->setSuffix(QStringLiteral(" %"));
+        start->setValue(panel_eval_effect_property(effect->trim_start_prop, effect->effect_trim_start, lt));
+        auto *end = spin(0.0, 100.0, 0.1);
+        end->setDecimals(2);
+        end->setSuffix(QStringLiteral(" %"));
+        end->setValue(panel_eval_effect_property(effect->trim_end_prop, effect->effect_trim_end, lt));
+        auto *trim_offset = spin(-1000000000.0, 1000000000.0, 1.0);
+        trim_offset->setDecimals(2);
+        trim_offset->setSuffix(QStringLiteral("°"));
+        trim_offset->setValue(panel_eval_effect_property(effect->trim_offset_prop, effect->effect_trim_offset, lt));
+        auto *multiple = combo();
+        multiple->addItem(tr("Simultaneously"), 0);
+        multiple->addItem(tr("Individually"), 1);
+        multiple->setCurrentIndex(std::clamp(effect->effect_trim_multiple_shapes, 0, 1));
+
+        bind_numeric(start, [](const LayerEffect &value, double t) {
+            return panel_eval_effect_property(value.trim_start_prop, value.effect_trim_start, t);
+        });
+        bind_numeric(end, [](const LayerEffect &value, double t) {
+            return panel_eval_effect_property(value.trim_end_prop, value.effect_trim_end, t);
+        });
+        bind_numeric(trim_offset, [](const LayerEffect &value, double t) {
+            return panel_eval_effect_property(value.trim_offset_prop, value.effect_trim_offset, t);
+        });
+
+        add_effect_row(tr("Start"), wrap_scalar_keyframe(start, &LayerEffect::trim_start_prop));
+        add_effect_row(tr("End"), wrap_scalar_keyframe(end, &LayerEffect::trim_end_prop));
+        add_effect_row(tr("Trim Offset"), wrap_scalar_keyframe(trim_offset, &LayerEffect::trim_offset_prop));
+        add_effect_row(tr("Trim Multiple Shapes"), multiple);
+
+        connect(start, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (!loading_values_ && selected_effect()) {
+                selected_effect()->effect_trim_start = static_cast<float>(value);
+                set_animated_value(selected_effect()->trim_start_prop, current_local_time(), value);
+                emit_effect_changed();
+            }
+        });
+        connect(end, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (!loading_values_ && selected_effect()) {
+                selected_effect()->effect_trim_end = static_cast<float>(value);
+                set_animated_value(selected_effect()->trim_end_prop, current_local_time(), value);
+                emit_effect_changed();
+            }
+        });
+        connect(trim_offset, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (!loading_values_ && selected_effect()) {
+                selected_effect()->effect_trim_offset = static_cast<float>(value);
+                set_animated_value(selected_effect()->trim_offset_prop, current_local_time(), value);
+                emit_effect_changed();
+            }
+        });
+        connect(multiple, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, multiple](int) {
+            if (!loading_values_ && selected_effect()) {
+                selected_effect()->effect_trim_multiple_shapes = multiple->currentData().toInt();
+                emit_effect_changed();
+            }
+        });
     } else if (selected_effect()->type == LayerEffectType::BackgroundColor) {
         LayerEffect *effect = selected_effect();
         auto section_label = [box](const QString &text) {

@@ -8,6 +8,12 @@
 
 namespace {
 
+constexpr EffectParameterDescriptor kTrimPathsParameters[] = {
+    {"effect_trim_start", EffectParameterKind::Scalar, 0.0, 0.0, 100.0, 0.1, true},
+    {"effect_trim_end", EffectParameterKind::Scalar, 100.0, 0.0, 100.0, 0.1, true},
+    {"effect_trim_offset", EffectParameterKind::Angle, 0.0, -1000000000.0, 1000000000.0, 0.1, true},
+    {"effect_trim_multiple_shapes", EffectParameterKind::Enumeration, 0.0, 0.0, 1.0, 1.0, false},
+};
 constexpr EffectParameterDescriptor kAppearanceParameters[] = {
     {"effect_color", EffectParameterKind::Color, 1.0, 0.0, 1.0, 1.0, true},
     {"effect_opacity", EffectParameterKind::Scalar, 1.0, 0.0, 1.0, 0.01, true},
@@ -187,6 +193,7 @@ const std::vector<EffectDescriptor> kDescriptors = {
     {LayerEffectType::FilmDistortion, "bgl.builtin.film-distortion", "film-distortion", "Film Distortion", "Distortion", "effect-transitions/shaders/damage-distortion/damage-distortion.effect", true, 2, LayerEffectSpace::LayerSpace, EffectExecutionBackend::Gpu, EffectColorContract::LinearLight, EffectAlphaContract::PremultipliedPreserve, 1, true, true, true, false, kDamageParameters, countof(kDamageParameters)},
     {LayerEffectType::AnalogDistortion, "bgl.builtin.analog-distortion", "analog-distortion", "Analog Distortion", "Distortion", "effect-transitions/shaders/damage-distortion/damage-distortion.effect", true, 2, LayerEffectSpace::LayerSpace, EffectExecutionBackend::Gpu, EffectColorContract::DisplayReferred, EffectAlphaContract::PremultipliedPreserve, 1, true, true, true, false, kDamageParameters, countof(kDamageParameters)},
     {LayerEffectType::DigitalDistortion, "bgl.builtin.digital-distortion", "digital-distortion", "Digital Distortion", "Distortion", "effect-transitions/shaders/damage-distortion/damage-distortion.effect", true, 2, LayerEffectSpace::LayerSpace, EffectExecutionBackend::Gpu, EffectColorContract::DisplayReferred, EffectAlphaContract::PremultipliedPreserve, 1, true, true, true, false, kDamageParameters, countof(kDamageParameters)},
+    {LayerEffectType::TrimPaths, "bgl.builtin.trim-paths", "trim-paths", "Trim Paths", "Generate", "", false, 1, LayerEffectSpace::LayerSpace, EffectExecutionBackend::Cpu, EffectColorContract::PreserveInput, EffectAlphaContract::PremultipliedPreserve, 0, true, true, true, false, kTrimPathsParameters, countof(kTrimPathsParameters)},
 };
 
 double evaluate(const AnimatedProperty &property, double fallback, double time)
@@ -283,7 +290,8 @@ EffectDirtyScope effect_dirty_scope(const LayerEffect &effect)
     if (space == LayerEffectSpace::ScreenSpace)
         return EffectDirtyScope::Composition;
     if (effect.type == LayerEffectType::BackgroundColor ||
-        effect.type == LayerEffectType::Outline)
+        effect.type == LayerEffectType::Outline ||
+        effect.type == LayerEffectType::TrimPaths)
         return EffectDirtyScope::LayerRaster;
     return EffectDirtyScope::EffectOutput;
 }
@@ -300,6 +308,8 @@ bool effect_is_time_variant(const LayerEffect &effect)
         &effect.softness_prop, &effect.roundness_prop, &effect.speed_prop,
         &effect.center_x_prop, &effect.center_y_prop, &effect.complexity_prop,
         &effect.evolution_prop, &effect.stroke_width_prop,
+        &effect.trim_start_prop, &effect.trim_end_prop,
+        &effect.trim_offset_prop,
         &effect.stroke_opacity_prop, &effect.padding_left_prop,
         &effect.padding_right_prop, &effect.padding_top_prop,
         &effect.padding_bottom_prop, &effect.corner_radius_tl_prop,
@@ -440,6 +450,13 @@ ResolvedLayerEffect resolve_layer_effect(const LayerEffect &effect, double time)
     resolved.effect_stroke_opacity = static_cast<float>(std::clamp(
         evaluate(effect.stroke_opacity_prop, effect.effect_stroke_opacity, time),
         0.0, 1.0));
+    resolved.effect_trim_start = static_cast<float>(std::clamp(
+        evaluate(effect.trim_start_prop, effect.effect_trim_start, time), 0.0, 100.0));
+    resolved.effect_trim_end = static_cast<float>(std::clamp(
+        evaluate(effect.trim_end_prop, effect.effect_trim_end, time), 0.0, 100.0));
+    resolved.effect_trim_offset = static_cast<float>(
+        evaluate(effect.trim_offset_prop, effect.effect_trim_offset, time));
+    resolved.effect_trim_multiple_shapes = std::clamp(effect.effect_trim_multiple_shapes, 0, 1);
     resolved.effect_padding_left = static_cast<float>(
         evaluate(effect.padding_left_prop, effect.effect_padding_left, time));
     resolved.effect_padding_right = static_cast<float>(
@@ -567,6 +584,8 @@ EffectBoundsExpansion effect_bounds_expansion(const ResolvedLayerEffect &effect,
     case LayerEffectType::AnalogDistortion:
     case LayerEffectType::DigitalDistortion:
         return symmetric(effect.effect_amount * 32.0 + 4.0);
+    case LayerEffectType::TrimPaths:
+        return symmetric(4.0);
     case LayerEffectType::RoughenEdges:
         return symmetric(effect.effect_amount * 64.0 + 4.0);
     default:

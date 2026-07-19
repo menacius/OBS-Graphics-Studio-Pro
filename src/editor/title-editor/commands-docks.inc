@@ -56,8 +56,11 @@
     editor_status_bar_->addWidget(status_diagnostics_label_, 1);
     auto *diagnostics_timer = new QTimer(editor_status_bar_);
     diagnostics_timer->setInterval(1000);
-    diagnostics_timer->setTimerType(Qt::PreciseTimer);
-    connect(diagnostics_timer, &QTimer::timeout, this, &TitleEditor::update_footer_diagnostics);
+    diagnostics_timer->setTimerType(Qt::CoarseTimer);
+    connect(diagnostics_timer, &QTimer::timeout, this, [this]() {
+        if (!playing_)
+            update_footer_diagnostics();
+    });
     diagnostics_timer->start();
     status_activity_label_ = new QLabel(editor_status_bar_);
     status_activity_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -571,12 +574,22 @@
     upper_split->addWidget(canvas_panel);
 
     props_ = new PropertiesPanel(this);
-    props_->setMinimumWidth(260);
+    props_->setMinimumWidth(180);
     upper_split->setStretchFactor(0, 1);
 
     graphic_props_dock_ = create_editor_dock(QString::fromUtf8(kGraphicPropertiesDockObjectName),
                                              bgl_tr("OBSTitles.GraphicProperties"),
                                              title_props_);
+    auto *three_d_scene_scroll = new QScrollArea(this);
+    three_d_scene_scroll->setObjectName(QStringLiteral("Bgl3DSceneDockScroll"));
+    three_d_scene_scroll->setWidgetResizable(true);
+    three_d_scene_scroll->setMinimumWidth(260);
+    three_d_scene_scroll->setFrameShape(QFrame::NoFrame);
+    three_d_scene_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    three_d_scene_scroll->setWidget(title_props_->scene_controls_widget());
+    three_d_scene_dock_ = create_editor_dock(QString::fromUtf8(kThreeDSceneDockObjectName),
+                                             QStringLiteral("3D Camera, Lights & Environment"),
+                                             three_d_scene_scroll);
     layer_props_dock_ = create_editor_dock(QString::fromUtf8(kLayerPropertiesDockObjectName),
                                            bgl_tr("OBSTitles.LayerProperties"),
                                            props_);
@@ -595,8 +608,20 @@
     editor_audio_dock_ = create_editor_dock(QString::fromUtf8(kEditorAudioDockObjectName),
                                             QStringLiteral("Editor Audio"),
                                             create_editor_audio_panel());
-    editor_audio_dock_->setMinimumWidth(56);
-    editor_audio_dock_->setMaximumWidth(96);
+    editor_audio_dock_->setMinimumWidth(78);
+    editor_audio_dock_->setMaximumWidth(112);
+    connect(editor_audio_dock_, &QDockWidget::visibilityChanged, this,
+            [this](bool visible) {
+                if (!editor_audio_meter_timer_)
+                    return;
+                if (visible) {
+                    if (!editor_audio_meter_timer_->isActive())
+                        editor_audio_meter_timer_->start();
+                    update_editor_audio_meter();
+                } else {
+                    editor_audio_meter_timer_->stop();
+                }
+            });
     tools_sidebar_ = new ToolsSidebar(this);
     tools_dock_ = create_editor_dock(QStringLiteral("BroadcastGraphicsLiveToolsDock"),
                                      bgl_tr("OBSTitles.Tools"),
@@ -604,6 +629,8 @@
     tools_dock_->setMinimumWidth(46);
     tools_dock_->setMaximumWidth(64);
     addDockWidget(Qt::LeftDockWidgetArea, graphic_props_dock_);
+    addDockWidget(Qt::LeftDockWidgetArea, three_d_scene_dock_);
+    tabifyDockWidget(graphic_props_dock_, three_d_scene_dock_);
     addDockWidget(Qt::RightDockWidgetArea, tools_dock_);
     addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
     splitDockWidget(tools_dock_, layer_props_dock_, Qt::Horizontal);
@@ -1094,6 +1121,47 @@
                     canvas_->begin_text_edit_for_layer(l->id);
             });
 
+    connect(layers_, &LayerStack::add_light_requested,
+            this, [this](TitleLightType light_type) {
+                if (!title_) return;
+                const auto light_count = std::count_if(
+                    title_->layers.begin(), title_->layers.end(),
+                    [](const auto &layer) { return layer && layer->type == LayerType::Light; });
+                if (light_count >= 4) return;
+                auto layer = std::make_shared<Layer>();
+                layer->id = TitleDataStore::make_uuid();
+                layer->type = LayerType::Light;
+                layer->dimension_mode = LayerDimensionMode::ThreeD;
+                const char *base = light_type == TitleLightType::Ambient ? "Ambient Light" :
+                                   light_type == TitleLightType::Point ? "Point Light" :
+                                   light_type == TitleLightType::Spot ? "Spot Light" :
+                                   light_type == TitleLightType::Parallel ? "Parallel Light" :
+                                   "Environment Light";
+                int ordinal = 1;
+                std::string candidate;
+                do { candidate = std::string(base) + " " + std::to_string(ordinal++); }
+                while (std::any_of(title_->layers.begin(), title_->layers.end(),
+                    [&](const auto &other) { return other && other->name == candidate; }));
+                layer->name = candidate;
+                layer->position.static_value = {title_->width * 0.5, title_->height * 0.5};
+                layer->position_z.static_value = -1000.0;
+                layer->light.id = layer->id;
+                layer->light.name = layer->name;
+                layer->light.type = light_type;
+                layer->light.position.static_value = {0.0, 0.0, 0.0};
+                layer->light.target.static_value = {0.0, 0.0, 1000.0};
+                layer->light.casts_shadows = light_type == TitleLightType::Spot ||
+                                              light_type == TitleLightType::Parallel;
+                title_->add_layer(layer);
+                title_->default_light_enabled = false;
+                layers_->refresh();
+                on_layer_selected(layer->id);
+                if (timeline_) { timeline_->set_title(title_); timeline_->update(); }
+                if (title_props_) title_props_->set_title(title_);
+                force_next_title_visual_update();
+                on_title_modified();
+            });
+
     connect(layers_, &LayerStack::add_camera_requested,
             this, [this]() {
                 if (!title_) return;
@@ -1102,7 +1170,9 @@
                 const size_t custom_camera_count = static_cast<size_t>(std::count_if(
                     title_->cameras.begin(), title_->cameras.end(),
                     [](const TitleCamera &existing) {
-                        return existing.id != "default" || !existing.use_canvas_default;
+                        return existing.asset_space_owner_id.empty() &&
+                               (existing.id != "default" ||
+                                !existing.use_canvas_default);
                     }));
                 camera.name = QStringLiteral("Camera %1")
                                   .arg(custom_camera_count + 1).toStdString();
@@ -1363,6 +1433,9 @@
                 } else if (TitleCamera *camera = timeline_camera_from_owner(
                                *title_, owner_id)) {
                     camera->timeline_expanded = expanded;
+                } else if (TitleLight *light = timeline_light_from_owner(
+                               *title_, owner_id)) {
+                    light->timeline_expanded = expanded;
                 } else {
                     return;
                 }
@@ -1413,6 +1486,8 @@
             this, &TitleEditor::add_selected_layers_to_group);
     connect(layers_, &LayerStack::remove_from_group_requested,
             this, &TitleEditor::remove_selected_layers_from_group);
+    connect(layers_, &LayerStack::layer_rows_dropped,
+            this, &TitleEditor::drop_layer_list_rows);
 
     connect(layers_, &LayerStack::layer_parent_changed,
             this, [this](const std::string &lid, const std::string &parent_id) {
@@ -1576,6 +1651,35 @@
                 on_title_modified(true);
             });
 
+    connect(layers_, &LayerStack::layer_ui_color_changed,
+            this, [this](const std::string &lid, bool enabled,
+                         uint32_t argb) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer) return;
+                const uint32_t opaque_argb = argb | 0xFF000000u;
+                if (layer->custom_ui_color_enabled == enabled &&
+                    (!enabled || layer->custom_ui_color == opaque_argb))
+                    return;
+                layer->custom_ui_color_enabled = enabled;
+                if (enabled)
+                    layer->custom_ui_color = opaque_argb;
+                force_next_title_visual_update();
+                on_title_modified(true);
+                /* Let the originating QMenu finish its triggered/clicked
+                 * dispatch before rebuilding and deleting the row widgets. */
+                if (layers_) {
+                    QTimer::singleShot(0, layers_, [this]() {
+                        if (layers_)
+                            layers_->refresh();
+                    });
+                }
+                if (timeline_)
+                    timeline_->set_title(title_);
+                if (canvas_)
+                    canvas_->update();
+            });
+
     connect(layers_, &LayerStack::layer_name_changed,
             this, [this](const std::string &lid, const std::string &name) {
                 if (!title_) return;
@@ -1716,6 +1820,8 @@
         if (undo_index_ + 1 < (int)undo_stack_.size())
             restore_undo_snapshot(undo_index_ + 1);
     });
+    connect(props_, &PropertiesPanel::keyframe_navigation_requested,
+            this, &TitleEditor::on_playhead_changed);
 
     connect(props_, &PropertiesPanel::property_changed,
             this, [this](bool commit_undo) {
@@ -1810,10 +1916,13 @@
                 if (!title_) return;
                 playhead_ = std::clamp(playhead_, 0.0, title_->duration);
                 on_title_modified(push_undo_snapshot);
+                if (layers_) layers_->refresh();
                 timeline_->set_title(title_);
                 on_playhead_changed(playhead_);
                 refresh_canvas_background_control();
             });
+    connect(title_props_, &TitlePropertiesPanel::keyframe_navigation_requested,
+            this, &TitleEditor::on_playhead_changed);
     connect(title_props_, &TitlePropertiesPanel::stinger_structure_changed,
             this, [this, refresh_canvas_background_control]() {
                 if (!title_ || !layers_ || !timeline_ || !canvas_)
@@ -1888,4 +1997,3 @@
                 timeline_->set_title(title_);
                 on_title_modified();
             });
-

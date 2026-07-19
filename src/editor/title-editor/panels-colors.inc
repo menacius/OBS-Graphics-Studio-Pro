@@ -2,21 +2,21 @@
     act_timeline_visible_->setCheckable(true);
     act_timeline_visible_->setChecked(true);
     connect(act_timeline_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (timeline_dock_) timeline_dock_->setVisible(visible);
+        set_editor_dock_visible(timeline_dock_, visible);
     });
 
     act_prerender_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.PlaybackAndCache"));
     act_prerender_visible_->setCheckable(true);
     act_prerender_visible_->setChecked(true);
     connect(act_prerender_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (prerender_dock_) prerender_dock_->setVisible(visible);
+        set_editor_dock_visible(prerender_dock_, visible);
     });
 
     act_editor_audio_visible_ = windows_menu->addAction(QStringLiteral("Editor Audio"));
     act_editor_audio_visible_->setCheckable(true);
     act_editor_audio_visible_->setChecked(true);
     connect(act_editor_audio_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (editor_audio_dock_) editor_audio_dock_->setVisible(visible);
+        set_editor_dock_visible(editor_audio_dock_, visible);
     });
 }
 
@@ -55,6 +55,8 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
     QAction *visibility_action = nullptr;
     if (object_name == QString::fromUtf8(kGraphicPropertiesDockObjectName))
         visibility_action = act_graphic_props_visible_;
+    else if (object_name == QString::fromUtf8(kThreeDSceneDockObjectName))
+        visibility_action = act_three_d_scene_visible_;
     else if (object_name == QString::fromUtf8(kLayerPropertiesDockObjectName))
         visibility_action = act_layer_props_visible_;
     else if (object_name == QString::fromUtf8(kEffectsDockObjectName))
@@ -83,6 +85,85 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
     connect(dock, &QDockWidget::dockLocationChanged, this, [this]() { save_editor_layout(); });
     connect(dock, &QDockWidget::visibilityChanged, this, [this]() { save_editor_layout(); });
     return dock;
+}
+
+void TitleEditor::set_editor_dock_visible(QDockWidget *dock, bool visible)
+{
+    if (!dock)
+        return;
+
+    if (!visible) {
+        dock->hide();
+        return;
+    }
+
+    const auto preferred_area = [this, dock]() {
+        if (dock == timeline_dock_)
+            return Qt::BottomDockWidgetArea;
+        if (dock == tools_dock_ || dock == styles_dock_ || dock == effects_presets_dock_)
+            return Qt::LeftDockWidgetArea;
+        return Qt::RightDockWidgetArea;
+    };
+
+    /* A layout saved by Development Version 309 can leave docks floating with
+     * an off-screen frame after their allowed areas were temporarily cleared.
+     * Preserve legitimate on-screen floating panels, but redock orphaned ones. */
+    if (dock->isFloating()) {
+        bool on_screen = false;
+        const QRect frame = dock->frameGeometry();
+        for (QScreen *screen : QGuiApplication::screens()) {
+            if (screen && screen->availableGeometry().intersects(frame)) {
+                on_screen = true;
+                break;
+            }
+        }
+        if (!on_screen) {
+            dock->setFloating(false);
+            addDockWidget(preferred_area(), dock);
+        }
+    } else if (dockWidgetArea(dock) == Qt::NoDockWidgetArea) {
+        addDockWidget(preferred_area(), dock);
+    }
+
+    dock->show();
+    dock->raise();
+    if (dock->isFloating()) {
+        dock->activateWindow();
+        return;
+    }
+
+    /* Showing a dock does not expand a splitter whose saved size is zero.
+     * Recover only collapsed panels, leaving normal user-resized docks alone. */
+    const Qt::DockWidgetArea area = dockWidgetArea(dock);
+    if (area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea) {
+        if (dock->height() < 48)
+            resizeDocks({dock}, {dock == timeline_dock_ ? 240 : 180}, Qt::Vertical);
+    } else if (dock->width() < 48) {
+        const int preferred_width = dock == tools_dock_ ? 52 :
+                                    (dock == editor_audio_dock_ ? 76 : 300);
+        resizeDocks({dock}, {preferred_width}, Qt::Horizontal);
+    }
+
+    /* Qt applies restored splitter geometry after the current event. Repeat the
+     * collapse check once the pending layout pass has completed. */
+    QPointer<QDockWidget> guarded_dock(dock);
+    QTimer::singleShot(0, this, [this, guarded_dock]() {
+        if (!guarded_dock || guarded_dock->isHidden() || guarded_dock->isFloating())
+            return;
+        const Qt::DockWidgetArea area = dockWidgetArea(guarded_dock.data());
+        if ((area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea) &&
+            guarded_dock->height() < 48) {
+            resizeDocks({guarded_dock.data()},
+                        {guarded_dock.data() == timeline_dock_ ? 240 : 180},
+                        Qt::Vertical);
+        } else if ((area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea) &&
+                   guarded_dock->width() < 48) {
+            const int preferred_width = guarded_dock.data() == tools_dock_ ? 52 :
+                                        (guarded_dock.data() == editor_audio_dock_ ? 76 : 300);
+            resizeDocks({guarded_dock.data()}, {preferred_width}, Qt::Horizontal);
+        }
+        guarded_dock->raise();
+    });
 }
 
 void TitleEditor::load_editor_layout()
@@ -128,6 +209,10 @@ void TitleEditor::load_editor_layout()
     if (act_graphic_props_visible_ && graphic_props_dock_) {
         QSignalBlocker blocker(act_graphic_props_visible_);
         act_graphic_props_visible_->setChecked(!graphic_props_dock_->isHidden());
+    }
+    if (act_three_d_scene_visible_ && three_d_scene_dock_) {
+        QSignalBlocker blocker(act_three_d_scene_visible_);
+        act_three_d_scene_visible_->setChecked(!three_d_scene_dock_->isHidden());
     }
     if (act_layer_props_visible_ && layer_props_dock_) {
         QSignalBlocker blocker(act_layer_props_visible_);
@@ -186,104 +271,99 @@ void TitleEditor::reset_default_layout()
         QDockWidget::DockWidgetClosable |
         QDockWidget::DockWidgetMovable |
         QDockWidget::DockWidgetFloatable;
-    const auto all_docks = {tools_dock_, graphic_props_dock_, layer_props_dock_,
-                            effects_dock_, effects_presets_dock_, styles_dock_,
-                            timeline_dock_, prerender_dock_, editor_audio_dock_};
+    const auto all_docks = {tools_dock_, graphic_props_dock_, three_d_scene_dock_,
+                            layer_props_dock_, effects_dock_, effects_presets_dock_,
+                            styles_dock_, timeline_dock_, prerender_dock_,
+                            editor_audio_dock_};
     for (auto *dock : all_docks) {
         if (!dock)
             continue;
+        dock->hide();
         dock->setFloating(false);
         removeDockWidget(dock);
-        dock->setMaximumWidth(dock == tools_dock_ ? 64 : (dock == editor_audio_dock_ ? 96 : QWIDGETSIZE_MAX));
-        if (dock == tools_dock_)
-            dock->setMinimumWidth(46);
-        else if (dock == editor_audio_dock_)
-            dock->setMinimumWidth(56);
-        else if (dock == effects_dock_ || dock == effects_presets_dock_)
-            dock->setMinimumWidth(130);
-        else
-            dock->setMinimumWidth(dock->widget() ? dock->widget()->minimumWidth() : 220);
         dock->setFeatures(reset_features);
         dock->setAllowedAreas(dock == timeline_dock_
                                   ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
                                   : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
+        dock->setMaximumWidth(QWIDGETSIZE_MAX);
+        dock->setMaximumHeight(QWIDGETSIZE_MAX);
+        if (dock == tools_dock_)
+            dock->setMinimumWidth(46);
+        else if (dock == editor_audio_dock_)
+            dock->setMinimumWidth(56);
+        else
+            dock->setMinimumWidth(dock->widget() ? dock->widget()->minimumWidth() : 220);
     }
 
-    /* The timeline owns both bottom corners so it spans the complete editor,
-     * matching the reference workspace. */
     setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
-    /* Left workspace: tools | title properties, color/styles and the paired
-     * Effects & Presets / Effects row. */
+    /* Left edge: the compact creation sidebar. */
     if (tools_dock_) {
-        tools_dock_->show();
         addDockWidget(Qt::LeftDockWidgetArea, tools_dock_);
-    }
-    if (graphic_props_dock_) {
-        graphic_props_dock_->show();
-        addDockWidget(Qt::LeftDockWidgetArea, graphic_props_dock_);
-        if (tools_dock_)
-            splitDockWidget(tools_dock_, graphic_props_dock_, Qt::Horizontal);
-    }
-    if (styles_dock_) {
-        styles_dock_->show();
-        addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
-        if (graphic_props_dock_)
-            splitDockWidget(graphic_props_dock_, styles_dock_, Qt::Vertical);
-    }
-    if (effects_presets_dock_) {
-        effects_presets_dock_->show();
-        addDockWidget(Qt::LeftDockWidgetArea, effects_presets_dock_);
-        if (styles_dock_)
-            splitDockWidget(styles_dock_, effects_presets_dock_, Qt::Vertical);
-    }
-    if (effects_dock_) {
-        effects_dock_->show();
-        addDockWidget(Qt::LeftDockWidgetArea, effects_dock_);
-        if (effects_presets_dock_)
-            splitDockWidget(effects_presets_dock_, effects_dock_, Qt::Horizontal);
+        tools_dock_->setMaximumWidth(64);
+        tools_dock_->show();
     }
 
-    /* The full layer/title properties panel occupies the right side. */
-    if (layer_props_dock_) {
-        layer_props_dock_->show();
-        addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
-    }
-
-    if (timeline_dock_) {
-        timeline_dock_->show();
-        addDockWidget(Qt::BottomDockWidgetArea, timeline_dock_);
-    }
-
+    /* Immediately to the right of the sidebar: the narrow audio monitor. */
     if (editor_audio_dock_) {
+        addDockWidget(Qt::LeftDockWidgetArea, editor_audio_dock_);
+        editor_audio_dock_->setMaximumWidth(96);
         editor_audio_dock_->show();
-        addDockWidget(Qt::RightDockWidgetArea, editor_audio_dock_);
-        if (layer_props_dock_)
-            splitDockWidget(layer_props_dock_, editor_audio_dock_, Qt::Vertical);
+        if (tools_dock_)
+            splitDockWidget(tools_dock_, editor_audio_dock_, Qt::Horizontal);
     }
 
-    /* Playback & Cache remains available from Window, but is closed in the
-     * default workspace because caching itself is disabled by default. */
-    if (prerender_dock_) {
-        addDockWidget(Qt::RightDockWidgetArea, prerender_dock_);
+    /* Remaining utility panels occupy one tabbed column to the right of Audio. */
+    QDockWidget *utility_anchor = styles_dock_ ? styles_dock_ : effects_presets_dock_;
+    if (utility_anchor) {
+        addDockWidget(Qt::LeftDockWidgetArea, utility_anchor);
+        utility_anchor->show();
         if (editor_audio_dock_)
-            tabifyDockWidget(editor_audio_dock_, prerender_dock_);
-        else if (layer_props_dock_)
-            splitDockWidget(layer_props_dock_, prerender_dock_, Qt::Vertical);
-        prerender_dock_->hide();
+            splitDockWidget(editor_audio_dock_, utility_anchor, Qt::Horizontal);
+    }
+    for (QDockWidget *dock : {effects_presets_dock_, effects_dock_, graphic_props_dock_,
+                              three_d_scene_dock_, prerender_dock_}) {
+        if (!dock || dock == utility_anchor)
+            continue;
+        addDockWidget(Qt::LeftDockWidgetArea, dock);
+        dock->show();
+        if (utility_anchor)
+            tabifyDockWidget(utility_anchor, dock);
+        else
+            utility_anchor = dock;
     }
 
-    if (tools_dock_)
-        tools_dock_->raise();
-    if (graphic_props_dock_)
-        graphic_props_dock_->raise();
-    if (styles_dock_)
-        styles_dock_->raise();
+    /* Right edge: the main contextual Properties inspector. */
+    if (layer_props_dock_) {
+        addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
+        layer_props_dock_->show();
+    }
+
+    /* Bottom edge: timeline spans the editor width. */
+    if (timeline_dock_) {
+        addDockWidget(Qt::BottomDockWidgetArea, timeline_dock_);
+        timeline_dock_->show();
+    }
+
+    if (utility_anchor)
+        utility_anchor->raise();
     if (layer_props_dock_)
         layer_props_dock_->raise();
     if (editor_audio_dock_)
         editor_audio_dock_->raise();
+
+    QList<QDockWidget *> left_docks;
+    QList<int> left_sizes;
+    if (tools_dock_) { left_docks.push_back(tools_dock_); left_sizes.push_back(52); }
+    if (editor_audio_dock_) { left_docks.push_back(editor_audio_dock_); left_sizes.push_back(76); }
+    if (utility_anchor) { left_docks.push_back(utility_anchor); left_sizes.push_back(310); }
+    if (!left_docks.empty())
+        resizeDocks(left_docks, left_sizes, Qt::Horizontal);
+    if (layer_props_dock_)
+        resizeDocks({layer_props_dock_}, {360}, Qt::Horizontal);
+    if (timeline_dock_)
+        resizeDocks({timeline_dock_}, {240}, Qt::Vertical);
 
     const auto set_visibility_action = [](QAction *action, bool visible) {
         if (!action)
@@ -293,62 +373,31 @@ void TitleEditor::reset_default_layout()
     };
     set_visibility_action(act_tools_visible_, true);
     set_visibility_action(act_graphic_props_visible_, true);
+    set_visibility_action(act_three_d_scene_visible_, true);
     set_visibility_action(act_layer_props_visible_, true);
     set_visibility_action(act_effects_visible_, true);
     set_visibility_action(act_effects_presets_visible_, true);
     set_visibility_action(act_styles_visible_, true);
     set_visibility_action(act_timeline_visible_, true);
-    set_visibility_action(act_prerender_visible_, false);
+    set_visibility_action(act_prerender_visible_, true);
     set_visibility_action(act_editor_audio_visible_, true);
     if (act_lock_panels_) {
         QSignalBlocker blocker(act_lock_panels_);
         act_lock_panels_->setChecked(false);
     }
 
-    QSize default_size(1680, 900);
-    QScreen *target_screen = screen();
-    if (!target_screen && windowHandle())
-        target_screen = windowHandle()->screen();
-    if (!target_screen)
-        target_screen = QApplication::primaryScreen();
-    if (target_screen) {
-        const QSize available = target_screen->availableGeometry().size();
-        const QSize safe_max(std::max(minimumWidth(), static_cast<int>(available.width() * 0.96)),
-                             std::max(minimumHeight(), static_cast<int>(available.height() * 0.94)));
-        default_size = default_size.boundedTo(safe_max);
-    }
-    default_size = default_size.expandedTo(minimumSize());
-    resize(default_size);
-
-    const auto apply_default_sizes = [this]() {
-        if (tools_dock_ && graphic_props_dock_ && layer_props_dock_)
-            resizeDocks({tools_dock_, graphic_props_dock_, layer_props_dock_},
-                        {46, 280, 285}, Qt::Horizontal);
-        if (graphic_props_dock_ && styles_dock_ && effects_presets_dock_)
-            resizeDocks({graphic_props_dock_, styles_dock_, effects_presets_dock_},
-                        {105, 320, 245}, Qt::Vertical);
-        if (effects_presets_dock_ && effects_dock_)
-            resizeDocks({effects_presets_dock_, effects_dock_}, {160, 130}, Qt::Horizontal);
-        if (timeline_dock_)
-            resizeDocks({timeline_dock_}, {230}, Qt::Vertical);
-    };
-    apply_default_sizes();
-
-    update_panel_lock_state();
     restoring_editor_layout_ = false;
+    update_panel_lock_state();
     save_editor_layout();
-
-    /* QMainWindow finalizes nested dock geometry after the event loop resumes.
-     * Re-apply the proportions once so the first visible frame matches the
-     * intended workspace, then persist the settled state. */
-    QTimer::singleShot(0, this, [this, apply_default_sizes]() {
-        apply_default_sizes();
-        save_editor_layout();
-    });
 }
 
 void TitleEditor::set_panels_locked(bool locked)
 {
+    if (panels_locked_ == locked) {
+        update_panel_lock_state();
+        return;
+    }
+
     panels_locked_ = locked;
     update_panel_lock_state();
     save_editor_layout();
@@ -360,32 +409,68 @@ void TitleEditor::update_panel_lock_state()
         QDockWidget::DockWidgetClosable |
         QDockWidget::DockWidgetMovable |
         QDockWidget::DockWidgetFloatable;
-    const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::DockWidgetClosable;
+    const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::NoDockWidgetFeatures;
 
-    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, effects_presets_dock_, styles_dock_, timeline_dock_, prerender_dock_, editor_audio_dock_}) {
-        if (!dock) continue;
+    /* Locking disables the title-bar close action together with interactive
+     * movement/floating, so a locked workspace cannot lose a dock accidentally. Changing
+     * allowedAreas to NoDockWidgetArea or freezing min/max dimensions can make
+     * tabified docks disappear, collapse splitters, or restore off-screen on
+     * the next editor session. Preserve each dock's legal area and geometry. */
+    for (auto *dock : {tools_dock_, graphic_props_dock_, three_d_scene_dock_,
+                       layer_props_dock_, effects_dock_, effects_presets_dock_,
+                       styles_dock_, timeline_dock_, prerender_dock_,
+                       editor_audio_dock_}) {
+        if (!dock)
+            continue;
+
         dock->setFeatures(panels_locked_ ? locked_features : unlocked_features);
-        dock->setAllowedAreas(panels_locked_ ? Qt::NoDockWidgetArea
-                                             : (dock == timeline_dock_
-                                                    ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
-                                                    : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea)));
-        if (panels_locked_) {
-            const int locked_width = std::max(dock->minimumWidth(), dock->width());
-            if (dock == timeline_dock_) {
-                const int locked_height = std::max(dock->minimumHeight(), dock->height());
-                dock->setMinimumHeight(locked_height);
-                dock->setMaximumHeight(locked_height);
-            } else {
-                dock->setMinimumWidth(locked_width);
-                dock->setMaximumWidth(locked_width);
+
+        /* A locked tab stack already has its tab strip as the only useful
+         * identifier, so suppress the duplicate dock title bar. The Sidebar
+         * and Editor Audio are deliberately headerless while locked even when
+         * standalone, preserving their narrow width for the actual controls.
+         * Reuse our zero-height placeholder across repeated lock/unlock cycles
+         * and leave any unrelated custom title-bar widget untouched. */
+        const bool hide_locked_header = panels_locked_ &&
+            (dock == tools_dock_ || dock == editor_audio_dock_ ||
+             !tabifiedDockWidgets(dock).isEmpty());
+        QWidget *title_bar = dock->titleBarWidget();
+        const bool owns_locked_placeholder = title_bar &&
+            title_bar->property("bglLockedDockHeaderPlaceholder").toBool();
+        if (hide_locked_header && !owns_locked_placeholder) {
+            auto *placeholder = dock->findChild<QWidget *>(
+                QStringLiteral("BglLockedDockHeaderPlaceholder"),
+                Qt::FindDirectChildrenOnly);
+            if (!placeholder) {
+                placeholder = new QWidget(dock);
+                placeholder->setObjectName(QStringLiteral("BglLockedDockHeaderPlaceholder"));
+                placeholder->setProperty("bglLockedDockHeaderPlaceholder", true);
+                placeholder->setFixedHeight(0);
+                placeholder->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
             }
+            dock->setTitleBarWidget(placeholder);
+        } else if (!hide_locked_header && owns_locked_placeholder) {
+            dock->setTitleBarWidget(nullptr);
+        }
+
+        dock->setAllowedAreas(dock == timeline_dock_
+                                  ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
+                                  : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
+
+        /* Clear dimension clamps left by Development Version 309 before
+         * restoring the normal per-dock sizing policy. */
+        if (dock == timeline_dock_) {
+            dock->setMinimumHeight(dock->widget() ? dock->widget()->minimumHeight() : 180);
+            dock->setMaximumHeight(QWIDGETSIZE_MAX);
         } else {
-            dock->setMinimumWidth(dock == tools_dock_ ? 46 : (dock == editor_audio_dock_ ? 56 : (dock->widget() ? dock->widget()->minimumWidth() : 220)));
-            dock->setMaximumWidth(dock == tools_dock_ ? 64 : (dock == editor_audio_dock_ ? 96 : QWIDGETSIZE_MAX));
-            if (dock == timeline_dock_) {
-                dock->setMinimumHeight(dock->widget() ? dock->widget()->minimumHeight() : 180);
-                dock->setMaximumHeight(QWIDGETSIZE_MAX);
-            }
+            dock->setMinimumWidth(dock == tools_dock_
+                                      ? 46
+                                      : (dock == editor_audio_dock_
+                                             ? 56
+                                             : (dock->widget() ? dock->widget()->minimumWidth() : 220)));
+            dock->setMaximumWidth(dock == tools_dock_
+                                      ? 64
+                                      : (dock == editor_audio_dock_ ? 96 : QWIDGETSIZE_MAX));
         }
     }
 }
@@ -422,8 +507,10 @@ static void set_text_layer_direction_defaults(Layer &layer, bool paragraph_box, 
     layer.text_overflow_mode = paragraph_box ? 0 : 1;
     layer.text_box_width_to_text = !paragraph_box;
     layer.text_box_height_to_text = !paragraph_box;
-    layer.max_text_box_width = 9999.0f;
-    layer.max_text_box_height = 9999.0f;
+    layer.max_text_box_width = std::max(1.0f, layer.rect_width);
+    layer.max_text_box_height = std::max(1.0f, layer.rect_height);
+    layer.max_text_box_width_overridden = false;
+    layer.max_text_box_height_overridden = false;
     layer.rich_text.default_paragraph_format.align_h = layer.align_h;
     layer.rich_text.default_paragraph_format.align_v = layer.align_v;
 }
@@ -469,6 +556,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                   (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") :
                   (type == LayerType::Video) ? editor_text_std("OBSTitles.Video") :
                   (type == LayerType::Audio) ? editor_text_std("OBSTitles.Audio") :
+                  (type == LayerType::Empty) ? editor_text_std("OBSTitles.Empty") :
                   (type == LayerType::Adjustment) ? editor_text_std("OBSTitles.AdjustmentLayer") :
                   (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") :
                   (type == LayerType::Group) ? editor_text_std("OBSTitles.Group") : editor_text_std("OBSTitles.Shape");
@@ -491,6 +579,21 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                      ((layer_type_is_image_like(type)) ? title_->height * 0.4f : 160.0f);
     l->size.static_value.x = l->rect_width;
     l->size.static_value.y = l->rect_height;
+    if (type == LayerType::Empty) {
+        /* Empty layers have a transform origin but no raster geometry. A
+         * one-unit logical extent keeps transform math well-conditioned; the
+         * canvas deliberately never exposes it as a bounding box. */
+        l->rect_width = 1.0f;
+        l->rect_height = 1.0f;
+        l->size.static_value.x = 1.0;
+        l->size.static_value.y = 1.0;
+    }
+    if (type == LayerType::Text || type == LayerType::Clock) {
+        l->max_text_box_width = std::max(1.0f, l->rect_width);
+        l->max_text_box_height = std::max(1.0f, l->rect_height);
+        l->max_text_box_width_overridden = false;
+        l->max_text_box_height_overridden = false;
+    }
     if (layer_type_is_image_like(type)) {
         l->image_width = l->rect_width;
         l->image_height = l->rect_height;
@@ -595,6 +698,12 @@ void TitleEditor::create_pen_path_layer_from_canvas(const std::vector<BezierPath
     layer->position.static_value.y = bounds.center().y();
     layer->rect_width = (float)width;
     layer->rect_height = (float)height;
+    if (is_canvas_text_layer(*layer)) {
+        if (!layer->max_text_box_width_overridden)
+            layer->max_text_box_width = (float)width;
+        if (!layer->max_text_box_height_overridden)
+            layer->max_text_box_height = (float)height;
+    }
     layer->size.static_value.x = width;
     layer->size.static_value.y = height;
     layer->origin_x = 0.5f;
@@ -856,6 +965,9 @@ void TitleEditor::build_ui()
     QAction *new_action = file_menu->addAction(bgl_tr("OBSTitles.New"));
     register_editor_shortcut(new_action, {QKeySequence(QKeySequence::New)});
     connect(new_action, &QAction::triggered, this, &TitleEditor::new_title_contents);
+    QAction *import_action = file_menu->addAction(
+        obs_icon("import.svg"), bgl_tr("OBSTitles.ImportUnified"));
+    connect(import_action, &QAction::triggered, this, &TitleEditor::import_document);
     QAction *save_action = file_menu->addAction(obs_icon("save.svg"), bgl_tr("OBSTitles.Save"));
     register_editor_shortcut(save_action, {QKeySequence(QKeySequence::Save)});
     connect(save_action, &QAction::triggered, this, &TitleEditor::save_title);
@@ -930,7 +1042,10 @@ void TitleEditor::build_ui()
             timeline_->paste_keyframes_at_playhead();
             return;
         }
-        if (!layer_clipboard_.empty())
+        if ((!layer_clipboard_.empty() ||
+                    (QApplication::clipboard() && QApplication::clipboard()->mimeData() &&
+                     QApplication::clipboard()->mimeData()->hasFormat(
+                         "application/x-bgl-layer-clipboard+json"))))
             paste_layer_from_clipboard();
         else
             paste_external_clipboard_to_canvas();
@@ -1007,4 +1122,3 @@ void TitleEditor::build_ui()
     connect(act_guide_coordinates_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_show_guide_coordinates(visible);
     });
-

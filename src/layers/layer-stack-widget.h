@@ -78,15 +78,21 @@ signals:
     void ungroup_layers_requested();
     void add_to_group_requested(const std::string &group_id);
     void remove_from_group_requested();
+    void layer_rows_dropped(const std::vector<std::string> &layer_ids,
+                            const std::string &target_layer_id,
+                            int placement);
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
     void layer_blend_mode_changed(const std::string &layer_id, EffectBlendMode blend_mode);
     void layer_effects_enabled_changed(const std::string &layer_id, bool enabled);
     void layer_dimension_mode_changed(const std::string &layer_id, LayerDimensionMode mode);
+    void layer_ui_color_changed(const std::string &layer_id, bool enabled,
+                                uint32_t argb);
     void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
     void add_camera_requested();
+    void add_light_requested(TitleLightType type);
     void clone_layer_requested(const std::string &layer_id);
     void copy_layer_requested(const std::string &layer_id);
     void paste_layer_requested(const std::string &layer_id);
@@ -113,9 +119,15 @@ private slots:
     void on_add_image();
     void on_add_video();
     void on_add_audio();
+    void on_add_empty();
     void on_add_adjustment();
     void on_add_color_solid();
     void on_add_camera();
+    void on_add_ambient_light();
+    void on_add_point_light();
+    void on_add_spot_light();
+    void on_add_parallel_light();
+    void on_add_environment_light();
     void on_move_up();
     void on_move_down();
     void on_delete();
@@ -127,6 +139,7 @@ private:
     void populate();
     void update_property_rows();
     void sync_order_from_list();
+    void refresh_layer_row_backgrounds();
     std::string selected_id() const;
 
     std::shared_ptr<Title> title_;
@@ -138,5 +151,3 @@ private:
     bool          layer_clipboard_available_ = false;
     double        playhead_ = 0.0;
 };
-
-

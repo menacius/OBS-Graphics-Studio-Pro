@@ -6,7 +6,10 @@
 #include <unordered_map>
 
 #include <QPainter>
+#include <QColorDialog>
+#include <QDropEvent>
 #include <QStringList>
+#include <QWidgetAction>
 
 
 namespace {
@@ -15,6 +18,7 @@ using LayerPtr = std::shared_ptr<Layer>;
 
 constexpr int kLayerListMargin = 4;
 constexpr int kLayerListSpacing = 4;
+constexpr int kLayerDragHandleWidth = 20;
 constexpr int kLayerVisibilityWidth = 20;
 constexpr int kLayerAudioMuteWidth = 20;
 constexpr int kLayerLockWidth = 20;
@@ -29,11 +33,347 @@ constexpr int kLayerParentWidth = 150;
 constexpr int kLayerMaskWidth = 130;
 constexpr int kLayerMatteControlWidth = 20;
 constexpr int kLayerDimensionWidth = 54;
+constexpr int kLayerGroupDropTargetRole = Qt::UserRole + 8;
+
+enum class LayerListDropPlacement {
+    Before = 0,
+    After = 1,
+    IntoGroup = 2,
+};
+
+static QPoint layer_list_drop_position(QDropEvent *event)
+{
+    if (!event)
+        return {};
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position().toPoint();
+#else
+    return event->pos();
+#endif
+}
 
 /* Fixed columns + minimum usable layer-name area + layout gaps.  Include
  * extra room for the vertical scrollbar so the splitter can never compress
  * the layer list until controls paint over one another. */
-constexpr int kLayerStackMinimumWidth = 918;
+constexpr int kLayerStackMinimumWidth = 942;
+
+class LayerListWidget final : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+    using DropHandler = std::function<void(
+        const std::vector<std::string> &, const std::string &,
+        LayerListDropPlacement)>;
+
+    void set_layer_drop_handler(DropHandler handler)
+    {
+        drop_handler_ = std::move(handler);
+    }
+
+    void start_row_drag(QListWidgetItem *item)
+    {
+        if (!item || !(item->flags() & Qt::ItemIsDragEnabled))
+            return;
+        if (!item->isSelected()) {
+            clearSelection();
+            item->setSelected(true);
+        }
+        setCurrentItem(item, QItemSelectionModel::NoUpdate);
+        setFocus(Qt::MouseFocusReason);
+        dragged_layer_ids_.clear();
+        for (QListWidgetItem *selected : selectedItems()) {
+            if (!selected ||
+                selected->data(Qt::UserRole + 1).toString() !=
+                    QStringLiteral("layer") ||
+                !(selected->flags() & Qt::ItemIsDragEnabled))
+                continue;
+            dragged_layer_ids_.push_back(
+                selected->data(Qt::UserRole).toString().toStdString());
+        }
+        startDrag(Qt::MoveAction);
+        dragged_layer_ids_.clear();
+    }
+
+protected:
+    void dropEvent(QDropEvent *event) override
+    {
+        if (!event || dragged_layer_ids_.empty() || !drop_handler_) {
+            if (event)
+                event->ignore();
+            return;
+        }
+
+        QListWidgetItem *target = itemAt(layer_list_drop_position(event));
+        const bool drop_into_group = target &&
+            target->data(Qt::UserRole + 1).toString() ==
+                QStringLiteral("layer") &&
+            dropIndicatorPosition() == QAbstractItemView::OnItem &&
+            target->data(kLayerGroupDropTargetRole).toBool();
+        if (!drop_into_group) {
+            /* With ItemIsDropEnabled removed from ordinary rows, Qt exposes
+             * only AboveItem/BelowItem insertion lines here. Keep the dragged
+             * layer in its current hierarchy scope and let rowsMoved feed the
+             * existing canonical sibling-order synchronization. */
+            QListWidget::dropEvent(event);
+            return;
+        }
+
+        const std::string target_id =
+            target->data(Qt::UserRole).toString().toStdString();
+        if (
+            std::find(dragged_layer_ids_.begin(), dragged_layer_ids_.end(),
+                      target_id) != dragged_layer_ids_.end()) {
+            event->ignore();
+            return;
+        }
+
+        drop_handler_(dragged_layer_ids_, target_id,
+                      LayerListDropPlacement::IntoGroup);
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+    }
+
+private:
+    DropHandler drop_handler_;
+    std::vector<std::string> dragged_layer_ids_;
+};
+
+class LayerRowWidget final : public QWidget {
+public:
+    LayerRowWidget(QListWidgetItem *item, const QColor &layer_color,
+                   QWidget *parent)
+        : QWidget(parent), item_(item), layer_color_(layer_color)
+    {
+        setObjectName(QStringLiteral("layerListColorRow"));
+        setAutoFillBackground(false);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), palette().color(QPalette::Window));
+        QColor background = layer_color_;
+        background.setAlpha(item_ && item_->isSelected() ? 255 : 72);
+        painter.fillRect(rect(), background);
+        if (item_ && item_->isSelected()) {
+            QColor outline = layer_color_.lighter(145);
+            outline.setAlpha(230);
+            painter.setPen(QPen(outline, 1.0));
+            painter.drawRect(rect().adjusted(0, 0, -1, -1));
+        }
+    }
+
+private:
+    QListWidgetItem *item_ = nullptr;
+    QColor layer_color_;
+};
+
+class LayerColorIcon final : public QLabel {
+public:
+    using ClickHandler = std::function<void()>;
+
+    explicit LayerColorIcon(QWidget *parent) : QLabel(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+    }
+
+    void set_click_handler(ClickHandler handler)
+    {
+        click_handler_ = std::move(handler);
+    }
+
+protected:
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event && event->button() == Qt::LeftButton &&
+            rect().contains(event->pos()) && click_handler_) {
+            click_handler_();
+            event->accept();
+            return;
+        }
+        QLabel::mouseReleaseEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event &&
+            (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+             event->key() == Qt::Key_Space) && click_handler_) {
+            click_handler_();
+            event->accept();
+            return;
+        }
+        QLabel::keyPressEvent(event);
+    }
+
+private:
+    ClickHandler click_handler_;
+};
+
+static const std::array<QColor, 16> &layer_ui_color_palette()
+{
+    static const std::array<QColor, 16> colors = {
+        QColor(QStringLiteral("#e03131")),
+        QColor(QStringLiteral("#f76707")),
+        QColor(QStringLiteral("#f59f00")),
+        QColor(QStringLiteral("#94d82d")),
+        QColor(QStringLiteral("#37b24d")),
+        QColor(QStringLiteral("#0ca678")),
+        QColor(QStringLiteral("#1098ad")),
+        QColor(QStringLiteral("#1c7ed6")),
+        QColor(QStringLiteral("#4263eb")),
+        QColor(QStringLiteral("#7048e8")),
+        QColor(QStringLiteral("#ae3ec9")),
+        QColor(QStringLiteral("#d6336c")),
+        QColor(QStringLiteral("#8d6e63")),
+        QColor(QStringLiteral("#adb5bd")),
+        QColor(QStringLiteral("#495057")),
+        QColor(QStringLiteral("#212529")),
+    };
+    return colors;
+}
+
+static QString layer_ui_color_swatch_style(const QColor &color,
+                                           bool selected)
+{
+    const QPalette palette = qApp->palette();
+    const QColor border = selected
+        ? palette.color(QPalette::Highlight)
+        : palette.color(QPalette::Mid);
+    const QColor check = color.lightness() < 135 ? Qt::white : Qt::black;
+    return QStringLiteral(
+        "QToolButton{background:%1;color:%2;border:%3px solid %4;"
+        "border-radius:3px;font-weight:bold;padding:0;}"
+        "QToolButton:hover{border:2px solid %5;}")
+        .arg(color.name(QColor::HexRgb),
+             check.name(QColor::HexRgb),
+             selected ? QStringLiteral("2") : QStringLiteral("1"),
+             border.name(QColor::HexRgb),
+             palette.color(QPalette::Highlight).name(QColor::HexRgb));
+}
+
+static QIcon layer_ui_color_action_icon(const QColor &color)
+{
+    QPixmap pixmap(16, 16);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.fillRect(QRect(1, 1, 14, 14), color);
+    painter.setPen(qApp->palette().color(QPalette::Mid));
+    painter.drawRect(QRect(0, 0, 15, 15));
+    return QIcon(pixmap);
+}
+
+static void make_layer_row_children_transparent(QWidget *row_widget)
+{
+    if (!row_widget)
+        return;
+
+    const QBrush transparent(QColor(0, 0, 0, 0));
+    const QPalette::ColorGroup groups[] = {
+        QPalette::Active, QPalette::Inactive, QPalette::Disabled};
+    const QPalette::ColorRole roles[] = {
+        QPalette::Window, QPalette::Base,
+        QPalette::AlternateBase, QPalette::Button};
+
+    for (QWidget *child : row_widget->findChildren<QWidget *>()) {
+        /* Combo popup views must retain their opaque OBS-theme surface. */
+        if (!child || child->isWindow() ||
+            qobject_cast<QAbstractItemView *>(child))
+            continue;
+        child->setAutoFillBackground(false);
+        child->setAttribute(Qt::WA_OpaquePaintEvent, false);
+        QPalette child_palette = child->palette();
+        for (QPalette::ColorGroup group : groups)
+            for (QPalette::ColorRole role : roles)
+                child_palette.setBrush(group, role, transparent);
+        child->setPalette(child_palette);
+    }
+}
+
+class LayerRowDragHandle final : public QToolButton {
+public:
+    LayerRowDragHandle(LayerListWidget *list, QListWidgetItem *item,
+                       QWidget *parent)
+        : QToolButton(parent), list_(list), item_(item)
+    {
+        setFixedSize(kLayerDragHandleWidth, 20);
+        setObjectName(QStringLiteral("layerRowDragHandle"));
+        setAccessibleName(bgl_tr("OBSTitles.DragLayerTooltip"));
+        setAutoRaise(true);
+        setToolTip(bgl_tr("OBSTitles.DragLayerTooltip"));
+        setCursor(item && (item->flags() & Qt::ItemIsDragEnabled)
+                      ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        setEnabled(item && (item->flags() & Qt::ItemIsDragEnabled));
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (!event || event->button() != Qt::LeftButton || !isEnabled()) {
+            QToolButton::mousePressEvent(event);
+            return;
+        }
+        press_position_ = event->pos();
+        pressed_ = true;
+        setDown(true);
+        if (list_ && item_)
+            list_->setCurrentItem(item_);
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!event || !pressed_ ||
+            !(event->buttons() & Qt::LeftButton)) {
+            QToolButton::mouseMoveEvent(event);
+            return;
+        }
+        if ((event->pos() - press_position_).manhattanLength() <
+            QApplication::startDragDistance()) {
+            event->accept();
+            return;
+        }
+        pressed_ = false;
+        setDown(false);
+        setCursor(Qt::ClosedHandCursor);
+        if (list_)
+            list_->start_row_drag(item_);
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        pressed_ = false;
+        setDown(false);
+        if (event)
+            event->accept();
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QColor dot = palette().color(isEnabled() ? QPalette::Text
+                                                  : QPalette::Mid);
+        dot.setAlpha(isDown() ? 245 : 175);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(dot);
+        for (int column = 0; column < 2; ++column)
+            for (int row = 0; row < 3; ++row)
+                painter.drawEllipse(QPointF(7.0 + column * 6.0,
+                                            6.0 + row * 4.0),
+                                    1.25, 1.25);
+    }
+
+private:
+    LayerListWidget *list_ = nullptr;
+    QListWidgetItem *item_ = nullptr;
+    QPoint press_position_;
+    bool pressed_ = false;
+};
 
 class FxIndicatorButton final : public QToolButton {
 public:
@@ -266,15 +606,14 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
 {
     const QPalette pal = qApp->palette();
     const QColor window = pal.color(QPalette::Window);
-    const QColor base = pal.color(QPalette::Base);
     const QColor text = pal.color(QPalette::WindowText);
     const QColor disabled_text = pal.color(QPalette::Disabled, QPalette::WindowText);
     const QColor border = pal.color(QPalette::Mid);
     const QColor button = pal.color(QPalette::Button);
     const QColor button_text = pal.color(QPalette::ButtonText);
-    const QColor highlight = pal.color(QPalette::Highlight);
     const QColor hover = button.lightness() < 128 ? button.lighter(125) : button.darker(108);
-    setStyleSheet(QStringLiteral("background:%1;color:%2;")
+    setObjectName(QStringLiteral("layerStack"));
+    setStyleSheet(QStringLiteral("QWidget#layerStack{background:%1;color:%2;}")
                       .arg(window.name(QColor::HexRgb),
                            text.name(QColor::HexRgb)));
     setMinimumWidth(kLayerStackMinimumWidth);
@@ -318,6 +657,7 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
      * Visibility, audio mute, lock, expand, type, FX and matte role remain
      * fixed-width columns so rows never shift when a Video/Audio/Group row
      * gains or loses an audio switch. */
+    add_header("", kLayerDragHandleWidth);
     add_header("", kLayerVisibilityWidth);
     add_header("", kLayerAudioMuteWidth);
     add_header("", kLayerLockWidth);
@@ -332,15 +672,25 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                             .arg(disabled_text.name(QColor::HexRgb)));
     ch->addWidget(name, 1);
     add_header(bgl_tr("OBSTitles.ModeHeader"), kLayerModeWidth, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.ParentHeader"), kLayerParentWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header(bgl_tr("OBSTitles.MatteSourceHeader"), kLayerMaskWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header_icon("matte-alpha.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
     add_header_icon("matte-normal.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
+    add_header(bgl_tr("OBSTitles.ParentHeader"), kLayerParentWidth, Qt::AlignLeft | Qt::AlignVCenter);
     add_header(QStringLiteral("2D/3D"), kLayerDimensionWidth);
     vl->addWidget(columns);
 
-    list_ = new QListWidget(this);
+    auto *layer_list = new LayerListWidget(this);
+    list_ = layer_list;
+    layer_list->set_layer_drop_handler(
+        [this](const std::vector<std::string> &layer_ids,
+               const std::string &target_id,
+               LayerListDropPlacement placement) {
+            emit layer_rows_dropped(layer_ids, target_id,
+                                    static_cast<int>(placement));
+        });
     list_->setDragDropMode(QAbstractItemView::InternalMove);
+    list_->setDefaultDropAction(Qt::MoveAction);
+    list_->setDropIndicatorShown(true);
     list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     list_->setAlternatingRowColors(false);
     list_->setUniformItemSizes(false);
@@ -348,14 +698,12 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     list_->setStyleSheet(QStringLiteral(
         "QListWidget{background:%1;border:none;color:%2;}"
         "QListWidget::item{border-bottom:1px solid %3;}"
-        "QListWidget::item:selected{background:%4;color:%5;}"
-        "QListWidget::item:hover{background:%6;}")
+        "QListWidget::item:selected{background:transparent;color:%4;}"
+        "QListWidget::item:hover{background:transparent;}")
         .arg(window.name(QColor::HexRgb),
              text.name(QColor::HexRgb),
              border.name(QColor::HexRgb),
-             highlight.name(QColor::HexRgb),
-             pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
-             hover.name(QColor::HexRgb)));
+             pal.color(QPalette::HighlightedText).name(QColor::HexRgb)));
     vl->addWidget(list_, 1);
 
     auto *toolbar = new QToolBar(this);
@@ -408,6 +756,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                         bgl_tr("OBSTitles.Video"), this, &LayerStack::on_add_video);
     add_menu->addAction(obs_icon("audio.svg"),
                         bgl_tr("OBSTitles.Audio"), this, &LayerStack::on_add_audio);
+    add_menu->addAction(obs_icon("shape.svg"),
+                        bgl_tr("OBSTitles.Empty"), this, &LayerStack::on_add_empty);
     add_menu->addSeparator();
     add_menu->addAction(obs_icon("lightning.svg"),
                         bgl_tr("OBSTitles.AdjustmentLayer"), this, &LayerStack::on_add_adjustment);
@@ -416,6 +766,13 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     add_menu->addSeparator();
     add_menu->addAction(obs_icon("graphic.svg"),
                         QStringLiteral("Camera"), this, &LayerStack::on_add_camera);
+    auto *light_menu = add_menu->addMenu(obs_icon("lightning.svg"),
+                                          QStringLiteral("Light"));
+    light_menu->addAction(QStringLiteral("Ambient Light"), this, &LayerStack::on_add_ambient_light);
+    light_menu->addAction(QStringLiteral("Point Light"), this, &LayerStack::on_add_point_light);
+    light_menu->addAction(QStringLiteral("Spot Light"), this, &LayerStack::on_add_spot_light);
+    light_menu->addAction(QStringLiteral("Parallel Light"), this, &LayerStack::on_add_parallel_light);
+    light_menu->addAction(QStringLiteral("Environment Light"), this, &LayerStack::on_add_environment_light);
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -461,6 +818,7 @@ bool LayerStack::eventFilter(QObject *watched, QEvent *event)
             QSignalBlocker blocker(list_);
             list_->clearSelection();
             list_->setCurrentItem(nullptr);
+            refresh_layer_row_backgrounds();
             emit layer_selected(std::string());
             emit layers_selected({});
             event->accept();
@@ -578,6 +936,21 @@ void LayerStack::update_property_rows()
     }
 }
 
+void LayerStack::refresh_layer_row_backgrounds()
+{
+    if (!list_)
+        return;
+    for (int row = 0; row < list_->count(); ++row) {
+        QListWidgetItem *item = list_->item(row);
+        if (!item ||
+            item->data(Qt::UserRole + 1).toString() !=
+                QStringLiteral("layer"))
+            continue;
+        if (QWidget *row_widget = list_->itemWidget(item))
+            row_widget->update();
+    }
+}
+
 void LayerStack::sync_order_from_list()
 {
     if (!title_) return;
@@ -620,25 +993,128 @@ void LayerStack::populate()
     const QColor border = pal.color(QPalette::Mid);
     const QColor dark = pal.color(QPalette::Dark);
     const QColor highlight = pal.color(QPalette::Highlight);
-    const QColor hover = button.lightness() < 128 ? button.lighter(125) : button.darker(108);
     const QString button_style = QStringLiteral(
-        "QToolButton{color:%1;background:transparent;border:none;}"
-        "QToolButton:hover{background:%2;border-radius:2px;}"
-        "QToolButton:checked{color:%3;}")
+        "QToolButton{color:%1;background-color:rgba(0,0,0,0);border:none;}"
+        "QToolButton:hover{background-color:rgba(0,0,0,0);color:%2;}"
+        "QToolButton:checked{background-color:rgba(0,0,0,0);color:%2;}")
         .arg(button_text.name(QColor::HexRgb),
-             hover.name(QColor::HexRgb),
-             text.name(QColor::HexRgb));
+             highlight.name(QColor::HexRgb));
     const QString combo_style = QStringLiteral(
-        "QComboBox{color:%1;background:%2;border:none;border-radius:3px;padding-left:4px;}"
-        "QComboBox::drop-down{border:none;}"
+        "QComboBox{color:%1;background-color:rgba(0,0,0,0);border:1px solid transparent;border-radius:3px;padding-left:4px;}"
+        "QComboBox:hover{background-color:rgba(0,0,0,0);border-color:%3;}"
+        "QComboBox::drop-down{background-color:rgba(0,0,0,0);border:none;}"
         "QComboBox QAbstractItemView{background:%2;color:%1;selection-background-color:%3;selection-color:%4;}")
         .arg(field_text.name(QColor::HexRgb),
              base.name(QColor::HexRgb),
              highlight.name(QColor::HexRgb),
              pal.color(QPalette::HighlightedText).name(QColor::HexRgb));
-    const QString label_chip_style = QStringLiteral("color:%1;background:%2;border-radius:3px;padding-left:4px;")
-                                         .arg(field_text.name(QColor::HexRgb),
-                                              base.name(QColor::HexRgb));
+
+    auto show_layer_color_menu =
+        [this](QWidget *anchor, QListWidgetItem *item,
+               const std::string &layer_id, bool has_custom_color,
+               const QColor &current_color, const QColor &default_color) {
+            if (!anchor || layer_id.empty())
+                return;
+            if (item)
+                list_->setCurrentItem(item);
+
+            /* Keep the popup outside the colored type chip's widget subtree.
+             * Otherwise the chip's unqualified background stylesheet can
+             * cascade into the menu and tint it with the layer color. */
+            auto *menu = new QMenu(list_);
+            menu->setAttribute(Qt::WA_DeleteOnClose);
+            const QPalette menu_palette = qApp->palette();
+            menu->setPalette(menu_palette);
+            menu->setStyleSheet(QStringLiteral(
+                "QMenu{color:%1;background:%2;border:1px solid %3;}"
+                "QMenu::item{padding:5px 22px;}"
+                "QMenu::item:selected{background:%4;color:%5;}"
+                "QMenu::item:disabled{color:%6;}"
+                "QWidget#layerColorPaletteWidget{background:%2;color:%1;}")
+                .arg(menu_palette.color(QPalette::Text)
+                         .name(QColor::HexRgb),
+                     menu_palette.color(QPalette::Base)
+                         .name(QColor::HexRgb),
+                     menu_palette.color(QPalette::Mid)
+                         .name(QColor::HexRgb),
+                     menu_palette.color(QPalette::Highlight)
+                         .name(QColor::HexRgb),
+                     menu_palette.color(QPalette::HighlightedText)
+                         .name(QColor::HexRgb),
+                     menu_palette.color(QPalette::Disabled, QPalette::Text)
+                         .name(QColor::HexRgb)));
+            menu->addSection(bgl_tr("OBSTitles.LayerColorPalette"));
+
+            auto *palette_action = new QWidgetAction(menu);
+            auto *palette_widget = new QWidget(menu);
+            palette_widget->setObjectName(
+                QStringLiteral("layerColorPaletteWidget"));
+            auto *grid = new QGridLayout(palette_widget);
+            grid->setContentsMargins(6, 4, 6, 6);
+            grid->setHorizontalSpacing(4);
+            grid->setVerticalSpacing(4);
+
+            const auto &colors = layer_ui_color_palette();
+            for (int index = 0; index < static_cast<int>(colors.size());
+                 ++index) {
+                const QColor color = colors[static_cast<size_t>(index)];
+                const bool selected = has_custom_color &&
+                    current_color.rgb() == color.rgb();
+                auto *swatch = new QToolButton(palette_widget);
+                swatch->setObjectName(QStringLiteral("layerColorSwatch"));
+                swatch->setFixedSize(24, 24);
+                swatch->setAutoRaise(false);
+                swatch->setText(selected ? QStringLiteral("✓") : QString());
+                swatch->setToolTip(color.name(QColor::HexRgb).toUpper());
+                swatch->setAccessibleName(
+                    bgl_tr("OBSTitles.LayerColorSwatchAccessibleFormat")
+                        .arg(color.name(QColor::HexRgb).toUpper()));
+                swatch->setStyleSheet(
+                    layer_ui_color_swatch_style(color, selected));
+                connect(swatch, &QToolButton::clicked, menu,
+                        [this, menu, layer_id, color]() {
+                            /* Close first: the emitted edit rebuilds the layer
+                             * list synchronously and destroys this popup. */
+                            menu->close();
+                            emit layer_ui_color_changed(
+                                layer_id, true,
+                                static_cast<uint32_t>(color.rgba()));
+                        });
+                grid->addWidget(swatch, index / 4, index % 4);
+            }
+            palette_action->setDefaultWidget(palette_widget);
+            menu->addAction(palette_action);
+            menu->addSeparator();
+
+            QAction *default_action = menu->addAction(
+                layer_ui_color_action_icon(default_color),
+                bgl_tr("OBSTitles.DefaultLayerColor"));
+            default_action->setCheckable(true);
+            default_action->setChecked(!has_custom_color);
+            connect(default_action, &QAction::triggered, menu,
+                    [this, layer_id]() {
+                        emit layer_ui_color_changed(layer_id, false, 0u);
+                    });
+
+            QAction *custom_action = menu->addAction(
+                layer_ui_color_action_icon(current_color),
+                bgl_tr("OBSTitles.CustomLayerColor"));
+            connect(custom_action, &QAction::triggered, this,
+                    [this, layer_id, current_color]() {
+                        QColor selected = QColorDialog::getColor(
+                            current_color, this,
+                            bgl_tr("OBSTitles.CustomLayerColorDialog"),
+                            QColorDialog::DontUseNativeDialog);
+                        if (!selected.isValid())
+                            return;
+                        selected.setAlpha(255);
+                        emit layer_ui_color_changed(
+                            layer_id, true,
+                            static_cast<uint32_t>(selected.rgba()));
+                    });
+
+            menu->popup(anchor->mapToGlobal(QPoint(0, anchor->height())));
+        };
 
     std::set<std::string> track_matte_source_ids;
     for (const auto &candidate : title_->layers) {
@@ -691,19 +1167,26 @@ void LayerStack::populate()
         layout->setSpacing(kLayerListSpacing);
 
         if (!is_property) {
+            const bool is_light = timeline_light_from_owner(
+                *title_, timeline_row.owner_id) != nullptr;
             const bool expanded = timeline_row.is_camera_switch
                 ? title_->camera_switches_expanded
-                : ([&]() {
-                    const TitleCamera *camera = timeline_camera_from_owner(
-                        *title_, timeline_row.owner_id);
-                    return camera && camera->timeline_expanded;
-                })();
+                : is_light
+                    ? timeline_light_from_owner(*title_, timeline_row.owner_id)
+                          ->timeline_expanded
+                    : ([&]() {
+                        const TitleCamera *camera = timeline_camera_from_owner(
+                            *title_, timeline_row.owner_id);
+                        return camera && camera->timeline_expanded;
+                    })();
             auto *caret = new BglCaretButton(row_widget);
             caret->setCaretState(expanded ? 2 : 0);
             caret->setFixedSize(20, 20);
+            const QString owner_kind = is_light
+                ? QStringLiteral("light") : QStringLiteral("camera");
             caret->setToolTip(expanded
-                ? QStringLiteral("Hide camera properties")
-                : QStringLiteral("Show camera properties"));
+                ? QStringLiteral("Hide %1 properties").arg(owner_kind)
+                : QStringLiteral("Show %1 properties").arg(owner_kind));
             connect(caret, &QToolButton::clicked, this,
                     [this, caret, owner = timeline_row.owner_id]() {
                 const bool next = caret->caretState() == 0;
@@ -712,7 +1195,9 @@ void LayerStack::populate()
             });
             layout->addWidget(caret);
             auto *camera_icon = new QLabel(timeline_row.is_camera_switch
-                ? QStringLiteral("⇄") : QStringLiteral("CAM"), row_widget);
+                ? QStringLiteral("⇄")
+                : is_light ? QStringLiteral("LGT")
+                           : QStringLiteral("CAM"), row_widget);
             camera_icon->setFixedWidth(34);
             camera_icon->setAlignment(Qt::AlignCenter);
             camera_icon->setStyleSheet(QStringLiteral("color:%1;font-weight:700;")
@@ -861,21 +1346,53 @@ void LayerStack::populate()
         auto *item = new QListWidgetItem();
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
         item->setData(Qt::UserRole + 1, "layer");
-        Qt::ItemFlags row_flags = item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled;
+        Qt::ItemFlags row_flags =
+            item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled;
+        row_flags &= ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         if (!l->linked_media_stream)
-            row_flags |= Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled;
-        else
-            row_flags &= ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+            row_flags |= Qt::ItemIsDragEnabled;
+        /* Only an unlocked Group accepts an on-row drop. Every other layer
+         * exposes only the standard above/below insertion line. */
+        if (l->type == LayerType::Group && !l->locked)
+            row_flags |= Qt::ItemIsDropEnabled;
         item->setFlags(row_flags & ~Qt::ItemIsUserCheckable);
+        item->setData(kLayerGroupDropTargetRole,
+                      l->type == LayerType::Group && !l->locked);
         item->setSizeHint(QSize(0, 28));
         list_->addItem(item);
 
-        QWidget *row_widget = new QWidget(list_);
-        row_widget->setStyleSheet(QStringLiteral("background:transparent;color:%1;")
-                                      .arg(text.name(QColor::HexRgb)));
+        QWidget *row_widget = new LayerRowWidget(
+            item, layer_color(*l, row), list_);
+        QPalette row_palette = row_widget->palette();
+        row_palette.setColor(QPalette::WindowText, text);
+        row_palette.setColor(QPalette::Text, text);
+        row_widget->setPalette(row_palette);
         auto *hl = new QHBoxLayout(row_widget);
         hl->setContentsMargins(kLayerListMargin, 0, kLayerListMargin, 0);
         hl->setSpacing(kLayerListSpacing);
+        auto *drag_handle = new LayerRowDragHandle(
+            static_cast<LayerListWidget *>(list_), item, row_widget);
+        drag_handle->setStyleSheet(button_style);
+        hl->addWidget(drag_handle);
+
+        /* Every optional control lives inside a permanent fixed-width cell.
+         * Hiding an inapplicable control therefore never shifts later columns
+         * away from their shared header positions. */
+        auto add_fixed_control_column = [&](QWidget *control, int width,
+                                            bool show_control) {
+            auto *cell = new QWidget(row_widget);
+            cell->setFixedWidth(width);
+            cell->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+            auto *cell_layout = new QHBoxLayout(cell);
+            cell_layout->setContentsMargins(0, 0, 0, 0);
+            cell_layout->setSpacing(0);
+            if (control) {
+                cell_layout->addWidget(control, 0, Qt::AlignCenter);
+                control->setVisible(show_control);
+            }
+            hl->addWidget(cell);
+            return cell;
+        };
         const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
         auto make_toggle = [&](const char *on_icon, const char *off_icon, bool checked,
@@ -908,6 +1425,8 @@ void LayerStack::populate()
 
         const LayerMediaKinds media_kinds = layer_media_kinds(title_, *l);
         const bool is_audio_layer = l->type == LayerType::Audio;
+        const bool is_non_raster_layer = is_audio_layer ||
+            l->type == LayerType::Light || l->type == LayerType::Empty;
         const bool is_group_layer = layer_type_can_have_children(l->type);
 
         QToolButton *vis = nullptr;
@@ -1029,13 +1548,28 @@ void LayerStack::populate()
                                .arg(disabled_text.name(QColor::HexRgb)));
         hl->addWidget(idx);
 
-        QLabel *type = new QLabel(layer_type_short(l->type), row_widget);
+        auto *type = new LayerColorIcon(row_widget);
+        type->setText(layer_type_short(l->type));
         type->setFixedWidth(kLayerTypeWidth);
         type->setAlignment(Qt::AlignCenter);
-        type->setStyleSheet(QStringLiteral("background:%1;border:1px solid %2;color:%3;font-weight:bold;")
-                                .arg(layer_color(*l, row).name(QColor::HexRgb),
-                                     dark.name(QColor::HexRgb),
-                                     pal.color(QPalette::HighlightedText).name(QColor::HexRgb)));
+        type->setAccessibleName(bgl_tr("OBSTitles.LayerColorTooltip"));
+        type->setToolTip(bgl_tr("OBSTitles.LayerColorTooltip"));
+        const QColor effective_layer_color = layer_color(*l, row);
+        type->setStyleSheet(QStringLiteral(
+            "background:%1;border:1px solid %2;color:%3;font-weight:bold;")
+                .arg(effective_layer_color.name(QColor::HexRgb),
+                     dark.name(QColor::HexRgb),
+                     pal.color(QPalette::HighlightedText)
+                         .name(QColor::HexRgb)));
+        type->set_click_handler(
+            [show_layer_color_menu, type, item, id = l->id,
+             has_custom_color = l->custom_ui_color_enabled,
+             current_color = effective_layer_color,
+             default_color = layer_type_color(l->type)]() {
+                show_layer_color_menu(
+                    type, item, id, has_custom_color,
+                    current_color, default_color);
+            });
         hl->addWidget(type);
 
         const bool has_effect_stack = !l->effects.empty();
@@ -1131,10 +1665,9 @@ void LayerStack::populate()
         name->setStyleSheet(l->locked
             ? QStringLiteral("QLineEdit{color:%1;background:transparent;border:none;}")
                   .arg(disabled_text.name(QColor::HexRgb))
-            : QStringLiteral("QLineEdit{color:%1;background:transparent;border:none;padding:1px;} "
-                             "QLineEdit:focus{background:%2;border:1px solid %3;border-radius:2px;}")
+            : QStringLiteral("QLineEdit{color:%1;background-color:rgba(0,0,0,0);border:none;padding:1px;} "
+                             "QLineEdit:focus{background-color:rgba(0,0,0,0);border:1px solid %2;border-radius:2px;}")
                   .arg(text.name(QColor::HexRgb),
-                       base.name(QColor::HexRgb),
                        highlight.name(QColor::HexRgb)));
         connect(name, &QLineEdit::editingFinished, this,
                 [this, id = l->id, name]() {
@@ -1155,36 +1688,13 @@ void LayerStack::populate()
         mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
         int mode_idx = mode->findData((int)l->blend_mode);
         mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
-        mode->setEnabled(!is_audio_layer);
-        mode->setVisible(!is_audio_layer);
+        mode->setEnabled(!is_non_raster_layer);
         connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this, id = l->id, mode](int index) {
                     emit layer_blend_mode_changed(id, (EffectBlendMode)mode->itemData(index).toInt());
                 });
-        hl->addWidget(mode);
-
-        QComboBox *parent = new QComboBox(row_widget);
-        parent->setFixedWidth(kLayerParentWidth);
-        parent->setStyleSheet(combo_style);
-        parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
-        parent->addItem(bgl_tr("OBSTitles.None"), "");
-        for (int candidate_row = 0; candidate_row < static_cast<int>(title_->layers.size()); ++candidate_row) {
-            const auto &candidate = title_->layers[static_cast<size_t>(candidate_row)];
-            if (!candidate || candidate->id == l->id) continue;
-            const int layer_number = static_cast<int>(title_->layers.size()) - candidate_row;
-            const QString label = QStringLiteral("%1. %2")
-                                      .arg(layer_number)
-                                      .arg(QString::fromStdString(candidate->name));
-            parent->addItem(label, QString::fromStdString(candidate->id));
-        }
-        int parent_idx = parent->findData(QString::fromStdString(l->transform_parent_id));
-        parent->setCurrentIndex(parent_idx >= 0 ? parent_idx : 0);
-        connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                [this, id = l->id, parent](int index) {
-                    emit layer_parent_changed(id, parent->itemData(index).toString().toStdString());
-                });
-        parent->setVisible(!is_audio_layer);
-        hl->addWidget(parent);
+        add_fixed_control_column(mode, kLayerModeWidth,
+                                 !is_non_raster_layer);
 
         QComboBox *matte = new QComboBox(row_widget);
         matte->setFixedWidth(kLayerMaskWidth);
@@ -1194,6 +1704,7 @@ void LayerStack::populate()
         for (int candidate_row = 0; candidate_row < static_cast<int>(title_->layers.size()); ++candidate_row) {
             const auto &candidate = title_->layers[static_cast<size_t>(candidate_row)];
             if (!candidate || candidate->id == l->id) continue;
+            if (!layer_type_can_be_scene_mask(candidate->type)) continue;
             /* A child cannot use one of its container groups as a matte: the
              * group result already depends on that child, which would create
              * a recursive compositing graph. Groups remain valid matte sources
@@ -1210,8 +1721,8 @@ void LayerStack::populate()
 
         const int matte_idx = matte->findData(QString::fromStdString(l->mask_source_id));
         matte->setCurrentIndex(matte_idx >= 0 ? matte_idx : 0);
-        matte->setVisible(!is_audio_layer);
-        hl->addWidget(matte);
+        add_fixed_control_column(matte, kLayerMaskWidth,
+                                 !is_non_raster_layer);
 
         const bool has_matte = !l->mask_source_id.empty() && l->mask_mode != MaskMode::None;
         const bool uses_luma = l->mask_mode == MaskMode::Luma || l->mask_mode == MaskMode::InvertedLuma;
@@ -1248,8 +1759,8 @@ void LayerStack::populate()
         matte_type->setAutoRaise(true);
         matte_type->setStyleSheet(button_style);
         matte_type->setEnabled(has_matte);
-        matte_type->setVisible(!is_audio_layer);
-        hl->addWidget(matte_type);
+        add_fixed_control_column(matte_type, kLayerMatteControlWidth,
+                                 !is_non_raster_layer);
 
         QToolButton *matte_invert = new QToolButton(row_widget);
         matte_invert->setCheckable(true);
@@ -1266,8 +1777,8 @@ void LayerStack::populate()
         matte_invert->setAutoRaise(true);
         matte_invert->setStyleSheet(button_style);
         matte_invert->setEnabled(has_matte);
-        matte_invert->setVisible(!is_audio_layer);
-        hl->addWidget(matte_invert);
+        add_fixed_control_column(matte_invert, kLayerMatteControlWidth,
+                                 !is_non_raster_layer);
 
         auto selected_matte_mode = [matte_type, matte_invert]() {
             const bool inverted = matte_invert->isChecked();
@@ -1319,6 +1830,35 @@ void LayerStack::populate()
                     if (!source_id.empty()) emit layer_mask_changed(id, source_id, selected_matte_mode());
                 });
 
+        QComboBox *parent = new QComboBox(row_widget);
+        parent->setFixedWidth(kLayerParentWidth);
+        parent->setStyleSheet(combo_style);
+        parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
+        parent->addItem(bgl_tr("OBSTitles.None"), "");
+        for (int candidate_row = 0;
+             candidate_row < static_cast<int>(title_->layers.size());
+             ++candidate_row) {
+            const auto &candidate =
+                title_->layers[static_cast<size_t>(candidate_row)];
+            if (!candidate || candidate->id == l->id)
+                continue;
+            const int layer_number =
+                static_cast<int>(title_->layers.size()) - candidate_row;
+            const QString label = QStringLiteral("%1. %2")
+                                      .arg(layer_number)
+                                      .arg(QString::fromStdString(candidate->name));
+            parent->addItem(label, QString::fromStdString(candidate->id));
+        }
+        const int parent_idx = parent->findData(
+            QString::fromStdString(l->transform_parent_id));
+        parent->setCurrentIndex(parent_idx >= 0 ? parent_idx : 0);
+        connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, id = l->id, parent](int index) {
+                    emit layer_parent_changed(
+                        id, parent->itemData(index).toString().toStdString());
+                });
+        add_fixed_control_column(parent, kLayerParentWidth, !is_audio_layer);
+
         const bool supports_3d = !layer_type_is_audio(l->type) &&
                                  l->type != LayerType::Adjustment;
         auto *dimension_toggle = new QToolButton(row_widget);
@@ -1327,7 +1867,7 @@ void LayerStack::populate()
         dimension_toggle->setChecked(supports_3d &&
             l->dimension_mode == LayerDimensionMode::ThreeD);
         dimension_toggle->setEnabled(supports_3d && !l->locked);
-        dimension_toggle->setFixedSize(kLayerDimensionWidth, 20);
+        dimension_toggle->setFixedSize(24, 24);
         dimension_toggle->setAutoRaise(false);
         dimension_toggle->setCursor(supports_3d ? Qt::PointingHandCursor : Qt::ArrowCursor);
         dimension_toggle->setToolTip(supports_3d
@@ -1343,13 +1883,12 @@ void LayerStack::populate()
             dimension_toggle->style()->polish(dimension_toggle);
         };
         dimension_toggle->setStyleSheet(QStringLiteral(
-            "QToolButton{color:%1;background:%2;border:1px solid %3;border-radius:3px;"
+            "QToolButton{color:%1;background:transparent;border:1px solid %2;border-radius:3px;"
             "font-size:10px;font-weight:700;padding:0;}"
-            "QToolButton:hover:enabled{border-color:%4;}"
-            "QToolButton[threeD=\"true\"]{color:%5;background:%4;border-color:%4;}"
-            "QToolButton:disabled{color:%6;background:transparent;border-color:%3;}")
+            "QToolButton:hover:enabled{background:transparent;border-color:%3;}"
+            "QToolButton[threeD=\"true\"]{color:%4;background:%3;border-color:%3;}"
+            "QToolButton:disabled{color:%5;background:transparent;border-color:%2;}")
             .arg(field_text.name(QColor::HexRgb),
-                 base.name(QColor::HexRgb),
                  border.name(QColor::HexRgb),
                  highlight.name(QColor::HexRgb),
                  pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
@@ -1362,7 +1901,13 @@ void LayerStack::populate()
                     emit layer_dimension_mode_changed(
                         id, is_3d ? LayerDimensionMode::ThreeD : LayerDimensionMode::TwoD);
                 });
-        hl->addWidget(dimension_toggle);
+        add_fixed_control_column(dimension_toggle, kLayerDimensionWidth, true);
+
+        /* Palette roles such as Base and Button can still be filled by the
+         * native OBS/Qt style after a transparent stylesheet declaration.
+         * Clear them once the complete row exists so its color remains a
+         * single uninterrupted surface behind every embedded control. */
+        make_layer_row_children_transparent(row_widget);
 
         list_->setItemWidget(item, row_widget);
         if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||
@@ -1657,6 +2202,7 @@ void LayerStack::set_selected_layers(const std::vector<std::string> &layer_ids)
     list_->clearSelection();
     if (layer_ids.empty()) {
         list_->setCurrentItem(nullptr);
+        refresh_layer_row_backgrounds();
         return;
     }
 
@@ -1674,6 +2220,7 @@ void LayerStack::set_selected_layers(const std::vector<std::string> &layer_ids)
     }
     if (current)
         list_->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+    refresh_layer_row_backgrounds();
 }
 
 std::string LayerStack::selected_id() const
@@ -1697,6 +2244,7 @@ std::vector<std::string> LayerStack::selected_ids() const
 
 void LayerStack::on_selection_changed()
 {
+    refresh_layer_row_backgrounds();
     if (QListWidgetItem *current = list_ ? list_->currentItem() : nullptr) {
         const QString kind = current->data(Qt::UserRole + 1).toString();
         if (kind == QStringLiteral("property") ||
@@ -1766,9 +2314,15 @@ void LayerStack::on_add_rect() { emit add_layer_requested(LayerType::Shape); }
 void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
 void LayerStack::on_add_video() { emit add_layer_requested(LayerType::Video); }
 void LayerStack::on_add_audio() { emit add_layer_requested(LayerType::Audio); }
+void LayerStack::on_add_empty() { emit add_layer_requested(LayerType::Empty); }
 void LayerStack::on_add_adjustment() { emit add_layer_requested(LayerType::Adjustment); }
 void LayerStack::on_add_color_solid() { emit add_layer_requested(LayerType::ColorSolid); }
 void LayerStack::on_add_camera() { emit add_camera_requested(); }
+void LayerStack::on_add_ambient_light() { emit add_light_requested(TitleLightType::Ambient); }
+void LayerStack::on_add_point_light() { emit add_light_requested(TitleLightType::Point); }
+void LayerStack::on_add_spot_light() { emit add_light_requested(TitleLightType::Spot); }
+void LayerStack::on_add_parallel_light() { emit add_light_requested(TitleLightType::Parallel); }
+void LayerStack::on_add_environment_light() { emit add_light_requested(TitleLightType::Environment); }
 
 void LayerStack::on_move_up()
 {

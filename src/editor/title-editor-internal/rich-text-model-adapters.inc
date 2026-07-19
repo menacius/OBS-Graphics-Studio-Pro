@@ -824,21 +824,6 @@ static void set_image_preview_label(QLabel *label, const QString &path)
 
 static const QColor C_TEXT     { 0xcccccc };
 static const QColor C_RULER    { 0x1e1e1e };
-static const QColor C_KF_DOT   { 0xffd23f };
-
-static QIcon keyframe_diamond_icon(bool active, bool outlined = false)
-{
-    if (active)
-        return bgl_icon("keyframe-active.svg", C_KF_DOT);
-    if (outlined)
-        return bgl_icon("keyframe-outline.svg", C_KF_DOT);
-    return bgl_icon("keyframe-inactive.svg");
-}
-
-
-
-
-
 static double obs_frame_rate()
 {
     struct obs_video_info ovi = {};
@@ -874,4 +859,3 @@ static QString format_timecode(double t)
         .arg(seconds, 2, 10, QChar('0'))
         .arg(frames, 2, 10, QChar('0'));
 }
-

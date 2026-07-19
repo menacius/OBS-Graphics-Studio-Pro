@@ -286,6 +286,19 @@ static bool present_gpu_session_texture_locked(
 {
     if (!session || !texture)
         return false;
+    if (!replace_destination &&
+        (!gpu_session_has_published_frame_for_current_title(session) ||
+         texture != session->final_texture)) {
+        session->last_error =
+            "Refused to present a texture outside the Published generation.";
+        BGL_LOG_WARNING("RenderDiagnostics", QStringLiteral(
+            "stage=presentation-invariant action=reject-unpublished texture=%1 final=%2 target=%3 generation=%4")
+            .arg(reinterpret_cast<quintptr>(texture), 0, 16)
+            .arg(reinterpret_cast<quintptr>(session->final_texture), 0, 16)
+            .arg(session->active_presentation_target)
+            .arg(session->published_presentation_generation));
+        return false;
+    }
     gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
     gs_eparam_t *image = effect
         ? bgl_effect_param(effect, "image")
@@ -483,6 +496,96 @@ std::string title_gpu_render_session_last_error(TitleGpuRenderSession *session)
         return "GPU render session is null.";
     std::lock_guard<std::mutex> lock(session->mutex);
     return session->last_error ? std::string(session->last_error) : std::string();
+}
+
+bool title_gpu_render_session_last_draw_deferred(
+    TitleGpuRenderSession *session)
+{
+    if (!session)
+        return false;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->last_draw_deferred;
+}
+
+bool title_gpu_render_session_shader_compile_status(
+    TitleGpuRenderSession *session, TitleGpuShaderCompileStatus &status)
+{
+    status = {};
+    status.progress_percent = 100;
+    if (!session)
+        return false;
+    std::lock_guard<std::mutex> lock(session->shader_compile_mutex);
+    status.active = session->shader_compile_active;
+    status.queued = !session->shader_compile_queue.empty();
+    status.completed_jobs = session->shader_compile_completed_jobs;
+    status.total_jobs = session->shader_compile_total_jobs;
+    status.progress_percent = std::clamp(
+        session->shader_compile_progress_percent, 0, 100);
+    status.label = session->shader_compile_active
+        ? session->shader_compile_label
+        : (!session->shader_compile_queue.empty()
+               ? session->shader_compile_queue.front().label
+               : std::string());
+    return status.active || status.queued || status.progress_percent < 100;
+}
+
+bool title_gpu_render_session_get_diagnostics(
+    TitleGpuRenderSession *session, TitleGpuRenderDiagnostics &diagnostics)
+{
+    diagnostics = {};
+    if (!session || session->destroying.load())
+        return false;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load())
+        return false;
+
+    diagnostics.valid = true;
+    diagnostics.session_time = session->time;
+    diagnostics.last_published_time = session->diagnostics_last_published_time;
+    diagnostics.update_serial = session->diagnostics_update_serial;
+    diagnostics.render_serial = session->diagnostics_render_serial;
+    diagnostics.publish_serial = session->diagnostics_publish_serial;
+    diagnostics.presentation_generation =
+        session->published_presentation_generation;
+    diagnostics.model_revision = session->model_revision;
+    diagnostics.published_model_revision = session->published_model_revision;
+    diagnostics.frame_dirty = session->frame_dirty;
+    diagnostics.last_draw_deferred = session->last_draw_deferred;
+    diagnostics.state_transaction_pending =
+        session->state_transaction_pending.load(std::memory_order_acquire);
+    diagnostics.has_published_frame =
+        gpu_session_has_published_frame_for_current_title(session);
+    diagnostics.force_compatibility_raster_rebuild =
+        session->force_compatibility_raster_rebuild;
+    diagnostics.use_submitted_final = session->use_submitted_final;
+    diagnostics.use_gpu_cached_final = session->use_gpu_cached_final;
+    diagnostics.use_base_frame = session->use_base_frame;
+    diagnostics.raster_count = session->layers.size();
+    diagnostics.hardware_depth_run_count =
+        session->diagnostics_hardware_depth_run_count;
+    diagnostics.hardware_depth_layer_count =
+        session->diagnostics_hardware_depth_layer_count;
+    diagnostics.extrusion_pass_count =
+        session->diagnostics_extrusion_pass_count;
+
+    for (const auto &pair : session->layers) {
+        const auto &entry = pair.second;
+        if (entry.pending_upload)
+            ++diagnostics.pending_raster_count;
+        if (entry.gpu_text)
+            ++diagnostics.gpu_text_raster_count;
+        if (entry.gpu_primitive)
+            ++diagnostics.gpu_primitive_raster_count;
+    }
+    if (session->has_title) {
+        for (const auto &layer : session->title.layers) {
+            if (!layer)
+                continue;
+            if (layer->type == LayerType::Light && layer->visible)
+                ++diagnostics.visible_light_layer_count;
+        }
+    }
+    return true;
 }
 
 static bool title_gpu_render_session_submit_async_readback(
@@ -919,12 +1022,24 @@ technique Draw
 }
 )";
 
-static gs_effect_t *scene_mask_effect_for_data(TitleSourceData *data)
+static gs_effect_t *scene_mask_effect_for_data(TitleSourceData *data,
+                                                TitleGpuRenderSession *session = nullptr)
 {
     if (!data)
         return nullptr;
-    if (!data->scene_mask_effect)
-        data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-bgs-scene-mask.effect", nullptr);
+    if (data->scene_mask_effect)
+        return data->scene_mask_effect;
+
+    if (session) {
+        ensure_session_shader_effect(session, data->scene_mask_effect,
+                                     "core:scene-mask", "Scene mask matte",
+                                     kSceneMaskEffect, "obs-bgs-scene-mask.effect",
+                                     &data->scene_mask_effect);
+        return nullptr;
+    }
+
+    data->scene_mask_effect =
+        gs_effect_create(kSceneMaskEffect, "obs-bgs-scene-mask.effect", nullptr);
     return data->scene_mask_effect;
 }
 
@@ -1168,7 +1283,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
     if (!data->scene_mask_matted_texrender)
         data->scene_mask_matted_texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     if (!data->scene_mask_scene_texrender || !data->scene_mask_matted_texrender ||
-        !scene_mask_effect_for_data(data))
+        !scene_mask_effect_for_data(data, data->gpu_render_session))
         return;
 
     for (std::size_t layer_index = 0; layer_index < title.layers.size(); ++layer_index) {
@@ -1210,18 +1325,17 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
         gs_viewport_push();
         gs_projection_push();
         gs_blend_state_push();
-        gs_texrender_reset(data->scene_mask_scene_texrender);
-        if (!gs_texrender_begin(data->scene_mask_scene_texrender, data->tex_w, data->tex_h)) {
+        struct vec4 clear;
+        vec4_zero(&clear);
+        if (!begin_gpu_target(data->scene_mask_scene_texrender,
+                              data->tex_w, data->tex_h, clear)) {
             gs_blend_state_pop();
             gs_projection_pop();
             gs_viewport_pop();
             continue;
         }
-        gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
-
-        struct vec4 clear;
-        vec4_zero(&clear);
-        gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
+        gs_enable_blending(true);
+        gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
         gs_matrix_push();
         gs_matrix_identity();
@@ -1244,23 +1358,22 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
         gs_viewport_pop();
 
         gs_texture_t *scene_texture = gs_texrender_get_texture(data->scene_mask_scene_texrender);
-        gs_effect_t *effect = scene_mask_effect_for_data(data);
+        gs_effect_t *effect = scene_mask_effect_for_data(data, data->gpu_render_session);
         if (scene_texture && effect) {
             gs_eparam_t *image = bgl_effect_param(effect, "image");
             gs_eparam_t *mask = bgl_effect_param(effect, "mask");
             if (image && mask) {
                 gs_viewport_push();
                 gs_projection_push();
-                gs_texrender_reset(data->scene_mask_matted_texrender);
-                if (!gs_texrender_begin(data->scene_mask_matted_texrender, data->tex_w, data->tex_h)) {
+                struct vec4 transparent;
+                vec4_zero(&transparent);
+                if (!begin_gpu_target(data->scene_mask_matted_texrender,
+                                      data->tex_w, data->tex_h,
+                                      transparent)) {
                     gs_projection_pop();
                     gs_viewport_pop();
                     continue;
                 }
-                gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
-                struct vec4 transparent;
-                vec4_zero(&transparent);
-                gs_clear(GS_CLEAR_COLOR, &transparent, 1.0f, 0);
                 gs_matrix_push();
                 gs_matrix_identity();
                 gs_effect_set_texture(image, scene_texture);
@@ -1338,23 +1451,74 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
 static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
-    if (!data ||
-        !data->shown_on_display.load(std::memory_order_acquire) ||
-        !data->output_visible.load(std::memory_order_acquire) ||
-        !data->gpu_render_session)
+    if (!data)
         return;
-    if (g_source_scene_collection_transition.load(
-            std::memory_order_acquire))
+
+    const uint64_t source_render_serial = ++data->diagnostic_render_serial;
+    const auto render_now = std::chrono::steady_clock::now();
+    auto record_skipped_render = [&](const char *reason) {
+        ++data->diagnostic_skipped_render_count;
+        BGL_LOG_DEBUG("SourcePresentation", QStringLiteral(
+            "event=render-skipped source=%1 title=%2 render=%3 reason=%4 playhead=%5 dirty=%6 firstPending=%7 shown=%8 outputVisible=%9 requestedGeneration=%10 appliedGeneration=%11")
+            .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+            .arg(QString::fromStdString(data->title_id))
+            .arg(source_render_serial)
+            .arg(QString::fromUtf8(reason))
+            .arg(data->playhead, 0, 'f', 6)
+            .arg(data->dirty)
+            .arg(data->first_frame_pending)
+            .arg(data->shown_on_display.load(std::memory_order_acquire))
+            .arg(data->output_visible.load(std::memory_order_acquire))
+            .arg(data->requested_presentation_generation.load(std::memory_order_acquire))
+            .arg(data->applied_presentation_generation.load(std::memory_order_acquire)));
+        if (data->diagnostic_last_render_succeeded &&
+            (!data->diagnostic_last_flicker_warning.time_since_epoch().count() ||
+             render_now - data->diagnostic_last_flicker_warning >= std::chrono::milliseconds(250))) {
+            BGL_LOG_WARNING("SourceFlicker", QStringLiteral(
+                "event=visible-frame-gap source=%1 title=%2 render=%3 reason=%4 playhead=%5 previousSuccessfulRender=%6 skippedTotal=%7")
+                .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+                .arg(QString::fromStdString(data->title_id))
+                .arg(source_render_serial)
+                .arg(QString::fromUtf8(reason))
+                .arg(data->playhead, 0, 'f', 6)
+                .arg(data->diagnostic_successful_render_serial)
+                .arg(data->diagnostic_skipped_render_count));
+            data->diagnostic_last_flicker_warning = render_now;
+        }
+        data->diagnostic_last_render_was_skipped = true;
+    };
+
+    if (!data->shown_on_display.load(std::memory_order_acquire)) {
+        record_skipped_render("source-hidden");
         return;
+    }
+    if (!data->output_visible.load(std::memory_order_acquire)) {
+        record_skipped_render("output-hidden");
+        return;
+    }
+    if (!data->gpu_render_session) {
+        record_skipped_render("missing-gpu-session");
+        return;
+    }
+    if (g_source_scene_collection_transition.load(std::memory_order_acquire)) {
+        record_skipped_render("scene-collection-transition");
+        return;
+    }
     /* Frontend/source callbacks may invalidate a presentation between video
      * ticks. Never draw the previous generation while waiting for the tick to
      * rebuild the current title graph. */
-    if (!source_presentation_generation_is_current(data))
+    if (!source_presentation_generation_is_current(data)) {
+        record_skipped_render("presentation-generation-mismatch");
         return;
+    }
 
-    auto title = TitleDataStore::instance().get_title(data->title_id);
-    if (!title)
+    auto title = data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
+    if (!title) {
+        record_skipped_render("title-missing");
         return;
+    }
 
     const uint32_t width = clamped_source_dimension(title->width);
     const uint32_t height = clamped_source_dimension(title->height);
@@ -1415,6 +1579,56 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
     data->consecutive_draw_failures = 0;
     data->first_frame_pending = false;
     data->dirty = false;
+    data->diagnostic_last_render_succeeded = true;
+    data->diagnostic_last_render_was_skipped = false;
+    data->diagnostic_successful_render_serial = source_render_serial;
+    data->diagnostic_last_render_time = render_now;
+
+    TitleGpuRenderDiagnostics source_gpu_diagnostics;
+    const bool have_source_gpu_diagnostics =
+        title_gpu_render_session_get_diagnostics(data->gpu_render_session,
+                                                 source_gpu_diagnostics);
+    BGL_LOG_DEBUG("SourcePresentation", QStringLiteral(
+        "event=render-presented source=%1 title=%2 render=%3 playhead=%4 size=%5x%6 dirty=%7 firstPending=%8 gpuDiagnostics=%9 gpuSessionTime=%10 lastPublishedTime=%11 updateSerial=%12 gpuRenderSerial=%13 publishSerial=%14 modelRevision=%15 publishedRevision=%16 frameDirty=%17 deferred=%18 hasFrame=%19 cachedFinal=%20 baseFrame=%21 rasters=%22 pendingRasters=%23")
+        .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+        .arg(QString::fromStdString(title->id))
+        .arg(source_render_serial)
+        .arg(data->playhead, 0, 'f', 6)
+        .arg(width).arg(height)
+        .arg(data->dirty).arg(data->first_frame_pending)
+        .arg(have_source_gpu_diagnostics)
+        .arg(source_gpu_diagnostics.session_time, 0, 'f', 6)
+        .arg(source_gpu_diagnostics.last_published_time, 0, 'f', 6)
+        .arg(source_gpu_diagnostics.update_serial)
+        .arg(source_gpu_diagnostics.render_serial)
+        .arg(source_gpu_diagnostics.publish_serial)
+        .arg(source_gpu_diagnostics.model_revision)
+        .arg(source_gpu_diagnostics.published_model_revision)
+        .arg(source_gpu_diagnostics.frame_dirty)
+        .arg(source_gpu_diagnostics.last_draw_deferred)
+        .arg(source_gpu_diagnostics.has_published_frame)
+        .arg(source_gpu_diagnostics.use_gpu_cached_final)
+        .arg(source_gpu_diagnostics.use_base_frame)
+        .arg(source_gpu_diagnostics.raster_count)
+        .arg(source_gpu_diagnostics.pending_raster_count));
+    if (have_source_gpu_diagnostics &&
+        (!source_gpu_diagnostics.has_published_frame ||
+         source_gpu_diagnostics.last_draw_deferred ||
+         source_gpu_diagnostics.published_model_revision !=
+             source_gpu_diagnostics.model_revision)) {
+        BGL_LOG_WARNING("SourceFlicker", QStringLiteral(
+            "event=frame-consistency-anomaly source=%1 title=%2 render=%3 playhead=%4 hasFrame=%5 deferred=%6 modelRevision=%7 publishedRevision=%8 frameDirty=%9 publishSerial=%10")
+            .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+            .arg(QString::fromStdString(title->id))
+            .arg(source_render_serial)
+            .arg(data->playhead, 0, 'f', 6)
+            .arg(source_gpu_diagnostics.has_published_frame)
+            .arg(source_gpu_diagnostics.last_draw_deferred)
+            .arg(source_gpu_diagnostics.model_revision)
+            .arg(source_gpu_diagnostics.published_model_revision)
+            .arg(source_gpu_diagnostics.frame_dirty)
+            .arg(source_gpu_diagnostics.publish_serial));
+    }
     render_scene_masks_gpu(data, *title, data->playhead);
 }
 
@@ -1511,7 +1725,9 @@ static void sync_media_transport_cue_state(TitleSourceData *data, bool cue)
     if (!data)
         return;
 
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
     if (!title)
         return;
 
@@ -1556,6 +1772,12 @@ static void source_media_play_pause(void *priv, bool pause)
     sync_editor_transport_override(data);
     const bool was_playing = data->playing;
     data->playing = !pause;
+    data->playback_state.store(
+        data->preview_ready.load(std::memory_order_acquire)
+            ? TitlePlaybackState::PreviewReady
+                            : (pause ? TitlePlaybackState::Paused
+                                     : TitlePlaybackState::Playing),
+        std::memory_order_release);
     if (!data->editor_audio_preview && !pause)
         sync_media_transport_cue_state(data, true);
     else if (data->editor_audio_preview)
@@ -1578,6 +1800,9 @@ static void source_media_restart(void *priv)
     if (!data->editor_transport_controlled)
         data->editor_playback_reverse = false;
     data->playing = true;
+    data->preview_ready.store(false, std::memory_order_release);
+    data->playback_state.store(TitlePlaybackState::Playing,
+                               std::memory_order_release);
     if (!data->editor_audio_preview)
         sync_media_transport_cue_state(data, true);
     else
@@ -1596,6 +1821,9 @@ static void source_media_stop(void *priv)
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
     data->playing = false;
+    data->preview_ready.store(false, std::memory_order_release);
+    data->playback_state.store(TitlePlaybackState::Stopped,
+                               std::memory_order_release);
     data->playhead = 0.0;
     if (!data->editor_audio_preview)
         sync_media_transport_cue_state(data, false);
@@ -1610,7 +1838,9 @@ static int64_t source_media_get_duration(void *priv)
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return 0;
     if (data->audio_runtime) return data->audio_runtime->duration_ms();
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
     return title ? static_cast<int64_t>(std::llround(title->duration * 1000.0)) : 0;
 }
 
@@ -1627,7 +1857,9 @@ static void source_media_set_time(void *priv, int64_t milliseconds)
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
     sync_editor_transport_override(data);
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
     const double duration = title ? std::max(0.0, title->duration) : 0.0;
     data->playhead = std::clamp(milliseconds / 1000.0, 0.0, duration);
     data->dirty = true;

@@ -562,6 +562,100 @@ void TitleEditor::add_selected_layers_to_group(const std::string &group_id)
         .arg(static_cast<qulonglong>(editor_elapsed_us(operation_started))));
 }
 
+void TitleEditor::drop_layer_list_rows(
+    const std::vector<std::string> &layer_ids,
+    const std::string &target_layer_id, int placement)
+{
+    constexpr int kDropIntoGroup = 2;
+    if (!title_ || layer_ids.empty() || placement != kDropIntoGroup)
+        return;
+
+    const auto target = title_->find_layer(target_layer_id);
+    if (!target || target->type != LayerType::Group || target->locked)
+        return;
+
+    auto roots = editor_top_level_selected_layers(title_, layer_ids);
+    std::set<std::string> root_ids;
+    for (const auto &root : roots)
+        if (root)
+            root_ids.insert(root->id);
+    if (roots.empty() ||
+        (target && root_ids.find(target->id) != root_ids.end()))
+        return;
+
+    const std::string destination_parent_id = target->id;
+
+    std::vector<std::shared_ptr<Layer>> moving;
+    moving.reserve(roots.size());
+    bool reparented = false;
+    for (const auto &root : roots) {
+        if (!root || root->linked_media_stream)
+            continue;
+        const bool changes_parent =
+            root->parent_id != destination_parent_id;
+        if (changes_parent &&
+            (root->locked || root->id == destination_parent_id ||
+             editor_parenting_would_cycle(title_, root->id,
+                                          destination_parent_id)))
+            continue;
+        if (changes_parent &&
+            !editor_reparent_layer_with_parent_bind(
+                title_, *root, destination_parent_id,
+                root->transform_parent_id, playhead_))
+            continue;
+        reparented = reparented || changes_parent;
+        moving.push_back(root);
+    }
+    if (moving.empty())
+        return;
+
+    std::set<std::string> moving_ids;
+    for (const auto &layer : moving)
+        moving_ids.insert(layer->id);
+
+    std::map<std::string, std::vector<std::shared_ptr<Layer>>> scopes;
+    for (const auto &layer : title_->layers) {
+        if (layer)
+            scopes[editor_group_order_scope(title_, *layer)].push_back(layer);
+    }
+    for (auto &[scope, siblings] : scopes) {
+        siblings.erase(std::remove_if(
+                           siblings.begin(), siblings.end(),
+                           [&moving_ids](const auto &layer) {
+                               return layer &&
+                                   moving_ids.find(layer->id) !=
+                                       moving_ids.end();
+                           }),
+                       siblings.end());
+    }
+
+    /* Children use bottom-to-top model order. Appending the dropped block
+     * therefore places it at the top of the Group's visible child list. */
+    auto &destination = scopes[destination_parent_id];
+    destination.insert(destination.end(), moving.begin(), moving.end());
+
+    auto reordered = editor_canonical_group_order(title_, scopes);
+    if (reordered.size() != title_->layers.size())
+        return;
+    const bool reordered_layers = reordered != title_->layers;
+    if (!reparented && !reordered_layers)
+        return;
+    title_->layers = std::move(reordered);
+
+    std::vector<std::string> next_selection;
+    next_selection.reserve(moving.size());
+    for (const auto &layer : moving)
+        next_selection.push_back(layer->id);
+    if (target->group_collapsed)
+        next_selection = {target->id};
+
+    layers_->refresh();
+    timeline_->set_title(title_);
+    synchronize_layer_selection(next_selection);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
 void TitleEditor::remove_selected_layers_from_group()
 {
     const auto operation_started = std::chrono::steady_clock::now();
@@ -644,12 +738,45 @@ void TitleEditor::copy_selected_layer()
         if (referenced_camera_ids.find(camera.id) != referenced_camera_ids.end())
             layer_clipboard_cameras_.push_back(camera);
     }
+
+    if (!layer_clipboard_.empty() && QApplication::clipboard()) {
+        static constexpr const char *kLayerClipboardMimeType =
+            "application/x-bgl-layer-clipboard+json";
+        const std::string payload = serialize_layer_clipboard_json(
+            layer_clipboard_, layer_clipboard_cameras_,
+            layer_clipboard_source_title_id_);
+        auto *mime = new QMimeData();
+        mime->setData(kLayerClipboardMimeType,
+                      QByteArray::fromStdString(payload));
+        QApplication::clipboard()->setMimeData(mime);
+    }
     if (layers_) layers_->set_layer_clipboard_available(!layer_clipboard_.empty());
 }
 
 void TitleEditor::paste_layer_from_clipboard()
 {
-    if (!title_ || layer_clipboard_.empty()) return;
+    if (!title_) return;
+
+    static constexpr const char *kLayerClipboardMimeType =
+        "application/x-bgl-layer-clipboard+json";
+    const QMimeData *system_mime = QApplication::clipboard()
+        ? QApplication::clipboard()->mimeData() : nullptr;
+    if (system_mime && system_mime->hasFormat(kLayerClipboardMimeType)) {
+        std::vector<std::shared_ptr<Layer>> decoded_layers;
+        std::vector<TitleCamera> decoded_cameras;
+        std::string decoded_source_title_id;
+        std::string error;
+        if (deserialize_layer_clipboard_json(
+                system_mime->data(kLayerClipboardMimeType).toStdString(),
+                &decoded_layers, &decoded_cameras,
+                &decoded_source_title_id, &error)) {
+            layer_clipboard_ = std::move(decoded_layers);
+            layer_clipboard_cameras_ = std::move(decoded_cameras);
+            layer_clipboard_source_title_id_ =
+                std::move(decoded_source_title_id);
+        }
+    }
+    if (layer_clipboard_.empty()) return;
 
     std::vector<std::shared_ptr<Layer>> clipboard_layers;
     clipboard_layers.reserve(layer_clipboard_.size());
@@ -878,6 +1005,23 @@ void TitleEditor::delete_selected_layer()
         bgl::video::FrameRuntime::instance().forget_layer(id);
 
     title_->layers = std::move(remaining);
+    std::set<std::string> referenced_camera_ids;
+    for (const auto &layer : title_->layers) {
+        if (!layer) continue;
+        if (!layer->camera_id.empty())
+            referenced_camera_ids.insert(layer->camera_id);
+        if (!layer->camera_assignment.static_value.empty())
+            referenced_camera_ids.insert(layer->camera_assignment.static_value);
+        for (const DiscreteKeyframe &key : layer->camera_assignment.keyframes)
+            if (!key.value.empty()) referenced_camera_ids.insert(key.value);
+    }
+    title_->cameras.erase(std::remove_if(
+        title_->cameras.begin(), title_->cameras.end(),
+        [&referenced_camera_ids](const TitleCamera &camera) {
+            return !camera.asset_space_owner_id.empty() &&
+                   referenced_camera_ids.find(camera.id) ==
+                       referenced_camera_ids.end();
+        }), title_->cameras.end());
     for (auto &layer : title_->layers) {
         if (!layer) continue;
         if (removed_ids.find(layer->parent_id) != removed_ids.end())
@@ -1010,6 +1154,15 @@ void TitleEditor::restore_undo_snapshot(int index)
         synchronize_layer_selection({sel_layer_id_});
     else
         synchronize_layer_selection({});
+    /* restore_title_authoring_snapshot() replaces the Layer instances while
+     * retaining their IDs. If selection did not change, the normal selection
+     * synchronizer intentionally skips its expensive panel rebuild and the
+     * Properties/Effects panels would keep pointers to the pre-undo objects.
+     * Rebind explicitly so every restored value, keyframe diamond and effect
+     * is visible on the same event turn as Undo/Redo. */
+    update_layer_panels(
+        !sel_layer_id_.empty() ? title_->find_layer(sel_layer_id_) : nullptr,
+        playhead_);
     active_text_edit_layer_id_.clear();
     if (props_)
         props_->set_active_text_edit_layer(std::string());
@@ -1044,14 +1197,19 @@ void TitleEditor::update_undo_redo_actions()
 
 void TitleEditor::update_title_bar()
 {
-    if (title_ && title_lbl_)
-        title_lbl_->setText(QString::fromStdString(title_->name));
-    if (graphic_props_dock_) {
-        graphic_props_dock_->setWindowTitle(title_
-            ? bgl_tr("OBSTitles.PropertiesNamed").arg(QString::fromStdString(title_->name))
-            : bgl_tr("OBSTitles.Properties"));
+    if (title_ && title_lbl_) {
+        const QString title_text = QString::fromStdString(title_->name);
+        if (title_lbl_->text() != title_text)
+            title_lbl_->setText(title_text);
     }
-    if (dirty_indicator_)
+    if (graphic_props_dock_) {
+        const QString dock_title = title_
+            ? bgl_tr("OBSTitles.PropertiesNamed").arg(QString::fromStdString(title_->name))
+            : bgl_tr("OBSTitles.Properties");
+        if (graphic_props_dock_->windowTitle() != dock_title)
+            graphic_props_dock_->setWindowTitle(dock_title);
+    }
+    if (dirty_indicator_ && dirty_indicator_->isVisible() != dirty_)
         dirty_indicator_->setVisible(dirty_);
 }
 
@@ -1093,10 +1251,14 @@ void TitleEditor::commit_title_name_edit(bool accept)
 void TitleEditor::set_dirty(bool dirty)
 {
     dirty_ = dirty;
-    if (dirty_indicator_)
+    if (dirty_indicator_ && dirty_indicator_->isVisible() != dirty_)
         dirty_indicator_->setVisible(dirty_);
     update_title_bar();
-    setWindowTitle(bgl_editor_caption(bgl_tr(dirty_ ? "OBSTitles.EditorModifiedTitle" : "OBSTitles.EditorWindowTitle")));
+    const QString window_title = bgl_editor_caption(
+        bgl_tr(dirty_ ? "OBSTitles.EditorModifiedTitle"
+                      : "OBSTitles.EditorWindowTitle"));
+    if (windowTitle() != window_title)
+        setWindowTitle(window_title);
 }
 
 bool TitleEditor::confirm_save_before_close()
@@ -1132,16 +1294,16 @@ void TitleEditor::play_pause()
     playing_ = !playing_;
     if (canvas_) canvas_->set_playback_active(playing_);
     if (playing_) {
+        playback_transport_ui_clock_.invalidate();
+        playback_inspector_ui_clock_.invalidate();
+        playback_diagnostics_clock_.invalidate();
+        playback_pointer_ui_clock_.invalidate();
         const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
         if (cache_settings.from_beginning) {
-            const bool follow_title_mode = cache_settings.follow_title_playback_mode;
-            if (follow_title_mode && title_->playback_mode == 1) {
-                const double loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
-                const double loop_end = std::clamp(title_->loop_end, loop_start, title_->duration);
-                on_playhead_changed(loop_end > loop_start + 0.0001 ? loop_start : 0.0);
-            } else {
-                on_playhead_changed(0.0);
-            }
+            /* Start is independent of Mode.  "From Beginning" always means
+             * timeline zero; an authored loop still plays its intro before it
+             * enters the configured Loop Start/End region. */
+            on_playhead_changed(0.0);
         } else if (playhead_ >= title_->duration) {
             /* Restart only at the physical end of the title. Being after a
              * Pause/Loop zone is a valid current-playhead start when Playback
@@ -1159,6 +1321,7 @@ void TitleEditor::play_pause()
         act_play_->setIcon(obs_icon("play.svg"));
         play_timer_->stop();
         sync_editor_audio_preview(false);
+        refresh_playback_ui(playhead_, true);
     }
 }
 
@@ -1170,6 +1333,10 @@ void TitleEditor::play_full_loop()
     if (!playing_ || playhead_ >= title_->duration)
         on_playhead_changed(0.0);
     playing_ = true;
+    playback_transport_ui_clock_.invalidate();
+    playback_inspector_ui_clock_.invalidate();
+    playback_diagnostics_clock_.invalidate();
+    playback_pointer_ui_clock_.invalidate();
     if (canvas_) canvas_->set_playback_active(true);
     act_play_->setText("⏸");
     act_play_->setIcon(obs_icon("pause.svg"));
@@ -1190,6 +1357,7 @@ void TitleEditor::reverse_play()
         act_play_->setText("▶");
         act_play_->setIcon(obs_icon("play.svg"));
         sync_editor_audio_preview(false);
+        refresh_playback_ui(playhead_, true);
         return;
     }
     full_loop_playback_ = false;
@@ -1198,6 +1366,10 @@ void TitleEditor::reverse_play()
     if (playhead_ <= 0.0)
         on_playhead_changed(title_->duration);
     playing_ = true;
+    playback_transport_ui_clock_.invalidate();
+    playback_inspector_ui_clock_.invalidate();
+    playback_diagnostics_clock_.invalidate();
+    playback_pointer_ui_clock_.invalidate();
     if (canvas_) canvas_->set_playback_active(true);
     act_play_->setText("⏸");
     act_play_->setIcon(obs_icon("pause.svg"));
@@ -1275,6 +1447,11 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
     asset_layer->asset_pause_duration = 1.0;
     asset_layer->asset_loop_count = 1;
     asset_layer->asset_loop = false;
+    asset_layer->asset_isolated_3d_space = true;
+    asset_layer->asset_space_width = std::max(1, asset_title->width);
+    asset_layer->asset_space_height = std::max(1, asset_title->height);
+    asset_layer->asset_space_center_x = source_bounds.center().x();
+    asset_layer->asset_space_center_y = source_bounds.center().y();
     asset_layer->in_time = 0.0;
     asset_layer->out_time = title_->duration;
     asset_layer->origin_x = 0.5f;
@@ -1291,6 +1468,42 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
         if (source)
             id_map[source->id] = TitleDataStore::make_uuid();
     }
+
+    /* Cameras are document-local. Snapshot every authored source camera into
+     * the host with an Asset Layer owner, including cameras belonging to a
+     * nested Asset Layer, then make every cloned descendant's assignment
+     * explicit. The host active camera can therefore never leak into the
+     * asset's internal 3D projection. */
+    std::map<std::string, std::string> camera_id_map;
+    for (const TitleCamera &source_camera : asset_title->cameras) {
+        if (source_camera.id.empty())
+            continue;
+        TitleCamera camera = source_camera;
+        const std::string source_camera_id = camera.id;
+        camera.id = TitleDataStore::make_uuid();
+        const auto nested_owner = id_map.find(source_camera.asset_space_owner_id);
+        camera.asset_space_owner_id = nested_owner != id_map.end()
+            ? nested_owner->second : asset_layer->id;
+        camera.timeline_expanded = false;
+        camera_id_map[source_camera_id] = camera.id;
+        title_->cameras.push_back(std::move(camera));
+    }
+
+    auto remapped_asset_camera = [&](std::string camera_id,
+                                     double source_time) {
+        if (camera_id.empty()) {
+            camera_id = asset_title->active_camera.evaluate(
+                std::max(0.0, source_time));
+            if (camera_id.empty())
+                camera_id = asset_title->active_camera_id;
+        }
+        const auto mapped = camera_id_map.find(camera_id);
+        if (mapped != camera_id_map.end())
+            return mapped->second;
+        const auto fallback = camera_id_map.find(asset_title->active_camera_id);
+        return fallback != camera_id_map.end() ? fallback->second
+                                                : std::string();
+    };
 
     std::vector<std::shared_ptr<Layer>> clones;
     clones.reserve(asset_title->layers.size());
@@ -1327,6 +1540,24 @@ void TitleEditor::insert_asset_layer(const std::string &asset_id,
             clone->mask_source_id.clear();
             clone->mask_mode = MaskMode::None;
         }
+
+        const bool follows_source_active_camera =
+            source->camera_id.empty() &&
+            source->camera_assignment.static_value.empty() &&
+            source->camera_assignment.keyframes.empty();
+        if (follows_source_active_camera) {
+            clone->camera_assignment = asset_title->active_camera;
+            clone->camera_assignment.name = "camera_assignment";
+            clone->asset_camera_uses_owner_time = true;
+        }
+        clone->camera_assignment.static_value = remapped_asset_camera(
+            clone->camera_assignment.static_value.empty()
+                ? source->camera_id
+                : clone->camera_assignment.static_value,
+            0.0);
+        for (DiscreteKeyframe &key : clone->camera_assignment.keyframes)
+            key.value = remapped_asset_camera(key.value, key.time);
+        clone->camera_id = clone->camera_assignment.static_value;
 
         if (source->parent_id.empty()) {
             editor_offset_layer_position_track(*clone,

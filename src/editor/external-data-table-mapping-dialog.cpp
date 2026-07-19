@@ -1,4 +1,5 @@
 #include "external-data-table-mapping-dialog.h"
+#include "bgl-modern-controls.h"
 
 #include "external-data-binding-dialog.h"
 #include "external-data-provider.h"
@@ -127,9 +128,9 @@ void ExternalDataTableMappingDialog::build_ui()
     maximum_rows_spin_ = new QSpinBox(behavior_group);
     maximum_rows_spin_->setRange(0, 1000000);
     maximum_rows_spin_->setSpecialValueText(QStringLiteral("All rows"));
-    ignore_empty_check_ = new QCheckBox(QStringLiteral("Ignore rows where all mapped values are empty"), behavior_group);
+    ignore_empty_check_ = new BglSwitch(QStringLiteral("Ignore rows where all mapped values are empty"), behavior_group);
     ignore_empty_check_->setChecked(true);
-    preserve_manual_check_ = new QCheckBox(QStringLiteral("Preserve manually created cue rows"), behavior_group);
+    preserve_manual_check_ = new BglSwitch(QStringLiteral("Preserve manually created cue rows"), behavior_group);
     preserve_manual_check_->setChecked(true);
     behavior_form->addRow(QStringLiteral("Update mode"), mode_combo_);
     behavior_form->addRow(QStringLiteral("Stable row ID field"), row_id_combo_);

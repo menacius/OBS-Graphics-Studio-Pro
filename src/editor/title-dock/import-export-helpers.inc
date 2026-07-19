@@ -209,7 +209,8 @@ private:
             return false;
 
         const QString suffix = info.suffix().toLower();
-        return suffix == QStringLiteral("obgt") ||
+        return suffix == QStringLiteral("obgp") ||
+               suffix == QStringLiteral("obgt") ||
                suffix == QStringLiteral("otpt") ||
                suffix == QStringLiteral("json");
     }
@@ -755,9 +756,15 @@ public:
 
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
-        const auto *list_view = qobject_cast<const QListView *>(option.widget);
-        if (list_view && list_view->viewMode() == QListView::ListMode)
-            return QSize(std::max(240, option.rect.width()), 44);
+        const auto *list_view = qobject_cast<const QListView *>(parent());
+        if (list_view && list_view->viewMode() == QListView::ListMode) {
+            int available_width = list_view->viewport()
+                ? list_view->viewport()->contentsRect().width()
+                : option.rect.width();
+            if (available_width <= 0)
+                available_width = option.rect.width();
+            return QSize(std::max(0, available_width), 44);
+        }
         return QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight);
     }
 
@@ -874,4 +881,3 @@ private:
         painter->restore();
     }
 };
-

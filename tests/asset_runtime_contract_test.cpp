@@ -79,6 +79,31 @@ int main()
         ok = false;
     }
 
+    Title stroke_title;
+    stroke_title.duration = 5.0;
+    auto stroke_layer = std::make_shared<Layer>();
+    stroke_layer->type = LayerType::SolidRect;
+    stroke_layer->out_time = stroke_title.duration;
+    stroke_layer->stroke_color_r.keyframes.push_back({0.0, 0.0});
+    stroke_layer->stroke_color_r.keyframes.push_back({1.0, 255.0});
+    stroke_title.layers.push_back(stroke_layer);
+    if (!bgs::asset_runtime::title_has_timeline_animation(stroke_title)) {
+        std::cerr << "stroke color keyframes must mark an asset as animated\n";
+        ok = false;
+    }
+
+    Title media_title;
+    media_title.duration = 5.0;
+    auto media_layer = std::make_shared<Layer>();
+    media_layer->type = LayerType::Video;
+    media_layer->in_time = 0.0;
+    media_layer->out_time = media_title.duration;
+    media_title.layers.push_back(media_layer);
+    if (!bgs::asset_runtime::title_has_timeline_animation(media_title)) {
+        std::cerr << "media-only asset must expose timeline playback controls\n";
+        ok = false;
+    }
+
     Title instance_title;
     instance_title.duration = 10.0;
     auto root_asset = std::make_shared<Layer>();
@@ -96,6 +121,18 @@ int main()
     if (!bgs::asset_runtime::asset_layer_has_timeline_animation(instance_title,
                                                                  *root_asset)) {
         std::cerr << "nested keyframes must mark the Asset Layer as animated\n";
+        ok = false;
+    }
+
+    root_asset->asset_animated = true;
+    root_asset->asset_playback_mode = 1;
+    if (!bgs::asset_runtime::title_has_independent_playback(instance_title)) {
+        std::cerr << "independent animated asset must keep a runtime refresh clock\n";
+        ok = false;
+    }
+    root_asset->asset_playback_mode = 0;
+    if (bgs::asset_runtime::title_has_independent_playback(instance_title)) {
+        std::cerr << "synchronized asset must not request independent refresh\n";
         ok = false;
     }
 

@@ -1,3 +1,964 @@
+# v0.8.13-alpha — Development Version 394
+
+## Development Version 394 — v0.8.13-alpha release and consolidated README
+
+- Promotes all current runtime, build, dependency and package metadata from `v0.8.12-alpha` to `v0.8.13-alpha` and advances the delivery identifier to Development Version 394.
+- Rebuilds the top-level README around the complete feature set added since Development Version 281, including Trim Paths, the Motion Blur temporal pipeline, 3D lights/materials/shadows, extrusion and camera workflows, packed title files, rich document import, cue Preview and editor/UI improvements.
+- Keeps historical changelog version labels unchanged and retains the complete Development Version 393 rendering behavior, including the Motion Blur/transition deadlock fix and Development Version 392 crash containment.
+
+## Development Version 393
+
+- Fixes the repeated `resource deadlock would occur` render failure triggered by Motion Blur combined with active text transitions.
+- Removes the recursive acquisition of the non-recursive `TitleGpuRenderSession::mutex` from synchronous effect-registry lookups; the compositor already owns that mutex, while `TitleEffectRegistry` independently serializes `find()` and `compile()` through its own recursive mutex.
+- Keeps effect shader compilation asynchronous and worker-safe without blanking or indefinitely deferring the editor/OBS frame.
+- Extends temporal sample exception containment around the complete recursive sample render, so any future per-sample failure falls back to the authored current transition frame rather than invalidating the entire compositor frame.
+- Retains the Development Version 392 Spot/Parallel shadow clip correction and compositor no-throw boundary.
+- Bumps runtime/build metadata to Development Version 393.
+
+## Development Version 392
+
+- Fixes Spot and Parallel shadow casting on D3D11 by converting the Qt/OpenGL planar shadow projection from -W..W clip Z to D3D's 0..W clip range before rasterization; Point-light atlas projection remains unchanged.
+- Falls back from failed full-pipeline Motion Blur samples to the authored current transition frame, preserving text transitions instead of dropping the layer or propagating an exception.
+- Adds a compositor-level exception boundary that retains the last stable published texture, marks the frame for retry and records the exception without terminating OBS/Qt.
+- Leaves the 4096 px shadowmap maximum and 2048 px default introduced by Development Version 391 unchanged.
+- Bumps runtime/build metadata to Development Version 392.
+
+## Development Version 391
+
+- Removes the 8192 px shadowmap size option from Preferences > Advanced and clamps the persisted runtime preference back to the supported 256–4096 px set.
+- Keeps the shadowmap default at 2048 px and continues persisting user-selected shadowmap size through the existing preferences store.
+- Fixes Spot and Parallel light shadows by explicitly setting a full-size planar shadow-map viewport before drawing casters; Point-light atlas viewport handling is unchanged.
+- Bumps runtime/build metadata to Development Version 391.
+
+## Development Version 390
+
+- Adds 8192 px shadowmap support and changes the default Advanced shadowmap size to 2048 px.
+- Keeps the selected shadowmap size persistent through the existing preferences store and applies the 8192 px upper bound in the shadow renderer.
+- Uses high-precision floating-point Motion Blur accumulation/coverage targets where available, with BGRA fallback, to remove visible 8-bit banding on moving shapes, images and video.
+- Keeps GPU primitive raster entries valid while their first-use shader compile is pending and prevents empty same-key entries from being skipped after a title opens in the editor.
+- Bumps runtime/build metadata to Development Version 390.
+
+## Development Version 389
+
+- Replaces the shader-compile canvas overlay with a full canvas suppression screen that only shows `Compiling Shaders N of M` centered until compilation completes.
+- Adds Preferences > Advanced shadowmap size control and routes the selected resolution into the 3D shadow-map render pass/cache identity.
+- Removes authored Falloff Start from the visible light controls; runtime falloff start now derives from Source Size.
+- Updates new light defaults to Source Size 15 px and Falloff Distance 450 px.
+- Bumps runtime/build metadata to Development Version 389.
+
+## Development Version 388
+
+- Moves first-use GPU shader/effect compilation out of the synchronous render/present path and into a session-local worker that compiles one queued shader at a time under the OBS graphics context.
+- Presents the previous stable texture while compilation is pending, avoiding full OBS/editor stalls during first-use shader creation.
+- Adds a canvas progress overlay showing the active shader label and aggregate compile progress.
+- Covers core compositor shaders, effect registry shaders, GPU text, masks, adjustment layers, layer-copy/blend, temporal motion-blur composite and shadow-map shaders.
+- Bumps runtime/build metadata to Development Version 388.
+
+## Development Version 387
+
+- Fixes the Dev386 first-editor-open freeze. Runtime diagnostics show the
+  first frame stopping immediately after `depth-run-summary` on a zero-light
+  title, isolating the stall to first-use compilation of the expanded common
+  GPU layer effect.
+- Removes manual four-neighbour bilinear comparison from every Point-shadow
+  tap and restores one depth lookup per Poisson sample.
+- Preserves receiver-matched texel-centre depth, the self-shadow acne fix and
+  real-time shadow-map updates during direct manipulation.
+- Invalidates the affected GPU effect and persistent raster namespaces and
+  retains the complete Development Version 386 delivery otherwise.
+
+## Development Version 386
+
+- Rebuilds all active GPU shadow maps during transform-only editor updates,
+  making shadows follow 2D/3D object and light drags in real time while layer
+  rasters remain resident.
+- Fixes Point-light self-shadow acne when the same planar surface accepts and
+  casts shadows. Receiver-plane depth is now evaluated on the exact quantized
+  texel-centre cube ray used by the writer.
+- Adds manual tile-clamped bilinear PCF for final Point-shadow comparisons,
+  blending the four neighbouring visibility tests without crossing into an
+  adjacent 3 x 2 atlas face.
+- Invalidates the affected GPU effect and persistent raster namespaces and
+  retains the complete Development Version 385 delivery.
+
+## Development Version 385
+
+- Fixes Point-shadow caster fragments being clipped on D3D11 even though the
+  shadow target and draw loop were reported as successful.
+- Replaces the mixed Qt projection-Z/manual cube-face-W writer position with
+  clip depth derived from the same signed cube-face depth used for atlas XY/W.
+  Selected-face vertices now remain in D3D's `0 <= z <= w` range and Z24 depth
+  remains monotonic from the light.
+- Renames the map diagnostic result to `submitted` and adds receiver-binding
+  diagnostics covering material opt-in, map state and comparison values.
+- Invalidates the affected GPU effect and persistent raster namespaces and
+  retains the complete Development Version 384 delivery.
+
+## Development Version 384
+
+- Restores visible Point, Spot and Parallel shadows for punctual lights. When
+  `Source Size` is zero, the receiver now uses a direct 16-tap Poisson PCF
+  resolve and cannot be classified as fully lit by a sparse PCSS blocker
+  search.
+- Keeps contact-hardening PCSS for finite emitters while separating manual
+  Shadow Softness from blocker discovery, anchoring the umbra to the exact
+  centre ray and treating out-of-map planar samples as clear far depth.
+- Retries shadow targets in floating `RGBA16F` when a graphics backend cannot
+  begin the preferred `R32F + Z24/S8` surface.
+- Adds one-shot shadow diagnostics for target creation/begin, caster and
+  receiver discovery, shader setup and successful map publication.
+- Invalidates the affected GPU effect and persistent raster namespaces and
+  retains the complete Development Version 383 delivery.
+
+## Development Version 383
+
+- Replaces the regressed Point/Spot/Parallel PCSS receiver with a stable
+  multiscale Poisson filter. An 8-tap compact contact kernel preserves the
+  umbra and a 16-tap outer kernel is introduced progressively from physical
+  caster/receiver separation.
+- Removes the Point blocker-search dependency on the shadow near plane. Search
+  radius now follows the emitter's apparent size at the receiver and is safely
+  bounded, preventing valid blockers from being scattered across unrelated
+  cube faces and diluted into isolated artifacts.
+- Uses one deterministic Poisson rotation per light rather than a different
+  world-space hash at every pixel, eliminating the grain/crawling artifacts
+  reported in Development Version 382.
+- Keeps Source Size as the physical penumbra driver and Shadow Softness as the
+  artistic addition, while retaining the proven six-face Point writer,
+  receiver-plane self-shadow correction and real-time overlay scheduling.
+- Invalidates the GPU effect and persistent raster namespaces and retains the
+  complete Development Version 382 delivery.
+
+## Development Version 382
+
+- Restores Point-light shadows to the runtime-proven six-face 3 x 2 cube
+  atlas after the focused projection introduced in Development Version 381
+  could publish empty shadow maps on real scenes.
+- Retains contact-hardening PCSS, rotated Poisson filtering, alpha-aware
+  casters and the per-layer 3D Casts/Accepts Shadows controls, with the
+  responsive 256 draft / 512 final per-face Point-map budget.
+- Keeps the last complete shadow maps during direct manipulation and rebuilds
+  them on the release/settle update, so canvas overlays remain real-time while
+  a layer or light is dragged.
+- Fixes the D3D11 `Invalid texture vertex size specified` runtime failure by
+  packing the two scalar GPU-text vertex attributes into supported vec2
+  streams. This prevents the immediate CPU glyph fallback seen in the supplied
+  log and removes its editor-frame stalls.
+- Retains the complete Development Version 381 delivery except for the
+  regressed focused Point projection and its oversized map budget.
+
+## Development Version 381
+
+- Replaces fixed-radius 5 x 5 grid PCF with PCSS contact-hardening shadows for
+  Point, Spot and Parallel lights: a 12-tap blocker search estimates the
+  occluder depth, followed by a 16-tap adaptive filter only inside shadows.
+- Derives physical penumbra from Source Size and blocker/receiver separation,
+  so contact regions remain sharp and the shadow broadens with real spatial
+  distance. Authored Shadow Softness remains an additive artistic control.
+- Uses a stable rotated Poisson disk instead of a square grid, removing blocky
+  bands without frame-to-frame crawling.
+- Fits ordinary Point-light scenes into one focused perspective shadow map.
+  This concentrates the full map resolution on the actual visual layers and
+  reduces the caster pass from six draws to one; a cube atlas remains as the
+  complete fallback when geometry surrounds the light.
+- Raises Point shadow-map detail to 512 per draft face / 1024 per final face,
+  while PCSS early-out reduces receiver sampling from 25 to 12 in unshadowed
+  areas (28 only where a blocker exists).
+- Applies the same depth-aware PCSS path to Spot and Parallel shadows, retains
+  alpha-aware casting and receiver-plane self-shadow correction, and
+  invalidates all affected GPU caches.
+
+## Development Version 380
+
+- Fixes Point shadows disappearing when the light is far from the objects.
+- Computes the closest light-to-surface distance against both triangles of
+  every finite 3D visual quad instead of relying on corner distances.
+- Replaces the fixed `0.01` cube near plane with a conservative distance-aware
+  bound, preventing remote casters and receivers from collapsing into the same
+  Z24 values.
+- Makes Point shadow bias distance-invariant by expressing it over the scene's
+  occupied radial-depth span before normalizing by the far plane.
+- Retains all Development Version 379 Point atlas projection fixes.
+
+## Development Version 379
+
+- Implements a complete Point-light cube projection in the shadow writer and
+  uses the same projection body verbatim in receiver atlas lookup.
+- Replaces the separate 24-matrix receiver mapping that could disagree with
+  the writer after Qt-to-libobs shader upload, producing repeated diagonal
+  streaks and large black cube-face regions.
+- Uses signed per-face depth as clip `w`, so casters behind a face are clipped
+  instead of mirrored into that face.
+- Keeps R32F radial depth, receiver-plane PCF, alpha-aware silhouettes and all
+  opt-in 3D cast/accept controls from Development Version 378.
+
+## Development Version 378
+
+- Replaces colour-packed Point/Spot/Parallel shadow depth with a native linear
+  `R32F` render target, avoiding sRGB transfer and colour quantisation for
+  numeric shadow distances.
+- Corrects soft Point-light PCF on layers that both cast and receive shadows:
+  each neighbouring sample ray is compared at its intersection with the
+  receiver plane instead of reusing the centre ray's distance.
+- Removes the large black self-shadow wedge reproduced by the supplied 3D test
+  title while preserving the caster-derived shadow arc at the receiver edge.
+- Retains the complete Development Version 377 delivery.
+
+## Development Version 377
+
+- Fixes Point-light shadows appearing as a long diagonal artifact unrelated
+  to the visual caster. Receiver lookup now uses the exact six matrices that
+  wrote the Point atlas instead of a separately reconstructed cube-face UV.
+- Packs normalized shadow distance across RGB24, eliminating the 8-bit radial
+  depth quantization that could produce receiver self-shadow streaks.
+- Explicitly excludes Light, Empty, Audio, Adjustment and container layers
+  from the caster pass; only eligible 3D raster layers with `Casts Shadows`
+  contribute silhouettes.
+- Retains the complete Development Version 376 delivery.
+
+## Development Version 376
+
+- Fixes MSVC `C2026: string too big, trailing characters truncated` in
+  `gpu-effects-transitions.inc` by splitting the layer-copy/lighting effect
+  across adjacent raw literals below 16 KiB.
+- Adds a source contract that checks every embedded effect literal against the
+  MSVC limit and reconstructs the complete concatenated shader.
+- Retains the complete Development Version 375 delivery.
+
+## Development Version 375
+
+- Adds per-light omnidirectional shadows for Point lights. Each Point light
+  renders six alpha-aware, depth-tested views into a portable 3×2 atlas and
+  samples radial distance in the material shader.
+- Restricts the shadow pass to directly authored 3D visual layers. A layer
+  casts only when `Casts Shadows` is enabled and receives only when `Accepts
+  Lights` and `Accepts Shadows` are both enabled.
+- Includes every eligible raster visual layer as an independent caster and
+  receiver across Point, Spot and Parallel lights, with fail-open behavior for
+  missing shadow resources.
+- Computes Point-light penumbra from world-space Source Size at each receiver;
+  authored Shadow Softness remains additive.
+- Retains the complete Development Version 374 delivery.
+
+## Development Version 374
+
+- Replaces the single global shadow map with one depth-tested, alpha-aware
+  shadow map for each of the four GPU light slots. Spot and Parallel lights
+  now shadow only their own diffuse/specular contribution, so one occluded
+  light no longer darkens unrelated lights, ambient light or environment light.
+- Converts each light's Source Size from scene units into a projected shadow-
+  map radius and filters the result with a 5 x 5 PCF footprint. Authored Shadow
+  Softness remains an additive artistic adjustment.
+- Adds a per-layer `Z / Visibility` selector to 3D properties. `Scene Position
+  (Z)` is the default and uses camera-space depth/hardware Z; `Layer Order`
+  preserves the authored layer-list order.
+- Retains the complete Development Version 373 delivery.
+
+## Development Version 373
+
+- Adds a type-aware Light Properties section to the selected Light layer with
+  enabled/type, RGBA color, brightness, source size, falloff, spot cone,
+  point-of-interest and shadow authoring controls.
+- Adds `light_source_size` as a backward-compatible animated property with a
+  zero default, JSON persistence, timeline exposure and cache invalidation.
+- Routes finite source size into all four GPU light slots, broadening the
+  diffuse terminator and specular lobe and contributing to supported shadow
+  softness. The canvas helper visualizes non-zero source size while selected.
+- Keeps the title-wide light controls on the same model and retains the full
+  Development Version 372 delivery.
+
+## Development Version 372
+
+- Restores the Development Version 370 FX selected-state fill and layer-type
+  icon appearance while retaining continuous color-backed rows and the square
+  2D/3D toggle.
+- Adds a click popup to the layer-type icon with sixteen 4x4 color swatches,
+  Default Layer Color and a themed Custom Color dialog. The popup and its
+  swatch-grid surface use the OBS theme menu background rather than inheriting
+  the selected layer color.
+- Persists custom editor colors on each individual layer inside its title/
+  graphic, allowing same-type layers to use different colors, and routes them
+  through the shared layer-color helper used by rows, timeline and canvas.
+- Keeps editor-only color metadata out of the raster fingerprint and records
+  changes through the existing title save and undo snapshot path.
+- Retains the complete corrected Development Version 370 delivery.
+
+## Development Version 370
+
+- Replaces generic flat-list InternalMove outcomes with explicit Before, After
+  and Into Group drop intents. Normal rows expose only insertion boundaries;
+  only unlocked Groups accept an on-row drop.
+- Preserves the existing hierarchy scope for boundary reorders. On-Group drops
+  preserve world transforms while reparenting and rebuild canonical group order.
+- Paints every layer row with its configured layer/timeline color, using full
+  opacity for selected rows and a semi-transparent 72 alpha when unselected.
+- Clears native Base, Window, AlternateBase and Button palette fills from
+  embedded layer-row controls so that color forms one uninterrupted surface
+  behind names, selectors and indicators. Dropdown popups remain theme-opaque.
+- Keeps the 2D/3D control square and uses the current OBS theme highlight for
+  its active state.
+- Retains the complete Development Version 369 delivery.
+
+## Development Version 369
+
+- Removes Preview, Range Tools and Waveform rows from pure Audio Layer
+  properties while retaining its directly editable Range row.
+- Prevents the responsive inspector from collapsing the Volume dB and signed
+  Pan inputs to zero width; both are fixed-width editors placed visibly beside
+  their sliders in Audio Layer and Video Audio properties.
+- Retains bidirectional slider/input synchronization and the complete
+  Development Version 368 delivery.
+
+## Development Version 368
+
+- Moves Parent immediately before 2D/3D in the layer list and preserves every
+  optional column's width so all row controls remain aligned with the header.
+- Adds a grip control at the start of each draggable layer row and routes it
+  through the existing hierarchy-aware internal move behavior.
+- Enlarges the 2D Empty editor cross from 36 px to 56 px while retaining the
+  compact 3D axes representation.
+- Retains the complete Development Version 367 delivery.
+
+## Development Version 367
+
+- Adds synchronized signed dB Volume and signed Pan entry to Audio and Video
+  audio properties, removes the duplicate inner title and completes its locale
+  strings.
+- Adds non-raster 2D/3D Empty transform-parent layers, drawn and selected only
+  through their editor cross/axes object with no canvas bounding box.
+- Removes pure Audio layers from canvas bounding-box geometry, preserves
+  aggregate keyframe markers on collapsed strips and changes solid grey to
+  `#4a4a4a`.
+- Gives the Audio Editor meter theme-aware OBS green/yellow/red zones, peak
+  markers and clip feedback.
+- Retains the complete Development Version 366 delivery.
+
+## Development Version 366
+
+- Removes the fixed 240 px minimum width from Titles and Graphics list rows.
+- Makes list rows follow the live viewport width with Adjust-mode relayout and
+  no horizontal scrollbar as the dock resizes, floats or changes dock area.
+- Retains the fixed card geometry used intentionally by icon/grid mode.
+- Retains the complete Development Version 365 delivery.
+
+## Development Version 365
+
+- Moves the single read-only Cue Preview panel into the external Live Text Cues
+  window while that window is open, including Canvas, status, Take and Cancel.
+- Reparents the authoritative widget rather than copying it, so PreviewReady,
+  GPU/media state and local/OBS routing remain synchronized automatically.
+- Returns Preview to splitter position 2 on window close and protects its
+  lifetime when the dock shuts down with the external window still open.
+- Rejects every editing input path on the local Preview canvas and recursively
+  locks duplicated OBS Preview items, including nested group children.
+- Retains the complete Development Version 364 delivery.
+
+## Development Version 364
+
+- Renames Show Preview Before Cue to Select Row Before Cue and preserves its
+  default-off, two-stage selection-to-Program behavior.
+- Adds a separately persisted Show Preview child option. It is enabled in the
+  menu only while Select Row Before Cue is active and controls both the local
+  read-only Preview section and the OBS Duplicate Scene Preview route.
+- Keeps PreviewReady row state, cache priming and Next/Previous Cue navigation
+  active with visual Preview hidden, and migrates the legacy combined setting.
+- Retains the complete Development Version 363 delivery.
+
+## Development Version 363
+
+- Reads `BasicWindow/SceneDuplicationMode` from OBS's modern user configuration
+  first and uses the legacy global configuration only when no migrated user
+  value exists.
+- Replaces the pointer-inequality fallback with an isolated private duplicate of
+  the active OBS Preview scene, installs it with the frontend Preview API and
+  restores the previous Preview scene on exit. Program is never modified.
+- Routes Next Cue and Previous Cue hotkeys through the dock. With Show Preview
+  Before Cue enabled, PreviewReady becomes their navigation base and the next or
+  previous row is rendered frozen in Preview without taking it to Program.
+- Retains the complete Development Version 362 delivery.
+
+## Development Version 362
+
+- Removes the unsupported `obs_sceneitem_set_selected()` call that caused
+  MSVC C3861 while compiling `title-dock.cpp` against the OBS SDK.
+- Retains the supported locked scene-item state, so the private OBS Preview
+  overlay remains non-editable.
+- Retains the complete Development Version 361 delivery.
+
+## Development Version 361
+
+- Moves the local cue Preview into a separate read-only splitter section that
+  cannot select, edit, focus or accept drops and does not move with the Live
+  Text Cues editing pop-out.
+- Uses OBS `BasicWindow/SceneDuplicationMode` as the routing authority: with
+  Duplicate Scene off (or Studio Mode off), the local section is used; with it
+  on, the frozen private source is placed at the top of the isolated OBS
+  Preview scene and stretched to the base canvas without touching Program.
+- Reconciles the route while PreviewReady, removes its temporary scene item on
+  Cancel/route changes/shutdown, and renders the immutable cue snapshot through
+  the OBS source's dimensions, render, media-duration and seek callbacks.
+- Retains the complete Development Version 360 delivery.
+
+## Development Version 360
+
+- Adds the optional, default-off Show Preview Before Cue state and a private,
+  frozen GPU/media preview path with deterministic Pause → loop start → frame 0
+  selection and no Program, timeline, event or audio side effects.
+- Keeps Preview resident after Take, marks Preview-only rows green and rows that
+  are simultaneously in Preview and Program red.
+- Moves the complete Live Text Cues pop-out action into Live Text Settings.
+- Adds Cue to Program, Uncue and Cue Last hotkeys to every title's BGL Hotkeys
+  section.
+
+## Development Version 359
+
+- Expands the Live Text Cues pop-out from the table alone to the complete panel:
+  header, live cue timer, cue table, row controls, data-source controls,
+  playlist/countdown, persistence, settings and external refresh controls.
+- Moves those authoritative widgets themselves into the non-modal window and
+  restores the same widgets in their original dock order when it closes, so
+  state, signals, menus and button availability remain identical.
+
+## Development Version 358
+
+- Keeps the Live text cue Cache Status column hidden whenever caching is
+  disabled, including after restoration of a saved movable-header layout.
+- Adds a non-modal, resizable editing window for the complete Live text cue
+  table. The window detaches the authoritative table widget itself and returns
+  it to the dock when closed, eliminating duplicate state and synchronization
+  drift across cue status, text, image, color and external-data controls.
+- Keeps the detached editor live while the selected title, cue state, cache
+  state or external data changes in the dock.
+
+## Development Version 357
+
+- Keeps every outgoing live-cue row yellow for the complete authored outro,
+  both after an explicit uncue and while another row is pending during a
+  cue-to-cue hand-off.
+- Uses one ending-state predicate for cue icons, row borders and full-row
+  backgrounds so every dock refresh path presents the same state.
+
+## Development Version 356
+
+- Fixes both editor restart-loop paths: direct preview `Mode: Loop` and
+  `Mode: Playback Mode` when the title's authored Playback Mode is Loop.
+- Marks only a restart wrap as a transport discontinuity, prevents the stale
+  pre-wrap audio clock from replacing the wrapped playhead, and explicitly
+  seeks/resumes the private editor audio source at the loop start.
+- Leaves ping-pong playback unchanged because its playhead remains continuous
+  and only its direction reverses.
+
+## Development Version 355
+
+- Adds a complete four-channel ARGB Stroke Color animation track to Appearance,
+  including previous/next navigation, Delete All Keyframes, timeline exposure,
+  persistence, cache invalidation and editor/source rendering.
+- Moves Emissive Color directly after Fill whenever material controls are
+  available and unifies all Properties/toggle labels with the 3D Camera label
+  typography while deriving their colors from the active OBS palette.
+- Corrects editor transport behavior across Start, preview Mode, authored
+  Playback Mode and A/V cadence: From Beginning is timeline zero, Play Every
+  Frame advances deterministically, stale reverse state is cleared on mode
+  changes, Pause titles can resume their outro from Current Time, and cached-only
+  playback presents its terminal frame before stopping.
+
+## Development Version 354
+
+- Removed the trailing elastic Transform-grid column so Position, Scale/Size, Anchor, Rotation and Orientation keyframe navigation groups are anchored at the actual right edge.
+- Places dock tabs in every dock area on the upper edge and explicitly keeps editor-owned tab widgets at the top.
+- Replaced the Effect Settings complete-stack visibility toolbutton with the shared OBS-theme-aware `Effect Stack` toggle switch.
+- Retains all Development Version 353 responsive layout and locked-dock header behavior.
+
+## Development Version 353
+
+- Rebuilt the 3D Orientation row on the same responsive Properties grid as Position, Scale, Anchor and Rotation, so X/Y/Z no longer extend beyond the inspector width.
+- Removed the elastic width from Lock Scale, keeping the label and switch together and leaving spare row width after the Scale options.
+- Moves the functional 2D Size/aspect lock into the same Scale Stroke / Scale Corners row and presents it as Lock Scale; 3D continues to use the true XYZ Scale lock in that position.
+- Locked docks no longer expose a close button. Tabbed dock headers are hidden completely while locked, as are the standalone Sidebar and Editor Audio headers; normal headers return on unlock.
+- Retains all Development Version 352 responsive Properties styling.
+
+## Development Version 352
+
+- Fixed the hidden dynamic layout path that moved Rotation Z from the XYZ column to column 4; 3D Rotation is now always X/Y/Z in columns 1/2/3, while 2D Rotation spans the full field width.
+- Moved Lock Scale out of the Scale value row and into the Scale Stroke / Scale Corners options row.
+- Removed the 130 px Transform/Shape/Image field minima and the 50 px keyframe-column minima that forced a wide Properties dock.
+- Reduced the Layer Properties panel minimum width from 260 px to 180 px and made its input size hints responsive without changing other inspectors.
+- Applied a direct Camera-style, OBS-palette-derived stylesheet to the complete Layer Properties content tree.
+- Retains the compact Development Version 351 keyframe carets.
+
+## Development Version 351
+
+- Rebuilt Transform, Shape Size and Image Box Size rows in the 3D Camera visual pattern: right-aligned property labels, separate XYZ/WH labels and uniformly filled, expanding fields.
+- Applied the Camera inspector's compact margins, row spacing and field-growth behavior to every collapsible Properties section.
+- Removed remaining fixed-width constraints from normal Properties inputs so fields fill their available row width consistently.
+- Replaced remaining hard-coded Properties accent colors with the active OBS palette highlight and text colors.
+- Reduced Previous/Next keyframe caret controls from 16×18 px to 10×14 px while retaining the 18 px diamond and all navigation behavior.
+- Retains all Development Version 350 theme-aware audio meter and linked text-box maximum behavior.
+
+## Development Version 350
+
+- Moved keyframe navigation groups to the right edge of property rows and removed the borders from diamonds and Previous/Next caret controls.
+- Matched Properties section geometry, field metrics, labels, colors, margins and padding to the compact 3D Camera inspector styling.
+- Reworked Editor Audio as a narrow Premiere-style stereo dB meter with dual channels, peak hold, bottom mute control and a red X over muted headphones.
+- Made the audio meter derive its background, scale, frame, text and level gradient from the active OBS `QPalette`, so it follows every OBS theme.
+- Linked Max Text Box Width/Height to the authored Size values until the user explicitly enters a different maximum, including serialization and canvas resizing.
+- Retains all Development Version 349 compiler and keyframe-color fixes.
+
+## Development Version 349
+
+- Fixed the MSVC `C2065: C_KF_DOT undeclared identifier` failure emitted from `hierarchy-model.inc` in every translation unit that includes the shared editor internals.
+- Moved the keyframe yellow into the common modern-controls API so timeline keyframe shapes and inspector diamond assets use the same maintained color source.
+- Retains all Development Version 348 editor UI fixes.
+
+## Development Version 348
+
+- Removed the redundant Properties title row and its duplicate Undo/Redo buttons from the layer inspector.
+- Unified every keyframe diamond on the shared active/outlined/inactive SVG asset and compact 18 px control metric.
+- Added property-track Previous/Next keyframe carets around inspector, 3D Camera, Effects, text animator, stroke-offset and free-transform diamonds; unavailable directions stay disabled.
+- Added or retained Delete All Keyframes context menus for the unified diamond controls, including camera, audio, extension-effect and free-transform tracks.
+- Normalized editor input fields to the compact 3D Camera inspector height, typography, padding, borders and focus style.
+- Replaced ordinary editor checkboxes with the shared theme-aware toggle switch control.
+
+## Development Version 347
+
+- Fixed imported Photoshop text becoming effectively invisible because EngineData scale `1.0` was incorrectly interpreted as 1% instead of 100%.
+- Added dual scale normalization for standard ratio values and percentage-style PSD producers.
+- Reasserts descriptor-decoded UTF-8 text as the canonical rich-text `plain_text` during final layer conversion, preventing synchronization from emptying a valid Text layer.
+
+## Development Version 346
+
+- Filters disabled Photoshop effects out of imported native BGL effect stacks for object-based `lfx2`/`lmfx`, legacy `lrFX` and the final layer conversion boundary.
+- Decodes Photoshop `StyleRun` and `ParagraphRun` arrays into canonical rich-text character and paragraph ranges with UTF-16-to-UTF-8 offset conversion.
+- Preserves Photoshop font, size, bold/italic, underline, strike, tracking, baseline, horizontal/vertical scaling, caps, fill, stroke and paragraph layout where represented by EngineData.
+- Initializes every imported SVG, PSD, XCF and BGL title Group as collapsed, including nested source groups.
+
+## Development Version 345
+
+- Collapsed File > Import into one direct action and unified runtime-aware filter for Qt-supported images, SVG, PSD, XCF and BGL title/graphics formats.
+- Added recursive SVG `<text>`/`<tspan>` parsing with UTF-8 rich-text ranges and per-run font, size, weight, style, stretch, decoration, tracking, baseline, fill/gradient and stroke data.
+- Added local/data-URL `@font-face` registration and retained orthogonal rotate/scale transforms on editable SVG Text layers.
+- Added Photoshop EngineData rich-text decoding for font sets, style/run arrays, fill/stroke colors, font metrics and justification.
+
+## Development Version 344
+
+- Extended SVG import with CSS/presentation colors, `rgb`/`rgba`/`hsl`/`hsla`, `currentColor`, inherited font family/size/weight/style, tracking, text anchoring, native editable text layers, fill/stroke gradients, intermediate stops, angle/center/focal/scale and spread modes.
+- Added PSD `lfx2`/`lmfx` descriptor and legacy `lrFX` decoding, mapping Photoshop shadows, glows, overlays, strokes and bevel/emboss settings to native BGL effects.
+- Expanded Photoshop mode-family mapping for darken/lighten, burn/dodge, soft/hard/vivid/linear/pin light and hue/saturation/color/luminosity variants.
+- Changed 2D Flip Horizontal/Vertical to reflect the complete world transform around the layer anchor in canvas space and convert the result back through its group/transform-parent basis.
+
+## Development Version 343
+
+- Corrected the incomplete Development Version 342 include relocation: `commands-docks.inc` and the later editor modules also continue scopes opened by earlier `.inc` files.
+- Moved `import-documents.inc` after the complete pre-existing editor implementation chain, so its namespace and all importer methods begin at genuine translation-unit file scope without interrupting `build_ui()` or any later member function.
+- Added a complete include-chain regression contract covering every editor `.inc` module and the final importer position.
+
+## Development Version 342
+
+- Moved the document-import implementation include after `panels-colors.inc`, whose opening UI method intentionally continues across the module boundary. The importer namespace now begins at true translation-unit file scope under MSVC.
+- Prevents the resulting namespace-scope parse failure, cascading `kPi`/`QTransform::shear` diagnostics and MSVC internal compiler error while retaining the complete SVG/XCF/PSD import implementation from Development Version 341.
+
+## Development Version 341
+
+- Added **File > Import** with Vector, GIMP and Photoshop document importers.
+- SVG documents are parsed into editable Shape layers; multiple SVG shapes are placed in an automatically created Group while fill, stroke, opacity, transforms and Bézier geometry remain editable.
+- GIMP XCF and Photoshop PSD imports offer a pre-import choice between one merged bitmap and separate document layers.
+- Separate-layer import preserves document order, hierarchy, names, visibility, opacity and supported blend modes, maps groups/text/vector-shape/solid/adjustment/pixel content to corresponding BGL layer types, and retains lossless source channels for pixel layers.
+- PSD and XCF decoding runs inside the plugin and does not require external graphics software.
+
+## Development Version 339
+
+- Reverted reusable Asset Library persistence to the pre-338 data-store workflow; **Save as Asset** no longer creates or maintains `.obgp` packages.
+- Removed packed-asset package creation, explicit-save replacement and deletion cleanup.
+- Kept the independent asset clock, paused/stopped editor refresh, GPU recomposition fix and media-only asset animation detection from Development Version 338.
+- Packed `.obgp` title/template import and export remain available and unchanged.
+
+## Development Version 338
+
+- Reusable Asset Library entries are now written as complete `.obgp` packages with images, video/audio and fonts packed by default.
+- Explicit Save of an edited asset atomically refreshes its package, while asset deletion removes the managed packed file.
+- Independent animated assets now use the editor playback cadence even when the containing title is paused or stopped.
+- Video- or audio-only assets are now recognized as animated timeline content and expose synchronized/independent playback controls.
+- The GPU compositor treats the independent asset clock as a live frame dependency, preventing transform-, opacity- and other composition-only animation from freezing while the parent playhead is held or crosses a loop boundary.
+- OBS source, editor canvas and cache scheduling now share the same independent-playback predicate.
+
+## Development Version 337
+
+- Added `.obgp`, a separate binary packed-title container with a versioned manifest and streaming LZ4 block compression.
+- Exporters can independently pack images, video/audio media and fonts; disabled categories stay as external references.
+- Added atomic container writes, per-entry SHA-256 validation, bounded block decompression and safe extraction-path validation.
+- Packed imports resolve resource URIs to persistent per-package files and register embedded fonts before title diagnostics/rendering.
+- Kept `.obgt`, `.otpt` and JSON template import/export behavior independent and backward-compatible.
+
+## Development Version 336
+
+- Replaced geometry-dependent Rotate dragging with a linear screen-space scrub after ring hit-testing.
+- Locks the dominant horizontal or vertical mouse direction after the first three pixels, then maps right/up to positive and left/down to negative rotation at 0.5 degrees per pixel.
+- Removes all ray-plane, projected-tangent and polar-angle drag singularities, so a ring remains interactive when its plane is exactly perpendicular to the screen.
+- Preserves Local/Parent/World axis selection, complete XYZ Euler reconstruction, multi-selection and Shift 15-degree snapping.
+
+## Development Version 335
+
+- Added a projected-ring tangent fallback for Rotate drags when an X/Y rotation plane is edge-on to the active camera.
+- Rejects near-parallel ray/plane intersections whose hit lies many visible-ring radii away, preventing an almost-zero angular response before the layer has any Z rotation.
+- Rebinds the Layer Properties and Effects panels to the newly restored Layer objects after every Undo/Redo snapshot replacement, even when the selected layer ID is unchanged.
+- Refreshes restored property values, widget state and keyframe diamonds immediately instead of waiting for a selection or playhead change.
+
+## Development Version 334
+
+- Applied the authored-only rule to every property track in the shared Layer List/Timeline model, including camera properties, legacy title lights, camera assignment and Camera Switches.
+- Restored Double-sided behavior for Text, Clock and Ticker by removing the typography-only front-face override from the shared culling predicate.
+- Corrected local transform composition to apply Orientation as the base axis frame before Rotation XYZ.
+- Rebuilt rotation-ring axes from scale-free orthonormal Local and Parent bases; World remains canonical canvas XYZ.
+- Replaced screen-polar rotation dragging with world-ray/rotation-plane intersection and signed 3D angles.
+- Applies Local, Parent and World rotation deltas through the appropriate conjugated basis, decomposes the result back to stable ZYX Euler channels and authors all grouped Rotation XYZ channels together.
+- Advanced the GPU renderer/cache ABI to v53.
+
+## Development Version 333
+
+- Added inspector diamonds for every animated camera property: Projection, Position, Target, Orientation, Rotation, Focal Length, Field of View, Zoom, Near Clip and Far Clip.
+- Made grouped XYZ diamonds author and remove their complete camera tracks, while Projection keys retain discrete Hold interpolation.
+- Rebuilds the Layer List immediately after camera inspector keyframe edits, so the default camera row exists exactly while it owns authored property keyframes.
+- Removed the always-authorable material-track exception; Material Options now appear in the Layer List and Timeline only for properties with keyframes.
+
+## Development Version 332
+
+- Excluded Light controls from root and group visible-artwork composition while retaining their lighting and shadow participation.
+- Changed the defensive Light branch in the GPU layer renderer from a successful no-op to non-renderable, so reusable target storage cannot be mistaken for newly rendered artwork.
+- Eliminated the untransformed stale 3D copy that appeared at canvas centre immediately after adding a Light layer.
+- Bumped the renderer cache ABI for the corrected controller/artwork boundary.
+
+## Development Version 331
+
+- Routed every compatible 3D run through the native hardware-depth camera path, including scenes and groups containing only one raster layer.
+- Removed the single-layer-only projective fallback that caused Y rotation to behave differently—and horizontally mirror content—until a second layer was added.
+- Replaced shader-based stable-frame publication with a validated, exact GPU resource copy, ensuring transparent or back-face-culled frames erase the previously published image.
+- Retained the existing one-time canvas-Y/libobs coordinate conversion and bumped the renderer cache ABI.
+
+## Development Version 330
+
+- Froze the current planar 2D/3D renderer as the compatibility baseline for the mesh-era rebuild.
+- Disabled the legacy repeated-alpha-slice extrusion/bevel renderer and removed its authoring panel; serialized fields remain readable and writable strictly for migration.
+- Removed legacy extrusion from animation, cache, raster-selection and hardware-depth scheduling decisions.
+- Made stable-frame publication an explicit two-target transaction with Free, Rendering, Complete and Published states plus a monotonic publication generation.
+- Restricted normal OBS presentation and prerender readback to the validated Published target, so partial or failed replacement frames cannot escape.
+- Restored canonical GPU target state before every clear and changed stable publication to exact full-frame replacement, preventing negative rotations from retaining an old Text raster or shifting unrelated artwork.
+- Required editor frames to match the current model revision so stale artwork cannot be shown under current transform overlays; live OBS retains its complete-frame fail-safe.
+- Corrected the hardware-depth camera-space Y convention so positive/downward canvas movement is no longer rendered in the opposite direction.
+- Hardened every reusable off-screen target, alias-prone ping/pong composition and 3D cached-prefix boundary against retaining the initial layer position.
+- Kept reused Text, Clock and Ticker glyph rasters front-facing so flipped layers do not expose mirrored typography.
+- Bumped the renderer cache ABI to invalidate prerenders produced under the retired geometry path.
+
+## Development Version 329
+
+- Moved the destructive reset from title Source Properties to **Preferences > Advanced**.
+- Added a red danger-zone button and two-stage confirmation before any deletion.
+- Clears BGL QSettings in native and INI formats, including the complete Windows `HKEY_CURRENT_USER\\Software\\BroadcastGraphicsLive` registry subtree.
+- Deletes BGL plugin configuration and user files, including titles, layouts, templates, presets, palettes, installed effects, frame/proxy/optical-flow caches and BGL logs, while refusing to recursively remove shared application-data/cache roots.
+
+## Development Version 328
+
+- Fixed Motion Blur flicker during Background Persistence by collapsing the shutter for held layers and rendering their frozen state once.
+- Incoming and otherwise non-persistent cue layers retain their authored Motion Blur.
+- Applied the same rule to live GPU rendering and compatibility/cache rendering.
+- Added a targeted render diagnostic whenever persistence bypasses Motion Blur.
+
+## Development Version 327
+
+- Fixed Background Persistence using different clocks for retained pixels and GPU transforms during cue-to-cue playback.
+- Persistent layers inside Asset hierarchies now inherit the frozen root hold time before resolving their asset-local timeline.
+- Added persistence-layer diagnostics to source render logs.
+- Built from the clean Development Version 313 logging/source-diagnostics baseline; the unrelated 325 and 326 experiments are not included.
+
+## Development Version 313
+
+- Reorganized logging options into logical groups: Core and application, OBS source, Editor and interface, Title model and animation, Rendering, and Cache and media.
+- Added dedicated source logging categories for lifecycle/visibility, timing and animation, frame presentation, flicker/frame consistency, source scene masks, and source audio.
+- Added source tick-cadence diagnostics and correlated tick/render serials, playhead, cue phase, dirty/first-frame state and presentation generation data.
+- Added diagnostics for every skipped source draw, successful GPU frame publication, deferred or missing frames, stale model revisions and visible-frame gaps that can manifest as flicker during animation.
+- Kept the highest-volume Source Flicker, Cache Playback and Performance categories disabled by default; they can be enabled only while reproducing a fault.
+
+## Development Version 312
+
+- Rebuilt the editor default dock workspace: Sidebar at the far left, Editor Audio immediately beside it, all utility panels in one tabbed column, Timeline at the bottom, and Layer Properties at the right.
+- Increased the editor layout schema so installations with stale or collapsed dock state automatically receive the corrected workspace.
+- Added a destructive “Reset All Broadcast Graphics Live Settings…” action to the OBS source Properties panel, with two confirmation dialogs. It clears BGL settings and removes the plugin application-data and cache folders.
+
+## Development Version 311
+
+- Invalidated the corrupted Development 309/310 dock-state schema so the editor rebuilds the new default workspace once on upgrade.
+- Checked panel actions now recover docks that have no dock area, have been restored off-screen as floating windows, or are trapped in a zero-size splitter.
+- Preserves legitimate on-screen floating panels and normal user-resized dock dimensions.
+
+## Development Version 310
+
+- Fixed checked dock menu items that did not bring tabified docks to the front.
+- Panel locking now disables movement and floating without invalidating dock areas or freezing splitter dimensions.
+- Clears the width/height clamps introduced by Development Version 309 so previously hidden or collapsed docks recover automatically.
+
+## Development Version 309
+
+- Fixed the Windows linker failure by adding the missing `TitleEditor::set_panels_locked(bool)` implementation.
+- The dock-panel lock action now updates dock features immediately and persists the lock state in the editor layout settings.
+
+# v0.8.12-alpha — Development Version 308
+
+## Development Version 308 — motion blur resolve, default workspace, cross-session clipboard
+
+- Motion Blur now resolves the normalized shutter exposure directly instead of applying an optical-density alpha lift, preventing opaque stacked afterimages.
+- Transform-only temporal sampling uses a denser editor-safe budget to reduce visible sample stepping.
+- The editor default dock workspace is reorganized into a compact creation/library column, a logical inspector/effects column, and a full-width timeline.
+- Layer copy/paste now uses a canonical JSON MIME payload on the system clipboard, allowing paste between editor windows and separate editor sessions while preserving groups, animation, effects, rich text, media bindings, and assigned cameras.
+
+# v0.8.12-alpha — Development Version 307
+
+## Development Version 307 — correlated render diagnostics
+
+- Added the dedicated `RenderDiagnostics` logger category.
+- Correlated editor playhead requests, canvas scheduling, GPU session updates, render attempts and stable-frame publication through monotonically increasing serials.
+- Added scalar snapshots for session/published time, model revisions, dirty/deferred state, raster readiness, active extrusion/light counts, hardware-depth runs and executed extrusion passes.
+- Added rate-limited canvas stall warnings when playback repeatedly prepares the same playhead.
+- Added structured geometry-authoring logs for extrusion and bevel controls.
+- This release is diagnostic-only and intentionally does not change render, cache or serialization decisions.
+
+# v0.8.12-alpha — Development Version 306
+
+## Development Version 306 — single-layer extrusion and transactional GPU publication recovery
+
+- Made enabled Text, Clock, Ticker and Shape extrusion a self-contained hardware-depth pass, including scenes where the only other 3D object is a non-raster Light layer.
+- Routed extruded text through the exact compatibility raster before depth-shell composition so GPU glyph-buffer allocation is not a prerequisite for extrusion.
+- Added an immediate CPU fallback raster for first GPU-text publication failures.
+- Replaced optional-raster fail-open with transactional defer: an older text/vector texture can remain visible only as the last complete frame while the editor immediately rebuilds the exact current model.
+- Exposed deferred draw state to the canvas and replaced repaint-only recovery with a forced model refresh, preventing stale frames from persisting until a light or other scene property changes.
+- Advanced development and GPU text/cache identities to 306.
+
+# v0.8.12-alpha — Development Version 304
+
+## Development Version 304 — unified 3D inspector, responsive Z interaction and extrusion repair
+
+- Added a dedicated dock for 3D Camera, Lights and Environment controls.
+- Standardized Material and Geometry inspector sections, including keyframe controls and numeric label scrubbing.
+- Made Emissive Color an Appearance swatch with animated ARGB channels, serialization, timeline tracks and cache dependencies.
+- Suppressed artwork boxes/resize handles for Light layers while retaining light-object overlays and the shared 3D gizmo.
+- Restricted Light-layer hit testing to the projected object overlay, eliminating invisible resize/move regions.
+- Restored the transform-only GPU path for unified XYZ movement by copying `position_3d` and its authority flag into the render-session snapshot.
+- Removed the obsolete 3D full-refresh gate so interactive XYZ/orientation/camera changes use resident GPU rasters until the settled rebuild.
+- Promoted enabled text/shape extrusion to 3D depth rendering automatically and migrated Development 300–303 saved states.
+- Improved extrusion with adaptive depth-shell density and per-shell world-space lighting planes.
+
+# v0.8.12-alpha — Development Version 299
+
+
+## Development Version 299 — Windows build fixes for 3D lighting
+
+- Split the large embedded layer-compositor effect into adjacent raw string literals so MSVC no longer raises C2026 while preserving one identical shader source at runtime.
+- Renamed the local `slots` array to avoid collision with Qt's `slots` preprocessor macro, which caused the parser cascade in `gpu-presentation-readback.inc`.
+- Corrected the material-field factory lambda to capture `this`, allowing access to `three_d_controls_` under MSVC.
+- Removed a duplicate `clipAlpha` declaration found while validating the shader source.
+- Advanced development and GPU pipeline identities to 299 and added regression checks for these Windows-specific failures.
+
+## Development Version 298 — 3D lighting, materials and planar shadows
+
+- Integrated lighting into the existing depth-aware GPU layer compositor rather than introducing a second renderer or a post-process approximation.
+- Added title-level **Ambient**, **Point**, **Spot**, **Parallel** and **Environment** lights with animated color, intensity, position, point of interest, distance falloff, cone, environment rotation and shadow properties.
+- Added an explicit default-light compatibility policy. Existing titles keep their previous pixels because layer **Accepts Lights** is off by default; adding the first authored light disables the compatibility light.
+- Added opt-in per-layer Material Options: Accepts Lights/Shadows, Casts Shadows, reflection participation, ambient, diffuse, specular, shininess, metallic, roughness, reflection intensity, emissive color and emissive intensity.
+- Added per-pixel planar shading derived from the existing world matrix, transformed normal and active camera position. Four explicit light slots avoid backend-dependent dynamic uniform arrays across OBS D3D11/OpenGL/Metal shader translation.
+- Added normalized None/Linear/Inverse-square distance attenuation, Spot cone feathering, metallic/dielectric Fresnel response, roughness-shaped highlights, environment-color lighting and premultiplied-alpha-safe emission.
+- Added the first real shadow pass: the first enabled shadow-casting Spot or Parallel light renders alpha-tested 3D planar casters into a 512px draft/1024px final color-depth target, then receivers use a configurable 3×3 PCF lookup with darkness, softness and bias.
+- Added Light owner rows to the common Layer List/Timeline/Graph Editor, including Position, Point of Interest, Color, Intensity, Falloff, Cone, Shadow and Environment Rotation tracks. Material scalar tracks are authorable from expanded 3D layer rows.
+- Added canonical serialization, duplicate-ID recovery, opaque unknown-field passthrough, animation detection, frame bounds, visual/content hashes and cache invalidation for every new light/material pixel input.
+- Added editor controls under **3D Lights & Environment** and layer **Material Options**, including color swatches, numeric drag behavior, type-dependent enablement and safe reset defaults.
+- Advanced title serialization development identity to 265 and GPU/cache identities to Development Version 298.
+- Added an executable Development Version 298 contract covering the data model, serialization, shader binding, shadows, editor/timeline authoring, cache dependencies and compatibility defaults.
+
+### Deliberate scope limits in this development build
+
+- Point lights illuminate correctly but do not yet cast cube-map shadows.
+- One shadow map is evaluated per title: the first enabled shadow-casting Spot or Parallel light.
+- Environment lights currently use authored color/intensity for diffuse/reflection contribution; HDRI texture sampling and importance-filtered image-based lighting are not yet implemented.
+- The implementation shades existing planar 3D layers. Extruded/beveled text and shape geometry, imported glTF/GLB meshes, normal maps, transmission/refraction and camera depth of field remain separate renderer phases.
+
+## Previous: Development Version 297
+
+# v0.8.12-alpha — Development Version 297
+
+## Development Version 297 — Temporal-occupancy Motion Blur alpha resolve
+
+- Replaced the Development Version 296 direct max-alpha output that made every historical shutter position fully opaque.
+- Keeps normalized full-shutter RGB and does not composite a separate sharp current-frame color at 100% effect strength.
+- Uses maximum sample alpha only as an authored-coverage ceiling. Final wet alpha is based on temporal occupancy (`exposure alpha / coverage alpha`) with a smooth optical-density lift.
+- Fully or strongly overlapped pixels retain the layer's authored opacity, while low-occupancy outer trails fade progressively instead of becoming opaque copies.
+- Preserves authored translucent fills, shadows, glows and antialiased edges because resolved alpha can never exceed the strongest alpha actually present at that pixel in any shutter sample.
+- Applies the identical resolve to complete GPU effect/transition sampling, transform-only GPU sampling, GPU readback and Cairo compatibility rendering.
+- Leaves effect ordering, Noise/Grain, Trim Paths, transitions, sample-density rules, source budgets and editor performance changes untouched.
+- Advances the effect-output, visual-renderer and GPU text-pipeline cache identities to prevent reuse of Development Version 296 output.
+
+## Previous: Development Version 296
+
+# v0.8.12-alpha — Development Version 296
+
+## Development Version 296 — Opaque temporal-coverage Motion Blur resolve
+
+- Keeps the Development Version 295 full-shutter temporal color: at 100% effect opacity no separately reinforced sharp current-frame RGB is composited.
+- Adds an independent max-alpha envelope accumulated from the exact same shutter samples. Opaque artwork therefore remains opaque instead of becoming translucent when its normalized exposure is spread over motion.
+- Resolves exposure straight color against temporal max coverage, preserving premultiplied output.
+- Uses maximum—not additive or source-over—coverage, so authored translucent fills, shadows, glows and antialiased edges do not gain opacity from overlapping samples.
+- Applies the same contract to complete GPU effect/transition samples, transform-only GPU sampling, GPU-readback acceleration and the Cairo compatibility path.
+- Leaves effect ordering, Noise/Grain sampling, Trim Paths, transitions, sample-density rules and editor/source performance budgets unchanged.
+
+## Previous: Development Version 295
+
+## Development Version 295 — Full-shutter Motion Blur resolve
+
+- Removed the separately reinforced current-frame silhouette from full-strength Motion Blur. A moving layer now resolves to the normalized shutter exposure without a separately reinforced sharp current frame.
+- Replaced the Development Version 294 strongest-alpha resolve with a standard premultiplied RGBA dry/wet interpolation. At 100% effect opacity the output is exactly the temporal exposure; lower effect opacity intentionally mixes the unblurred current frame with that exposure.
+- Preserved normalized sample weighting, so overlapping samples of semi-transparent fills, shadows, glows, antialiased edges and effect output do not gain opacity through additive or source-over accumulation.
+- Applied the same resolve contract to transform-only GPU Motion Blur, complete temporal rendering with effects/Trim Paths/transitions, GPU readback and Cairo compatibility fallback.
+- Kept the complete effect-stack sampling and quality/performance budgets from Development Version 294 unchanged.
+- Advanced the effect-output, visual-renderer and GPU text-pipeline cache identities to prevent reuse of pre-295 resolved frames.
+
+# v0.8.12-alpha — Development Version 294
+
+## Development Version 294 — Motion Blur quality and complete effect-stack exposure
+
+- Restored the pre-regression distance-adaptive sampling rule: authored `Samples` is again a minimum quality request and fast motion may increase resident-texture samples up to a path-specific cap.
+- Removed the dev289 2–6-sample throttle from the cheap transform-only GPU path; CPU-raster temporal work retains a strict source budget.
+- Replaced sharp-frame source-over resolution with an opacity-preserving temporal color resolve. Noise, Grain, shadows, glows and internal texture detail now participate in the blur inside opaque silhouettes, while authored alpha remains unchanged.
+- Animated procedural effects and every native effect property now trigger temporal reevaluation during the shutter interval; future effects using the generic animated flag inherit the same behavior automatically.
+- Increased the GPU-only complete temporal budget for animated effects while keeping animated Trim Paths/text geometry on the lower CPU-raster budget.
+- Bumped the effect-output cache identity to prevent reuse of pre-dev294 Motion Blur/effect results.
+- Kept the Development Version 293 editor GUI-thread and playback performance audit unchanged.
+
+# v0.8.12-alpha — Development Version 293
+
+## Development Version 293 — Editor playback and UI-event performance audit
+
+- Audited the editor path separately from OBS source rendering after reproducing playback slowdown while moving a high-polling-rate mouse across inspector controls.
+- Split playhead consumers by cost. The canvas still receives every transport frame, transport feedback such as the timeline/timecode is monitor-capped to at most 30 Hz, and heavyweight Layers/Properties/Effects/Graphic Properties/sidebar evaluation is capped at 10 Hz during playback. Scrubbing, stepping and the final stopped frame still force an exact full UI refresh.
+- Stopped reevaluating hidden inspector docks. This removes repeated animated-property evaluation, keyframe-row traversal, control updates, canvas-handle publication and color-swatch restyling for panels that cannot currently be seen.
+- Added playback-time passive pointer filtering: no-button `MouseMove`/`HoverMove` events over ordinary inspector widgets are coalesced to at most 30 Hz before QSS/custom-widget processing. Canvas and Timeline retain continuous pointer input, while clicks, drags, wheels, tooltips and Enter/Leave hover changes remain intact. Future controls can opt in with `bglContinuousPointerDuringPlayback`.
+- Prevented editor audio preview duplication for titles that contain no audio tracks, including recursive Asset checks. Audio-capable titles now publish their title snapshot only on creation, discontinuities or actual model/audio changes instead of marking the private source dirty on every playback frame.
+- Avoided repeated media play/pause calls and per-frame audio debug formatting when transport state is unchanged. The editor audio meter no longer repaints identical levels, uses a coarse timer, and suspends that timer while its dock is hidden.
+- Removed the unconditional 10 Hz title-bar rewrite from the dynamic Clock/Ticker timer, changed the background diagnostics timer to a coarse idle-only timer during playback, and guarded title, diagnostics and swatch setters against unchanged values.
+- Made Debug/Trace logging lazy so disabled high-frequency render diagnostics no longer construct `QString` payloads before the logger rejects them.
+- Removed stale hard-coded development numbers from the automated-suite runner; manifest validation and JSON reports now follow the current CMake development version, avoiding false failures on future deliveries.
+- Kept the GPU text/base-raster cache revision at 292 because this audit changes editor scheduling and auxiliary source lifecycle, not rendered-pixel or cache-key semantics.
+
+# v0.8.12-alpha — Development Version 292
+
+## Development Version 292 — Coverage-preserving Motion Blur alpha resolve
+
+- Reworked Motion Blur compositing so semi-transparent fills, shadows, glows, antialiased edges and effect output no longer gain opacity when temporal samples overlap.
+- Replaced the source-over alpha union with a premultiplied, coverage-preserving resolve: source-over color is normalized to `max(sharp alpha, trail alpha)`. Opaque current pixels remain opaque, authored translucent coverage remains stable, and trail-only pixels remain visible.
+- Routed the transform-only OBS source fast path through the same trail/sharp resolve used by the complete effects, Trim Paths and transition path, removing divergent alpha behavior between optimization branches.
+- Applied the same contract to GPU readback and Cairo fallback rendering, including cached-raster samples.
+- Kept normalized sample weighting, source frame budgets, Trim Paths shadow alignment and nested temporal target isolation from Development Versions 287–291.
+- Bumped the GPU text-pipeline cache revision to 292.
+
+# v0.8.12-alpha — Development Version 291
+
+## Development Version 291 — Trim Paths shadow alignment under Motion Blur
+
+- Fixed an OBS-source-only offset of legacy shadows and layer-space Drop Shadow/Long Shadow while Trim Paths is animated under Motion Blur.
+- Coordinate-sensitive temporal samples now keep a 1:1 local raster so the shadow offset remains anchored to the trimmed geometry.
+- The full-resolution override is limited to the Trim Paths + shadow combination; other source Motion Blur samples retain the Development Version 289 real-time budget.
+- Bumped the GPU text-pipeline cache revision to 291.
+
+# v0.8.12-alpha — Development Version 290
+
+## Development Version 290 — Animated vector property compile fix
+
+- Fixed MSVC error C2440 in `source-runtime.inc`: `Layer::origin_prop` is an `AnimatedVectorProperty` (`AnimatedVec2Property`) and cannot be stored in an `AnimatedProperty*` scalar array.
+- Motion Blur shutter-interval detection now evaluates `origin_prop` with `animated_vec2_property_changes_during_interval()`, together with `size` and `image_size`.
+- Bumped the GPU text-pipeline cache revision to 290.
+
+## Development Version 289 — OBS source Motion Blur frame budget
+
+- Audited the OBS source path separately from the editor and found that authored Motion Blur samples were still treated as a minimum: fast motion could silently escalate an 8-sample effect to 32–40 GPU draws, while animated Trim Paths/text geometry triggered several full CPU raster-and-upload cycles on the OBS graphics thread.
+- Added an explicit `realtime_output` contract to live title-source and Stinger render sessions. Editor, cache and offline sessions retain their authored quality behavior; only real-time output is constrained by the graphics-thread budget.
+- Changed adaptive exposure selection from hidden escalation to a hard authored ceiling: useful motion density may reduce the sample count but can no longer raise it above the configured Samples value.
+- Added resolution-aware source limits. Transform-only exposure is capped at 6/4/3 samples for ordinary/large/UHD canvases; complete GPU temporal passes are capped at 4/3/2; CPU-raster temporal passes such as animated Trim Paths are capped at 3 samples below 3 MP and 2 samples above it.
+- Historical source-raster samples now render at 0.625× below HD-class canvases, 0.5× at HD/QHD, and 0.375× at UHD. The authored current frame remains full-resolution and is still composited sharply over the normalized trail.
+- Replaced the global “has any keyframes” temporal predicate with shutter-interval change detection. Properties animated elsewhere in the title no longer force a complete per-sample rerender during a locally static exposure.
+- Applied the same authored-ceiling and real-time sample-budget rules to the compatibility Motion Blur path.
+- Bumped the GPU pipeline cache revision so pre-289 resident payloads cannot bypass the corrected source contract.
+
+# v0.8.12-alpha — Development Version 288
+
+## Development Version 288 — Motion Blur render-time performance audit
+
+- Traced the sudden OBS **Average time to render frame** increase to the Development Version 286/287 Motion Blur path: ordinary position/scale/rotation motion recursively rendered the complete layer, effects and transitions for every shutter sample and then performed another full-canvas accumulation pass per sample.
+- Added a transform-only GPU path that evaluates the already effected local texture once and reuses it across shutter samples while still sampling hierarchy, 2D/3D transform, camera, visibility, wipe and general-transition state at each shutter time. The trail is drawn first and the sharp frame source-over directly in the caller target, eliminating auxiliary sharp/trail targets and a fullscreen resolve for this common path.
+- Restricted complete temporal rerendering to content that actually changes below Motion Blur, including animated Trim Paths/source geometry, active text transitions, ticker output, active transition blur and screen-space effects. Dormant in/out transition descriptors no longer force the expensive path throughout the title.
+- Reduced the complete-pipeline budget to 6–10 samples depending on content/projection, with a maximum of 4 in editor draft mode; the larger adaptive budgets remain available only to the inexpensive transform-only path.
+- Replaced read-previous/write-next full-canvas ping-pong accumulation with normalized in-place additive accumulation in one persistent render target, while retaining the Development Version 287 trail-under-sharp resolve and premultiplied-alpha safeguards.
+- Kept video transform Motion Blur on the current decoded frame unless another active temporal effect requires full sampling, avoiding repeated decode/raster work inside one OBS frame.
+- Advanced runtime/build and GPU cache identity to 288 and added regression contracts for fast-path selection, active-transition gating, bounded dynamic sampling and in-place accumulation.
+
+# v0.8.12-alpha — Development Version 287
+
+## Development Version 287 — normalized Motion Blur trail resolve
+
+- Replaced the Development Version 286 additive sharp-plus-trail accumulation with a two-stage resolve: shutter samples first form a normalized premultiplied-alpha exposure, then the untouched current frame is composited over it.
+- Prevented overlapping temporal samples from increasing RGB or alpha on the current object, eliminating the visible stacked-copy/brightening artifact while preserving the authored fill, stroke and effect appearance.
+- Retained complete per-sample evaluation of Trim Paths, text/general transitions, layer-space effects, projected/screen-space effects, hierarchy and camera movement.
+- Applied the same normalized trail-under-sharp contract to the GPU session path, GPU readback compatibility path and Cairo fallback path.
+- Advanced runtime/build and GPU base-raster cache identity to 287 and added regression coverage for normalized weights, source-over resolve ordering and non-additive compatibility compositing.
+
+# v0.8.12-alpha — Development Version 286
+
+## Development Version 286 — opaque post-effects Motion Blur
+
+- Replaced the main GPU Motion Blur crossfade with full-strength sharp-frame retention plus a separately weighted temporal trail, preventing opaque layers from becoming semi-transparent when Motion Blur is enabled.
+- Moved temporal accumulation after the complete per-layer visual pipeline: every shutter sample now evaluates layer-space effects, projected/screen-space effects, general transitions, visibility/opacity and transform/camera state before it is accumulated.
+- Added time-sampled base-raster regeneration for geometry/source changes, including animated Trim Paths and transition-managed Text Animators, so reveals and text transitions produce their own motion exposure instead of blurring one frozen raster.
+- Added isolated nested temporal targets for source-aware effects, preventing an effect-source layer with Motion Blur from clearing an outer layer's in-progress accumulation.
+- Preserved premultiplied-alpha constraints in the temporal composite shader and advanced the runtime/build and GPU text/base-raster cache revision to 286.
+- Added a Development Version 286 regression contract covering opacity retention, post-effect ordering, Trim Paths/text-transition sampling and nested target isolation.
+
+# v0.8.12-alpha — Development Version 285
+
+## Development Version 285 — Trim Paths base-raster live invalidation fix
+
+- Fixed the remaining stale Trim Paths editor/live output by preserving Trim Paths effects in the reusable GPU base-raster cache identity.
+- Ordinary post-raster pixel effects are still removed from the base-raster key, while the geometry-stage Start, End, Trim Offset, multiple-shapes mode, enabled state and animation timing now invalidate the exact stroke raster immediately.
+- Restored dynamic-raster classification for animated Trim Paths properties, including updates at the current playhead without requiring a layer move, effect toggle or reload.
+- Advanced the runtime/build development version and GPU text/base-raster cache revision to 285.
+- Added a regression contract preventing Trim Paths from being removed by the base-key effect filtering step.
+
+# v0.8.12-alpha — Development Version 284
+
+## Development Version 284 — Stroke Offset popup MSVC capture fix
+
+- Fixed the Stroke Options popup build failure on MSVC by explicitly capturing the shared `local_time` callback in the outer popup lambda.
+- Preserved the nested Stroke Offset value-change and keyframe callbacks, which now access the captured timeline-time provider legally on all supported C++17 compilers.
+- Added a source contract check preventing this lambda-capture regression.
+- Advanced the runtime/build development version to 284.
+
+# v0.8.12-alpha — Development Version 283
+
+## Development Version 283 — Trim Paths live refresh and general Stroke Offset
+
+- Fixed stale Trim Paths previews/output by adding evaluated Start, End, Trim Offset and Trim Multiple Shapes values to the rendered effect-layer cache key.
+- Moved Stroke Offset out of the Trim Paths effect and into the layer's general stroke settings.
+- Made the general Stroke Offset animatable, serializable, preset-aware and available in the stroke options popup and timeline.
+- Applied Stroke Offset geometrically before optional Trim Paths processing for shapes, plain/rich text and text-background strokes.
+- Added automatic migration of Development Version 282 Trim Paths Stroke Offset values/keyframes into the layer-level setting.
+- Updated cache fingerprints, animation detection and render/live-cue bounds for static and animated stroke offsets.
+- Advanced the runtime/build development version and GPU text cache revision to 283.
+
+# v0.8.12-alpha — Development Version 282
+
+## Development Version 282 — Trim Paths and geometric Stroke Offset
+
+- Added a built-in **Trim Paths** effect with animatable Start, End, Trim Offset and Stroke Offset properties plus Simultaneously/Individually subpath processing.
+- Implemented arc-length path slicing with wrap-around and adaptive Bézier flattening before stroke rasterization rather than masking already-rendered pixels.
+- Added geometric positive/negative stroke-path offsetting for open, closed and compound paths, including winding-independent outward detection for closed contours.
+- Applied the geometry modifier to shape outlines, ticker/plain text outlines, exact rich-text glyph strokes and text-background strokes while preserving original fill and inside/outside clipping geometry.
+- Routed affected layers through the exact compatibility path so editor preview, live output and cached frames share the same generated geometry.
+- Added full keyframe, Undo/Redo, preset, serialization, bounds-expansion and cache-key support.
+- Advanced the runtime/build development version and GPU text cache revision to 282.
+
 # v0.8.12-alpha — Development Version 281
 
 ## Development Version 281 — continuous static strokes and restored text transitions

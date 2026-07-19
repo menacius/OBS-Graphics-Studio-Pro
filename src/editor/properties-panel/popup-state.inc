@@ -189,13 +189,44 @@ static QString auto_style_join_ids(const std::vector<std::string> &ids)
     return parts.join(QStringLiteral(", "));
 }
 
-
 void PropertiesPanel::set_undo_redo_available(bool undo_available, bool redo_available)
 {
     if (btn_properties_undo_)
         btn_properties_undo_->setEnabled(undo_available);
     if (btn_properties_redo_)
         btn_properties_redo_->setEnabled(redo_available);
+}
+
+
+void PropertiesPanel::register_keyframe_times(
+    QAbstractButton *button, std::function<std::vector<double>()> provider)
+{
+    if (!button)
+        return;
+    keyframe_time_providers_[button] = std::move(provider);
+    bgl_refresh_keyframe_navigation(button);
+}
+
+QWidget *PropertiesPanel::make_keyframe_controls(QAbstractButton *button,
+                                                  QWidget *parent)
+{
+    return bgl_make_keyframe_controls(
+        button, parent,
+        [this, button]() {
+            const auto found = keyframe_time_providers_.find(button);
+            return found == keyframe_time_providers_.end()
+                ? std::vector<double>{} : found->second();
+        },
+        [this]() {
+            if (!layer_)
+                return 0.0;
+            return std::clamp(playhead_ - layer_->in_time, 0.0,
+                              std::max(0.0, layer_->out_time - layer_->in_time));
+        },
+        [this](double local_time) {
+            if (layer_)
+                emit keyframe_navigation_requested(layer_->in_time + local_time);
+        });
 }
 
 
@@ -322,45 +353,33 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     setStyleSheet(QStringLiteral("QScrollArea{background:%1;border:none;}").arg(panel_bg_name));
 
     auto *inner = new QWidget(this);
-    inner->setStyleSheet(QStringLiteral("background:%1;").arg(panel_bg_name));
+    inner->setObjectName(QStringLiteral("BglLayerPropertiesContent"));
+    inner->setProperty("bglResponsivePropertyFields", true);
+    inner->setStyleSheet(QStringLiteral(
+        "QWidget#BglLayerPropertiesContent{background:%1;}"
+        "QWidget#BglLayerPropertiesContent QLabel{color:%2;font-size:10px;background:transparent;}"
+        "QWidget#BglLayerPropertiesContent QDoubleSpinBox,"
+        "QWidget#BglLayerPropertiesContent QSpinBox,"
+        "QWidget#BglLayerPropertiesContent QComboBox,"
+        "QWidget#BglLayerPropertiesContent QLineEdit,"
+        "QWidget#BglLayerPropertiesContent QTextEdit{color:%3;background:%4;"
+        "border:1px solid %5;border-radius:2px;padding:1px 3px;"
+        "selection-background-color:%6;}"
+        "QWidget#BglLayerPropertiesContent QDoubleSpinBox:focus,"
+        "QWidget#BglLayerPropertiesContent QSpinBox:focus,"
+        "QWidget#BglLayerPropertiesContent QComboBox:focus,"
+        "QWidget#BglLayerPropertiesContent QLineEdit:focus,"
+        "QWidget#BglLayerPropertiesContent QTextEdit:focus{border-color:%6;}")
+        .arg(panel_bg_name, subtle_text_name, control_text_name,
+             control_bg_name, border_name, highlight_name));
     auto *vl = new QVBoxLayout(inner);
-    vl->setContentsMargins(2, 2, 2, 2);
-    vl->setSpacing(3);
-
-    /* Keep the editor history visible while working in the inspector.  The
-     * buttons delegate to the title editor's canonical snapshot stack; they do
-     * not maintain a second, properties-only history. */
-    properties_history_row_ = new QWidget(inner);
-    auto *history_row = properties_history_row_;
-    history_row->setObjectName(QStringLiteral("BroadcastGraphicsLivePropertiesHistory"));
-    auto *history_layout = new QHBoxLayout(history_row);
-    history_layout->setContentsMargins(4, 2, 4, 2);
-    history_layout->setSpacing(3);
-    auto *history_label = new QLabel(bgl_tr("OBSTitles.Properties"), history_row);
-    history_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    btn_properties_undo_ = new QToolButton(history_row);
-    btn_properties_undo_->setIcon(obs_icon("undo.svg"));
-    btn_properties_undo_->setToolTip(bgl_tr("OBSTitles.Undo"));
-    btn_properties_undo_->setAccessibleName(bgl_tr("OBSTitles.Undo"));
-    btn_properties_undo_->setAutoRaise(true);
-    btn_properties_undo_->setEnabled(false);
-    btn_properties_redo_ = new QToolButton(history_row);
-    btn_properties_redo_->setIcon(obs_icon("redo.svg"));
-    btn_properties_redo_->setToolTip(bgl_tr("OBSTitles.Redo"));
-    btn_properties_redo_->setAccessibleName(bgl_tr("OBSTitles.Redo"));
-    btn_properties_redo_->setAutoRaise(true);
-    btn_properties_redo_->setEnabled(false);
-    history_layout->addWidget(history_label);
-    history_layout->addWidget(btn_properties_undo_);
-    history_layout->addWidget(btn_properties_redo_);
-    vl->addWidget(history_row);
-    connect(btn_properties_undo_, &QToolButton::clicked, this, &PropertiesPanel::undo_requested);
-    connect(btn_properties_redo_, &QToolButton::clicked, this, &PropertiesPanel::redo_requested);
+    vl->setContentsMargins(6, 5, 6, 6);
+    vl->setSpacing(2);
 
     const QString section_style =
         QStringLiteral("QGroupBox{color:%1;background:%2;border:none;"
-        "border-radius:0;margin-top:14px;font-size:10px;font-weight:bold;}"
-        "QGroupBox::title{subcontrol-origin:margin;left:6px;top:2px;padding:0 4px;}"
+        "border-top:2px solid %3;margin:0;padding-top:4px;font-size:11px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QGroupBox::indicator{width:10px;height:10px;margin-left:2px;}"
         "QLabel{color:%4;font-size:10px;}")
             .arg(panel_text_name)
@@ -385,7 +404,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                  hover_bg_name, highlight_name, highlighted_text_name, subtle_text_name);
 
     auto style_form = [](QFormLayout *form) {
-        form->setContentsMargins(4, 3, 4, 4);
+        form->setContentsMargins(5, 4, 5, 5);
         form->setHorizontalSpacing(4);
         form->setVerticalSpacing(2);
         form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -393,7 +412,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     };
 
-    auto add_form_row = [this, panel_text_name](QFormLayout *form, const QString &label_text, QWidget *field) {
+    auto add_form_row = [this, subtle_text_name](QFormLayout *form, const QString &label_text, QWidget *field) {
         if (!form || label_text.isEmpty()) {
             if (form) form->addRow(label_text, field);
             return;
@@ -411,7 +430,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                emit property_changed(true);
                                            });
         label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        label->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(panel_text_name));
+        label->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name));
         form->addRow(label, field);
     };
 
@@ -451,23 +470,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     auto mk_kf_button = [&](const QString &tip) {
         auto *b = new QPushButton(inner);
-        b->setFixedSize(20, 20);
-        b->setIconSize(QSize(14, 14));
-        b->setIcon(keyframe_diamond_icon(false));
+        b->setIcon(bgl_keyframe_diamond_icon(false));
         b->setToolTip(tip);
         b->setAccessibleName(tip);
         b->setProperty("active", false);
         b->setProperty("outlined", false);
-        const QColor kf_hover = panel_bg.lightness() < 128 ? panel_bg.lighter(128) : panel_bg.darker(108);
-        const QColor kf_mark = highlight;
-        QColor kf_mark_bg = kf_mark;
-        kf_mark_bg.setAlpha(44);
-        b->setStyleSheet(QStringLiteral(
-            "QPushButton{background:transparent;border:none;border-radius:2px;padding:0;}"
-            "QPushButton:hover{background:%1;}"
-            "QPushButton[outlined=\"true\"]{background:%2;}"
-            "QPushButton[active=\"true\"]{background:%2;}")
-            .arg(kf_hover.name(QColor::HexRgb), kf_mark_bg.name(QColor::HexArgb)));
+        bgl_style_keyframe_button(b);
         return b;
     };
 
@@ -477,8 +485,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         hl->setContentsMargins(0, 0, 0, 0);
         hl->setSpacing(3);
         field->setSizePolicy(QSizePolicy::Expanding, field->sizePolicy().verticalPolicy());
-        hl->addWidget(button);
         hl->addWidget(field, 1);
+        hl->addWidget(make_keyframe_controls(button, row), 0, Qt::AlignVCenter);
         return row;
     };
 
@@ -491,9 +499,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_scale_y_->setSuffix("%");
     spn_transform_size_w_ = mk_dspin(0.0, 9999.0, 10.0);
     spn_transform_size_h_ = mk_dspin(0.0, 9999.0, 10.0);
-    chk_scale_lock_ = new TransformLockCheckBox(inner);
+    chk_scale_lock_ = new BglSwitch(inner);
     chk_scale_lock_->setChecked(true);
-    chk_transform_size_lock_ = new TransformLockCheckBox(inner);
+    chk_transform_size_lock_ = new BglSwitch(inner);
     chk_transform_size_lock_->setChecked(true);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
@@ -564,8 +572,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_box_ = new QWidget(inner);
     transform_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *tform_layout = new QVBoxLayout(transform_box_);
-    tform_layout->setContentsMargins(7, 5, 7, 6);
-    tform_layout->setSpacing(8);
+    tform_layout->setContentsMargins(5, 4, 5, 5);
+    tform_layout->setSpacing(2);
 
     btn_transform_defaults_ = new QToolButton(transform_box_);
     btn_transform_defaults_->setObjectName(QStringLiteral("BglPanelDefaultsButton"));
@@ -578,28 +586,28 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     transform_grid_ = new QGridLayout();
     auto *transform_grid = transform_grid_;
-    transform_grid->setContentsMargins(0, 2, 0, 0);
-    transform_grid->setHorizontalSpacing(5);
-    transform_grid->setVerticalSpacing(4);
-    transform_grid->setColumnMinimumWidth(0, 20);
-    transform_grid->setColumnMinimumWidth(1, 68);
-    transform_grid->setColumnMinimumWidth(2, 90);
-    transform_grid->setColumnMinimumWidth(3, 90);
-    transform_grid->setColumnMinimumWidth(4, 90);
-    transform_grid->setColumnMinimumWidth(5, 20);
-    transform_grid->setColumnMinimumWidth(6, 0);
-    transform_grid->setColumnStretch(7, 1);
+    transform_grid->setContentsMargins(0, 0, 0, 0);
+    transform_grid->setHorizontalSpacing(4);
+    transform_grid->setVerticalSpacing(2);
+    transform_grid->setColumnMinimumWidth(0, 82);
+    transform_grid->setColumnMinimumWidth(1, 0);
+    transform_grid->setColumnMinimumWidth(2, 0);
+    transform_grid->setColumnMinimumWidth(3, 0);
+    transform_grid->setColumnMinimumWidth(4, 30);
+    transform_grid->setColumnMinimumWidth(5, 0);
+    transform_grid->setColumnStretch(1, 1);
+    transform_grid->setColumnStretch(2, 1);
+    transform_grid->setColumnStretch(3, 1);
+    transform_grid->setColumnStretch(5, 0);
 
     auto style_transform_spin = [&](QDoubleSpinBox *spin) {
-        spin->setFixedSize(70, 20);
+        spin->setFixedHeight(20);
+        spin->setMinimumWidth(0);
+        spin->setMaximumWidth(QWIDGETSIZE_MAX);
+        spin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         spin->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
         spin->setPrefix(QString());
-        spin->setStyleSheet(QStringLiteral("QDoubleSpinBox{color:%1;background:transparent;border:none;"
-                            "padding:1px 2px;font-size:10px;selection-background-color:%2;}"
-                            "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:12px;background:%3;"
-                            "border-left:1px solid %4;}"
-                            "QDoubleSpinBox::up-button:hover,QDoubleSpinBox::down-button:hover{background:%5;}")
-                            .arg(control_text_name, highlight_name, button_bg_name, border_name, hover_bg_name));
+        spin->setStyleSheet(control_style);
     };
     style_transform_spin(spn_px_);
     style_transform_spin(spn_py_);
@@ -623,11 +631,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto make_transform_field = [&](const QString &label, QDoubleSpinBox *spin, const char *icon_name = nullptr) {
         auto *field = new QWidget(transform_box_);
         field->setObjectName(QStringLiteral("OBSTitlesTransformNumericField"));
-        field->setStyleSheet(QStringLiteral("QWidget#OBSTitlesTransformNumericField{background:%1;border:1px solid %2;"
-                             "border-radius:2px;}").arg(control_bg_name, border_name));
+        field->setStyleSheet(QStringLiteral(
+            "QWidget#OBSTitlesTransformNumericField{background:transparent;border:none;}"));
         auto *field_layout = new QHBoxLayout(field);
-        field_layout->setContentsMargins(5, 0, 0, 0);
-        field_layout->setSpacing(2);
+        field_layout->setContentsMargins(0, 0, 0, 0);
+        field_layout->setSpacing(4);
         auto *field_label = new NumericDragLabel(label, spin, field,
                                                  [this]() {
                                                      if (loading_values_) return;
@@ -645,10 +653,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             field_label->setPixmap(obs_icon(icon_name).pixmap(14, 14));
             field_label->setText(QString());
         }
-        field_label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:11px;padding:0;}").arg(subtle_text_name));
+        field_label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:10px;padding:0;}").arg(subtle_text_name));
         field_layout->addWidget(field_label);
-        field_layout->addWidget(spin);
-        field->setFixedSize(90, 20);
+        field_layout->addWidget(spin, 1);
+        field->setMinimumWidth(0);
+        field->setMaximumWidth(QWIDGETSIZE_MAX);
+        field->setFixedHeight(20);
+        field->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         return field;
     };
 
@@ -682,17 +693,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     /* Anchor preset control lives in the editor dynamic toolbar. */
     btn_anchor_grid_ = nullptr;
 
-    chk_scale_lock_->setText(QString());
+    chk_scale_lock_->setText(QStringLiteral("Lock Scale"));
     chk_scale_lock_->setToolTip(bgl_tr("OBSTitles.ScaleLock"));
-    chk_scale_lock_->setFixedSize(20, 20);
-    chk_transform_size_lock_->setText(QString());
+    chk_transform_size_lock_->setText(QStringLiteral("Lock Scale"));
     chk_transform_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_transform_size_lock_->setFixedSize(20, 20);
 
-    const QString transform_label_style = QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(panel_text_name);
+    const QString transform_label_style = QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name);
     auto add_transform_row = [&](int row, QPushButton *kf, const QString &label, QWidget *drag_field, QWidget *first,
                                  QWidget *middle, QWidget *second) {
-        transform_grid->addWidget(kf, row, 0, Qt::AlignCenter);
         auto *text = new NumericDragLabel(label, drag_field, transform_box_,
                                           [this]() {
                                               if (loading_values_) return;
@@ -704,30 +712,31 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                               numeric_label_dragging_ = false;
                                               emit property_changed(true);
                                           });
+        text->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         text->setStyleSheet(transform_label_style);
-        transform_grid->addWidget(text, row, 1, Qt::AlignVCenter);
-        transform_grid->addWidget(first, row, 2, Qt::AlignLeft);
-        if (middle) transform_grid->addWidget(middle, row, 3, Qt::AlignCenter);
-        if (second) transform_grid->addWidget(second, row, 4, Qt::AlignLeft);
+        transform_grid->addWidget(text, row, 0, Qt::AlignVCenter);
+        transform_grid->addWidget(first, row, 1);
+        if (middle) transform_grid->addWidget(middle, row, 2);
+        if (second) transform_grid->addWidget(second, row, 3);
+        transform_grid->addWidget(make_keyframe_controls(kf, transform_box_),
+                                  row, 5, Qt::AlignRight | Qt::AlignVCenter);
         return text;
     };
 
     add_transform_row(0, btn_kf_pos_x_, QStringLiteral("Local Position"), field_pos_x,
                       field_pos_x, field_pos_y, nullptr);
-    transform_grid->addWidget(transform_position_field_z_, 0, 4, Qt::AlignLeft);
+    transform_grid->addWidget(transform_position_field_z_, 0, 3);
 
     transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, bgl_tr("OBSTitles.Scale"),
                                                field_scale_x, field_scale_x,
                                                field_scale_y, nullptr);
     transform_scale_field_x_ = field_scale_x;
     transform_scale_field_y_ = field_scale_y;
-    transform_grid->addWidget(transform_scale_field_z_, 1, 4, Qt::AlignLeft);
-    transform_grid->addWidget(chk_scale_lock_, 1, 5, Qt::AlignCenter);
+    transform_grid->addWidget(transform_scale_field_z_, 1, 3);
 
     transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, bgl_tr("OBSTitles.Size"),
                                               field_transform_size_w, field_transform_size_w,
                                               field_transform_size_h, nullptr);
-    transform_grid->addWidget(chk_transform_size_lock_, 1, 4, Qt::AlignCenter);
     transform_size_field_w_ = field_transform_size_w;
     transform_size_field_h_ = field_transform_size_h;
 
@@ -743,22 +752,37 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                   emit property_changed(true);
                                               });
     anchor_label->setStyleSheet(transform_label_style);
-    transform_grid->addWidget(anchor_label, 2, 1, Qt::AlignVCenter);
-    transform_grid->addWidget(btn_kf_origin_x_, 2, 0, Qt::AlignCenter);
-    transform_grid->addWidget(field_origin_x, 2, 2, Qt::AlignLeft);
-    transform_grid->addWidget(field_origin_y, 2, 3, Qt::AlignLeft);
-    transform_grid->addWidget(transform_anchor_field_z_, 2, 4, Qt::AlignLeft);
+    anchor_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    transform_grid->addWidget(anchor_label, 2, 0, Qt::AlignVCenter);
+    transform_grid->addWidget(field_origin_x, 2, 1);
+    transform_grid->addWidget(field_origin_y, 2, 2);
+    transform_grid->addWidget(transform_anchor_field_z_, 2, 3);
+    transform_grid->addWidget(make_keyframe_controls(btn_kf_origin_x_, transform_box_),
+                              2, 5, Qt::AlignRight | Qt::AlignVCenter);
 
     add_transform_row(3, btn_kf_rotation_, bgl_tr("OBSTitles.Rotation"),
                       transform_rotation_field_z_, transform_rotation_field_x_,
                       transform_rotation_field_y_, nullptr);
-    transform_grid->addWidget(transform_rotation_field_z_, 3, 4, Qt::AlignLeft);
+    transform_grid->addWidget(transform_rotation_field_z_, 3, 3);
 
     transform_orientation_row_ = new QWidget(transform_box_);
-    auto *orientation_layout = new QHBoxLayout(transform_orientation_row_);
+    transform_orientation_row_->setMinimumWidth(0);
+    transform_orientation_row_->setMaximumWidth(QWIDGETSIZE_MAX);
+    transform_orientation_row_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    auto *orientation_layout = new QGridLayout(transform_orientation_row_);
     orientation_layout->setContentsMargins(0, 0, 0, 0);
-    orientation_layout->setSpacing(5);
-    orientation_layout->addWidget(btn_kf_orientation_x_, 0, Qt::AlignCenter);
+    orientation_layout->setHorizontalSpacing(4);
+    orientation_layout->setVerticalSpacing(2);
+    orientation_layout->setColumnMinimumWidth(0, 82);
+    orientation_layout->setColumnMinimumWidth(1, 0);
+    orientation_layout->setColumnMinimumWidth(2, 0);
+    orientation_layout->setColumnMinimumWidth(3, 0);
+    orientation_layout->setColumnMinimumWidth(4, 30);
+    orientation_layout->setColumnMinimumWidth(5, 0);
+    orientation_layout->setColumnStretch(1, 1);
+    orientation_layout->setColumnStretch(2, 1);
+    orientation_layout->setColumnStretch(3, 1);
+    orientation_layout->setColumnStretch(5, 0);
     auto *orientation_label = new NumericDragLabel(QStringLiteral("Orientation"), field_orientation_x,
                                                     transform_orientation_row_,
                                                     [this]() {
@@ -772,19 +796,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                         emit property_changed(true);
                                                     });
     orientation_label->setStyleSheet(transform_label_style);
-    orientation_label->setFixedWidth(68);
-    orientation_layout->addWidget(orientation_label);
-    orientation_layout->addWidget(field_orientation_x);
-    orientation_layout->addSpacing(0);
-    orientation_layout->addWidget(field_orientation_y);
-    orientation_layout->addWidget(field_orientation_z);
-    orientation_layout->addStretch(1);
+    orientation_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    orientation_layout->addWidget(orientation_label, 0, 0, Qt::AlignVCenter);
+    orientation_layout->addWidget(field_orientation_x, 0, 1);
+    orientation_layout->addWidget(field_orientation_y, 0, 2);
+    orientation_layout->addWidget(field_orientation_z, 0, 3);
+    orientation_layout->addWidget(
+        make_keyframe_controls(btn_kf_orientation_x_, transform_orientation_row_),
+        0, 5, Qt::AlignRight | Qt::AlignVCenter);
 
     row_shape_scale_options_ = new QWidget(transform_box_);
     row_shape_scale_options_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *shape_scale_options_layout = new QHBoxLayout(row_shape_scale_options_);
     shape_scale_options_layout->setContentsMargins(0, 0, 0, 0);
     shape_scale_options_layout->setSpacing(10);
+    chk_scale_lock_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    chk_transform_size_lock_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    chk_shape_scale_stroke_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    chk_shape_scale_corners_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    shape_scale_options_layout->addWidget(chk_scale_lock_);
+    shape_scale_options_layout->addWidget(chk_transform_size_lock_);
     shape_scale_options_layout->addWidget(chk_shape_scale_stroke_);
     shape_scale_options_layout->addWidget(chk_shape_scale_corners_);
     shape_scale_options_layout->addStretch(1);
@@ -816,9 +847,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     three_d_controls_ = new QWidget(transform_box_);
     auto *three_d_layout = new QGridLayout(three_d_controls_);
     three_d_layout->setContentsMargins(0, 4, 0, 0);
-    three_d_layout->setHorizontalSpacing(5);
-    three_d_layout->setVerticalSpacing(6);
-    three_d_layout->setColumnMinimumWidth(0, 106);
+    three_d_layout->setHorizontalSpacing(4);
+    three_d_layout->setVerticalSpacing(2);
+    three_d_layout->setColumnMinimumWidth(0, 82);
     three_d_layout->setColumnStretch(2, 1);
 
     cmb_transform_axis_space_ = new QComboBox(three_d_controls_);
@@ -831,14 +862,32 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         "Controls the 3D gizmo axis orientation only. Transform values above "
         "are always authored in the layer's local transform relative to its "
         "effective parent."));
-    three_d_layout->addWidget(new QLabel(QStringLiteral("Axis Space"), three_d_controls_), 0, 0);
+    auto *axis_space_label = new QLabel(QStringLiteral("Axis Space"), three_d_controls_);
+    axis_space_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    three_d_layout->addWidget(axis_space_label, 0, 0);
     three_d_layout->addWidget(cmb_transform_axis_space_, 0, 1, 1, 2);
 
     cmb_layer_camera_ = new QComboBox(three_d_controls_);
     cmb_layer_camera_->setFixedHeight(20);
     cmb_layer_camera_->setStyleSheet(control_style);
-    three_d_layout->addWidget(new QLabel(QStringLiteral("Camera"), three_d_controls_), 1, 0);
+    auto *layer_camera_label = new QLabel(QStringLiteral("Camera"), three_d_controls_);
+    layer_camera_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    three_d_layout->addWidget(layer_camera_label, 1, 0);
     three_d_layout->addWidget(cmb_layer_camera_, 1, 1, 1, 2);
+
+    cmb_depth_mode_ = new QComboBox(three_d_controls_);
+    cmb_depth_mode_->addItem(bgl_tr("OBSTitles.ScenePositionZ"),
+        static_cast<int>(LayerDepthMode::Automatic));
+    cmb_depth_mode_->addItem(bgl_tr("OBSTitles.LayerOrder"),
+        static_cast<int>(LayerDepthMode::LayerOrder));
+    cmb_depth_mode_->setFixedHeight(20);
+    cmb_depth_mode_->setStyleSheet(control_style);
+    cmb_depth_mode_->setToolTip(bgl_tr("OBSTitles.DepthVisibilityTooltip"));
+    auto *depth_mode_label = new QLabel(
+        bgl_tr("OBSTitles.DepthVisibility"), three_d_controls_);
+    depth_mode_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    three_d_layout->addWidget(depth_mode_label, 2, 0);
+    three_d_layout->addWidget(cmb_depth_mode_, 2, 1, 1, 2);
 
     auto *depth_row = new QWidget(three_d_controls_);
     auto *depth_layout = new QGridLayout(depth_row);
@@ -863,10 +912,403 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     depth_layout->addWidget(chk_write_depth_, 0, 1);
     depth_layout->addWidget(chk_double_sided_, 1, 0);
     depth_layout->addWidget(chk_backface_culling_, 1, 1);
-    three_d_layout->addWidget(depth_row, 2, 0, 1, 3);
+    three_d_layout->addWidget(depth_row, 3, 0, 1, 3);
+
     tform_layout->addWidget(three_d_controls_);
 
+
     bgl_add_panel_section(vl, transform_box_, bgl_tr("OBSTitles.Transform"), btn_transform_defaults_);
+
+    /* ── Light Source: authored directly on the selected Light layer ── */
+    light_options_box_ = new QWidget(inner);
+    light_options_box_->setStyleSheet(
+        QStringLiteral("background:%1;").arg(section_bg_name));
+    auto *light_form = new QFormLayout(light_options_box_);
+    style_form(light_form);
+
+    chk_light_enabled_ = new BglSwitch(bgl_tr("OBSTitles.LightEnabled"),
+                                        light_options_box_);
+    style_checkbox(chk_light_enabled_);
+    add_form_row(light_form, QString(), chk_light_enabled_);
+
+    cmb_light_type_ = new QComboBox(light_options_box_);
+    cmb_light_type_->addItem(bgl_tr("OBSTitles.LightAmbient"),
+                             static_cast<int>(TitleLightType::Ambient));
+    cmb_light_type_->addItem(bgl_tr("OBSTitles.LightPoint"),
+                             static_cast<int>(TitleLightType::Point));
+    cmb_light_type_->addItem(bgl_tr("OBSTitles.LightSpot"),
+                             static_cast<int>(TitleLightType::Spot));
+    cmb_light_type_->addItem(bgl_tr("OBSTitles.LightParallel"),
+                             static_cast<int>(TitleLightType::Parallel));
+    cmb_light_type_->addItem(bgl_tr("OBSTitles.LightEnvironment"),
+                             static_cast<int>(TitleLightType::Environment));
+    cmb_light_type_->setFixedHeight(20);
+    cmb_light_type_->setStyleSheet(control_style);
+    add_form_row(light_form, bgl_tr("OBSTitles.LightType"), cmb_light_type_);
+
+    btn_light_color_ = new QPushButton(light_options_box_);
+    btn_light_color_->setFixedHeight(20);
+    btn_light_color_->setToolTip(bgl_tr("OBSTitles.LightColorTooltip"));
+    style_push_button(btn_light_color_);
+    add_form_row(light_form, bgl_tr("OBSTitles.LightColor"), btn_light_color_);
+
+    spn_light_intensity_ = mk_dspin(0.0, 100000.0, 1.0);
+    spn_light_intensity_->setDecimals(2);
+    spn_light_intensity_->setSuffix(QStringLiteral(" %"));
+    spn_light_intensity_->setToolTip(
+        bgl_tr("OBSTitles.LightBrightnessTooltip"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightBrightness"),
+                 spn_light_intensity_);
+
+    spn_light_source_size_ = mk_dspin(0.0, 100000.0, 1.0);
+    spn_light_source_size_->setDecimals(2);
+    spn_light_source_size_->setSuffix(QStringLiteral(" px"));
+    spn_light_source_size_->setToolTip(
+        bgl_tr("OBSTitles.LightSourceSizeTooltip"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightSourceSize"),
+                 spn_light_source_size_);
+
+    cmb_light_falloff_ = new QComboBox(light_options_box_);
+    cmb_light_falloff_->addItem(bgl_tr("OBSTitles.LightFalloffNone"),
+                                static_cast<int>(TitleLightFalloff::None));
+    cmb_light_falloff_->addItem(bgl_tr("OBSTitles.LightFalloffLinear"),
+                                static_cast<int>(TitleLightFalloff::Linear));
+    cmb_light_falloff_->addItem(
+        bgl_tr("OBSTitles.LightFalloffInverseSquare"),
+        static_cast<int>(TitleLightFalloff::InverseSquare));
+    cmb_light_falloff_->setFixedHeight(20);
+    cmb_light_falloff_->setStyleSheet(control_style);
+    add_form_row(light_form, bgl_tr("OBSTitles.LightFalloff"),
+                 cmb_light_falloff_);
+
+    spn_light_falloff_start_ = mk_dspin(0.0, 10000000.0, 1.0);
+    spn_light_falloff_start_->setDecimals(2);
+    spn_light_falloff_start_->setSuffix(QStringLiteral(" px"));
+    /* Falloff Start is derived from Source Size and is intentionally not shown. */
+    spn_light_falloff_distance_ = mk_dspin(0.001, 10000000.0, 10.0);
+    spn_light_falloff_distance_->setDecimals(2);
+    spn_light_falloff_distance_->setSuffix(QStringLiteral(" px"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightFalloffDistance"),
+                 spn_light_falloff_distance_);
+
+    spn_light_cone_angle_ = mk_dspin(0.1, 179.0, 0.5);
+    spn_light_cone_angle_->setDecimals(2);
+    spn_light_cone_angle_->setSuffix(QStringLiteral("°"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightConeAngle"),
+                 spn_light_cone_angle_);
+    spn_light_cone_feather_ = mk_dspin(0.0, 100.0, 1.0);
+    spn_light_cone_feather_->setDecimals(2);
+    spn_light_cone_feather_->setSuffix(QStringLiteral(" %"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightConeFeather"),
+                 spn_light_cone_feather_);
+
+    spn_light_target_x_ = mk_dspin(-1000000.0, 1000000.0, 1.0);
+    spn_light_target_y_ = mk_dspin(-1000000.0, 1000000.0, 1.0);
+    spn_light_target_z_ = mk_dspin(-1000000.0, 1000000.0, 1.0);
+    row_light_target_ = new QWidget(light_options_box_);
+    auto *light_target_layout = new QHBoxLayout(row_light_target_);
+    light_target_layout->setContentsMargins(0, 0, 0, 0);
+    light_target_layout->setSpacing(3);
+    const std::array<std::pair<const char *, QDoubleSpinBox *>, 3>
+        light_target_components{{
+            {"X", spn_light_target_x_}, {"Y", spn_light_target_y_},
+            {"Z", spn_light_target_z_}}};
+    for (const auto &component : light_target_components) {
+        auto *axis = new QLabel(QString::fromLatin1(component.first),
+                                row_light_target_);
+        axis->setAlignment(Qt::AlignCenter);
+        axis->setFixedWidth(10);
+        light_target_layout->addWidget(axis);
+        light_target_layout->addWidget(component.second, 1);
+    }
+    add_form_row(light_form, bgl_tr("OBSTitles.LightTarget"),
+                 row_light_target_);
+
+    chk_light_casts_shadows_ = new BglSwitch(
+        bgl_tr("OBSTitles.LightCastsShadows"), light_options_box_);
+    style_checkbox(chk_light_casts_shadows_);
+    add_form_row(light_form, QString(), chk_light_casts_shadows_);
+    spn_light_shadow_darkness_ = mk_dspin(0.0, 100.0, 1.0);
+    spn_light_shadow_darkness_->setDecimals(2);
+    spn_light_shadow_darkness_->setSuffix(QStringLiteral(" %"));
+    add_form_row(light_form, bgl_tr("OBSTitles.LightShadowDarkness"),
+                 spn_light_shadow_darkness_);
+    spn_light_shadow_softness_ = mk_dspin(0.0, 32.0, 0.5);
+    spn_light_shadow_softness_->setDecimals(2);
+    add_form_row(light_form, bgl_tr("OBSTitles.LightShadowSoftness"),
+                 spn_light_shadow_softness_);
+    spn_light_shadow_bias_ = mk_dspin(0.0, 0.25, 0.0001);
+    spn_light_shadow_bias_->setDecimals(6);
+    add_form_row(light_form, bgl_tr("OBSTitles.LightShadowBias"),
+                 spn_light_shadow_bias_);
+
+    bgl_add_panel_section(vl, light_options_box_,
+                          bgl_tr("OBSTitles.LightProperties"));
+
+    auto light_property_changed = [this](bool commit) {
+        if (loading_values_ || !layer_ || layer_->type != LayerType::Light)
+            return;
+        emit property_changed(commit);
+    };
+    connect(chk_light_enabled_, &QCheckBox::toggled, this,
+            [this, light_property_changed](bool enabled) {
+                if (loading_values_ || !layer_ ||
+                    layer_->type != LayerType::Light)
+                    return;
+                layer_->light.enabled = enabled;
+                light_property_changed(true);
+            });
+    connect(cmb_light_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, light_property_changed](int index) {
+                if (loading_values_ || !layer_ ||
+                    layer_->type != LayerType::Light || index < 0)
+                    return;
+                layer_->light.type = static_cast<TitleLightType>(
+                    cmb_light_type_->itemData(index).toInt());
+                load_values();
+                light_property_changed(true);
+            });
+    connect(cmb_light_falloff_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, light_property_changed](int index) {
+                if (loading_values_ || !layer_ ||
+                    layer_->type != LayerType::Light || index < 0)
+                    return;
+                layer_->light.falloff = static_cast<TitleLightFalloff>(
+                    cmb_light_falloff_->itemData(index).toInt());
+                load_values();
+                light_property_changed(true);
+            });
+    connect(chk_light_casts_shadows_, &QCheckBox::toggled, this,
+            [this, light_property_changed](bool enabled) {
+                if (loading_values_ || !layer_ ||
+                    layer_->type != LayerType::Light)
+                    return;
+                layer_->light.casts_shadows = enabled;
+                load_values();
+                light_property_changed(true);
+            });
+    auto connect_light_scalar =
+        [this, light_property_changed](
+            QDoubleSpinBox *spin, AnimatedProperty TitleLight::*member) {
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, member, light_property_changed](double value) {
+                        if (loading_values_ || !layer_ ||
+                            layer_->type != LayerType::Light)
+                            return;
+                        set_animated_value(layer_->light.*member, playhead_,
+                                           value);
+                        light_property_changed(!numeric_label_dragging_);
+                    });
+        };
+    connect_light_scalar(spn_light_intensity_, &TitleLight::intensity);
+    connect_light_scalar(spn_light_source_size_, &TitleLight::source_size);
+    connect_light_scalar(spn_light_falloff_distance_,
+                         &TitleLight::falloff_distance);
+    connect_light_scalar(spn_light_cone_angle_, &TitleLight::cone_angle);
+    connect_light_scalar(spn_light_cone_feather_, &TitleLight::cone_feather);
+    connect_light_scalar(spn_light_shadow_darkness_,
+                         &TitleLight::shadow_darkness);
+    connect_light_scalar(spn_light_shadow_softness_,
+                         &TitleLight::shadow_softness);
+    connect_light_scalar(spn_light_shadow_bias_, &TitleLight::shadow_bias);
+
+    auto connect_light_target =
+        [this, light_property_changed](QDoubleSpinBox *spin, int component) {
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, component, light_property_changed](double value) {
+                        if (loading_values_ || !layer_ ||
+                            layer_->type != LayerType::Light)
+                            return;
+                        Vec3Value target =
+                            layer_->light.target.evaluate(playhead_);
+                        if (component == 0) target.x = value;
+                        else if (component == 1) target.y = value;
+                        else target.z = value;
+                        set_animated_value(layer_->light.target, playhead_,
+                                           target);
+                        light_property_changed(!numeric_label_dragging_);
+                    });
+        };
+    connect_light_target(spn_light_target_x_, 0);
+    connect_light_target(spn_light_target_y_, 1);
+    connect_light_target(spn_light_target_z_, 2);
+
+    connect(btn_light_color_, &QPushButton::clicked, this, [this]() {
+        if (loading_values_ || !layer_ || layer_->type != LayerType::Light)
+            return;
+        const QColor initial = QColor::fromRgba(static_cast<QRgb>(
+            evaluated_light_color(layer_->light, playhead_)));
+        const QColor selected = QColorDialog::getColor(
+            initial, this, bgl_tr("OBSTitles.LightColorDialog"),
+            QColorDialog::ShowAlphaChannel |
+                QColorDialog::DontUseNativeDialog);
+        if (!selected.isValid())
+            return;
+        set_animated_value(layer_->light.color_a, playhead_, selected.alpha());
+        set_animated_value(layer_->light.color_r, playhead_, selected.red());
+        set_animated_value(layer_->light.color_g, playhead_, selected.green());
+        set_animated_value(layer_->light.color_b, playhead_, selected.blue());
+        load_values();
+        emit property_changed(true);
+    });
+
+    /* ── Material Options: standard property rows, scrubbable labels and keyframes ── */
+    material_options_box_ = new QWidget(inner);
+    material_options_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
+    auto *material_form = new QFormLayout(material_options_box_);
+    style_form(material_form);
+
+    auto make_option_kf_row = [&](QPushButton *&button, const QString &tip,
+                                  QWidget *control, QWidget *parent) {
+        auto *row = new QWidget(parent);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(4);
+        button = mk_kf_button(tip);
+        layout->addWidget(control, 1);
+        layout->addWidget(make_keyframe_controls(button, row), 0, Qt::AlignVCenter);
+        return row;
+    };
+    auto add_scrubbable_option_row = [&](QFormLayout *form, const QString &label_text,
+                                         QWidget *field, QWidget *drag_target) {
+        auto *label = new NumericDragLabel(label_text, drag_target, form->parentWidget(),
+            [this]() {
+                if (loading_values_) return;
+                numeric_label_dragging_ = true;
+                emit property_changed(true);
+            },
+            [this]() {
+                if (loading_values_) return;
+                numeric_label_dragging_ = false;
+                emit property_changed(true);
+            });
+        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        label->setStyleSheet(transform_label_style);
+        form->addRow(label, field);
+    };
+
+    auto *material_switches = new QWidget(material_options_box_);
+    auto *material_switch_layout = new QGridLayout(material_switches);
+    material_switch_layout->setContentsMargins(0, 0, 0, 0);
+    material_switch_layout->setHorizontalSpacing(10);
+    material_switch_layout->setVerticalSpacing(3);
+    chk_material_accepts_lights_ = new BglSwitch(QStringLiteral("Accepts Lights"), material_switches);
+    chk_material_casts_shadows_ = new BglSwitch(QStringLiteral("Casts Shadows"), material_switches);
+    chk_material_accepts_shadows_ = new BglSwitch(QStringLiteral("Accepts Shadows"), material_switches);
+    chk_material_reflections_ = new BglSwitch(QStringLiteral("In Reflections"), material_switches);
+    chk_material_accepts_lights_->setToolTip(QStringLiteral("Let scene lights shade this layer."));
+    chk_material_casts_shadows_->setToolTip(QStringLiteral("Let this layer cast shadows."));
+    chk_material_accepts_shadows_->setToolTip(QStringLiteral("Let this layer receive shadows."));
+    chk_material_reflections_->setToolTip(QStringLiteral("Include this layer in environment/reflection lighting."));
+    for (auto *check : {chk_material_accepts_lights_, chk_material_casts_shadows_,
+                        chk_material_accepts_shadows_, chk_material_reflections_})
+        style_checkbox(check);
+    material_switch_layout->addWidget(chk_material_accepts_lights_, 0, 0);
+    material_switch_layout->addWidget(chk_material_casts_shadows_, 0, 1);
+    material_switch_layout->addWidget(chk_material_accepts_shadows_, 1, 0);
+    material_switch_layout->addWidget(chk_material_reflections_, 1, 1);
+    material_form->addRow(material_switches);
+
+    auto configure_material_spin = [](QDoubleSpinBox *spin, int decimals,
+                                      const QString &tooltip) {
+        spin->setDecimals(decimals);
+        spin->setMinimumWidth(72);
+        spin->setToolTip(tooltip);
+    };
+    spn_material_ambient_ = mk_dspin(0.0, 4.0, 0.05);
+    spn_material_diffuse_ = mk_dspin(0.0, 4.0, 0.05);
+    spn_material_specular_ = mk_dspin(0.0, 4.0, 0.05);
+    spn_material_shininess_ = mk_dspin(1.0, 512.0, 1.0);
+    spn_material_metallic_ = mk_dspin(0.0, 1.0, 0.05);
+    spn_material_roughness_ = mk_dspin(0.02, 1.0, 0.05);
+    spn_material_reflection_ = mk_dspin(0.0, 4.0, 0.05);
+    spn_material_emissive_intensity_ = mk_dspin(0.0, 16.0, 0.1);
+    configure_material_spin(spn_material_ambient_, 2, QStringLiteral("Ambient response multiplier."));
+    configure_material_spin(spn_material_diffuse_, 2, QStringLiteral("Diffuse response multiplier."));
+    configure_material_spin(spn_material_specular_, 2, QStringLiteral("Specular response multiplier."));
+    configure_material_spin(spn_material_shininess_, 1, QStringLiteral("Specular exponent."));
+    configure_material_spin(spn_material_metallic_, 2, QStringLiteral("0 = dielectric, 1 = metallic."));
+    configure_material_spin(spn_material_roughness_, 2, QStringLiteral("Micro-surface roughness."));
+    configure_material_spin(spn_material_reflection_, 2, QStringLiteral("Environment reflection intensity."));
+    configure_material_spin(spn_material_emissive_intensity_, 2, QStringLiteral("Self-illumination intensity."));
+
+    auto add_material_property = [&](const QString &label, QDoubleSpinBox *spin,
+                                     QPushButton *&button, const QString &tip) {
+        QWidget *row = make_option_kf_row(button, tip, spin, material_options_box_);
+        add_scrubbable_option_row(material_form, label, row, spin);
+    };
+    add_material_property(QStringLiteral("Ambient"), spn_material_ambient_,
+                          btn_kf_material_ambient_, QStringLiteral("Toggle Ambient keyframe"));
+    add_material_property(QStringLiteral("Diffuse"), spn_material_diffuse_,
+                          btn_kf_material_diffuse_, QStringLiteral("Toggle Diffuse keyframe"));
+    add_material_property(QStringLiteral("Specular"), spn_material_specular_,
+                          btn_kf_material_specular_, QStringLiteral("Toggle Specular keyframe"));
+    add_material_property(QStringLiteral("Shininess"), spn_material_shininess_,
+                          btn_kf_material_shininess_, QStringLiteral("Toggle Shininess keyframe"));
+    add_material_property(QStringLiteral("Metallic"), spn_material_metallic_,
+                          btn_kf_material_metallic_, QStringLiteral("Toggle Metallic keyframe"));
+    add_material_property(QStringLiteral("Roughness"), spn_material_roughness_,
+                          btn_kf_material_roughness_, QStringLiteral("Toggle Roughness keyframe"));
+    add_material_property(QStringLiteral("Reflection"), spn_material_reflection_,
+                          btn_kf_material_reflection_, QStringLiteral("Toggle Reflection keyframe"));
+    bgl_add_panel_section(vl, material_options_box_, QStringLiteral("Material Options"));
+
+    /* ── Geometry Options ── */
+    geometry_options_box_ = new QWidget(inner);
+    geometry_options_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
+    auto *geometry_form = new QFormLayout(geometry_options_box_);
+    style_form(geometry_form);
+    chk_geometry_extrusion_ = new BglSwitch(QStringLiteral("Extrusion / Bevel"), geometry_options_box_);
+    style_checkbox(chk_geometry_extrusion_);
+    geometry_form->addRow(chk_geometry_extrusion_);
+
+    spn_geometry_extrusion_depth_ = mk_dspin(0.0, 100000.0, 1.0);
+    spn_geometry_extrusion_depth_->setDecimals(2);
+    spn_geometry_extrusion_depth_->setSuffix(QStringLiteral(" px"));
+    spn_geometry_bevel_depth_ = mk_dspin(0.0, 100000.0, 0.5);
+    spn_geometry_bevel_depth_->setDecimals(2);
+    spn_geometry_bevel_depth_->setSuffix(QStringLiteral(" px"));
+    spn_geometry_bevel_segments_ = new QSpinBox(geometry_options_box_);
+    spn_geometry_bevel_segments_->setRange(1, 16);
+    spn_geometry_bevel_segments_->setFixedHeight(20);
+    spn_geometry_bevel_segments_->setStyleSheet(control_style);
+    spn_geometry_extrusion_segments_ = new QSpinBox(geometry_options_box_);
+    spn_geometry_extrusion_segments_->setRange(1, 64);
+    spn_geometry_extrusion_segments_->setFixedHeight(20);
+    spn_geometry_extrusion_segments_->setStyleSheet(control_style);
+
+    QWidget *extrusion_depth_row = make_option_kf_row(
+        btn_kf_geometry_extrusion_depth_, QStringLiteral("Toggle Extrusion Depth keyframe"),
+        spn_geometry_extrusion_depth_, geometry_options_box_);
+    add_scrubbable_option_row(geometry_form, QStringLiteral("Extrusion Depth"),
+                              extrusion_depth_row, spn_geometry_extrusion_depth_);
+    add_scrubbable_option_row(geometry_form, QStringLiteral("Body Segments"),
+                              spn_geometry_extrusion_segments_, spn_geometry_extrusion_segments_);
+    QWidget *bevel_depth_row = make_option_kf_row(
+        btn_kf_geometry_bevel_depth_, QStringLiteral("Toggle Bevel Depth keyframe"),
+        spn_geometry_bevel_depth_, geometry_options_box_);
+    add_scrubbable_option_row(geometry_form, QStringLiteral("Bevel Depth"),
+                              bevel_depth_row, spn_geometry_bevel_depth_);
+    add_scrubbable_option_row(geometry_form, QStringLiteral("Bevel Segments"),
+                              spn_geometry_bevel_segments_, spn_geometry_bevel_segments_);
+    chk_geometry_bevel_front_ = new BglSwitch(QStringLiteral("Front Bevel"), geometry_options_box_);
+    chk_geometry_bevel_back_ = new BglSwitch(QStringLiteral("Back Bevel"), geometry_options_box_);
+    style_checkbox(chk_geometry_bevel_front_);
+    style_checkbox(chk_geometry_bevel_back_);
+    auto *bevel_sides = new QWidget(geometry_options_box_);
+    auto *bevel_sides_layout = new QHBoxLayout(bevel_sides);
+    bevel_sides_layout->setContentsMargins(0, 0, 0, 0);
+    bevel_sides_layout->setSpacing(10);
+    bevel_sides_layout->addWidget(chk_geometry_bevel_front_);
+    bevel_sides_layout->addWidget(chk_geometry_bevel_back_);
+    bevel_sides_layout->addStretch(1);
+    geometry_form->addRow(bevel_sides);
+    /* Development Version 330: retain the widgets only as an internal bridge
+     * for loading old documents. The alpha-slice implementation is not real
+     * mesh geometry and is no longer user-facing or part of production output.
+     * A new Geometry section will return with the retained-mesh renderer. */
+    geometry_options_box_->setVisible(false);
 
     /* ── Video Layer ── */
     video_box_ = new QGroupBox(QStringLiteral("Video Timing & Loading"), inner);
@@ -904,7 +1346,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(video_form, QStringLiteral("Loading"), lbl_video_loading_status_);
     add_form_row(video_form, QString(), bar_video_loading_);
 
-    chk_video_time_remap_ = new QCheckBox(QStringLiteral("Enable Time Remap"), video_box_);
+    chk_video_time_remap_ = new BglSwitch(QStringLiteral("Enable Time Remap"), video_box_);
     add_form_row(video_form, QStringLiteral("Time Remap"), chk_video_time_remap_);
 
     cmb_video_interpolation_ = new QComboBox(video_box_);
@@ -923,7 +1365,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_video_time_remap_audio_->setStyleSheet(control_style);
     add_form_row(video_form, QStringLiteral("Remap Audio"), cmb_video_time_remap_audio_);
 
-    chk_video_optical_flow_ = new QCheckBox(QStringLiteral("Background optical-flow analysis"), video_box_);
+    chk_video_optical_flow_ = new BglSwitch(QStringLiteral("Background optical-flow analysis"), video_box_);
     add_form_row(video_form, QStringLiteral("Optical Flow"), chk_video_optical_flow_);
     lbl_video_optical_flow_status_ = new QLabel(QStringLiteral("Draft preview until analysis is ready"), video_box_);
     lbl_video_optical_flow_status_->setWordWrap(true);
@@ -1067,16 +1509,48 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     lbl_audio_range_feedback_ = new QLabel(audio_box_);
     lbl_audio_range_feedback_->setWordWrap(true);
     lbl_audio_range_feedback_->setStyleSheet(QStringLiteral("color:%1;font-size:11px;background:transparent;").arg(subtle_text_name));
-    spn_audio_volume_ = mk_dspin(0.0, 400.0, 1.0); spn_audio_volume_->setSuffix(QStringLiteral(" %"));
-    spn_audio_pan_ = mk_dspin(-100.0, 100.0, 1.0); spn_audio_pan_->setSuffix(QStringLiteral(" %"));
+    auto make_signed_audio_spin = [&](double minimum, double maximum,
+                                      double step, int decimals) {
+        auto *spin = new SignedAudioSpinBox(audio_box_);
+        spin->setRange(minimum, maximum);
+        spin->setSingleStep(step);
+        spin->setDecimals(decimals);
+        spin->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+        spin->setFixedHeight(20);
+        /* The inspector's responsive normalizer gives ordinary spin boxes an
+         * Ignored horizontal size policy. In a slider row that lets the slider
+         * compress the numeric editor to zero pixels. These two authored input
+         * fields must remain directly visible and editable at every dock width. */
+        spin->setProperty("bglSkipTransformPanelMetrics", true);
+        spin->setFixedWidth(88);
+        spin->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        spin->setAlignment(Qt::AlignRight);
+        spin->setStyleSheet(control_style);
+        return spin;
+    };
+    spn_audio_volume_ = make_signed_audio_spin(kAudioMinimumDb,
+        kAudioMaximumDb, 0.1, 1);
+    spn_audio_volume_->setObjectName(QStringLiteral("audioVolumeDbInput"));
+    spn_audio_volume_->setAccessibleName(QStringLiteral("Volume in decibels"));
+    spn_audio_volume_->setToolTip(QStringLiteral(
+        "Enter Volume from -96.0 dB to +12.0 dB"));
+    spn_audio_volume_->setSuffix(QStringLiteral(" dB"));
+    spn_audio_pan_ = make_signed_audio_spin(-100.0, 100.0, 1.0, 0);
+    spn_audio_pan_->setObjectName(QStringLiteral("audioPanInput"));
+    spn_audio_pan_->setAccessibleName(QStringLiteral("Audio pan"));
+    spn_audio_pan_->setToolTip(QStringLiteral(
+        "Enter Pan from -100 (left) through 0 (center) to +100 (right)"));
     spn_audio_fade_in_ = mk_dspin(0.0, 60.0, 0.01); spn_audio_fade_in_->setSuffix(QStringLiteral(" s"));
     spn_audio_fade_out_ = mk_dspin(0.0, 60.0, 0.01); spn_audio_fade_out_->setSuffix(QStringLiteral(" s"));
-    sld_audio_volume_ = new QSlider(Qt::Horizontal, audio_box_); sld_audio_volume_->setRange(0, 400);
+    sld_audio_volume_ = new QSlider(Qt::Horizontal, audio_box_);
+    sld_audio_volume_->setRange(audio_db_to_slider(kAudioMinimumDb),
+                                audio_db_to_slider(kAudioMaximumDb));
     sld_audio_pan_ = new QSlider(Qt::Horizontal, audio_box_); sld_audio_pan_->setRange(-100, 100);
-    btn_kf_audio_volume_ = new QToolButton(audio_box_); btn_kf_audio_volume_->setIcon(keyframe_diamond_icon(false));
-    btn_kf_audio_pan_ = new QToolButton(audio_box_); btn_kf_audio_pan_->setIcon(keyframe_diamond_icon(false));
+    btn_kf_audio_volume_ = new QToolButton(audio_box_); btn_kf_audio_volume_->setIcon(bgl_keyframe_diamond_icon(false));
+    btn_kf_audio_pan_ = new QToolButton(audio_box_); btn_kf_audio_pan_->setIcon(bgl_keyframe_diamond_icon(false));
     for (auto *b : {btn_kf_audio_volume_, btn_kf_audio_pan_}) {
-        b->setAutoRaise(true); b->setFixedSize(24,22); b->setToolTip(QStringLiteral("Toggle keyframe at current time"));
+        b->setAutoRaise(true); b->setToolTip(QStringLiteral("Toggle keyframe at current time"));
+        bgl_style_keyframe_button(b);
     }
     auto make_audio_pair_row = [this, panel_text_name](const QString &first_label, QDoubleSpinBox *first,
                                                                const QString &second_label, QDoubleSpinBox *second) {
@@ -1106,9 +1580,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         layout->addWidget(second, 1);
         return row;
     };
-    auto make_slider_row = [this](QWidget *numeric, QWidget *slider, QWidget *kf) {
+    auto make_slider_row = [this](QWidget *numeric, QWidget *slider, QAbstractButton *kf) {
         auto *row = new QWidget(audio_box_); auto *l = new QHBoxLayout(row);
-        l->setContentsMargins(0,0,0,0); l->setSpacing(5); l->addWidget(numeric); l->addWidget(slider,1); l->addWidget(kf); return row;
+        l->setContentsMargins(0,0,0,0); l->setSpacing(5);
+        l->addWidget(slider, 1);
+        l->addWidget(numeric, 0, Qt::AlignRight | Qt::AlignVCenter);
+        l->addWidget(make_keyframe_controls(kf, row)); return row;
     };
 
     cmb_audio_fade_curve_ = new QComboBox(audio_box_);
@@ -1173,6 +1650,32 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             emit property_changed(commit);
         }
     };
+    auto install_audio_keyframe_menu =
+        [this, audio_changed](QToolButton *button,
+                              AnimatedProperty Layer::*member) {
+        register_keyframe_times(button, [this, member]() {
+            std::vector<double> times;
+            if (!layer_) return times;
+            for (const Keyframe &key : (layer_.get()->*member).keyframes)
+                times.push_back(key.time);
+            return times;
+        });
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(button, &QWidget::customContextMenuRequested, this,
+                [this, button, member, audio_changed](const QPoint &position) {
+            QMenu menu(button);
+            QAction *clear = menu.addAction(
+                bgl_tr("OBSTitles.DeleteAllKeyframes"));
+            clear->setEnabled(layer_ && !(layer_.get()->*member).keyframes.empty());
+            if (menu.exec(button->mapToGlobal(position)) != clear || !layer_)
+                return;
+            (layer_.get()->*member).keyframes.clear();
+            load_values();
+            audio_changed(true);
+        });
+    };
+    install_audio_keyframe_menu(btn_kf_audio_volume_, &Layer::audio_volume_prop);
+    install_audio_keyframe_menu(btn_kf_audio_pan_, &Layer::audio_pan_prop);
     connect(btn_audio_browse_, &QToolButton::clicked, this, [this, audio_changed]() {
         if (!layer_ || layer_->type != LayerType::Audio) return;
         const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Choose audio file"),
@@ -1262,8 +1765,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             [set_audio_range_from_playhead]() mutable { set_audio_range_from_playhead(true); });
     connect(btn_audio_set_out_, &QPushButton::clicked, this,
             [set_audio_range_from_playhead]() mutable { set_audio_range_from_playhead(false); });
-    connect(spn_audio_volume_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_volume_); sld_audio_volume_->setValue(qRound(v)); audio_changed(false); }});
-    connect(sld_audio_volume_, &QSlider::valueChanged, this, [this, audio_changed](int v){ if (layer_ && !loading_values_) { layer_->audio_volume=float(v/100.0); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(spn_audio_volume_); spn_audio_volume_->setValue(v); audio_changed(false); }});
+    connect(spn_audio_volume_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double db){ if (layer_ && !loading_values_) { const double gain=audio_db_to_gain(db); layer_->audio_volume=float(gain); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), gain); QSignalBlocker b(sld_audio_volume_); sld_audio_volume_->setValue(audio_db_to_slider(db)); audio_changed(false); }});
+    connect(sld_audio_volume_, &QSlider::valueChanged, this, [this, audio_changed](int value){ if (layer_ && !loading_values_) { const double db=double(value)/10.0; const double gain=audio_db_to_gain(db); layer_->audio_volume=float(gain); set_animated_value(layer_->audio_volume_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), gain); QSignalBlocker b(spn_audio_volume_); spn_audio_volume_->setValue(db); audio_changed(false); }});
     connect(spn_audio_pan_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, audio_changed](double v){ if (layer_ && !loading_values_) { layer_->audio_pan=float(v/100.0); set_animated_value(layer_->audio_pan_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(sld_audio_pan_); sld_audio_pan_->setValue(qRound(v)); audio_changed(false); }});
     connect(sld_audio_pan_, &QSlider::valueChanged, this, [this, audio_changed](int v){ if (layer_ && !loading_values_) { layer_->audio_pan=float(v/100.0); set_animated_value(layer_->audio_pan_prop, std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)), v/100.0); QSignalBlocker b(spn_audio_pan_); spn_audio_pan_->setValue(v); audio_changed(false); }});
     connect(btn_kf_audio_volume_, &QToolButton::clicked, this, [this, audio_changed]() { if (!layer_) return; const double t=std::clamp(playhead_-layer_->in_time,0.0,std::max(0.0,layer_->out_time-layer_->in_time)); toggle_keyframe(layer_->audio_volume_prop,t,layer_->audio_volume_prop.evaluate(t)); audio_changed(true); });
@@ -1363,29 +1866,29 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     appearance_box_ = new QWidget(inner);
     appearance_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *appearance_layout = new QVBoxLayout(appearance_box_);
-    appearance_layout->setContentsMargins(7, 5, 7, 6);
-    appearance_layout->setSpacing(8);
+    appearance_layout->setContentsMargins(5, 4, 5, 5);
+    appearance_layout->setSpacing(2);
 
     auto *appearance_grid = new QGridLayout();
-    appearance_grid->setContentsMargins(0, 4, 0, 0);
-    appearance_grid->setHorizontalSpacing(12);
-    appearance_grid->setVerticalSpacing(4);
-    appearance_grid->setColumnMinimumWidth(0, 24);
-    appearance_grid->setColumnMinimumWidth(1, 112);
-    appearance_grid->setColumnMinimumWidth(2, 42);
-    appearance_grid->setColumnMinimumWidth(3, 32);
-    appearance_grid->setColumnMinimumWidth(4, 86);
-    appearance_grid->setColumnStretch(5, 1);
+    appearance_grid->setContentsMargins(0, 0, 0, 0);
+    appearance_grid->setHorizontalSpacing(4);
+    appearance_grid->setVerticalSpacing(2);
+    appearance_grid->setColumnMinimumWidth(0, 82);
+    appearance_grid->setColumnMinimumWidth(1, 42);
+    appearance_grid->setColumnMinimumWidth(2, 0);
+    appearance_grid->setColumnMinimumWidth(3, 0);
+    appearance_grid->setColumnStretch(2, 1);
 
     auto make_swatch = [&](const QString &tip) {
         auto *button = new QPushButton(appearance_box_);
-        button->setFixedSize(32, 32);
+        button->setFixedSize(42, 20);
         button->setToolTip(tip);
         button->setText(QString());
         return button;
     };
     btn_appearance_fill_color_ = make_swatch(bgl_tr("OBSTitles.FillColorTooltip"));
     btn_appearance_stroke_color_ = make_swatch(bgl_tr("OBSTitles.OutlineColorLabel"));
+    btn_material_emissive_color_ = make_swatch(QStringLiteral("Emissive Color"));
     spn_appearance_stroke_width_ = mk_dspin(0.0, 200.0, 1.0);
     spn_appearance_stroke_width_->setFixedSize(86, 24);
     spn_appearance_stroke_width_->setSuffix(QStringLiteral("px"));
@@ -1399,10 +1902,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_appearance_opacity_->setFixedHeight(20);
     spn_appearance_opacity_->setStyleSheet(control_style);
     btn_kf_appearance_fill_ = mk_kf_button(bgl_tr("OBSTitles.ToggleFillColorKeyframe"));
-    btn_kf_appearance_stroke_ = mk_kf_button(bgl_tr("OBSTitles.OutlineColorLabel"));
-    btn_kf_appearance_stroke_->setEnabled(false);
+    btn_kf_appearance_stroke_ = mk_kf_button(QStringLiteral("Toggle Stroke Color keyframe"));
     btn_kf_appearance_opacity_ = btn_kf_opacity_;
     btn_kf_appearance_opacity_->show();
+    btn_kf_material_emissive_color_ = mk_kf_button(QStringLiteral("Toggle Emissive Color keyframe"));
+    btn_kf_material_emissive_intensity_ = mk_kf_button(QStringLiteral("Toggle Emissive Intensity keyframe"));
     auto *stroke_options_trigger = new QPushButton(appearance_box_);
     stroke_options_trigger->hide();
     btn_appearance_stroke_label_ = new StrokeOptionsLabel(
@@ -1423,8 +1927,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         "QLabel:hover{color:%2;}").arg(panel_text_name, highlighted_text_name));
 
     auto add_appearance_row = [&](int row, QPushButton *kf, const QString &label, QWidget *primary,
-                                  QWidget *secondary = nullptr, QWidget *label_widget = nullptr) {
-        appearance_grid->addWidget(kf, row, 0, Qt::AlignCenter);
+                                  QWidget *secondary = nullptr, QWidget *label_widget = nullptr) -> QWidget * {
         QWidget *text = label_widget;
         if (!text) {
             text = new NumericDragLabel(label, secondary ? secondary : primary, appearance_box_,
@@ -1440,17 +1943,46 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                         });
             text->setStyleSheet(transform_label_style);
         }
-        appearance_grid->addWidget(text, row, 1, Qt::AlignVCenter);
+        if (auto *label_control = qobject_cast<QLabel *>(text))
+            label_control->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        appearance_grid->addWidget(text, row, 0, Qt::AlignVCenter);
         if (primary)
-            appearance_grid->addWidget(primary, row, 2, Qt::AlignLeft | Qt::AlignVCenter);
+            appearance_grid->addWidget(primary, row, 1, Qt::AlignLeft | Qt::AlignVCenter);
         if (secondary)
-            appearance_grid->addWidget(secondary, row, 4, Qt::AlignLeft | Qt::AlignVCenter);
+            appearance_grid->addWidget(secondary, row, 2, Qt::AlignLeft | Qt::AlignVCenter);
+        if (kf)
+            appearance_grid->addWidget(make_keyframe_controls(kf, appearance_box_),
+                                       row, 3, Qt::AlignRight | Qt::AlignVCenter);
+        return text;
     };
 
     add_appearance_row(0, btn_kf_appearance_fill_, bgl_tr("OBSTitles.Fill"), btn_appearance_fill_color_);
-    add_appearance_row(1, btn_kf_appearance_stroke_, bgl_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
+    appearance_emissive_color_label_ = add_appearance_row(
+        1, btn_kf_material_emissive_color_, QStringLiteral("Emissive Color"),
+        btn_material_emissive_color_);
+    auto *emissive_intensity_drag_label = new NumericDragLabel(
+        QStringLiteral("Emissive Intensity"), spn_material_emissive_intensity_,
+        appearance_box_,
+        [this]() {
+            if (loading_values_) return;
+            numeric_label_dragging_ = true;
+            emit property_changed(true);
+        },
+        [this]() {
+            if (loading_values_) return;
+            numeric_label_dragging_ = false;
+            emit property_changed(true);
+        });
+    emissive_intensity_drag_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    emissive_intensity_drag_label->setStyleSheet(QStringLiteral(
+        "font-size:10px;color:%1;background:transparent;"
+        "QLabel:hover{color:%2;}").arg(panel_text_name, highlighted_text_name));
+    appearance_emissive_intensity_label_ = add_appearance_row(
+        2, btn_kf_material_emissive_intensity_, QStringLiteral("Emissive Intensity"),
+        nullptr, spn_material_emissive_intensity_, emissive_intensity_drag_label);
+    add_appearance_row(3, btn_kf_appearance_stroke_, bgl_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
                        spn_appearance_stroke_width_, btn_appearance_stroke_label_);
-    add_appearance_row(2, btn_kf_appearance_opacity_, bgl_tr("OBSTitles.Opacity"), nullptr,
+    add_appearance_row(4, btn_kf_appearance_opacity_, bgl_tr("OBSTitles.Opacity"), nullptr,
                        spn_appearance_opacity_);
     appearance_layout->addLayout(appearance_grid);
     bgl_add_panel_section(vl, appearance_box_, bgl_tr("OBSTitles.Appearance"));
@@ -1566,7 +2098,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_text_external_binding_->setToolTip(QStringLiteral("Bind text content to external data"));
     btn_text_external_binding_->setStyleSheet(QStringLiteral(
         "QToolButton{border:1px solid palette(mid);border-radius:3px;}"
-        "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
+        "QToolButton:checked{border:2px solid palette(highlight);"
+        "background:palette(highlight);color:palette(highlighted-text);}"));
 
     cmb_clock_preset_ = new QComboBox(inner);
     cmb_clock_preset_->setFixedHeight(20);
@@ -1600,4 +2133,3 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_size_->setRange(6, 500);
     spn_size_->setFixedHeight(20);
     spn_size_->setStyleSheet(control_style);
-

@@ -2,6 +2,15 @@
     double right = left;
     double top = left;
     double bottom = left;
+    const auto stroke_offset_extents = animated_scalar_extents(layer.stroke_offset_prop);
+    const double stroke_offset_extent = std::max({
+        std::abs(static_cast<double>(layer.stroke_offset)),
+        std::abs(stroke_offset_extents.first),
+        std::abs(stroke_offset_extents.second)});
+    left += stroke_offset_extent;
+    right += stroke_offset_extent;
+    top += stroke_offset_extent;
+    bottom += stroke_offset_extent;
     const bool background_may_be_enabled = layer.background_enabled ||
         layer.background_enabled_prop.is_animated();
     if (background_may_be_enabled) {

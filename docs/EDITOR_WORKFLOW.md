@@ -48,19 +48,21 @@ When a layer with animated Position is selected with the Selection tool, the can
 
 ## 3D layers, cameras, and views
 
-The 2D/3D layer toggle is opt-in. Pure 2D layers keep the legacy affine path, while promoted layers use Position, Scale and Anchor XYZ plus Rotation and Orientation XYZ. All authored Transform values are stored and keyframed in layer-local coordinates relative to the effective group or transform parent. Local, Parent and World affect gizmo-axis orientation only.
+The 2D/3D layer toggle is opt-in. Pure 2D layers keep the legacy affine path, while promoted layers use Position, Scale and Anchor XYZ plus Rotation and Orientation XYZ. Orientation establishes the base local axes and Rotation XYZ is applied inside that basis. All authored Transform values are stored and keyframed in layer-local coordinates relative to the effective group or transform parent. Local, Parent and World affect gizmo-axis orientation only.
 
-Title cameras support perspective and orthographic projection, Position, Point of Interest, Rotation, Orientation, focal length, field of view, zoom, near/far clipping and active-camera selection. The editor provides Active Camera, Front, Back, Left, Right, Top, Bottom and Custom Perspective views. Editor view navigation is never serialized or included in title cache identity.
+Title cameras support perspective and orthographic projection, Position, Point of Interest, Rotation, Orientation, focal length, field of view, zoom, near/far clipping and active-camera selection. Every animated camera property has a diamond in the 3D Camera inspector; Position, Target, Orientation and Rotation use one grouped XYZ diamond, while Projection creates discrete Hold keys. The editor provides Active Camera, Front, Back, Left, Right, Top, Bottom and Custom Perspective views. Editor view navigation is never serialized or included in title cache identity.
 
-Move, Rotate and Scale gizmos support axis and plane handles, snapping, multi-selection and Local/Parent/World orientation. Hover highlights the exact axis, plane or ring that will receive the click. Projected gizmo geometry is shared by hit-testing and painting to avoid duplicate work.
+Move, Rotate and Scale gizmos support axis and plane handles, snapping, multi-selection and Local/Parent/World orientation. Rotate rings use the layer's current scale-free local basis, the effective parent's scale-free basis, or canonical world XYZ respectively. After a ring is hit, the first three pixels lock horizontal or vertical screen-space scrubbing; right/up increases and left/down decreases the angle at 0.5° per pixel. Because drag magnitude no longer comes from projected ring geometry, fully edge-on rings remain interactive. Hover highlights the exact axis, plane or ring that will receive the click. Projected gizmo geometry is shared by hit-testing and painting to avoid duplicate work.
 
 ## Camera Timeline and Vector3 channels
 
-Cameras appear as first-class Timeline rows. Camera switching, Camera Switches rows, camera assignment and projection switching are discrete Hold tracks; continuous camera properties use ordinary temporal interpolation. Static cameras and unkeyed assignments retain the same render/cache behavior as the pre-animation 3D pipeline.
+Cameras appear as first-class Timeline rows. The implicit default camera is hidden until its first camera-property keyframe is authored and is hidden again after its final keyframe is removed. Camera switching, Camera Switches rows, camera assignment and projection switching are discrete Hold tracks; continuous camera properties use ordinary temporal interpolation. Every property track—layer, material, effect, camera, light, assignment or switch—appears in the Layer List/Timeline only while it owns keyframes. Static cameras and unkeyed assignments retain the same render/cache behavior as the pre-animation 3D pipeline.
 
 Layer List, Timeline and Graph Editor consume the same flattened row model. Expanding a Vector3 or four-channel property reveals X/Y/Z/W or A/R/G/B child rows on both sides. Aggregate rows target all channels, child rows target one component, and checked channel toggles use the same color as the rendered curve.
 
 Graph keyframes move at sub-frame precision by default. Ctrl/Command enables explicit project-frame snapping. Double-clicking an empty property row creates a keyframe; double-clicking an existing temporal key opens Keyframe Velocity. Copy, cut, paste and delete are shared by Timeline and Graph Editor, and paste at an occupied time replaces the existing key instead of creating a duplicate.
+
+Undo/Redo restores the authored title atomically and rebinds every Properties and Effects control to the restored layer objects in the same UI event, including current values and keyframe diamonds.
 
 ## Full XYZ spatial motion paths
 
@@ -80,6 +82,12 @@ Canvas, Layer List, Timeline and Graph Editor use one guarded selection-synchron
 
 Playback cadence uses fractional millisecond accumulation for project rates such as 59.94 or 29.97 fps. Diagnostics publish one elapsed-time sample per second: FPS counts successfully presented frames, and average render time covers the frames rendered in the same interval. Monitor-rate interaction timers run only during active pointer gestures, while stopped clocks/tickers refresh at a bounded rate.
 
+The playback hot path is split by cost. Canvas presentation remains project-frame driven; visible Timeline/timecode feedback is capped to the lower of monitor cadence and 30 Hz; heavyweight Layer, Graphic Properties, Layer Properties, Effects, Playback/Cache and sidebar evaluation is capped at 10 Hz while transport is running. Hidden docks are not reevaluated. Scrubbing, frame stepping and the final stopped frame remain exact rather than throttled.
+
+Passive no-button pointer movement over ordinary inspector controls is coalesced to 30 Hz during playback so high-polling-rate mice cannot starve the GUI render queue. Canvas and Timeline input, button presses, drags, wheel events, Enter/Leave state and controls marked with `bglContinuousPointerDuringPlayback` retain continuous delivery. New editor controls should not request continuous pointer traffic unless their interaction semantics require it.
+
+Editor-side auxiliary work must remain state-driven: the private monitored-audio source exists only for titles with actual Audio layers (including nested Assets), title snapshots are republished only after a model/audio change or transport discontinuity, hidden meters suspend their timers, and setters/log statements on frame-adjacent paths must avoid work when their value or log level is unchanged. These are performance contracts, not optional micro-optimizations; adding a new per-frame panel update or precise timer requires profiling against playback plus high-rate pointer movement.
+
 ## Assets and libraries
 
 A saved title can become a reusable Asset Layer. Assets may be synchronized to the parent playhead or independent when their animation mode supports it. Animated assets use a stable bounds envelope covering the full authored motion rather than resizing the selection box every frame.
@@ -97,4 +105,3 @@ Stinger is a document playback mode and a native OBS transition type. Its timeli
 - **Switch at Point** renders the title animation and performs one Scene A → Scene B switch at the configured point. Editor-only Scene A/B backgrounds help preview the cut and never enter source output or cached frames.
 - **Manual Scene Animation** adds persistent Scene A and Scene B input layers. They use the ordinary visual-layer contract for Size, transform, opacity, timing, transitions, hierarchy, masks, mattes, blend modes, and effects.
 - Proxy readiness can be required or allowed to fall back to safe live rendering. Native OBS transition preview and on-air playback use the same transition callbacks.
-

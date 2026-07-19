@@ -59,7 +59,7 @@
         "QGroupBox#BroadcastGraphicsLiveTextTypePanel::title{subcontrol-origin:margin;left:14px;top:2px;padding:0 4px;background:%2;}")
         .arg(panel_text_name, section_bg_name, border_name));
     auto *type_grid = new QGridLayout(type_options_box_);
-    type_grid->setContentsMargins(7, 5, 7, 6);
+    type_grid->setContentsMargins(5, 4, 5, 5);
     type_grid->setHorizontalSpacing(4);
     type_grid->setVerticalSpacing(4);
     chk_bold_ = mk_type_icon_button("text-style-bold.svg", bgl_tr("OBSTitles.Bold"));
@@ -91,7 +91,7 @@
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *paragraph_layout = new QVBoxLayout(paragraph_box_);
-    paragraph_layout->setContentsMargins(7, 5, 7, 6);
+    paragraph_layout->setContentsMargins(5, 4, 5, 5);
     paragraph_layout->setSpacing(7);
 
     auto add_paragraph_button = [&](QHBoxLayout *layout, QButtonGroup *group,
@@ -110,7 +110,9 @@
         auto *spin = mk_dspin(-10000.0, 10000.0, 1.0);
         spin->setSuffix(QStringLiteral(" pt"));
         spin->setDecimals(0);
-        spin->setFixedWidth(94);
+        spin->setMinimumWidth(0);
+        spin->setMaximumWidth(QWIDGETSIZE_MAX);
+        spin->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         return spin;
     };
     auto add_metric_control = [&](QGridLayout *grid, int row, int column,
@@ -210,7 +212,7 @@
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *dynamic_form = new QFormLayout(dynamic_text_box_);
     style_form(dynamic_form);
-    dynamic_form->setContentsMargins(7, 5, 7, 6);
+    dynamic_form->setContentsMargins(5, 4, 5, 5);
     dynamic_form->setHorizontalSpacing(5);
     dynamic_form->setVerticalSpacing(6);
     cmb_text_style_ = new QComboBox(inner);
@@ -290,7 +292,8 @@
     spn_ticker_completion_->setDecimals(1);
     btn_kf_ticker_completion_ = mk_kf_button(bgl_tr("OBSTitles.ToggleTickerCompletionKeyframe"));
     ticker_completion_layout->addWidget(spn_ticker_completion_, 1);
-    ticker_completion_layout->addWidget(btn_kf_ticker_completion_);
+    ticker_completion_layout->addWidget(
+        make_keyframe_controls(btn_kf_ticker_completion_, row_ticker_completion_));
 
     cmb_ticker_style_ = new QComboBox(inner);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerHorizontal"), 0);
@@ -327,7 +330,7 @@
         "QLabel{color:%3;font-size:10px;background:transparent;}")
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *auto_layout = new QVBoxLayout(auto_style_box_);
-    auto_layout->setContentsMargins(7, 5, 7, 6);
+    auto_layout->setContentsMargins(5, 4, 5, 5);
     auto_layout->setSpacing(6);
     chk_auto_style_enabled_ = new BglSwitch("Enable automatic text styling", auto_style_box_);
     chk_auto_style_enabled_->setToolTip("When enabled, the selected text layer is styled by the rule engine before rendering. The original text stays editable; rules only produce final style runs.");
@@ -551,9 +554,9 @@
     cmb_auto_rule_generalization_->setFixedHeight(20);
     cmb_auto_rule_generalization_->setStyleSheet(control_style);
     cmb_auto_rule_generalization_->setToolTip("Controls whether learned examples that describe the same reusable structure are folded into one rule.");
-    chk_auto_rule_prevent_duplicates_ = new QCheckBox("Skip exact duplicate rules", auto_rules_dialog_);
+    chk_auto_rule_prevent_duplicates_ = new BglSwitch("Skip exact duplicate rules", auto_rules_dialog_);
     chk_auto_rule_prevent_duplicates_->setChecked(true);
-    chk_auto_rule_allow_multiple_cases_ = new QCheckBox("Apply one rule to every matching case", auto_rules_dialog_);
+    chk_auto_rule_allow_multiple_cases_ = new BglSwitch("Apply one rule to every matching case", auto_rules_dialog_);
     chk_auto_rule_allow_multiple_cases_->setChecked(true);
     edt_auto_rule_excludes_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_excludes_->setPlaceholderText("Rule IDs to exclude, comma-separated");
@@ -635,7 +638,7 @@
         .arg(panel_text_name, section_bg_name, subtle_text_name));
     auto *live_edit_form = new QFormLayout(live_edit_box_);
     style_form(live_edit_form);
-    live_edit_form->setContentsMargins(7, 5, 7, 6);
+    live_edit_form->setContentsMargins(5, 4, 5, 5);
     live_edit_form->setHorizontalSpacing(12);
     live_edit_form->setVerticalSpacing(6);
     chk_scene_mask_->setText(QString());
@@ -680,7 +683,7 @@
     bullets_box_ = new QGroupBox("Bullets and Numbering", inner);
     bullets_box_->setStyleSheet(section_style);
     auto *bullets_layout = new QVBoxLayout(bullets_box_);
-    bullets_layout->setContentsMargins(7, 5, 7, 6);
+    bullets_layout->setContentsMargins(5, 4, 5, 5);
     auto *bullets_hint = new QLabel("Broadcast lower thirds typically use manual bullet glyphs; this group is ready for list presets.", inner);
     bullets_hint->setWordWrap(true);
     bullets_hint->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name));
@@ -693,8 +696,8 @@
     rect_box_->setTitle(QString());
     rect_box_->setStyleSheet(QStringLiteral("QGroupBox{background:%1;border:none;margin:0;padding:0;}").arg(section_bg_name));
     auto *shape_layout = new QVBoxLayout(rect_box_);
-    shape_layout->setContentsMargins(7, 5, 7, 6);
-    shape_layout->setSpacing(8);
+    shape_layout->setContentsMargins(5, 4, 5, 5);
+    shape_layout->setSpacing(2);
 
     btn_shape_defaults_ = new QToolButton(rect_box_);
     btn_shape_defaults_->setObjectName(QStringLiteral("BglPanelDefaultsButton"));
@@ -739,23 +742,24 @@
 
     auto *shape_grid = new QGridLayout();
     shape_grid->setContentsMargins(0, 0, 0, 0);
-    shape_grid->setHorizontalSpacing(5);
-    shape_grid->setVerticalSpacing(4);
-    shape_grid->setColumnMinimumWidth(0, 24);
-    shape_grid->setColumnMinimumWidth(1, 82);
-    shape_grid->setColumnMinimumWidth(2, 90);
-    shape_grid->setColumnMinimumWidth(3, 90);
-    shape_grid->setColumnMinimumWidth(4, 20);
-    shape_grid->setColumnStretch(5, 1);
+    shape_grid->setHorizontalSpacing(4);
+    shape_grid->setVerticalSpacing(2);
+    shape_grid->setColumnMinimumWidth(0, 72);
+    shape_grid->setColumnMinimumWidth(1, 0);
+    shape_grid->setColumnMinimumWidth(2, 0);
+    shape_grid->setColumnMinimumWidth(3, 30);
+    shape_grid->setColumnMinimumWidth(4, 0);
+    shape_grid->setColumnStretch(1, 1);
+    shape_grid->setColumnStretch(2, 1);
 
     auto make_shape_field = [&](const QString &label, QDoubleSpinBox *spin, const QIcon &icon = QIcon()) {
         auto *field = new QWidget(rect_box_);
         field->setObjectName(QStringLiteral("OBSTitlesShapeNumericField"));
-        field->setStyleSheet(QStringLiteral("QWidget#OBSTitlesShapeNumericField{background:%1;border:1px solid %2;"
-                             "border-radius:2px;}").arg(control_bg_name, border_name));
+        field->setStyleSheet(QStringLiteral(
+            "QWidget#OBSTitlesShapeNumericField{background:transparent;border:none;}"));
         auto *field_layout = new QHBoxLayout(field);
-        field_layout->setContentsMargins(5, 0, 0, 0);
-        field_layout->setSpacing(2);
+        field_layout->setContentsMargins(0, 0, 0, 0);
+        field_layout->setSpacing(4);
         auto *field_label = new NumericDragLabel(label, spin, field,
                                                  [this]() {
                                                      if (loading_values_) return;
@@ -774,10 +778,13 @@
             field_label->setPixmap(icon.pixmap(QSize(14, 14)));
             field_label->setAccessibleName(label);
         }
-        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(control_text_name));
+        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(subtle_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin, 1);
-        field->setFixedSize(90, 20);
+        field->setMinimumWidth(0);
+        field->setMaximumWidth(QWIDGETSIZE_MAX);
+        field->setFixedHeight(20);
+        field->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         return field;
     };
 
@@ -831,35 +838,39 @@
     style_transform_spin(spn_corner_bevel_roundness_);
     auto *field_width = make_shape_field(bgl_tr("OBSTitles.W"), spn_layer_w_);
     auto *field_height = make_shape_field(bgl_tr("OBSTitles.H"), spn_layer_h_);
-    chk_size_lock_ = new TransformLockCheckBox(rect_box_);
+    chk_size_lock_ = new BglSwitch(rect_box_);
     chk_size_lock_->setText(QString());
     chk_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_size_lock_->setFixedSize(20, 20);
+    chk_size_lock_->setFixedSize(30, 20);
     chk_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *size_label = new QLabel(bgl_tr("OBSTitles.Size"), rect_box_);
+    size_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(panel_text_name));
     shape_size_label_ = size_label;
     shape_size_field_w_ = field_width;
     shape_size_field_h_ = field_height;
-    shape_grid->addWidget(btn_kf_width_, 0, 0, Qt::AlignCenter);
-    shape_grid->addWidget(size_label, 0, 1);
-    shape_grid->addWidget(field_width, 0, 2);
-    shape_grid->addWidget(field_height, 0, 3);
-    shape_grid->addWidget(chk_size_lock_, 0, 4, Qt::AlignCenter);
+    shape_grid->addWidget(size_label, 0, 0);
+    shape_grid->addWidget(field_width, 0, 1);
+    shape_grid->addWidget(field_height, 0, 2);
+    shape_grid->addWidget(chk_size_lock_, 0, 3, Qt::AlignCenter);
+    shape_grid->addWidget(make_keyframe_controls(btn_kf_width_, rect_box_),
+                          0, 4, Qt::AlignRight | Qt::AlignVCenter);
     shape_layout->addLayout(shape_grid);
 
     row_rect_corners_ = new QWidget(rect_box_);
     row_rect_corners_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *corners_layout = new QGridLayout(row_rect_corners_);
     corners_layout->setContentsMargins(0, 0, 0, 0);
-    corners_layout->setHorizontalSpacing(5);
-    corners_layout->setVerticalSpacing(6);
+    corners_layout->setHorizontalSpacing(4);
+    corners_layout->setVerticalSpacing(2);
+    corners_layout->setColumnStretch(0, 1);
+    corners_layout->setColumnStretch(1, 1);
     corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
     corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
-    chk_corner_lock_ = new TransformLockCheckBox(row_rect_corners_);
+    chk_corner_lock_ = new BglSwitch(row_rect_corners_);
     chk_corner_lock_->setText(QString());
     chk_corner_lock_->setToolTip(bgl_tr("OBSTitles.SyncCornerRadii"));
-    chk_corner_lock_->setFixedSize(24, 24);
+    chk_corner_lock_->setFixedSize(30, 20);
     chk_corner_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     corners_layout->addWidget(chk_corner_lock_, 0, 2, 2, 1, Qt::AlignCenter);
     corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
@@ -952,8 +963,8 @@
     image_box_ = new QWidget(inner);
     image_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
     auto *image_layout = new QVBoxLayout(image_box_);
-    image_layout->setContentsMargins(7, 5, 7, 6);
-    image_layout->setSpacing(8);
+    image_layout->setContentsMargins(5, 4, 5, 5);
+    image_layout->setSpacing(2);
 
     auto *image_content = new QWidget(image_box_);
     image_content->setStyleSheet(QStringLiteral("background:transparent;"));
@@ -967,4 +978,3 @@
     lbl_image_preview_->setStyleSheet(QStringLiteral("background:transparent;"));
     set_image_preview_label(lbl_image_preview_, QString());
     image_content_layout->addWidget(lbl_image_preview_, 0, Qt::AlignTop);
-

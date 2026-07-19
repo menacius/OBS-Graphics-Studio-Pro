@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <atomic>
 #include <condition_variable>
+#include <cmath>
 #include <thread>
 #include <mutex>
 #include <set>
@@ -67,6 +68,10 @@ struct TitleCamera {
     OpaqueSerializationPassthrough serialization_passthrough_json;
     std::string id = "default";
     std::string name = "Default Camera";
+    /* Non-empty only for an internal camera snapshot owned by an isolated
+     * Asset Layer. These cameras are serialized with the host title but stay
+     * hidden from its camera UI and cannot become its active camera. */
+    std::string asset_space_owner_id;
     bool use_canvas_default = true;
     AnimatedProperty position_x { "camera_position_x", 0.0 };
     AnimatedProperty position_y { "camera_position_y", 0.0 };
@@ -185,10 +190,15 @@ inline void mirror_camera_vector_track_to_legacy(AnimatedVec3Property &track, do
 
 inline bool title_camera_has_authored_keyframes(const TitleCamera &camera)
 {
-    return camera.position_x.is_animated() || camera.position_y.is_animated() ||
-           camera.position_z.is_animated() || camera.position_3d.is_animated() ||
-           camera.target_x.is_animated() || camera.target_y.is_animated() ||
-           camera.target_z.is_animated() || camera.target_3d.is_animated() ||
+    const bool position_animated = camera.position_3d_path_enabled
+        ? camera.position_3d.is_animated()
+        : camera.position_x.is_animated() || camera.position_y.is_animated() ||
+          camera.position_z.is_animated() || camera.position_3d.is_animated();
+    const bool target_animated = camera.target_3d_path_enabled
+        ? camera.target_3d.is_animated()
+        : camera.target_x.is_animated() || camera.target_y.is_animated() ||
+          camera.target_z.is_animated() || camera.target_3d.is_animated();
+    return position_animated || target_animated ||
            camera.orientation_x.is_animated() || camera.orientation_y.is_animated() ||
            camera.orientation_z.is_animated() || camera.rotation_x.is_animated() ||
            camera.rotation_y.is_animated() || camera.rotation_z.is_animated() ||
@@ -254,6 +264,10 @@ struct Title {
     std::vector<TitleCamera> cameras { TitleCamera{} };
     std::string active_camera_id = "default";
     AnimatedDiscreteProperty active_camera { "active_camera", "default" };
+    std::vector<TitleLight> lights;
+    bool default_light_enabled = true;
+    bool lighting_enabled = true;
+    double environment_exposure = 0.0;
     /* The global switch track follows the same disclosure model as cameras. */
     bool camera_switches_expanded = false;
     /* Shared disclosure state for multi-channel timeline properties.  The
@@ -282,6 +296,11 @@ struct Title {
     bool        is_asset = false;
     bool        asset_animated = false;
     std::string asset_category = "Default";
+
+    /* Fonts extracted from a packed title are application-local resources,
+     * not system installations.  Persist their resolved paths so a later OBS
+     * session can register them again before text layers are deserialized. */
+    std::vector<std::string> packed_font_files;
 
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
 
@@ -315,6 +334,7 @@ struct Title {
     double playlist_hold_seconds = 5.0;
     int current_cue_row = -1; /* runtime-only active live text row */
     int pending_cue_row = -1; /* runtime-only next row waiting for outro */
+    int last_cue_row = -1; /* runtime-only most recently sent-to-Program row */
     bool cue_uncue_requested = false; /* runtime-only: keep active status until the outro completes */
     uint64_t cue_revision = 0; /* runtime-only live text cue counter */
     bool playlist_active = false; /* runtime-only playlist state */
@@ -402,11 +422,19 @@ struct TitleTemplateExportMetadata {
     std::string screenshot_png_base64;
 };
 
+struct PackedTitleExportOptions {
+    bool pack_images = true;
+    bool pack_media = true; /* Video and audio source files. */
+    bool pack_fonts = true;
+};
+
 inline bool title_has_custom_camera(const Title &title)
 {
     return std::any_of(title.cameras.begin(), title.cameras.end(),
                        [](const TitleCamera &camera) {
-                           return camera.id != "default" || !camera.use_canvas_default;
+                           return camera.asset_space_owner_id.empty() &&
+                                  (camera.id != "default" ||
+                                   !camera.use_canvas_default);
                        });
 }
 
@@ -426,6 +454,20 @@ std::string serialize_layer_effect_stack_json(
     const std::vector<LayerEffect> &effects);
 bool deserialize_layer_effect_stack_json(
     const std::string &payload, std::vector<LayerEffect> *effects,
+    std::string *error = nullptr);
+
+/* Cross-editor/process clipboard payload. Uses the canonical layer and camera
+ * schemas so copy/paste preserves groups, animation, effects, rich text, media
+ * bindings and camera assignments without a parallel lossy format. */
+std::string serialize_layer_clipboard_json(
+    const std::vector<std::shared_ptr<Layer>> &layers,
+    const std::vector<TitleCamera> &cameras,
+    const std::string &source_title_id);
+bool deserialize_layer_clipboard_json(
+    const std::string &payload,
+    std::vector<std::shared_ptr<Layer>> *layers,
+    std::vector<TitleCamera> *cameras,
+    std::string *source_title_id,
     std::string *error = nullptr);
 
 /* ══════════════════════════════════════════════════════════════════
@@ -448,6 +490,12 @@ public:
     bool                   export_title(const std::string &id,
                                         const std::string &path,
                                         const TitleTemplateExportMetadata &metadata,
+                                        std::string *error = nullptr) const;
+    bool                   export_packed_title(
+                                        const std::string &id,
+                                        const std::string &path,
+                                        const TitleTemplateExportMetadata &metadata,
+                                        const PackedTitleExportOptions &options,
                                         std::string *error = nullptr) const;
     std::shared_ptr<Title> import_title(const std::string &path,
                                         std::string *error = nullptr,

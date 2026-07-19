@@ -406,7 +406,7 @@ static QString template_library_root_path()
 
 static QString template_file_filter()
 {
-    return QStringLiteral("*.obgt *.otpt *.json");
+    return QStringLiteral("*.obgp *.obgt *.otpt *.json");
 }
 
 static bool is_title_template_file_info(const QFileInfo &info)
@@ -415,7 +415,8 @@ static bool is_title_template_file_info(const QFileInfo &info)
         return false;
 
     const QString suffix = info.suffix().toLower();
-    return suffix == QStringLiteral("obgt") ||
+    return suffix == QStringLiteral("obgp") ||
+           suffix == QStringLiteral("obgt") ||
            suffix == QStringLiteral("otpt") ||
            suffix == QStringLiteral("json");
 }
@@ -902,5 +903,42 @@ static bool prompt_template_library_category(QWidget *parent, QString &category)
     return dialog.exec() == QDialog::Accepted;
 }
 
-} // namespace
+static bool prompt_packed_title_options(QWidget *parent,
+                                        PackedTitleExportOptions &options)
+{
+    QDialog dialog(parent);
+    bgl_apply_brand_icon(&dialog);
+    dialog.setWindowTitle(bgl_tr("OBSTitles.PackedOptionsTitle"));
+    dialog.setModal(true);
 
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(obs_layout_spacing(&dialog));
+    auto *description = new QLabel(bgl_tr("OBSTitles.PackedOptionsDescription"), &dialog);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto *images = new BglSwitch(bgl_tr("OBSTitles.PackImages"), &dialog);
+    auto *media = new BglSwitch(bgl_tr("OBSTitles.PackMedia"), &dialog);
+    auto *fonts = new BglSwitch(bgl_tr("OBSTitles.PackFonts"), &dialog);
+    images->setChecked(options.pack_images);
+    media->setChecked(options.pack_media);
+    fonts->setChecked(options.pack_fonts);
+    fonts->setToolTip(bgl_tr("OBSTitles.PackFontsTooltip"));
+    layout->addWidget(images);
+    layout->addWidget(media);
+    layout->addWidget(fonts);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    options.pack_images = images->isChecked();
+    options.pack_media = media->isChecked();
+    options.pack_fonts = fonts->isChecked();
+    return true;
+}
+
+} // namespace

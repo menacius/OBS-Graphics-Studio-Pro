@@ -12,6 +12,7 @@
 #include "transition-editor-dialog.h"
 #include "transition-preset-catalog.h"
 #include "text-animator-presets.h"
+#include "effect-preset-catalog.h"
 
 #include <QPointer>
 #include <QClipboard>
@@ -19,10 +20,13 @@
 #include <QDesktopServices>
 #include <QFile>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QMimeData>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QScreen>
+#include <QGuiApplication>
 #include <QWindow>
 #include <QTimer>
 #include <QJsonArray>
@@ -34,18 +38,35 @@
 #include <QPlainTextEdit>
 #include <QComboBox>
 #include <QSet>
+#include <QMap>
 #include <QDirIterator>
 #include <QDateTime>
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QVBoxLayout>
 #include <QStatusBar>
 #include <QPalette>
 #include <QStringList>
 #include <QToolButton>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QXmlStreamReader>
+#include <QDataStream>
+#include <QSaveFile>
+#include <QRadioButton>
+#include <QCryptographicHash>
+#include <QImageReader>
+#include <QFontMetricsF>
+#include <QFontDatabase>
 
 #include <cmath>
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <functional>
+#include <initializer_list>
 #include <obs.h>
 
 
@@ -64,3 +85,4 @@
 #include "title-editor/editor-audio-preview.inc"
 #include "title-editor/signal-handlers.inc"
 #include "title-editor/editor-events.inc"
+#include "title-editor/import-documents.inc"

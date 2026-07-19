@@ -435,6 +435,8 @@ inline bool effect_has_any_keyframes(const LayerEffect &effect)
         &effect.softness_prop, &effect.roundness_prop, &effect.speed_prop,
         &effect.center_x_prop, &effect.center_y_prop, &effect.complexity_prop,
         &effect.evolution_prop, &effect.stroke_width_prop,
+        &effect.trim_start_prop, &effect.trim_end_prop,
+        &effect.trim_offset_prop,
         &effect.stroke_opacity_prop, &effect.padding_left_prop,
         &effect.padding_right_prop, &effect.padding_top_prop,
         &effect.padding_bottom_prop, &effect.corner_radius_tl_prop,

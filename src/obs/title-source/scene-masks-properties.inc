@@ -432,6 +432,14 @@ static uint32_t eval_fill_color(const Layer &layer, double t)
            (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
 }
 
+static uint32_t eval_stroke_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.stroke_color_a, (layer.stroke_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.stroke_color_r, (layer.stroke_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.stroke_color_g, (layer.stroke_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.stroke_color_b, layer.stroke_color & 0xFF, t);
+}
+
 static QColor gradient_color_with_opacity(uint32_t argb, double gradient_opacity, double stop_opacity)
 {
     QColor color((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, (argb >> 24) & 0xFF);
@@ -713,6 +721,68 @@ static bool eval_effect_enabled(const LayerEffect &effect, double t)
     return effect.enabled && (!effect.enabled_prop.is_animated() || effect.enabled_prop.evaluate(t) >= 0.5);
 }
 
+static double eval_layer_stroke_offset(const Layer &layer, double local_time)
+{
+    const double value = layer.stroke_offset_prop.is_animated()
+        ? layer.stroke_offset_prop.evaluate(local_time)
+        : (double)layer.stroke_offset;
+    return std::clamp(std::isfinite(value) ? value : 0.0, -16384.0, 16384.0);
+}
+
+static bool layer_has_stroke_geometry_modifiers(const Layer &layer,
+                                                double local_time)
+{
+    // Keep animated offsets on the geometry-aware path even when the current
+    // sample happens to be zero.  Otherwise the renderer can switch between
+    // the primitive fast path and the compatibility path at zero crossings,
+    // leaving stale cached stroke geometry for the following frame.
+    if (layer.stroke_offset_prop.is_animated() ||
+        std::abs(eval_layer_stroke_offset(layer, local_time)) > 1.0e-7)
+        return true;
+    for (const LayerEffect &effect : layer.effects) {
+        if (effect.type == LayerEffectType::TrimPaths &&
+            resolve_layer_effect(effect, local_time).enabled)
+            return true;
+    }
+    return false;
+}
+
+static std::vector<QPainterPath> apply_layer_trim_paths_partitioned(
+    const Layer &layer, double local_time,
+    const std::vector<QPainterPath> &sources)
+{
+    std::vector<QPainterPath> results =
+        bgs::apply_stroke_offset_geometry_partitioned(
+            sources, eval_layer_stroke_offset(layer, local_time));
+    for (const LayerEffect &effect : layer.effects) {
+        if (effect.type != LayerEffectType::TrimPaths)
+            continue;
+        const ResolvedLayerEffect resolved = resolve_layer_effect(effect, local_time);
+        if (!resolved.enabled)
+            continue;
+        bgs::TrimPathsGeometryOptions options;
+        options.start_percent = resolved.effect_trim_start;
+        options.end_percent = resolved.effect_trim_end;
+        options.trim_offset_degrees = resolved.effect_trim_offset;
+        options.individually = resolved.effect_trim_multiple_shapes != 0;
+        results = bgs::apply_trim_paths_geometry_partitioned(results, options);
+        const bool all_empty = std::all_of(
+            results.begin(), results.end(),
+            [](const QPainterPath &path) { return path.isEmpty(); });
+        if (all_empty)
+            break;
+    }
+    return results;
+}
+
+static QPainterPath apply_layer_trim_paths(const Layer &layer, double local_time,
+                                            const QPainterPath &source)
+{
+    const std::vector<QPainterPath> results =
+        apply_layer_trim_paths_partitioned(layer, local_time, {source});
+    return results.empty() ? QPainterPath{} : results.front();
+}
+
 static uint32_t eval_effect_color(const LayerEffect &effect, double t)
 {
     return ((uint32_t)eval_channel(effect.color_a, (effect.effect_color >> 24) & 0xFF, t) << 24) |
@@ -758,9 +828,9 @@ static bool eval_outline_enabled(const Layer &layer, double)
     return layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f;
 }
 
-static uint32_t eval_outline_color(const Layer &layer, double)
+static uint32_t eval_outline_color(const Layer &layer, double t)
 {
-    return eval_outline_enabled(layer, 0.0) ? layer.stroke_color : 0x00000000;
+    return eval_outline_enabled(layer, t) ? eval_stroke_color(layer, t) : 0x00000000;
 }
 
 static double eval_outline_width(const Layer &layer, double)
@@ -1295,4 +1365,3 @@ static QFont font_for_layer(const Layer &layer, double t)
     apply_text_style_to_font(font, layer);
     return font;
 }
-

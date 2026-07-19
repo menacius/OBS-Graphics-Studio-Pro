@@ -93,6 +93,7 @@
 #include <QRegularExpression>
 #include <QMetaObject>
 #include <QObject>
+#include <QCoreApplication>
 
 #include <memory>
 #include <string>
@@ -108,11 +109,15 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <thread>
+#include <condition_variable>
+#include <deque>
 #include <sstream>
 #include <iomanip>
 #include <functional>
 #include <utility>
+#include <exception>
 #include "path-geometry.h"
+#include "stroke-path-geometry.h"
 
 using bgs::live_text::exposed_text_layers;
 
@@ -125,6 +130,24 @@ static inline gs_eparam_t *bgl_effect_param(gs_effect_t *effect,
                                              const char *name) noexcept
 {
     return effect && name ? gs_effect_get_param_by_name(effect, name) : nullptr;
+}
+
+/* Motion Blur accumulates fractional weighted samples. 8-bit UNORM targets
+ * quantize each contribution and become visibly banded on smooth fills/images,
+ * so exposure and coverage use a floating-point target when the backend allows
+ * it. The input sample target remains display-format BGRA; only the running
+ * sums need extra precision. */
+static gs_texrender_t *bgl_create_motion_blur_sample_target()
+{
+    return gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+}
+
+static gs_texrender_t *bgl_create_motion_blur_accumulation_target()
+{
+    gs_texrender_t *target = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
+    if (!target)
+        target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    return target;
 }
 
 /* Implemented after all split title-source function continuations have closed.

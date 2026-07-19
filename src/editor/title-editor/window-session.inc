@@ -1357,8 +1357,10 @@ static bool editor_decompose_local_3d(const QMatrix4x4 &local,
      * right-handed, matching the renderer's culling/winding semantics. */
     scale = QVector3D(scale_x, scale_y, scale_z);
 
-    /* local_matrix() applies Rz * Ry * Rx. Extract the same convention
-     * explicitly; generic quaternion-to-Euler conversion can use different ordering
+    /* Extract the complete local rotation basis as Rz * Ry * Rx. The caller
+     * stores it in Rotation XYZ and resets Orientation XYZ, preserving the
+     * visible basis after reparenting without applying Orientation twice.
+     * Generic quaternion-to-Euler conversion can use different ordering
      * conventions near gimbal lock across math libraries and Qt versions. */
     const double r00 = x.x();
     const double r10 = x.y();
@@ -2090,8 +2092,13 @@ TitleEditor::TitleEditor(QWidget *parent)
     setDockOptions(QMainWindow::AllowNestedDocks |
                    QMainWindow::AllowTabbedDocks |
                    QMainWindow::GroupedDragging);
+    setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
     build_ui();
+    for (QTabWidget *tabs : findChildren<QTabWidget *>())
+        tabs->setTabPosition(QTabWidget::North);
+    for (QWidget *field : findChildren<QWidget *>())
+        bgl_apply_editor_field_style(field);
     const QPointer<TitleEditor> external_data_guard(this);
     external_data_callback_id_ =
         ExternalDataManager::instance().on_change(
@@ -2213,14 +2220,18 @@ TitleEditor::TitleEditor(QWidget *parent)
     update_autosave_timer();
 
     clock_timer_ = new QTimer(this);
-    // Dynamic text does not need to wake the editor/OBS render path at 30 Hz.
-    // A 10 Hz UI refresh is smooth for clocks while avoiding constant canvas invalidation.
+    // Runtime content continues while the title transport is stopped. Clocks
+    // stay on the inexpensive 10 Hz cadence; independent animated assets use
+    // the editor playback cadence so their motion is not coupled to Pause.
     clock_timer_->setInterval(100);
     connect(clock_timer_, &QTimer::timeout, this, [this]() {
-        update_title_bar();
-        /* Clocks/tickers are runtime-dynamic, but they do not need monitor-rate
-         * invalidation while transport is stopped. Ten updates per second keep
-         * the editor responsive without permanently competing with interaction. */
+        const bool independent_asset = title_ &&
+            bgs::asset_runtime::title_has_independent_playback(*title_);
+        const int target_interval = independent_asset
+            ? std::max(1, editor_playback_ui_timer_interval_ms())
+            : 100;
+        if (clock_timer_->interval() != target_interval)
+            clock_timer_->setInterval(target_interval);
         if (!playing_ && !dock_layout_transition_ && canvas_ &&
             isVisible() && !isMinimized() && isActiveWindow() &&
             title_has_dynamic_text_layer(title_))
@@ -2319,6 +2330,8 @@ QWidget *TitleEditor::create_effects_panel()
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
+    connect(effects_panel_, &EffectsPanel::keyframe_navigation_requested,
+            this, &TitleEditor::on_playhead_changed);
 
     /* Dock panels are constructed after the central canvas.  Connecting only
      * from the canvas-construction branch therefore left these signals entirely
@@ -2334,4 +2347,3 @@ QWidget *TitleEditor::create_effects_panel()
     }
     return effects_panel_;
 }
-

@@ -10,6 +10,23 @@
     auto *lines_action = new QWidgetAction(live_text_settings_menu);
     lines_action->setDefaultWidget(lines_widget);
     live_text_settings_menu->addAction(lines_action);
+    live_text_settings_menu->addSeparator();
+    act_select_row_before_cue_ = live_text_settings_menu->addAction(
+        bgl_tr("OBSTitles.SelectRowBeforeCue"));
+    act_select_row_before_cue_->setCheckable(true);
+    act_select_row_before_cue_->setToolTip(
+        bgl_tr("OBSTitles.SelectRowBeforeCueTooltip"));
+    act_show_cue_preview_ = live_text_settings_menu->addAction(
+        bgl_tr("OBSTitles.ShowCuePreview"));
+    act_show_cue_preview_->setCheckable(true);
+    act_show_cue_preview_->setToolTip(
+        bgl_tr("OBSTitles.ShowCuePreviewTooltip"));
+    act_live_text_columns_window_ = live_text_settings_menu->addAction(
+        obs_icon("list-view.svg"),
+        bgl_tr("OBSTitles.OpenLiveTextColumnsWindow"));
+    act_live_text_columns_window_->setCheckable(true);
+    act_live_text_columns_window_->setToolTip(
+        bgl_tr("OBSTitles.OpenLiveTextColumnsWindowTooltip"));
     auto *external_data_menu = new QMenu(btn_external_refresh_);
     act_external_data_source_ = external_data_menu->addAction(bgl_tr("OBSTitles.EnableExternalDataSource"),
                                                               this, &TitleDock::on_toggle_external_data_source);
@@ -107,6 +124,23 @@
     });
     connect(spin_live_text_lines_per_row_, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &TitleDock::on_live_text_lines_per_row_changed);
+    connect(act_live_text_columns_window_, &QAction::triggered,
+            this, &TitleDock::open_live_text_columns_window);
+    connect(act_select_row_before_cue_, &QAction::toggled,
+            this, [this](bool enabled) {
+                select_row_before_cue_ = enabled;
+                if (act_show_cue_preview_)
+                    act_show_cue_preview_->setEnabled(enabled);
+                if (!enabled)
+                    leavePreview();
+                save_dock_settings();
+            });
+    connect(act_show_cue_preview_, &QAction::toggled,
+            this, [this](bool enabled) {
+                show_cue_preview_ = enabled;
+                sync_live_cue_preview_output_route();
+                save_dock_settings();
+            });
     connect(act_background_persistence_, &QAction::toggled, this, [this](bool checked) {
         background_persistence_ = checked;
         if (!background_persistence_) {
@@ -169,6 +203,15 @@
     if (act_playlist_reverse_) act_playlist_reverse_->setChecked(playlist_reverse_);
     if (act_background_persistence_) act_background_persistence_->setChecked(background_persistence_);
     if (act_text_persistence_) act_text_persistence_->setChecked(text_persistence_);
+    if (act_select_row_before_cue_) {
+        QSignalBlocker block(act_select_row_before_cue_);
+        act_select_row_before_cue_->setChecked(select_row_before_cue_);
+    }
+    if (act_show_cue_preview_) {
+        QSignalBlocker block(act_show_cue_preview_);
+        act_show_cue_preview_->setChecked(show_cue_preview_);
+        act_show_cue_preview_->setEnabled(select_row_before_cue_);
+    }
     hold_spin->setValue(playlist_hold_seconds_);
     if (spin_live_text_lines_per_row_) {
         QSignalBlocker block(spin_live_text_lines_per_row_);
@@ -193,6 +236,7 @@ void TitleDock::update_template_view_mode()
         list_->setIconSize(QSize(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight));
         list_->setGridSize(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
         list_->setResizeMode(QListView::Adjust);
+        list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         list_->setMovement(QListView::Static);
         list_->setSpacing(6);
         list_->setUniformItemSizes(true);
@@ -208,7 +252,8 @@ void TitleDock::update_template_view_mode()
         list_->setViewMode(QListView::ListMode);
         list_->setIconSize(QSize(kTitleListIconExtent * 3 + 6, kTitleListIconExtent));
         list_->setGridSize(QSize());
-        list_->setResizeMode(QListView::Fixed);
+        list_->setResizeMode(QListView::Adjust);
+        list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         list_->setMovement(QListView::Static);
         list_->setSpacing(0);
         list_->setUniformItemSizes(true);
@@ -450,19 +495,27 @@ bool TitleDock::restore_live_text_header_state()
 {
     if (!text_table_ || text_table_->columnCount() <= 0) return false;
 
+    bool restored = false;
     auto title = TitleDataStore::instance().get_title(selected_id());
     if (title && !title->live_text_header_state.empty()) {
         const QByteArray encoded(title->live_text_header_state.data(), (int)title->live_text_header_state.size());
         const QByteArray state = QByteArray::fromBase64(encoded);
         if (!state.isEmpty() && text_table_->horizontalHeader()->restoreState(state)) {
             live_text_header_states_[text_table_->columnCount()] = state;
-            return true;
+            restored = true;
         }
     }
 
-    auto it = live_text_header_states_.find(text_table_->columnCount());
-    if (it == live_text_header_states_.end()) return false;
-    return text_table_->horizontalHeader()->restoreState(it->second);
+    if (!restored) {
+        auto it = live_text_header_states_.find(text_table_->columnCount());
+        if (it != live_text_header_states_.end())
+            restored = text_table_->horizontalHeader()->restoreState(it->second);
+    }
+
+    /* A persisted QHeaderView state also contains hidden-section flags. It
+     * must never resurrect Cache Status while the global cache is disabled. */
+    enforce_live_text_cache_column_visibility();
+    return restored;
 }
 
 bool TitleDock::has_checked_live_text_rows() const
@@ -768,6 +821,8 @@ void TitleDock::update_external_data_controls()
 
     if (btn_data_sources_)
         btn_data_sources_->setEnabled(has_title && has_exposed);
+    if (act_live_text_columns_window_)
+        act_live_text_columns_window_->setEnabled(has_title && has_exposed);
     if (btn_live_text_settings_)
         btn_live_text_settings_->setEnabled(has_title);
     if (btn_external_refresh_) {
@@ -794,6 +849,588 @@ void TitleDock::update_external_data_controls()
     if (act_external_data_settings_) {
         act_external_data_settings_->setEnabled(has_title && has_exposed);
     }
+}
+
+void TitleDock::enforce_live_text_cache_column_visibility()
+{
+    if (!text_table_ || text_table_->columnCount() <= kLiveCacheColumn)
+        return;
+    text_table_->setColumnHidden(
+        kLiveCacheColumn, !CacheManager::instance().cacheEnabled());
+}
+
+void TitleDock::update_live_text_columns_window_title()
+{
+    if (!live_text_columns_dialog_)
+        return;
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    live_text_columns_dialog_->setWindowTitle(title
+        ? bgl_tr("OBSTitles.LiveTextColumnsWindowFormat")
+              .arg(QString::fromStdString(title->name))
+        : bgl_tr("OBSTitles.LiveTextColumnsWindow"));
+}
+
+void TitleDock::open_live_text_columns_window()
+{
+    if (!text_table_ || !live_text_section_ || !live_text_section_layout_ ||
+        !live_text_header_widget_ || !live_text_toolbar_ ||
+        !live_text_table_host_layout_ || !live_text_table_placeholder_ ||
+        !live_cue_preview_panel_ || !sections_)
+        return;
+
+    if (live_text_columns_dialog_) {
+        if (act_live_text_columns_window_) {
+            QSignalBlocker block(act_live_text_columns_window_);
+            act_live_text_columns_window_->setChecked(true);
+        }
+        live_text_columns_dialog_->show();
+        live_text_columns_dialog_->raise();
+        live_text_columns_dialog_->activateWindow();
+        return;
+    }
+
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || exposed_text_layers(title).empty()) {
+        if (act_live_text_columns_window_) {
+            QSignalBlocker block(act_live_text_columns_window_);
+            act_live_text_columns_window_->setChecked(false);
+        }
+        return;
+    }
+
+    QWidget *main_window = static_cast<QWidget *>(obs_frontend_get_main_window());
+    auto *dialog = new QDialog(main_window, Qt::Window);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setModal(false);
+    dialog->resize(std::max(900, width() * 2), std::max(520, height()));
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+
+    live_text_columns_dialog_ = dialog;
+    update_live_text_columns_window_title();
+
+    live_text_section_layout_->removeWidget(live_text_header_widget_);
+    live_text_header_widget_->setParent(dialog);
+    layout->addWidget(live_text_header_widget_);
+
+    live_text_table_host_layout_->removeWidget(text_table_);
+    text_table_->setParent(dialog);
+    layout->addWidget(text_table_, 1);
+    text_table_->show();
+
+    live_text_section_layout_->removeWidget(live_text_toolbar_);
+    live_text_toolbar_->setParent(dialog);
+    layout->addWidget(live_text_toolbar_);
+
+    /* Move the one authoritative read-only Preview with the Live Text Cues
+     * controls. Reparenting preserves its CanvasPreview/source state, so the
+     * dock and external window can never drift or render duplicate previews. */
+    live_cue_preview_panel_->setParent(dialog);
+    layout->addWidget(live_cue_preview_panel_, 1);
+    live_text_header_widget_->show();
+    live_text_toolbar_->show();
+    live_text_table_placeholder_->show();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+        if (live_text_columns_dialog_ != dialog)
+            return;
+        restore_live_text_table_to_dock();
+    });
+    connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+        if (live_text_columns_dialog_ == dialog)
+            live_text_columns_dialog_ = nullptr;
+    });
+
+    dialog->show();
+    sync_live_cue_preview_output_route();
+    dialog->raise();
+    dialog->activateWindow();
+    adjust_live_text_table_columns(true);
+}
+
+void TitleDock::restore_live_text_table_to_dock()
+{
+    QDialog *dialog = live_text_columns_dialog_;
+    if (!dialog)
+        return;
+
+    live_text_columns_dialog_ = nullptr;
+    disconnect(dialog, nullptr, this, nullptr);
+    if (dialog->layout()) {
+        dialog->layout()->removeWidget(live_text_header_widget_);
+        dialog->layout()->removeWidget(text_table_);
+        dialog->layout()->removeWidget(live_text_toolbar_);
+        dialog->layout()->removeWidget(live_cue_preview_panel_);
+    }
+    live_text_header_widget_->setParent(live_text_section_);
+    live_text_section_layout_->insertWidget(0, live_text_header_widget_);
+    text_table_->setParent(live_text_table_host_);
+    live_text_table_host_layout_->insertWidget(0, text_table_, 1);
+    live_text_toolbar_->setParent(live_text_section_);
+    live_text_section_layout_->insertWidget(2, live_text_toolbar_);
+    live_cue_preview_panel_->setParent(sections_);
+    sections_->insertWidget(2, live_cue_preview_panel_);
+    sections_->setStretchFactor(2, 1);
+    live_text_header_widget_->show();
+    text_table_->show();
+    live_text_toolbar_->show();
+    live_text_table_placeholder_->hide();
+    if (act_live_text_columns_window_) {
+        QSignalBlocker block(act_live_text_columns_window_);
+        act_live_text_columns_window_->setChecked(false);
+    }
+    dialog->deleteLater();
+    sync_live_cue_preview_output_route();
+    enforce_live_text_cache_column_visibility();
+    adjust_live_text_table_columns(true);
+}
+
+namespace {
+
+double deterministic_live_cue_preview_time(const Title &title)
+{
+    if (title.playback_mode == 2)
+        return std::clamp(title.pause_time, 0.0, title.duration);
+    if (title.playback_mode == 1 && title.loop_end > title.loop_start)
+        return std::clamp(title.loop_start, 0.0, title.duration);
+    return 0.0;
+}
+
+QString deterministic_live_cue_preview_position_label(const Title &title)
+{
+    if (title.playback_mode == 2)
+        return bgl_tr("OBSTitles.PreviewPauseFrame");
+    if (title.playback_mode == 1 && title.loop_end > title.loop_start)
+        return bgl_tr("OBSTitles.PreviewLoopStartFrame");
+    return bgl_tr("OBSTitles.PreviewTimelineStartFrame");
+}
+
+bool lock_private_obs_preview_item(obs_scene_t *, obs_sceneitem_t *item,
+                                   void *)
+{
+    if (!item)
+        return true;
+    if (obs_sceneitem_is_group(item))
+        obs_sceneitem_group_enum_items(
+            item, lock_private_obs_preview_item, nullptr);
+    obs_sceneitem_set_locked(item, true);
+    return true;
+}
+
+} // namespace
+
+bool TitleDock::obs_duplicate_scene_preview_enabled() const
+{
+    if (!obs_frontend_preview_program_mode_active())
+        return false;
+
+    /* OBS 31+ stores interface/studio-mode choices in user.ini. Prefer that
+     * authoritative value and retain global.ini as a migration fallback for
+     * older profiles. */
+    config_t *user_config = obs_frontend_get_user_config();
+    if (user_config && config_has_user_value(
+            user_config, "BasicWindow", "SceneDuplicationMode")) {
+        return config_get_bool(
+            user_config, "BasicWindow", "SceneDuplicationMode");
+    }
+    config_t *global_config = obs_frontend_get_global_config();
+    return global_config && config_get_bool(
+        global_config, "BasicWindow", "SceneDuplicationMode");
+}
+
+bool TitleDock::attach_live_cue_preview_to_obs()
+{
+    if (!live_cue_preview_source_ ||
+        !obs_duplicate_scene_preview_enabled())
+        return false;
+
+    obs_source_t *preview_scene_source =
+        obs_frontend_get_current_preview_scene();
+    if (!preview_scene_source)
+        return false;
+
+    obs_source_t *private_preview_source = live_cue_obs_private_preview_scene_
+        ? obs_scene_get_source(live_cue_obs_private_preview_scene_)
+        : nullptr;
+    if (live_cue_obs_preview_item_ && private_preview_source &&
+        preview_scene_source == private_preview_source) {
+        obs_source_release(preview_scene_source);
+        live_cue_preview_uses_obs_ = true;
+        return true;
+    }
+
+    /* Work on a private reference-copy of the current OBS Preview scene. This
+     * guarantees that the Program scene is never mutated even when OBS returns
+     * the same scene pointer for Preview and Program before it lazily creates
+     * its own Duplicate Scene copy. */
+    detach_live_cue_preview_from_obs();
+    obs_scene_t *base_preview_scene = obs_scene_from_source(preview_scene_source);
+    if (!base_preview_scene) {
+        obs_source_release(preview_scene_source);
+        return false;
+    }
+    obs_scene_t *private_preview_scene = obs_scene_duplicate(
+        base_preview_scene, "BGL Cue Preview Scene",
+        OBS_SCENE_DUP_PRIVATE_REFS);
+    if (!private_preview_scene) {
+        obs_source_release(preview_scene_source);
+        return false;
+    }
+
+    /* Duplicate Scene owns independent scene-item transforms. Lock every
+     * copied item (including nested groups), not only the BGL overlay, so the
+     * OBS Preview bus remains a monitor and cannot edit the private scene. */
+    obs_scene_enum_items(
+        private_preview_scene, lock_private_obs_preview_item, nullptr);
+
+    obs_sceneitem_t *preview_item = obs_scene_add(
+        private_preview_scene, live_cue_preview_source_);
+    if (!preview_item) {
+        obs_scene_release(private_preview_scene);
+        obs_source_release(preview_scene_source);
+        return false;
+    }
+
+    struct vec2 origin = {0.0f, 0.0f};
+    obs_sceneitem_set_pos(preview_item, &origin);
+    obs_sceneitem_set_alignment(preview_item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+    obs_sceneitem_set_bounds_type(preview_item, OBS_BOUNDS_STRETCH);
+    obs_sceneitem_set_bounds_alignment(
+        preview_item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+    struct obs_video_info video_info = {};
+    if (obs_get_video_info(&video_info)) {
+        struct vec2 bounds = {
+            static_cast<float>(video_info.base_width),
+            static_cast<float>(video_info.base_height)};
+        obs_sceneitem_set_bounds(preview_item, &bounds);
+    }
+    obs_sceneitem_set_locked(preview_item, true);
+    obs_sceneitem_set_visible(preview_item, true);
+    obs_sceneitem_set_order(preview_item, OBS_ORDER_MOVE_TOP);
+
+    live_cue_obs_private_preview_scene_ = private_preview_scene;
+    live_cue_obs_previous_preview_scene_source_ = preview_scene_source;
+    live_cue_obs_preview_item_ = preview_item;
+    live_cue_preview_uses_obs_ = true;
+    obs_frontend_set_current_preview_scene(
+        obs_scene_get_source(private_preview_scene));
+    return true;
+}
+
+void TitleDock::detach_live_cue_preview_from_obs()
+{
+    live_cue_preview_uses_obs_ = false;
+
+    obs_source_t *private_preview_source = live_cue_obs_private_preview_scene_
+        ? obs_scene_get_source(live_cue_obs_private_preview_scene_)
+        : nullptr;
+    obs_source_t *current_preview_source =
+        obs_frontend_preview_program_mode_active()
+            ? obs_frontend_get_current_preview_scene()
+            : nullptr;
+    if (current_preview_source && private_preview_source &&
+        current_preview_source == private_preview_source &&
+        live_cue_obs_previous_preview_scene_source_) {
+        obs_frontend_set_current_preview_scene(
+            live_cue_obs_previous_preview_scene_source_);
+    }
+    if (current_preview_source)
+        obs_source_release(current_preview_source);
+
+    if (live_cue_obs_preview_item_) {
+        obs_sceneitem_remove(live_cue_obs_preview_item_);
+        live_cue_obs_preview_item_ = nullptr;
+    }
+    if (live_cue_obs_private_preview_scene_) {
+        obs_scene_release(live_cue_obs_private_preview_scene_);
+        live_cue_obs_private_preview_scene_ = nullptr;
+    }
+    if (live_cue_obs_previous_preview_scene_source_) {
+        obs_source_release(live_cue_obs_previous_preview_scene_source_);
+        live_cue_obs_previous_preview_scene_source_ = nullptr;
+    }
+}
+
+void TitleDock::sync_live_cue_preview_output_route()
+{
+    if (!isPreviewReady() || !show_cue_preview_) {
+        detach_live_cue_preview_from_obs();
+        if (live_cue_preview_panel_)
+            live_cue_preview_panel_->hide();
+        return;
+    }
+
+    if (obs_duplicate_scene_preview_enabled() &&
+        attach_live_cue_preview_to_obs()) {
+        if (live_cue_preview_panel_)
+            live_cue_preview_panel_->hide();
+        return;
+    }
+
+    detach_live_cue_preview_from_obs();
+    if (live_cue_preview_panel_)
+        live_cue_preview_panel_->show();
+    if (live_cue_preview_canvas_)
+        live_cue_preview_canvas_->repaint();
+}
+
+bool TitleDock::enterPreview(const std::shared_ptr<Title> &title, int row)
+{
+    if (!title || !live_cue_preview_canvas_ || !live_cue_preview_panel_)
+        return false;
+
+    auto preview_title = clone_title_snapshot(title);
+    if (!preview_title)
+        return false;
+    /* Isolate ticker/media runtime keys from the on-air title while retaining
+     * the authored hierarchy and asset references in the deep snapshot. */
+    preview_title->id = title->id + "::cue-preview";
+
+    auto exposed = exposed_text_layers(preview_title);
+    normalize_live_text_rows(preview_title, exposed);
+    if (exposed.empty()) {
+        row = 0;
+    } else if (row < 0 || row >= static_cast<int>(preview_title->live_text_rows.size())) {
+        return false;
+    }
+
+    for (int col = 0; col < static_cast<int>(exposed.size()); ++col) {
+        auto &target = exposed[col];
+        if (!target)
+            continue;
+        const int value_row = target->exposed_single_value ? 0 : row;
+        if (value_row < 0 ||
+            value_row >= static_cast<int>(preview_title->live_text_rows.size()) ||
+            col >= static_cast<int>(preview_title->live_text_rows[value_row].size()))
+            continue;
+        apply_live_text_runtime_binding(*preview_title, value_row, *target);
+        const std::string cue_value = effective_live_text_cue_value(
+            *preview_title, value_row, *target,
+            preview_title->live_text_rows[value_row][col]);
+        apply_live_cue_layer_value(*preview_title, target, row, cue_value);
+    }
+
+    preview_title->current_cue_row = row;
+    preview_title->pending_cue_row = -1;
+    preview_title->cue_uncue_requested = false;
+    preview_title->cue_persistence_transition = false;
+    preview_title->cue_persistent_text_columns.clear();
+
+    const QString previous_title_id = live_cue_preview_title_id_;
+    const int previous_row = live_cue_preview_row_;
+    live_cue_preview_title_ = preview_title;
+    live_cue_preview_title_id_ = QString::fromStdString(title->id);
+    live_cue_preview_row_ = row;
+    live_cue_preview_time_ = deterministic_live_cue_preview_time(*preview_title);
+
+    if (!live_cue_preview_source_) {
+        obs_data_t *settings = obs_data_create();
+        obs_data_set_string(settings, PROP_TITLE_ID, title->id.c_str());
+        obs_data_set_bool(settings, "editor_audio_preview", true);
+        obs_data_set_bool(settings, "editor_transport_controlled", true);
+        live_cue_preview_source_ = obs_source_create_private(
+            "broadcast_graphics_live_source", "BGL Cue Preview", settings);
+        obs_data_release(settings);
+        if (live_cue_preview_source_) {
+            obs_source_inc_active(live_cue_preview_source_);
+            obs_source_inc_showing(live_cue_preview_source_);
+            obs_source_set_monitoring_type(live_cue_preview_source_,
+                                           OBS_MONITORING_TYPE_NONE);
+            obs_source_set_muted(live_cue_preview_source_, true);
+            obs_source_media_play_pause(live_cue_preview_source_, true);
+        }
+    }
+
+    if (live_cue_preview_source_)
+        ::enterPreview(live_cue_preview_source_, preview_title,
+                       live_cue_preview_time_);
+
+    live_cue_preview_canvas_->set_playback_active(false);
+    live_cue_preview_canvas_->set_title(preview_title, false, false);
+    live_cue_preview_canvas_->set_playhead(live_cue_preview_time_, false);
+    live_cue_preview_status_->setText(
+        bgl_tr("OBSTitles.PreviewReadyFormat")
+            .arg(row + 1)
+            .arg(deterministic_live_cue_preview_position_label(*preview_title))
+            .arg(live_cue_preview_time_, 0, 'f', 3));
+    sync_live_cue_preview_output_route();
+
+    /* Prime the exact cue/cache path while the operator inspects the frozen
+     * frame. The CanvasPreview session retains GPU textures/shaders/glyphs and
+     * the cache manager hydrates the Program-ready transition concurrently. */
+    CacheManager::instance().prepareLiveCueForPlayback(title, row);
+    CacheManager::instance().preloadLiveCues(title, row, 2);
+
+    if (!previous_title_id.isEmpty()) {
+        auto previous_title = TitleDataStore::instance().get_title(
+            previous_title_id.toStdString());
+        if (previous_title && previous_title_id == QString::fromStdString(selected_id()))
+            update_live_text_runtime_status_fast(previous_title, previous_row);
+    }
+    if (live_cue_preview_title_id_ == QString::fromStdString(selected_id()))
+        update_live_text_runtime_status_fast(title, row);
+    return true;
+}
+
+void TitleDock::leavePreview()
+{
+    const QString previous_title_id = live_cue_preview_title_id_;
+    const int previous_row = live_cue_preview_row_;
+    detach_live_cue_preview_from_obs();
+    if (live_cue_preview_source_)
+        ::leavePreview(live_cue_preview_source_);
+    live_cue_preview_title_.reset();
+    live_cue_preview_title_id_.clear();
+    live_cue_preview_row_ = -1;
+    live_cue_preview_time_ = 0.0;
+    if (live_cue_preview_canvas_) {
+        live_cue_preview_canvas_->set_playback_active(false);
+        live_cue_preview_canvas_->set_title(nullptr, false, false);
+    }
+    if (live_cue_preview_panel_)
+        live_cue_preview_panel_->hide();
+
+    auto previous_title = TitleDataStore::instance().get_title(
+        previous_title_id.toStdString());
+    if (previous_title && previous_title_id == QString::fromStdString(selected_id()))
+        update_live_text_runtime_status_fast(previous_title, previous_row);
+}
+
+bool TitleDock::isPreviewReady() const
+{
+    if (!live_cue_preview_title_ || live_cue_preview_row_ < 0)
+        return false;
+    return !live_cue_preview_source_ || ::isPreviewReady(live_cue_preview_source_);
+}
+
+void TitleDock::refresh_live_cue_preview()
+{
+    if (!isPreviewReady())
+        return;
+    auto title = TitleDataStore::instance().get_title(
+        live_cue_preview_title_id_.toStdString());
+    const int row = live_cue_preview_row_;
+    if (title)
+        enterPreview(title, row);
+    else
+        leavePreview();
+}
+
+void TitleDock::release_live_cue_preview_source()
+{
+    detach_live_cue_preview_from_obs();
+    if (!live_cue_preview_source_)
+        return;
+    obs_source_media_stop(live_cue_preview_source_);
+    obs_source_dec_showing(live_cue_preview_source_);
+    obs_source_dec_active(live_cue_preview_source_);
+    obs_source_release(live_cue_preview_source_);
+    live_cue_preview_source_ = nullptr;
+}
+
+int TitleDock::program_hotkey_target_row(const std::shared_ptr<Title> &title,
+                                         bool prefer_last) const
+{
+    if (!title)
+        return -1;
+    const int row_count = std::max(1, live_text_playlist_row_count(title));
+    auto valid_row = [row_count](int candidate) {
+        return candidate >= 0 && candidate < row_count ? candidate : -1;
+    };
+
+    if (prefer_last) {
+        int previous = valid_row(title->last_cue_row);
+        if (previous < 0)
+            previous = valid_row(last_cued_rows_.value(
+                QString::fromStdString(title->id), -1));
+        if (previous >= 0)
+            return previous;
+    }
+    if (QString::fromStdString(title->id) == QString::fromStdString(selected_id()) &&
+        text_table_) {
+        const int selected_row = valid_row(text_table_->currentRow());
+        if (selected_row >= 0)
+            return selected_row;
+    }
+    const int pending = valid_row(title->pending_cue_row);
+    if (pending >= 0)
+        return pending;
+    const int current = valid_row(title->current_cue_row);
+    if (current >= 0)
+        return current;
+    return 0;
+}
+
+void TitleDock::handle_program_hotkey(TitleProgramHotkeyCommand command,
+                                      const std::string &title_id)
+{
+    auto title = TitleDataStore::instance().get_title(title_id);
+    if (!title)
+        return;
+
+    if (command == TitleProgramHotkeyCommand::NextCue ||
+        command == TitleProgramHotkeyCommand::PreviousCue) {
+        const int row_count = live_text_playlist_row_count(title);
+        if (row_count <= 0)
+            return;
+        const int delta = command == TitleProgramHotkeyCommand::NextCue
+            ? 1 : -1;
+        int base = -1;
+        if (select_row_before_cue_ && isPreviewReady() &&
+            live_cue_preview_title_id_ == QString::fromStdString(title_id)) {
+            base = live_cue_preview_row_;
+        } else if (title->pending_cue_row >= 0) {
+            base = title->pending_cue_row;
+        } else {
+            base = title->current_cue_row;
+        }
+        const int row = base >= 0 && base < row_count
+            ? (base + delta + row_count) % row_count
+            : (delta < 0 ? row_count - 1 : 0);
+        if (select_row_before_cue_) {
+            /* Relative navigation is Preview-only, including when wrapping to
+             * the row that is already in Program. Do not let the ordinary
+             * active-row toggle interpret that case as an Uncue. */
+            if (title_has_bound_obs_source(title->id))
+                enterPreview(title, row);
+        } else {
+            cue_live_text_row_for_title(title, row, true);
+        }
+        return;
+    }
+
+    if (command == TitleProgramHotkeyCommand::Uncue) {
+        const int row = title->pending_cue_row >= 0
+            ? title->pending_cue_row : title->current_cue_row;
+        if (row >= 0)
+            cue_live_text_row_for_title(title, row, true);
+        return;
+    }
+
+    int row = -1;
+    if (command == TitleProgramHotkeyCommand::CueToProgram &&
+        isPreviewReady() &&
+        live_cue_preview_title_id_ == QString::fromStdString(title_id)) {
+        row = live_cue_preview_row_;
+    } else {
+        row = program_hotkey_target_row(
+            title, command == TitleProgramHotkeyCommand::CueLast);
+    }
+    if (row < 0)
+        return;
+
+    /* These three commands explicitly target Program. Temporarily bypass the
+     * optional first-click row-selection gate without changing its persisted
+     * setting. */
+    const bool preview_setting = select_row_before_cue_;
+    select_row_before_cue_ = false;
+    cue_live_text_row_for_title(title, row, false);
+    select_row_before_cue_ = preview_setting;
 }
 
 bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
@@ -840,6 +1477,27 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         }
     }
 
+    const bool row_is_program_active = title->current_cue_row == row ||
+        title->pending_cue_row == row;
+    const bool same_preview_ready = isPreviewReady() &&
+        live_cue_preview_title_id_ == title_id &&
+        live_cue_preview_row_ == row;
+    if (allow_uncue && row_is_program_active) {
+        /* Program uncue does not clear Preview output. The frozen row remains
+         * available and becomes green again after Program completes its
+         * outro. While it exists on both buses, the row is red. */
+    } else if (select_row_before_cue_ && allow_uncue && !force_restart) {
+        if (same_preview_ready) {
+            /* Second Cue/Take consumes the already prepared snapshot and now
+             * enters the unchanged Program cue path below. Keep the private
+             * preview frozen so Preview+Program is represented by one red row. */
+        } else {
+            if (isPreviewReady())
+                leavePreview();
+            return enterPreview(title, row);
+        }
+    }
+
     if (exposed_now.empty()) {
         updating_exposed_text_ = true;
         cache_waiting_cue_row_ = -1;
@@ -856,6 +1514,10 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         title->cue_uncue_requested = uncue_active;
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
+        if (!uncue_active && !immediate_finalize) {
+            last_cued_rows_[title_id] = 0;
+            title->last_cue_row = 0;
+        }
         ++title->cue_revision;
         TitleDataStore::instance().touch_runtime_change();
         seen_store_revision_ = TitleDataStore::instance().revision();
@@ -1010,6 +1672,10 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     TitleDataStore::instance().touch_runtime_change();
     seen_store_revision_ = TitleDataStore::instance().revision();
     CacheManager::instance().preloadLiveCues(title, row, 2);
+    if (title->current_cue_row >= 0 || title->pending_cue_row >= 0) {
+        last_cued_rows_[title_id] = row;
+        title->last_cue_row = row;
+    }
     updating_exposed_text_ = false;
     if (selected_title) {
         update_live_text_runtime_status_fast(title, row, previous_row);
@@ -1035,4 +1701,3 @@ int TitleDock::next_playlist_row(const std::shared_ptr<Title> &title, int curren
     const bool reverse = title ? title->playlist_reverse : playlist_reverse_;
     return (current_row + (reverse ? -1 : 1) + row_count) % row_count;
 }
-

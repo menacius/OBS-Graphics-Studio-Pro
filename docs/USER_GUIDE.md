@@ -33,13 +33,13 @@ Track mattes support Alpha, Luma, inverted variants, and Clipping Matte behavior
 
 ## 5. Work in 3D
 
-Enable the **2D/3D** toggle on a compatible visual layer to expose Position, Scale, Anchor, Rotation and Orientation XYZ controls. Choose or create a perspective/orthographic camera, then use Active Camera or an editor-only orthographic/custom view. The W/E/R tools activate Move, Rotate and Scale gizmos; Local, Parent and World choose axis orientation without changing the stored local transform.
+Enable the **2D/3D** toggle on a compatible visual layer to expose Position, Scale, Anchor, Rotation and Orientation XYZ controls. Choose or create a perspective/orthographic camera, then use Active Camera or an editor-only orthographic/custom view. The W/E/R tools activate Move, Rotate and Scale gizmos; Local, Parent and World choose the current local basis, effective parent basis or canonical world XYZ without changing the stored local-transform coordinate contract. After clicking a Rotate ring, drag horizontally or vertically to scrub its angle; the dominant initial direction locks for that drag, including when the ring is fully edge-on. Double-sided applies to every planar artwork type, including Text, Clock and Ticker.
 
 Camera rows in the timeline expose Position, Point of Interest, Rotation, Orientation, focal length, FOV, zoom, clipping and projection. Active-camera switching and per-layer camera assignment are Hold tracks. Depth Test and Write Depth are independent, while Double Sided and Backface Culling control plane visibility.
 
 ## 6. Animate
 
-Properties with a diamond control can be keyframed. The timeline supports multi-selection, easing, negative values, layer strips, group expansion, and keyframe navigation. During ordinary editing and scrubbing the editor can present at the monitor refresh rate; authored playback runs at the project frame rate.
+Properties with a diamond control can be keyframed. The timeline supports multi-selection, easing, negative values, layer strips, group expansion, and keyframe navigation. Undo/Redo updates the visible Properties and Effects values and diamonds immediately, without requiring another selection or playhead move. During ordinary editing and scrubbing the editor can present at the monitor refresh rate; authored playback runs at the project frame rate.
 
 Use the **Graph Editor** button in the timeline footer for AE-style temporal curve editing. Choose **Value Graph** to edit the final property curve or **Speed Graph** to edit velocity. Drag incoming/outgoing handles to change influence and speed, Alt-drag to break a linked temporal pair, marquee or Shift-select multiple keyframes for relative edits, and use **Keyframe Velocity…** for exact values. The context menu also provides Linear, Hold, Auto Bezier, Continuous Bezier, Manual Bezier, Easy Ease, Easy Ease In, and Easy Ease Out. Fit Graphs/Fit Selection, zoom, and pan controls help frame dense or very short animations.
 

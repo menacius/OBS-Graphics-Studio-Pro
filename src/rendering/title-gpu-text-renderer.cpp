@@ -98,10 +98,10 @@ struct VertDataIn {
     float4 pos : POSITION;
     float2 uv : TEXCOORD0;
     float2 localPos : TEXCOORD1;
-    float opacity : TEXCOORD2;
+    float2 opacityData : TEXCOORD2;
     float4 overrideColor : TEXCOORD3;
     float4 animatorData : TEXCOORD4;
-    float atlasPixelsPerLogical : TEXCOORD5;
+    float2 atlasScaleData : TEXCOORD5;
 };
 struct VertDataOut {
     float4 pos : POSITION;
@@ -118,10 +118,10 @@ VertDataOut VSDefault(VertDataIn v)
     o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
     o.uv = v.uv;
     o.localPos = v.localPos;
-    o.opacity = v.opacity;
+    o.opacity = v.opacityData.x;
     o.overrideColor = v.overrideColor;
     o.animatorData = v.animatorData;
-    o.atlasPixelsPerLogical = v.atlasPixelsPerLogical;
+    o.atlasPixelsPerLogical = v.atlasScaleData.x;
     return o;
 }
 
@@ -898,14 +898,17 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
     data->tvarray[0].array = bzalloc(sizeof(vec2) * data->num);
     data->tvarray[1].width = 2;
     data->tvarray[1].array = bzalloc(sizeof(vec2) * data->num);
-    data->tvarray[2].width = 1;
-    data->tvarray[2].array = bzalloc(sizeof(float) * data->num);
+    // OBS' D3D11 backend accepts 2- or 4-component texture vertex streams.
+    // Pack scalar values into vec2 streams and consume their x component in
+    // the vertex shader so GPU text does not fall back to the CPU renderer.
+    data->tvarray[2].width = 2;
+    data->tvarray[2].array = bzalloc(sizeof(vec2) * data->num);
     data->tvarray[3].width = 4;
     data->tvarray[3].array = bzalloc(sizeof(vec4) * data->num);
     data->tvarray[4].width = 4;
     data->tvarray[4].array = bzalloc(sizeof(vec4) * data->num);
-    data->tvarray[5].width = 1;
-    data->tvarray[5].array = bzalloc(sizeof(float) * data->num);
+    data->tvarray[5].width = 2;
+    data->tvarray[5].array = bzalloc(sizeof(vec2) * data->num);
     if (!data->tvarray[0].array || !data->tvarray[1].array ||
         !data->tvarray[2].array || !data->tvarray[3].array ||
         !data->tvarray[4].array || !data->tvarray[5].array) {
@@ -914,23 +917,24 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
     }
     auto *uv = static_cast<vec2 *>(data->tvarray[0].array);
     auto *local = static_cast<vec2 *>(data->tvarray[1].array);
-    auto *opacity = static_cast<float *>(data->tvarray[2].array);
+    auto *opacity = static_cast<vec2 *>(data->tvarray[2].array);
     auto *override_color = static_cast<vec4 *>(data->tvarray[3].array);
     auto *animator_data = static_cast<vec4 *>(data->tvarray[4].array);
     auto *atlas_pixels_per_logical =
-        static_cast<float *>(data->tvarray[5].array);
+        static_cast<vec2 *>(data->tvarray[5].array);
     for (size_t i = 0; i < vertices.size(); ++i) {
         vec3_set(&data->points[i], vertices[i].x, vertices[i].y, 0.0f);
         vec2_set(&uv[i], vertices[i].u, vertices[i].v);
         vec2_set(&local[i], vertices[i].local_x, vertices[i].local_y);
-        opacity[i] = vertices[i].opacity;
+        vec2_set(&opacity[i], vertices[i].opacity, 0.0f);
         vec4_set(&override_color[i], vertices[i].override_r,
                  vertices[i].override_g, vertices[i].override_b,
                  vertices[i].override_a);
         vec4_set(&animator_data[i], vertices[i].color_mix,
                  vertices[i].blur, vertices[i].stroke_outside_delta,
                  vertices[i].stroke_inside_delta);
-        atlas_pixels_per_logical[i] = vertices[i].atlas_pixels_per_logical;
+        vec2_set(&atlas_pixels_per_logical[i],
+                 vertices[i].atlas_pixels_per_logical, 0.0f);
     }
     return gs_vertexbuffer_create(data, 0);
 }
@@ -1644,6 +1648,35 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
     return true;
 }
 
+
+bool Renderer::effect_ready() const
+{
+    std::lock_guard<std::mutex> effect_lock(impl_->effect_mutex);
+    return impl_->backend_available && impl_->effect != nullptr;
+}
+
+bool Renderer::compile_effect()
+{
+    std::lock_guard<std::mutex> effect_lock(impl_->effect_mutex);
+    if (impl_->effect)
+        return true;
+    if (!impl_->backend_available)
+        return false;
+    impl_->effect = gs_effect_create(kGpuTextEffect,
+                                     "obs-bgs-gpu-text.effect", nullptr);
+    if (!impl_->effect || !gs_effect_get_technique(impl_->effect, "Draw")) {
+        if (impl_->effect) {
+            gs_effect_destroy(impl_->effect);
+            impl_->effect = nullptr;
+        }
+        impl_->backend_available = false;
+        impl_->last_error =
+            "Could not compile the Phase 12C GPU text shader.";
+        return false;
+    }
+    return true;
+}
+
 bool Renderer::render(Layer &layer)
 {
     std::lock_guard<std::mutex> effect_lock(impl_->effect_mutex);
@@ -1653,18 +1686,9 @@ bool Renderer::render(Layer &layer)
     if (!impl_->backend_available)
         return false;
     if (!impl_->effect) {
-        impl_->effect = gs_effect_create(kGpuTextEffect,
-                                         "obs-bgs-gpu-text.effect", nullptr);
-        if (!impl_->effect || !gs_effect_get_technique(impl_->effect, "Draw")) {
-            if (impl_->effect) {
-                gs_effect_destroy(impl_->effect);
-                impl_->effect = nullptr;
-            }
-            impl_->backend_available = false;
-            impl_->last_error =
-                "Could not compile the Phase 12C GPU text shader.";
-            return false;
-        }
+        impl_->last_error =
+            "GPU text shader is not compiled yet.";
+        return false;
     }
     if (!impl_->upload_pages())
         return false;
@@ -1690,6 +1714,14 @@ bool Renderer::render(Layer &layer)
         impl_->last_error = "Could not begin the GPU text layer target.";
         return false;
     }
+    /* Glyph targets share the graphics context with hardware 3D passes.
+     * Restore canonical state before clearing the alternate retained target;
+     * otherwise an older upright glyph buffer can survive a Y move. */
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_enable_blending(false);
     gs_ortho(0.0f, static_cast<float>(width), 0.0f,
              static_cast<float>(height), -100.0f, 100.0f);
     vec4 clear;

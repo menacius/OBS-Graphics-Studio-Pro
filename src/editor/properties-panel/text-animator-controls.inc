@@ -255,9 +255,9 @@ void PropertiesPanel::build_text_animator_section(QWidget *parent,
     animator_form->setHorizontalSpacing(6);
     animator_form->setVerticalSpacing(4);
     edt_text_animator_name_ = new QLineEdit(text_animators_box_);
-    chk_text_animator_enabled_ = new QCheckBox(QStringLiteral("Enabled"), text_animators_box_);
-    chk_text_animator_expanded_ = new QCheckBox(QStringLiteral("Expanded"), text_animators_box_);
-    chk_text_animator_transform_as_unit_ = new QCheckBox(
+    chk_text_animator_enabled_ = new BglSwitch(QStringLiteral("Enabled"), text_animators_box_);
+    chk_text_animator_expanded_ = new BglSwitch(QStringLiteral("Expanded"), text_animators_box_);
+    chk_text_animator_transform_as_unit_ = new BglSwitch(
         QStringLiteral("Transform selected unit as a group"), text_animators_box_);
     chk_text_animator_transform_as_unit_->setToolTip(QStringLiteral(
         "Use one shared transform origin for every glyph in the selected word, "
@@ -846,11 +846,9 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
         auto *spin = make_spin(animated->evaluate(local_time()), minimum, maximum,
                                decimals);
         auto *key_button = new QPushButton(row);
-        key_button->setFixedSize(22, 22);
-        key_button->setIcon(keyframe_diamond_icon(keyframe_at_time(*animated,
+        key_button->setIcon(bgl_keyframe_diamond_icon(keyframe_at_time(*animated,
                                                                     local_time())));
-        row_layout->addWidget(spin, 1);
-        row_layout->addWidget(key_button);
+        bgl_style_keyframe_button(key_button);
         auto resolve = [find_animator, item_id, selector_item,
                         property_member, selector_member]() -> AnimatedProperty * {
             TextAnimator *resolved_animator = find_animator();
@@ -868,6 +866,21 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
             return found != resolved_animator->properties.end() && property_member
                 ? &((*found).*property_member) : nullptr;
         };
+        auto *navigation = bgl_make_keyframe_controls(
+            key_button, row,
+            [resolve]() {
+                std::vector<double> times;
+                if (const AnimatedProperty *target = resolve())
+                    for (const Keyframe &key : target->keyframes)
+                        times.push_back(key.time);
+                return times;
+            }, local_time,
+            [this](double time) {
+                if (layer_)
+                    emit keyframe_navigation_requested(layer_->in_time + time);
+            });
+        row_layout->addWidget(spin, 1);
+        row_layout->addWidget(navigation);
         connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this, spin, resolve, local_time](double value) {
                     if (loading_values_) return;
@@ -908,7 +921,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
 
     if (property) {
         const std::string property_id = property->id;
-        auto *enabled = new QCheckBox(QStringLiteral("Enabled"), text_animator_item_editor_);
+        auto *enabled = new BglSwitch(QStringLiteral("Enabled"), text_animator_item_editor_);
         enabled->setChecked(property->enabled);
         form->addRow(QString::fromStdString(property->name), enabled);
         connect(enabled, &QCheckBox::toggled, this,
@@ -960,7 +973,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
                     }
                 }
             });
-    auto *enabled = new QCheckBox(QStringLiteral("Enabled"), text_animator_item_editor_);
+    auto *enabled = new BglSwitch(QStringLiteral("Enabled"), text_animator_item_editor_);
     enabled->setChecked(selector->enabled);
     form->addRow(QStringLiteral("State"), enabled);
     connect(enabled, &QCheckBox::toggled, this,
@@ -1025,7 +1038,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
                     emit property_changed(true);
                 }
             });
-    auto *invert = new QCheckBox(QStringLiteral("Invert Selection"), text_animator_item_editor_);
+    auto *invert = new BglSwitch(QStringLiteral("Invert Selection"), text_animator_item_editor_);
     invert->setChecked(selector->invert);
     form->addRow(QString(), invert);
     connect(invert, &QCheckBox::toggled, this,
@@ -1072,7 +1085,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
         add_animated_row(QStringLiteral("Ease High"), selector_id, true, nullptr, &TextSelector::ease_high, -100.0, 100.0);
         add_animated_row(QStringLiteral("Ease Low"), selector_id, true, nullptr, &TextSelector::ease_low, -100.0, 100.0);
         add_animated_row(QStringLiteral("Smoothness"), selector_id, true, nullptr, &TextSelector::smoothness, 0.0, 100.0);
-        auto *randomize = new QCheckBox(QStringLiteral("Randomize Order"), text_animator_item_editor_);
+        auto *randomize = new BglSwitch(QStringLiteral("Randomize Order"), text_animator_item_editor_);
         randomize->setChecked(selector->randomize_order);
         auto *seed = new QSpinBox(text_animator_item_editor_);
         seed->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
@@ -1129,7 +1142,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
                         emit property_changed(true);
                     }
                 });
-        auto *exclude_spaces = new QCheckBox(QStringLiteral("Exclude whitespace"),
+        auto *exclude_spaces = new BglSwitch(QStringLiteral("Exclude whitespace"),
                                              text_animator_item_editor_);
         exclude_spaces->setChecked(selector->exclude_whitespace);
         form->addRow(QString(), exclude_spaces);
@@ -1141,7 +1154,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
                         emit property_changed(true);
                     }
                 });
-        auto *randomize = new QCheckBox(QStringLiteral("Randomize Order"),
+        auto *randomize = new BglSwitch(QStringLiteral("Randomize Order"),
                                         text_animator_item_editor_);
         randomize->setChecked(selector->randomize_order);
         auto *seed = new QSpinBox(text_animator_item_editor_);
@@ -1208,7 +1221,7 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
         end->setValue((int)std::min<size_t>(selector->range_end, 1000000));
         form->addRow(QStringLiteral("Range Start"), start);
         form->addRow(QStringLiteral("Range End"), end);
-        auto *case_sensitive = new QCheckBox(QStringLiteral("Case Sensitive"), text_animator_item_editor_);
+        auto *case_sensitive = new BglSwitch(QStringLiteral("Case Sensitive"), text_animator_item_editor_);
         case_sensitive->setChecked(selector->case_sensitive);
         form->addRow(QString(), case_sensitive);
         connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -1263,9 +1276,9 @@ void PropertiesPanel::rebuild_text_animator_item_editor()
         auto *seed = new QSpinBox(text_animator_item_editor_);
         seed->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
         seed->setValue(selector->wiggly_seed);
-        auto *lock = new QCheckBox(QStringLiteral("Lock Dimensions"), text_animator_item_editor_);
+        auto *lock = new BglSwitch(QStringLiteral("Lock Dimensions"), text_animator_item_editor_);
         lock->setChecked(selector->lock_dimensions);
-        auto *per_character = new QCheckBox(QStringLiteral("Per-character Random Values"), text_animator_item_editor_);
+        auto *per_character = new BglSwitch(QStringLiteral("Per-character Random Values"), text_animator_item_editor_);
         per_character->setChecked(selector->per_character_random);
         form->addRow(QStringLiteral("Random Seed"), seed);
         form->addRow(QString(), lock);

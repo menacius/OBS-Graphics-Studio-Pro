@@ -619,6 +619,8 @@ QString CacheManager::contentHash(const Title &title) const
         add(e.effect_fill_type); add(e.effect_join_style);
         add(e.effect_on_front); add(e.effect_antialias); add(e.effect_owned_style_loaded);
         add((quint32)e.effect_stroke_color); add(e.effect_stroke_width); add(e.effect_stroke_opacity);
+        add(e.effect_trim_start); add(e.effect_trim_end); add(e.effect_trim_offset);
+        add(e.effect_trim_multiple_shapes);
         add(e.effect_padding_left); add(e.effect_padding_right); add(e.effect_padding_top); add(e.effect_padding_bottom);
         add(e.effect_corner_radius_tl); add(e.effect_corner_radius_tr); add(e.effect_corner_radius_br); add(e.effect_corner_radius_bl);
         add(e.effect_corner_type); add(e.effect_gradient_type); add(e.effect_gradient_spread);
@@ -635,7 +637,9 @@ QString CacheManager::contentHash(const Title &title) const
         add_anim(e.roundness_prop); add_anim(e.speed_prop); add_anim(e.center_x_prop);
         add_anim(e.center_y_prop); add_anim(e.complexity_prop); add_anim(e.evolution_prop);
         add_anim(e.stroke_width_prop);
-        add_anim(e.stroke_opacity_prop); add_anim(e.padding_left_prop); add_anim(e.padding_right_prop);
+        add_anim(e.stroke_opacity_prop); add_anim(e.trim_start_prop); add_anim(e.trim_end_prop);
+        add_anim(e.trim_offset_prop);
+        add_anim(e.padding_left_prop); add_anim(e.padding_right_prop);
         add_anim(e.padding_top_prop); add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
         add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop); add_anim(e.corner_radius_bl_prop);
         add_anim(e.gradient_start_pos_prop); add_anim(e.gradient_end_pos_prop);
@@ -737,6 +741,26 @@ QString CacheManager::contentHash(const Title &title) const
     for (bool persistent_col : title.cue_persistent_text_columns) add(persistent_col);
     add((quint32)title.bg_color);
     add_discrete(title.active_camera);
+    add(title.lighting_enabled);
+    add(title.default_light_enabled);
+    add(title.environment_exposure);
+    add(TitlePreferences::shadow_map_size_px());
+    add((quint64)title.lights.size());
+    for (const TitleLight &light : title.lights) {
+        add(QString::fromStdString(light.id));
+        add((int)light.type); add(light.enabled);
+        add_anim_vec3(light.position); add_anim_vec3(light.target);
+        add_anim(light.color_a); add_anim(light.color_r);
+        add_anim(light.color_g); add_anim(light.color_b);
+        add_anim(light.intensity); add_anim(light.source_size);
+        add((int)light.falloff);
+        add_anim(light.falloff_distance);
+        add_anim(light.cone_angle); add_anim(light.cone_feather);
+        add(light.casts_shadows); add_anim(light.shadow_darkness);
+        add_anim(light.shadow_softness); add_anim(light.shadow_bias);
+        add(QString::fromStdString(light.environment_path));
+        add_anim(light.environment_rotation); add(light.environment_visible);
+    }
     add((quint64)title.cameras.size());
     for (const TitleCamera &camera : title.cameras) {
         add(QString::fromStdString(camera.id));
@@ -799,6 +823,28 @@ QString CacheManager::contentHash(const Title &title) const
         add((int)layer->depth_mode);
         add(layer->depth_test); add(layer->write_to_depth);
         add(layer->double_sided); add(layer->backface_culling);
+        add(layer->material_accepts_lights);
+        add(layer->material_casts_shadows);
+        add(layer->material_accepts_shadows);
+        add(layer->material_appears_in_reflections);
+        add_anim(layer->material_ambient); add_anim(layer->material_diffuse);
+        add_anim(layer->material_specular); add_anim(layer->material_shininess);
+        add_anim(layer->material_metallic); add_anim(layer->material_roughness);
+        add_anim(layer->material_reflection_intensity);
+        add_anim(layer->material_emissive_color_a);
+        add_anim(layer->material_emissive_color_r);
+        add_anim(layer->material_emissive_color_g);
+        add_anim(layer->material_emissive_color_b);
+        add_anim(layer->material_emissive_intensity);
+        if (layer->type == LayerType::Light) {
+            const TitleLight &light = layer->light;
+            add((int)light.type); add(light.enabled); add_anim_vec3(light.position); add_anim_vec3(light.target);
+            add_anim(light.color_a); add_anim(light.color_r); add_anim(light.color_g); add_anim(light.color_b);
+            add_anim(light.intensity); add_anim(light.source_size);
+            add((int)light.falloff); add_anim(light.falloff_distance);
+            add_anim(light.cone_angle); add_anim(light.cone_feather); add(light.casts_shadows);
+            add_anim(light.shadow_darkness); add_anim(light.shadow_softness); add_anim(light.shadow_bias);
+        }
         add_anim_vec2(layer->position);
         add_anim(layer->position_z);
         add(layer->position_3d_path_enabled);
@@ -857,6 +903,7 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->text_overflow_mode); add(layer->text_fit_min_scale);
         add(layer->text_box_width_to_text); add(layer->text_box_height_to_text);
         add(layer->max_text_box_width); add(layer->max_text_box_height);
+        add(layer->max_text_box_width_overridden); add(layer->max_text_box_height_overridden);
         add((quint32)layer->text_color);
         add_anim(layer->text_color_a); add_anim(layer->text_color_r);
         add_anim(layer->text_color_g); add_anim(layer->text_color_b);
@@ -872,6 +919,8 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->fill_type); add((quint32)layer->fill_color);
         add_anim(layer->fill_color_a); add_anim(layer->fill_color_r);
         add_anim(layer->fill_color_g); add_anim(layer->fill_color_b);
+        add_anim(layer->stroke_color_a); add_anim(layer->stroke_color_r);
+        add_anim(layer->stroke_color_g); add_anim(layer->stroke_color_b);
         add(layer->gradient_type); add(layer->gradient_spread);
         add((quint32)layer->gradient_start_color); add((quint32)layer->gradient_end_color);
         add(layer->gradient_start_pos); add(layer->gradient_end_pos);
@@ -891,6 +940,7 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->stroke_gradient_center_x); add(layer->stroke_gradient_center_y);
         add(layer->stroke_gradient_scale); add(layer->stroke_gradient_focal_x); add(layer->stroke_gradient_focal_y);
         add_gradient_stops(layer->stroke_gradient_stops);
+        add(layer->stroke_offset); add_anim(layer->stroke_offset_prop);
 
         add(layer->background_enabled); add_anim(layer->background_enabled_prop);
         add((quint32)layer->background_color); add(layer->background_opacity);
@@ -1043,6 +1093,7 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add_anim(e.softness_prop); add_anim(e.roundness_prop); add_anim(e.speed_prop);
         add_anim(e.center_x_prop); add_anim(e.center_y_prop); add_anim(e.complexity_prop);
         add_anim(e.evolution_prop); add_anim(e.stroke_width_prop); add_anim(e.stroke_opacity_prop);
+        add_anim(e.trim_start_prop); add_anim(e.trim_end_prop); add_anim(e.trim_offset_prop);
         add_anim(e.padding_left_prop); add_anim(e.padding_right_prop); add_anim(e.padding_top_prop);
         add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
         add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop);
@@ -1057,6 +1108,21 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
 
     sample_time = time;
     add_discrete(title.active_camera);
+    add(title.lighting_enabled);
+    add(title.default_light_enabled);
+    add(title.environment_exposure);
+    add(TitlePreferences::shadow_map_size_px());
+    for (const TitleLight &light : title.lights) {
+        add(light.enabled); add((int)light.type); add((int)light.falloff);
+        add_vec3(light.position); add_vec3(light.target);
+        add_anim(light.color_a); add_anim(light.color_r);
+        add_anim(light.color_g); add_anim(light.color_b);
+        add_anim(light.intensity); add_anim(light.source_size);
+        add_anim(light.falloff_distance); add_anim(light.cone_angle);
+        add_anim(light.cone_feather); add(light.casts_shadows);
+        add_anim(light.shadow_darkness); add_anim(light.shadow_softness);
+        add_anim(light.shadow_bias); add_anim(light.environment_rotation);
+    }
     for (const TitleCamera &camera : title.cameras) {
         add_anim(camera.position_x); add_anim(camera.position_y); add_anim(camera.position_z);
         add(camera.position_3d_path_enabled);
@@ -1090,7 +1156,17 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
         add(layer->transform_quad_br_x); add(layer->transform_quad_br_y);
         add(layer->transform_quad_bl_x); add(layer->transform_quad_bl_y);
-        add_anim(layer->opacity); add_vec(layer->size); add_vec(layer->image_size); add_vec(layer->origin_prop);
+        add_anim(layer->opacity);
+        add_anim(layer->material_ambient); add_anim(layer->material_diffuse);
+        add_anim(layer->material_specular); add_anim(layer->material_shininess);
+        add_anim(layer->material_metallic); add_anim(layer->material_roughness);
+        add_anim(layer->material_reflection_intensity);
+        add_anim(layer->material_emissive_color_a);
+        add_anim(layer->material_emissive_color_r);
+        add_anim(layer->material_emissive_color_g);
+        add_anim(layer->material_emissive_color_b);
+        add_anim(layer->material_emissive_intensity);
+        add_vec(layer->size); add_vec(layer->image_size); add_vec(layer->origin_prop);
         add_anim(layer->font_size_prop); add_anim(layer->char_tracking_prop);
         add_anim(layer->char_scale_x_prop); add_anim(layer->char_scale_y_prop);
         add_anim(layer->baseline_shift_prop); add_anim(layer->text_color_a);
@@ -1099,6 +1175,9 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add_anim(layer->paragraph_indent_first_line_prop); add_anim(layer->paragraph_space_before_prop);
         add_anim(layer->paragraph_space_after_prop); add_anim(layer->fill_color_a);
         add_anim(layer->fill_color_r); add_anim(layer->fill_color_g); add_anim(layer->fill_color_b);
+        add_anim(layer->stroke_color_a); add_anim(layer->stroke_color_r);
+        add_anim(layer->stroke_color_g); add_anim(layer->stroke_color_b);
+        add_anim(layer->stroke_offset_prop);
         add_anim(layer->background_enabled_prop); add_anim(layer->background_opacity_prop);
         add_anim(layer->background_padding_x_prop); add_anim(layer->background_padding_y_prop);
         add_anim(layer->background_padding_left_prop); add_anim(layer->background_padding_right_prop);
@@ -1179,6 +1258,8 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(e.evolution_prop, 0.01);
         add_anim(e.stroke_width_prop, 0.25);
         add_anim(e.stroke_opacity_prop, 0.002);
+        add_anim(e.trim_start_prop, 0.002); add_anim(e.trim_end_prop, 0.002);
+        add_anim(e.trim_offset_prop, 0.01);
         add_anim(e.padding_left_prop, 0.25); add_anim(e.padding_right_prop, 0.25);
         add_anim(e.padding_top_prop, 0.25); add_anim(e.padding_bottom_prop, 0.25);
         add_anim(e.corner_radius_tl_prop, 0.25); add_anim(e.corner_radius_tr_prop, 0.25);
@@ -1194,4 +1275,3 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         if ((e.type == LayerEffectType::Noise || e.type == LayerEffectType::Grain || e.type == LayerEffectType::FilmDistortion || e.type == LayerEffectType::AnalogDistortion || e.type == LayerEffectType::DigitalDistortion) && e.effect_animated && e.enabled)
             add(quant(sample_time, 1.0 / 240.0));
     };
-

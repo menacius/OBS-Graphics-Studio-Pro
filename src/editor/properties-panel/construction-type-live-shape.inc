@@ -79,10 +79,21 @@
                                           layer_->stroke_gradient_start_color,
                                           layer_->stroke_gradient_end_color,
                                           layer_->stroke_gradient_type);
-                else
-                    style_color_button(btn_appearance_stroke_color_, layer_->stroke_color);
+                else {
+                    const double t = std::clamp(
+                        playhead_ - layer_->in_time, 0.0,
+                        std::max(0.0, layer_->out_time - layer_->in_time));
+                    style_color_button(btn_appearance_stroke_color_,
+                                       eval_stroke_color(*layer_, t));
+                }
                 btn_appearance_stroke_color_->setText(QString());
-                if (btn_outline_color_) style_color_button(btn_outline_color_, layer_->stroke_color);
+                if (btn_outline_color_) {
+                    const double t = std::clamp(
+                        playhead_ - layer_->in_time, 0.0,
+                        std::max(0.0, layer_->out_time - layer_->in_time));
+                    style_color_button(btn_outline_color_,
+                                       eval_stroke_color(*layer_, t));
+                }
             } else {
                 if (text_fill) {
                     const RichTextCharFormat fmt = current_text_char_format();
@@ -129,11 +140,16 @@
                             ? layer_->stroke_width : 1.0f;
                     fmt.stroke.fill.type = 0;
                     fmt.stroke.fill.color = argb;
+                    if (!text_edit_active()) {
+                        layer_->stroke_color = argb;
+                        set_stroke_color_channels_at(*layer_, local_time(), argb);
+                    }
                     apply_text_char_format(fmt, RichTextCharStroke);
                 } else {
                     layer_->outline_enabled = true;
                     layer_->stroke_fill_type = 1;
                     layer_->stroke_color = argb;
+                    set_stroke_color_channels_at(*layer_, local_time(), argb);
                 }
             } else {
                 if (text_fill) {
@@ -162,7 +178,7 @@
         QColor initial = stroke
             ? color_from_argb(inline_text_stroke
                 ? initial_inline_stroke.fill.color
-                : layer_->stroke_color)
+                : eval_stroke_color(*layer_, local_time()))
             : color_from_argb(inline_text_fill
                 ? initial_inline_fill.color
                 : (text_fill ? eval_text_color(*layer_, local_time()) : eval_fill_color(*layer_, local_time())));
@@ -223,9 +239,10 @@
             return QStringLiteral(
                 "QPushButton{background:%1;border:1px solid %2;border-radius:3px;"
                 "min-width:%3px;min-height:%3px;max-width:%3px;max-height:%3px;"
-                "padding:0;color:#ff5c5c;font-size:24px;font-weight:bold;}")
+                "padding:0;color:%4;font-size:24px;font-weight:bold;}")
                 .arg(control_bg_name, border_name)
-                .arg(size);
+                .arg(size)
+                .arg(highlight_name);
         };
 
         auto *wheel_column = new QWidget(color_tab);
@@ -637,7 +654,7 @@
                 fill = initial_inline_stroke.fill;
             } else {
                 fill.type = layer_->stroke_fill_type == 2 ? 1 : 0;
-                fill.color = layer_->stroke_color;
+                fill.color = eval_stroke_color(*layer_, local_time());
                 fill.gradient_type = layer_->stroke_gradient_type;
                 fill.gradient_spread = layer_->stroke_gradient_spread;
                 fill.gradient_start_color = layer_->stroke_gradient_start_color;
@@ -740,4 +757,3 @@
         end_pos->setValue(end_pos->value() * 100.0);
         start_opacity->setValue(start_opacity->value() * 100.0);
         end_opacity->setValue(end_opacity->value() * 100.0);
-

@@ -1,5 +1,13 @@
     auto layer = layers.front();
     if (!layer || layer->locked) return DragMode::None;
+    if (layer->type == LayerType::Audio)
+        return DragMode::None;
+    if (layer->type == LayerType::Light)
+        return light_layer_overlay_contains(*layer, view_pt)
+            ? DragMode::Move : DragMode::None;
+    if (layer->type == LayerType::Empty)
+        return empty_layer_overlay_contains(*layer, view_pt)
+            ? DragMode::Move : DragMode::None;
 
     if (active_tool_ == CanvasTool::FreeTransform) {
         const QRectF box = layer_local_rect(*layer);
@@ -163,9 +171,21 @@ void CanvasPreview::update_marquee(const QPointF &view_pt, Qt::KeyboardModifiers
     for (const auto &layer : title_->layers) {
         if (!layer || !layer->visible || layer->locked) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
-        QRectF bounds = layer_canvas_bounds(*layer);
-        if (!intersects_or_touches(canvas_rect, bounds))
-            continue;
+        if (layer->type == LayerType::Audio) continue;
+        bool object_hit = false;
+        if (layer->type == LayerType::Empty) {
+            std::array<QPointF, 4> axes;
+            bool is_3d = false;
+            if (!empty_layer_overlay_points(*layer, axes, is_3d) ||
+                !view_rect.contains(axes[0]))
+                continue;
+            object_hit = true;
+        }
+        if (!object_hit) {
+            QRectF bounds = layer_canvas_bounds(*layer);
+            if (!intersects_or_touches(canvas_rect, bounds))
+                continue;
+        }
         if (layer->type == LayerType::Group && !layer->group_collapsed)
             continue;
         const Layer *target = editor_canvas_selection_target(title_, *layer);
@@ -985,6 +1005,12 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                         std::abs(resized_height - state.h) > 0.01f);
                     layer->rect_width = resized_width;
                     layer->rect_height = resized_height;
+                    if (is_canvas_text_layer(*layer)) {
+                        if (!layer->max_text_box_width_overridden)
+                            layer->max_text_box_width = std::max(1.0f, resized_width);
+                        if (!layer->max_text_box_height_overridden)
+                            layer->max_text_box_height = std::max(1.0f, resized_height);
+                    }
                     set_animated_x(layer->size, lt, layer->rect_width);
                     set_animated_y(layer->size, lt, layer->rect_height);
                     apply_shape_resize_metrics_from_state(*layer, state.w, state.h,
@@ -1235,6 +1261,12 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 std::abs(new_h - start_height) > 0.01);
             layer->rect_width = static_cast<float>(new_w);
             layer->rect_height = static_cast<float>(new_h);
+            if (is_canvas_text_layer(*layer)) {
+                if (!layer->max_text_box_width_overridden)
+                    layer->max_text_box_width = std::max(1.0f, layer->rect_width);
+                if (!layer->max_text_box_height_overridden)
+                    layer->max_text_box_height = std::max(1.0f, layer->rect_height);
+            }
             set_animated_x(layer->size, lt, new_w);
             set_animated_y(layer->size, lt, new_h);
             if (start_state) {
@@ -1275,4 +1307,3 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             }
         }
     }
-

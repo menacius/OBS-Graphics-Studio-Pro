@@ -21,6 +21,7 @@
 #include <sstream>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -33,6 +34,9 @@ enum class HotkeyAction {
     CueRow,
     NextCue,
     PreviousCue,
+    CueToProgram,
+    Uncue,
+    CueLast,
     TickerTogglePause,
     TickerStop,
 };
@@ -67,6 +71,8 @@ bool g_hotkeys_active = false;
 uint64_t g_change_callback_id = 0;
 bool g_hotkey_section_source_registered = false;
 QSet<QString> g_pending_cue_hydration;
+TitleProgramHotkeyHandler g_program_command_handler;
+std::map<std::string, int> g_last_cued_rows;
 
 constexpr const char *kHotkeySectionSourceId = "broadcast_graphics_live_hotkey_section";
 constexpr const char *kDockSettingsGroup = "TitleDock";
@@ -254,7 +260,8 @@ static void apply_persistence_settings_to_title(const std::shared_ptr<Title> &ti
         title->cue_persistent_text_columns.clear();
 }
 
-static void cue_title_row(const std::shared_ptr<Title> &title, int row)
+static void cue_title_row(const std::shared_ptr<Title> &title, int row,
+                          bool toggle_active = true)
 {
     if (!title) return;
 
@@ -262,8 +269,8 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     normalize_live_text_rows(title, exposed);
 
     if (exposed.empty()) {
-        const bool uncue_active = title->current_cue_row == 0 ||
-            title->pending_cue_row == 0;
+        const bool uncue_active = toggle_active &&
+            (title->current_cue_row == 0 || title->pending_cue_row == 0);
         /* The title-level hotkey toggles the same synthetic row used by the
          * dock. Preserve current_cue_row while the outro runs. */
         title->current_cue_row = 0;
@@ -284,9 +291,11 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
             if (!g_pending_cue_hydration.contains(hydration_key)) {
                 g_pending_cue_hydration.insert(hydration_key);
                 const std::string title_id = title->id;
-                QTimer::singleShot(25, [title_id, row, hydration_key]() {
+                QTimer::singleShot(25, [title_id, row, hydration_key,
+                                        toggle_active]() {
                     g_pending_cue_hydration.remove(hydration_key);
-                    cue_title_row(TitleDataStore::instance().get_title(title_id), row);
+                    cue_title_row(TitleDataStore::instance().get_title(title_id),
+                                  row, toggle_active);
                 });
             }
             return;
@@ -304,7 +313,7 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.assign(exposed.size(), false);
 
-        if (is_active_cue || is_pending_cue) {
+        if (toggle_active && (is_active_cue || is_pending_cue)) {
             title->pending_cue_row = -1;
             title->cue_uncue_requested = true;
             title->cue_persistence_transition = false;
@@ -337,7 +346,52 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     }
 
     ++title->cue_revision;
+    if (title->current_cue_row >= 0 || title->pending_cue_row >= 0) {
+        g_last_cued_rows[title->id] = std::max(0, row);
+        title->last_cue_row = std::max(0, row);
+    }
     TitleDataStore::instance().touch_runtime_change();
+}
+
+static int last_cued_row_for_title(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return -1;
+    const auto it = g_last_cued_rows.find(title->id);
+    if (it != g_last_cued_rows.end())
+        return it->second;
+    if (title->last_cue_row >= 0)
+        return title->last_cue_row;
+    if (title->pending_cue_row >= 0)
+        return title->pending_cue_row;
+    if (title->current_cue_row >= 0)
+        return title->current_cue_row;
+    return 0;
+}
+
+static void uncue_title(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return;
+    const int active_row = title->pending_cue_row >= 0
+        ? title->pending_cue_row : title->current_cue_row;
+    if (active_row < 0)
+        return;
+    title->pending_cue_row = -1;
+    title->cue_uncue_requested = true;
+    title->cue_persistence_transition = false;
+    title->cue_persistent_text_columns.clear();
+    ++title->cue_revision;
+    TitleDataStore::instance().touch_runtime_change();
+}
+
+static bool dispatch_program_command(TitleProgramHotkeyCommand command,
+                                     const std::shared_ptr<Title> &title)
+{
+    if (!title || !g_program_command_handler)
+        return false;
+    g_program_command_handler(command, title->id);
+    return true;
 }
 
 static void cue_relative(const std::shared_ptr<Title> &title, int delta)
@@ -373,10 +427,25 @@ static void hotkey_callback(void *data, obs_hotkey_id, obs_hotkey_t *, bool pres
         cue_title_row(title, descriptor->row);
         break;
     case HotkeyAction::NextCue:
-        cue_relative(title, 1);
+        if (!dispatch_program_command(TitleProgramHotkeyCommand::NextCue,
+                                      title))
+            cue_relative(title, 1);
         break;
     case HotkeyAction::PreviousCue:
-        cue_relative(title, -1);
+        if (!dispatch_program_command(TitleProgramHotkeyCommand::PreviousCue,
+                                      title))
+            cue_relative(title, -1);
+        break;
+    case HotkeyAction::CueToProgram:
+        if (!dispatch_program_command(TitleProgramHotkeyCommand::CueToProgram,
+                                      title))
+            cue_title_row(title, last_cued_row_for_title(title), false);
+        break;
+    case HotkeyAction::Uncue:
+        uncue_title(title);
+        break;
+    case HotkeyAction::CueLast:
+        cue_title_row(title, last_cued_row_for_title(title), false);
         break;
     case HotkeyAction::TickerTogglePause: {
         auto layer = title->find_layer(descriptor->layer_id);
@@ -426,6 +495,28 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
         const std::string safe_title_id = hotkey_safe_id(title->id);
         const std::string section_name = title_section_name(title, name_counts);
         sections.push_back({title->id, section_name, nullptr});
+
+        descriptors.push_back({
+            "broadcast_graphics_live." + safe_title_id + ".program.cue",
+            obs_module_text("OBSTitles.CueToProgramHotkey"),
+            title->id,
+            HotkeyAction::CueToProgram,
+            -1,
+        });
+        descriptors.push_back({
+            "broadcast_graphics_live." + safe_title_id + ".program.uncue",
+            obs_module_text("OBSTitles.UncueHotkey"),
+            title->id,
+            HotkeyAction::Uncue,
+            -1,
+        });
+        descriptors.push_back({
+            "broadcast_graphics_live." + safe_title_id + ".program.cue_last",
+            obs_module_text("OBSTitles.CueLastHotkey"),
+            title->id,
+            HotkeyAction::CueLast,
+            -1,
+        });
 
         for (const auto &layer : title->layers) {
             if (!layer || layer->type != LayerType::Ticker)
@@ -618,4 +709,9 @@ void title_hotkeys_unregister()
     g_change_callback_id = 0;
     unregister_all_hotkeys();
     release_hotkey_section_sources();
+}
+
+void title_hotkeys_set_program_command_handler(TitleProgramHotkeyHandler handler)
+{
+    g_program_command_handler = std::move(handler);
 }

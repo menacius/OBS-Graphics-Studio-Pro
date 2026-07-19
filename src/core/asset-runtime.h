@@ -14,6 +14,11 @@ bool layer_has_timeline_animation(const Layer &layer);
 bool title_has_timeline_animation(const Title &title);
 bool asset_layer_has_timeline_animation(const Title &title,
                                          const Layer &asset_layer);
+bool layer_uses_independent_playback(const Layer &layer);
+/* True when at least one Asset Layer owns an animated, wall-clock-driven
+ * instance.  Render/editor schedulers use this independently of the parent
+ * title transport so Pause and loop-boundary holds cannot freeze the asset. */
+bool title_has_independent_playback(const Title &title);
 
 /* Deterministic mapping used by the runtime and unit tests. elapsed_seconds is
  * the independent monotonic clock before applying the instance time offset. */

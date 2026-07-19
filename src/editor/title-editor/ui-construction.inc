@@ -959,41 +959,48 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
     act_tools_visible_->setCheckable(true);
     act_tools_visible_->setChecked(true);
     connect(act_tools_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (tools_dock_) tools_dock_->setVisible(visible);
+        set_editor_dock_visible(tools_dock_, visible);
     });
 
     act_graphic_props_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.GraphicProperties"));
     act_graphic_props_visible_->setCheckable(true);
     act_graphic_props_visible_->setChecked(true);
     connect(act_graphic_props_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (graphic_props_dock_) graphic_props_dock_->setVisible(visible);
+        set_editor_dock_visible(graphic_props_dock_, visible);
+    });
+
+    act_three_d_scene_visible_ = windows_menu->addAction(QStringLiteral("3D Camera, Lights & Environment"));
+    act_three_d_scene_visible_->setCheckable(true);
+    act_three_d_scene_visible_->setChecked(true);
+    connect(act_three_d_scene_visible_, &QAction::triggered, this, [this](bool visible) {
+        set_editor_dock_visible(three_d_scene_dock_, visible);
     });
 
     act_layer_props_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.LayerProperties"));
     act_layer_props_visible_->setCheckable(true);
     act_layer_props_visible_->setChecked(true);
     connect(act_layer_props_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (layer_props_dock_) layer_props_dock_->setVisible(visible);
+        set_editor_dock_visible(layer_props_dock_, visible);
     });
 
     act_effects_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.EffectSettings"));
     act_effects_visible_->setCheckable(true);
     act_effects_visible_->setChecked(true);
     connect(act_effects_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (effects_dock_) effects_dock_->setVisible(visible);
+        set_editor_dock_visible(effects_dock_, visible);
     });
 
     act_effects_presets_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.EffectsAndPresets"));
     act_effects_presets_visible_->setCheckable(true);
     act_effects_presets_visible_->setChecked(true);
     connect(act_effects_presets_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (effects_presets_dock_) effects_presets_dock_->setVisible(visible);
+        set_editor_dock_visible(effects_presets_dock_, visible);
     });
 
     act_styles_visible_ = windows_menu->addAction(bgl_tr("OBSTitles.Libraries"));
     act_styles_visible_->setCheckable(true);
     act_styles_visible_->setChecked(true);
     connect(act_styles_visible_, &QAction::triggered, this, [this](bool visible) {
-        if (styles_dock_) styles_dock_->setVisible(visible);
+        set_editor_dock_visible(styles_dock_, visible);
     });
 

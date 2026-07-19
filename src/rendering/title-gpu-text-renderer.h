@@ -63,6 +63,8 @@ public:
                  std::string *reason = nullptr);
 
     /* Must be called under the OBS graphics context. */
+    bool compile_effect();
+    bool effect_ready() const;
     bool render(Layer &layer);
     void release_layer(Layer &layer);
     void reset();

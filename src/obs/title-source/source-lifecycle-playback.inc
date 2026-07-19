@@ -216,7 +216,65 @@
     session->frame_dirty = false;
     prune_gpu_mask_texture_cache(session);
     session->last_error = nullptr;
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=session-render-end session=%1 render=%2 result=published time=%3 revision=%4 publish=%5 dirty=%6 depthRuns=%7 depthLayers=%8 extrusionPasses=%9")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_render_serial)
+        .arg(session->time, 0, 'f', 9)
+        .arg(session->model_revision)
+        .arg(session->diagnostics_publish_serial)
+        .arg(session->frame_dirty ? 1 : 0)
+        .arg(session->diagnostics_hardware_depth_run_count)
+        .arg(session->diagnostics_hardware_depth_layer_count)
+        .arg(session->diagnostics_extrusion_pass_count));
     return published;
+    } catch (const std::exception &error) {
+        /* No C++ exception may cross an OBS render callback or a Qt paint/event
+         * handler. Preserve the last transactionally published frame, mark the
+         * graph dirty for a later retry and expose the exact failure in the BGL
+         * log instead of terminating the host process. */
+        session->motion_temporal_depth = 0;
+        session->frame_dirty = true;
+        session->last_draw_deferred = true;
+        session->last_error_storage =
+            std::string("GPU compositor exception: ") + error.what();
+        session->last_error = session->last_error_storage.c_str();
+        BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+            "stage=session-render-exception session=%1 render=%2 title=%3 time=%4 error=%5 fallbackPublished=%6 destination=%7")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(diagnostic_render_serial)
+            .arg(QString::fromStdString(session->title.id))
+            .arg(session->time, 0, 'f', 9)
+            .arg(QString::fromUtf8(error.what()))
+            .arg(gpu_session_has_published_frame_for_current_title(session)
+                     ? 1 : 0)
+            .arg(destination_composite ? 1 : 0));
+        return destination_composite
+            ? nullptr
+            : (gpu_session_has_published_frame_for_current_title(session)
+                   ? session->final_texture
+                   : nullptr);
+    } catch (...) {
+        session->motion_temporal_depth = 0;
+        session->frame_dirty = true;
+        session->last_draw_deferred = true;
+        session->last_error_storage = "Unknown GPU compositor exception.";
+        session->last_error = session->last_error_storage.c_str();
+        BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+            "stage=session-render-exception session=%1 render=%2 title=%3 time=%4 error=unknown fallbackPublished=%5 destination=%6")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(diagnostic_render_serial)
+            .arg(QString::fromStdString(session->title.id))
+            .arg(session->time, 0, 'f', 9)
+            .arg(gpu_session_has_published_frame_for_current_title(session)
+                     ? 1 : 0)
+            .arg(destination_composite ? 1 : 0));
+        return destination_composite
+            ? nullptr
+            : (gpu_session_has_published_frame_for_current_title(session)
+                   ? session->final_texture
+                   : nullptr);
+    }
 }
 
 static bool stage_gpu_texture_locked(TitleGpuRenderSession *session,
@@ -355,6 +413,12 @@ void title_gpu_render_session_invalidate_presentation(
     session->published_model_revision =
         std::numeric_limits<uint64_t>::max();
     session->active_presentation_target = -1;
+    session->published_presentation_generation = 0;
+    for (int index = 0; index < 2; ++index) {
+        session->presentation_target_states[index] =
+            TitleGpuRenderSession::PresentationTargetState::Free;
+        session->presentation_target_generations[index] = 0;
+    }
     session->published_final_serial = 0;
 
     session->use_submitted_final = false;
@@ -401,6 +465,7 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     bool expected = false;
     if (!session->destroying.compare_exchange_strong(expected, true))
         return;
+    stop_shader_compile_worker(session);
     /* Editor presentation and OBS source drawing execute under the graphics
      * lock and then take session->mutex. Taking the mutex first here creates
      * the inverse order (session -> graphics) and can deadlock shutdown against
@@ -436,6 +501,8 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     destroy_target(session->frame_a);
     destroy_target(session->frame_b);
     destroy_target(session->depth_target);
+    for (gs_texrender_t *&shadow_target : session->shadow_targets)
+        destroy_target(shadow_target);
     destroy_target(session->presentation_targets[0]);
     destroy_target(session->presentation_targets[1]);
     destroy_target(session->layer_target);
@@ -446,6 +513,9 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     destroy_target(session->effect_b);
     destroy_target(session->blur_a);
     destroy_target(session->blur_b);
+    destroy_target(session->motion_sample_target);
+    destroy_target(session->motion_accum_target);
+    destroy_target(session->motion_coverage_target);
     destroy_target(session->external_background_local);
     if (session->external_background_snapshot)
         gs_texture_destroy(session->external_background_snapshot);
@@ -489,6 +559,10 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         gs_effect_destroy(session->blit_effect);
     if (session->copy_effect)
         gs_effect_destroy(session->copy_effect);
+    if (session->shadow_effect)
+        gs_effect_destroy(session->shadow_effect);
+    if (session->motion_composite_effect)
+        gs_effect_destroy(session->motion_composite_effect);
     if (session->adjustment_mix_effect)
         gs_effect_destroy(session->adjustment_mix_effect);
     if (session->adjustment_coverage_effect)
@@ -521,6 +595,11 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
     std::lock_guard<std::mutex> lock(session->mutex);
     if (session->destroying.load())
         return;
+    const uint64_t diagnostic_update_serial =
+        ++session->diagnostics_update_serial;
+    const double previous_session_time = session->time;
+    const uint64_t previous_model_revision = session->model_revision;
+    const bool previous_frame_dirty = session->frame_dirty;
     const bool was_submitted = session->use_submitted_final ||
                                session->use_gpu_cached_final;
     const bool had_base = session->use_base_frame;
@@ -541,6 +620,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         !session->has_title ||
         session->model_revision != model_revision ||
         session->title.id != title.id;
+    session->interactive_transform_update = transform_only_update;
     if (model_changed) {
         bool updated_transform_snapshot = false;
         if (!forced_compatibility_rebuild && transform_only_update &&
@@ -571,6 +651,9 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                     snapshot_layer.transform_axis_space = source_layer.transform_axis_space;
                     snapshot_layer.position = source_layer.position;
                     snapshot_layer.position_z = source_layer.position_z;
+                    snapshot_layer.position_3d = source_layer.position_3d;
+                    snapshot_layer.position_3d_path_enabled =
+                        source_layer.position_3d_path_enabled;
                     snapshot_layer.scale = source_layer.scale;
                     snapshot_layer.scale_z = source_layer.scale_z;
                     snapshot_layer.rotation = source_layer.rotation;
@@ -624,7 +707,33 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
     const double clamped_time = std::clamp(
         time, 0.0, std::max(0.0, session->title.duration));
     const bool time_changed = std::abs(session->time - clamped_time) > 1e-9;
+    /* Independent Asset Layers are sampled from their own steady clock.  The
+     * parent title time can remain bit-identical while paused or at a loop
+     * boundary, so root-time comparison alone cannot decide that this frame is
+     * clean.  Force composition on scheduler updates; unchanged base rasters
+     * are still retained by the transform-neutral layer cache. */
+    const bool independent_asset_clock =
+        bgs::asset_runtime::title_has_independent_playback(session->title);
     session->time = clamped_time;
+
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=session-update-begin session=%1 update=%2 title=%3 requestedTime=%4 previousTime=%5 clampedTime=%6 requestedRevision=%7 previousRevision=%8 modelChanged=%9 forcedCompatibility=%10 transformOnly=%11 range=%12..%13 previousDirty=%14 wasSubmitted=%15 hadBase=%16")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_update_serial)
+        .arg(QString::fromStdString(title.id))
+        .arg(time, 0, 'f', 9)
+        .arg(previous_session_time, 0, 'f', 9)
+        .arg(clamped_time, 0, 'f', 9)
+        .arg(model_revision)
+        .arg(previous_model_revision)
+        .arg(model_changed ? 1 : 0)
+        .arg(forced_compatibility_rebuild ? 1 : 0)
+        .arg(transform_only_update ? 1 : 0)
+        .arg(resolved_first)
+        .arg(resolved_last)
+        .arg(previous_frame_dirty ? 1 : 0)
+        .arg(was_submitted ? 1 : 0)
+        .arg(had_base ? 1 : 0));
 
     /* Only rasterize the layer range that this graph will composite, plus any
      * track-matte sources it references. Parent layers are evaluated as
@@ -745,7 +854,19 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const double layer_time = gpu_layer_render_time(
             session->title, layer, session->time);
         Layer base_key_layer = layer;
-        base_key_layer.effects.clear();
+        /* Pixel effects are evaluated after the reusable base raster and must
+         * not invalidate that raster. Trim Paths is different: it changes the
+         * stroke path geometry before rasterization, so both its current values
+         * and its animation state must remain in the base-raster identity.
+         * Removing it here caused editor changes to reuse the previous stroke
+         * texture until another unrelated property changed the raster key. */
+        base_key_layer.effects.erase(
+            std::remove_if(
+                base_key_layer.effects.begin(), base_key_layer.effects.end(),
+                [](const LayerEffect &effect) {
+                    return effect.type != LayerEffectType::TrimPaths;
+                }),
+            base_key_layer.effects.end());
         const double base_local_time = std::max(0.0, layer_time - layer.in_time);
         const bool preserve_effect_surface =
             layer_requires_preserved_effect_surface(layer, base_local_time);
@@ -807,7 +928,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             key += "|ticker=" + std::to_string(QDateTime::currentMSecsSinceEpoch());
         if (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
             layer.type == LayerType::Ticker)
-            key += "|gpu-text-pipeline=281";
+            key += "|gpu-text-pipeline=307";
         if (layer.type == LayerType::Video) {
             key += "|" + bgl::video::FrameRuntime::instance()
                 .frame_cache_key_for_layer(
@@ -899,10 +1020,14 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
              layer.type == LayerType::Video ||
              layer_has_non_transform_animation(base_key_layer) ||
              text_animator_stack_is_time_dependent(layer.text_animators));
+        const bool entry_has_resolvable_raster =
+            entry.texture || !entry.pending_image.isNull() ||
+            entry.gpu_text || entry.gpu_primitive;
         if (!model_changed && !dynamic_raster && !local_geometry_changed &&
-            !entry.key.empty() && entry.key == key)
+            !entry.key.empty() && entry.key == key &&
+            entry_has_resolvable_raster)
             continue;
-        if (entry.key == key)
+        if (entry.key == key && entry_has_resolvable_raster)
             continue;
         /* Phase 12C consumes the immutable Phase 12B glyph layout first.
          * Text Animator transitions use the same per-glyph GPU path. Only an
@@ -946,6 +1071,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             const double padding = gpu_primitive_padding(
                 layer, base_local_time);
             entry.gpu_text = false;
+            entry.gpu_text_fallback_image = QImage();
             entry.gpu_primitive = true;
             entry.pending_image = QImage();
             entry.primitive_shape_type = static_cast<int>(primitive_type);
@@ -998,6 +1124,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                 session->scene_mask_placeholder_preview_enabled,
                 session->video_decode_client);
             entry.gpu_text = false;
+            entry.gpu_text_fallback_image = QImage();
             entry.gpu_primitive = false;
 
             if (layer.type == LayerType::Video) {
@@ -1071,7 +1198,62 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
 
     session->frame_dirty = session->frame_dirty || was_submitted || had_base ||
                            model_changed || range_changed || time_changed ||
-                           raster_changed;
+                           raster_changed || independent_asset_clock;
+
+    std::size_t pending_rasters = 0;
+    std::size_t textured_rasters = 0;
+    std::size_t gpu_text_rasters = 0;
+    std::size_t gpu_primitive_rasters = 0;
+    std::size_t persistence_layers = 0;
+    std::size_t persistence_asset_layers = 0;
+    for (const auto &pair : session->layers) {
+        const auto &entry = pair.second;
+        if (entry.pending_upload)
+            ++pending_rasters;
+        if (entry.texture)
+            ++textured_rasters;
+        if (entry.gpu_text)
+            ++gpu_text_rasters;
+        if (entry.gpu_primitive)
+            ++gpu_primitive_rasters;
+    }
+    for (const auto &layer : session->title.layers) {
+        if (!layer || !gpu_layer_uses_cue_persistence(session->title, *layer))
+            continue;
+        ++persistence_layers;
+        if (!layer->asset_owner_id.empty())
+            ++persistence_asset_layers;
+    }
+    std::size_t extrusion_layers = 0;
+    std::size_t visible_lights = 0;
+    for (const auto &layer : session->title.layers) {
+        if (!layer)
+            continue;
+        if (layer->type == LayerType::Light && layer->visible)
+            ++visible_lights;
+    }
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=session-update-end session=%1 update=%2 title=%3 time=%4 revision=%5 timeChanged=%6 rangeChanged=%7 rasterChanged=%8 dirty=%9 needed=%10 live=%11 rasters=%12 textured=%13 pending=%14 gpuText=%15 gpuPrimitive=%16 extrusionLayers=%17 lights=%18 persistenceLayers=%19 persistenceAssetLayers=%20")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_update_serial)
+        .arg(QString::fromStdString(session->title.id))
+        .arg(session->time, 0, 'f', 9)
+        .arg(session->model_revision)
+        .arg(time_changed ? 1 : 0)
+        .arg(range_changed ? 1 : 0)
+        .arg(raster_changed ? 1 : 0)
+        .arg(session->frame_dirty ? 1 : 0)
+        .arg(needed_ids.size())
+        .arg(live_ids.size())
+        .arg(session->layers.size())
+        .arg(textured_rasters)
+        .arg(pending_rasters)
+        .arg(gpu_text_rasters)
+        .arg(gpu_primitive_rasters)
+        .arg(extrusion_layers)
+        .arg(visible_lights)
+        .arg(persistence_layers)
+        .arg(persistence_asset_layers));
 }
 
 void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session,
@@ -1093,6 +1275,32 @@ void title_gpu_render_session_set_preview_quality(TitleGpuRenderSession *session
             pair.second.key.clear();
         }
     }
+}
+
+void title_gpu_render_session_set_realtime_output(
+    TitleGpuRenderSession *session, bool realtime_output)
+{
+    if (!session || session->destroying.load())
+        return;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        session->realtime_output.load(std::memory_order_relaxed) ==
+            realtime_output)
+        return;
+    session->realtime_output.store(
+        realtime_output, std::memory_order_relaxed);
+    session->frame_dirty = true;
+    for (auto &pair : session->layers) {
+        pair.second.effect_cache_key.clear();
+        pair.second.key.clear();
+    }
+}
+
+bool title_gpu_render_session_is_realtime_output(
+    const TitleGpuRenderSession *session)
+{
+    return session && !session->destroying.load(std::memory_order_relaxed) &&
+        session->realtime_output.load(std::memory_order_relaxed);
 }
 
 void title_gpu_render_session_set_editor_video_decode_client(
@@ -1303,7 +1511,8 @@ bool title_gpu_render_session_submit_gpu_cached_frame(
     const std::string &cache_key, uint64_t model_revision)
 {
     if (!session || session->destroying.load() || cache_key.empty() ||
-        !title_gpu_frame_cache_contains(cache_key))
+        !title_gpu_frame_cache_contains(cache_key) ||
+        title_has_3d_compositing(title))
         return false;
 
     std::lock_guard<std::mutex> lock(session->mutex);
@@ -1449,7 +1658,8 @@ bool title_gpu_render_session_submit_cached_prefix(
     const QImage &cached_prefix, double time,
     std::size_t first_dynamic_layer, uint64_t model_revision)
 {
-    if (!session || session->destroying.load() || cached_prefix.isNull())
+    if (!session || session->destroying.load() || cached_prefix.isNull() ||
+        title_has_3d_compositing(title))
         return false;
 
     QRect destination;
@@ -1478,4 +1688,3 @@ bool title_gpu_render_session_submit_cached_prefix(
                                                      std::memory_order_release);
         }
     } transaction(session);
-

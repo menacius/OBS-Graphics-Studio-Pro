@@ -493,6 +493,8 @@ static void *stinger_create(obs_data_t *settings, obs_source_t *source)
     auto *data = new BglStingerTransition;
     data->source = source;
     data->manual_render_session = title_gpu_render_session_create();
+    title_gpu_render_session_set_realtime_output(
+        data->manual_render_session, true);
     obs_transition_enable_fixed(source, true, 1000);
     stinger_update(data, settings);
     return data;

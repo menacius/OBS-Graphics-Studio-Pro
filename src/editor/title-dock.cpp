@@ -9,6 +9,9 @@
 #include "title-serialization-schema.h"
 #include "live-text-cue-utils.h"
 #include "title-source.h"
+#include "title-snapshot.h"
+#include "title-hotkeys.h"
+#include "canvas-preview.h"
 #include "title-assets.h"
 #include "timecode-spinbox.h"
 #include "title-localization.h"
@@ -28,6 +31,7 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/bmem.h>
+#include <util/config-file.h>
 
 #include <QAction>
 #include <QBuffer>
@@ -53,6 +57,7 @@
 #include <QMimeData>
 #include <QTextEdit>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QMainWindow>
 #include <QVBoxLayout>
 #include <QFormLayout>

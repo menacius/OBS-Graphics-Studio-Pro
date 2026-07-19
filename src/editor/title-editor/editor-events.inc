@@ -56,7 +56,10 @@
                     timeline_->paste_transition_to_selection();
                 else if (timeline_ && timeline_->has_keyframe_clipboard())
                     timeline_->paste_keyframes_at_playhead();
-                else if (!layer_clipboard_.empty())
+                else if ((!layer_clipboard_.empty() ||
+                    (QApplication::clipboard() && QApplication::clipboard()->mimeData() &&
+                     QApplication::clipboard()->mimeData()->hasFormat(
+                         "application/x-bgl-layer-clipboard+json"))))
                     paste_layer_from_clipboard();
                 else
                     paste_external_clipboard_to_canvas();
@@ -279,7 +282,10 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         return;
     }
     if (!editing_value && ev->matches(QKeySequence::Paste)) {
-        if (!layer_clipboard_.empty()) {
+        if ((!layer_clipboard_.empty() ||
+                    (QApplication::clipboard() && QApplication::clipboard()->mimeData() &&
+                     QApplication::clipboard()->mimeData()->hasFormat(
+                         "application/x-bgl-layer-clipboard+json")))) {
             paste_layer_from_clipboard();
             ev->accept();
             return;
@@ -360,6 +366,8 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.text_box_height_to_text = src.text_box_height_to_text;
     dst.max_text_box_width = src.max_text_box_width;
     dst.max_text_box_height = src.max_text_box_height;
+    dst.max_text_box_width_overridden = src.max_text_box_width_overridden;
+    dst.max_text_box_height_overridden = src.max_text_box_height_overridden;
 
     dst.text_color = src.text_color;
     dst.fill_color = src.fill_color;
@@ -385,6 +393,8 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.stroke_fill_type = src.stroke_fill_type;
     dst.stroke_color = src.stroke_color;
     dst.stroke_width = src.stroke_width;
+    dst.stroke_offset = src.stroke_offset;
+    dst.stroke_offset_prop = src.stroke_offset_prop;
     dst.outline_opacity = src.outline_opacity;
     dst.outline_join_style = src.outline_join_style;
     dst.outline_on_front = src.outline_on_front;
@@ -534,6 +544,10 @@ void TitleEditor::apply_new_layer_defaults(Layer &layer) const
         layer.fill_color = (default_new_layer_style_.fill_color != 0) ? default_new_layer_style_.fill_color : fg_argb;
         layer.stroke_color = (default_new_layer_style_.stroke_color != 0) ? default_new_layer_style_.stroke_color : bg_argb;
     }
+    layer.stroke_color_a.static_value = (layer.stroke_color >> 24) & 0xFF;
+    layer.stroke_color_r.static_value = (layer.stroke_color >> 16) & 0xFF;
+    layer.stroke_color_g.static_value = (layer.stroke_color >> 8) & 0xFF;
+    layer.stroke_color_b.static_value = layer.stroke_color & 0xFF;
 }
 
 void TitleEditor::load_new_layer_defaults()
@@ -1028,43 +1042,120 @@ void TitleEditor::on_playhead_changed(double t)
     apply_playhead_change(t, false);
 }
 
+void TitleEditor::refresh_playback_ui(double t, bool force_full_refresh)
+{
+    /* The canvas is the realtime consumer. Inspector widgets are not: many of
+     * them evaluate every bound property, rebuild labels, restyle swatches or
+     * traverse expanded keyframe rows. Updating all of those controls at the
+     * project frame rate made the GUI event queue extremely sensitive to
+     * high-polling-rate mouse movement and ordinary hover repaints.
+     *
+     * Keep transport feedback responsive, but give heavyweight inspectors a
+     * separate, lower cadence. Explicit scrubs/steps and the final stopped
+     * frame always force an exact refresh. */
+    const int transport_interval_ms = std::max(
+        16, static_cast<int>(std::ceil(1000.0 /
+            std::clamp(display_refresh_hz_, 1.0, 30.0))));
+    constexpr int kInspectorIntervalMs = 100;
+    constexpr int kDiagnosticsIntervalMs = 250;
+
+    auto due = [force_full_refresh](QElapsedTimer &clock, int interval_ms) {
+        return force_full_refresh || !clock.isValid() ||
+               clock.elapsed() >= interval_ms;
+    };
+    auto restart = [](QElapsedTimer &clock) {
+        if (clock.isValid())
+            clock.restart();
+        else
+            clock.start();
+    };
+    auto panel_visible = [this](QWidget *panel, QDockWidget *dock) {
+        if (!panel)
+            return false;
+        if (dock && !dock->isVisible())
+            return false;
+        return panel->isVisibleTo(this);
+    };
+
+    if (due(playback_transport_ui_clock_, transport_interval_ms)) {
+        if (timeline_ && timeline_->isVisibleTo(this) &&
+            (!timeline_dock_ || timeline_dock_->isVisible()))
+            timeline_->set_playhead(t);
+        if (time_lbl_) {
+            const QString text = bgl_tr("OBSTitles.TimeFpsFormat")
+                .arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2);
+            if (time_lbl_->text() != text)
+                time_lbl_->setText(text);
+        }
+        restart(playback_transport_ui_clock_);
+    }
+
+    if (due(playback_inspector_ui_clock_, kInspectorIntervalMs)) {
+        if (layers_ && layers_->isVisibleTo(this))
+            layers_->set_playhead(t);
+        if (panel_visible(title_props_, graphic_props_dock_) ||
+            (three_d_scene_dock_ && three_d_scene_dock_->isVisible()))
+            title_props_->set_playhead(t);
+        if (prerender_panel_ && prerender_panel_->isVisibleTo(this))
+            prerender_panel_->setPlayhead(t);
+
+        if (!sel_layer_id_.empty() && title_) {
+            if (auto layer = title_->find_layer(sel_layer_id_)) {
+                QScopedValueRollback<bool> panel_update_guard(
+                    updating_layer_panels_, true);
+                if (panel_visible(props_, layer_props_dock_))
+                    props_->update_playhead(t);
+                if (panel_visible(effects_panel_, effects_dock_))
+                    effects_panel_->update_playhead(t);
+                if (tools_sidebar_ && tools_sidebar_->isVisibleTo(this))
+                    update_sidebar_color_swatches(layer);
+            }
+        }
+        restart(playback_inspector_ui_clock_);
+    }
+
+    if (due(playback_diagnostics_clock_, kDiagnosticsIntervalMs)) {
+        update_footer_diagnostics();
+        restart(playback_diagnostics_clock_);
+    }
+}
+
 void TitleEditor::apply_playhead_change(double t, bool playback_frame)
 {
     if (shutting_down_)
         return;
+    const double requested_time = t;
+    const double previous_time = playhead_;
     t = title_ ? std::clamp(snap_to_obs_frame(t), 0.0, title_->duration) : snap_to_obs_frame(t);
-    if (std::abs(t - playhead_) < 1e-9) {
+    const bool same_time = std::abs(t - previous_time) < 1e-9;
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=editor-playhead-change editor=%1 title=%2 requestedTime=%3 snappedTime=%4 previousTime=%5 same=%6 playbackFrame=%7 playing=%8 reverse=%9 fps=%10")
+        .arg(reinterpret_cast<quintptr>(this), 0, 16)
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(requested_time, 0, 'f', 9)
+        .arg(t, 0, 'f', 9)
+        .arg(previous_time, 0, 'f', 9)
+        .arg(same_time ? 1 : 0)
+        .arg(playback_frame ? 1 : 0)
+        .arg(playing_ ? 1 : 0)
+        .arg(playback_reverse_ ? 1 : 0)
+        .arg(obs_frame_rate(), 0, 'f', 6));
+    if (same_time) {
         if (canvas_)
             canvas_->set_playhead(t, playback_frame);
+        if (!playback_frame)
+            refresh_playback_ui(t, true);
         return;
     }
     playhead_ = t;
     sync_editor_audio_preview(!playback_frame);
     canvas_->set_playhead(t, playback_frame);
-    timeline_->set_playhead(t);
-    if (layers_) layers_->set_playhead(t);
-    if (title_props_) title_props_->set_playhead(t);
-    if (prerender_panel_) prerender_panel_->setPlayhead(t);
+    refresh_playback_ui(t, !playback_frame || !playing_);
     if (!cache_reprioritize_clock_.isValid() || cache_reprioritize_clock_.elapsed() >= 80) {
         CacheManager::instance().reprioritize(title_, t);
         cache_reprioritize_clock_.restart();
     }
-
-    if (!sel_layer_id_.empty() && title_) {
-        auto l = title_->find_layer(sel_layer_id_);
-        if (l) {
-            QScopedValueRollback<bool> panel_update_guard(updating_layer_panels_, true);
-            if (props_)
-                props_->update_playhead(t);
-            if (effects_panel_)
-                effects_panel_->update_playhead(t);
-            update_sidebar_color_swatches(l);
-        }
-    }
-
-    update_footer_diagnostics();
-    if (time_lbl_)
-        time_lbl_->setText(bgl_tr("OBSTitles.TimeFpsFormat").arg(format_timecode(t)).arg(obs_frame_rate(), 0, 'f', 2));
 }
 
 void TitleEditor::on_title_modified(bool push_undo)
@@ -1084,6 +1175,7 @@ void TitleEditor::on_title_modified(bool push_undo)
                                    .arg(QString::fromStdString(title_->id)));
         return;
     }
+    editor_audio_snapshot_dirty_ = true;
     if (title_) set_dirty(true);
     schedule_cache_invalidation();
     canvas_->refresh_preview();

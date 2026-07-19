@@ -835,6 +835,9 @@ static void rich_text_document_sync_layer_mirrors_impl(
     layer.stroke_fill_type = !stroke.enabled ? 0 :
         (stroke.fill.type == 1 ? 2 : 1);
     layer.stroke_color = stroke.fill.color;
+    set_static_argb_channels(layer.stroke_color_a, layer.stroke_color_r,
+                             layer.stroke_color_g, layer.stroke_color_b,
+                             layer.stroke_color);
     layer.stroke_gradient_type = stroke.fill.gradient_type;
     layer.stroke_gradient_spread = stroke.fill.gradient_spread;
     layer.stroke_gradient_start_color = stroke.fill.gradient_start_color;
@@ -2028,4 +2031,3 @@ RichTextDocument rich_text_document_with_auto_styles(
     return rich_text_document_with_auto_styles_canonical(
         std::move(out), resolver);
 }
-

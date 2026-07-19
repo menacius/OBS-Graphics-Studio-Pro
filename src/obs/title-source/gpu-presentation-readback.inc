@@ -268,8 +268,10 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
             BglEffectExtensionCatalog::builtInTypeForId(
                 QString::fromStdString(*extension_id), &registered_builtin_type);
         gs_effect_t *effect = (!has_extension_id || is_registered_builtin)
-            ? session->effect_registry->compile(shader_type)
-            : session->effect_registry->compile(*extension_id);
+            ? session_registry_effect_or_queue(
+                  session, shader_type, session_effect_compile_label(shader_type))
+            : session_registry_effect_or_queue(
+                  session, *extension_id, extension_id->c_str());
         if (!effect) {
             /* GPU-only means there is no CPU compositor fallback. Keep the
              * layer visible if an optional shader asset is unavailable and
@@ -323,6 +325,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     for (const LayerEffect &effect_config : layer.effects) {
         if (!eval_effect_enabled(effect_config, local_time) ||
             effect_config.type == LayerEffectType::MotionBlur ||
+            effect_config.type == LayerEffectType::TrimPaths ||
             (execution_space_filter >= 0 &&
              static_cast<int>(effect_execution_space(effect_config)) !=
                  execution_space_filter) ||
@@ -400,7 +403,8 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
                            !cache_entry->key.empty() &&
                            !has_source_dependency;
     const std::string desired_cache_key = can_cache
-        ? cache_entry->key + "|gpu-effects-v21-organic-damage-motion239|" +
+        ? cache_entry->key +
+              "|gpu-effects-v26-3d-lighting-materials-shadows-v27-per-light-source-size-shadows-v28-point-shadow-atlas-complete-3d-interactions-v29-matrix-exact-rgb24-point-shadows-v30-float32-receiver-plane-point-shadows-v31-shared-point-cube-projection-v32-distance-stable-point-shadows-v33-pcss-contact-hardening-v34-shadow-runtime-recovery-v35-stable-multiscale-poisson-shadows-v36-restored-3d-shadow-visibility-v37-signed-point-shadow-clip-depth-v38-realtime-receiver-matched-point-pcf-v39-compile-safe-receiver-matched-point-pcf-v40-async-shader-compile-progress-v41-d3d-planar-shadow-clip|" +
               effect_layer_cache_key(nullptr, session->title, layer, title_time,
                                      static_cast<int>(width), static_cast<int>(height),
                                      false, false)
@@ -787,10 +791,13 @@ static gs_texture_t *render_gpu_adjustment_coverage(
     const double resolved_time = gpu_layer_render_time(title, layer, title_time);
     if (!session || !session->adjustment_coverage_target)
         return nullptr;
-    if (!session->adjustment_coverage_effect)
-        session->adjustment_coverage_effect = gs_effect_create(
-            kGpuAdjustmentCoverageEffect, "obs-bgs-adjustment-coverage.effect", nullptr);
-    if (!session->adjustment_coverage_effect)
+    if (!session->adjustment_coverage_effect &&
+        !ensure_session_shader_effect(
+            session, session->adjustment_coverage_effect,
+            "core:adjustment-coverage", "Adjustment coverage",
+            kGpuAdjustmentCoverageEffect,
+            "obs-bgs-adjustment-coverage.effect",
+            &session->adjustment_coverage_effect))
         return nullptr;
     struct vec4 clear; vec4_zero(&clear);
     if (!begin_gpu_target(session->adjustment_coverage_target,
@@ -840,13 +847,13 @@ static gs_texture_t *mix_gpu_adjustment_layer(
     const double resolved_time = gpu_layer_render_time(title, layer, title_time);
     if (!session || !original || !effected || !coverage || !target)
         return original;
-    if (!session->adjustment_mix_effect)
-        session->adjustment_mix_effect = gs_effect_create(
-            kGpuAdjustmentMixEffect, "obs-bgs-adjustment-mix.effect", nullptr);
-    if (!session->adjustment_mix_effect) {
-        session->last_error = "Could not compile adjustment-layer mix shader.";
+    if (!session->adjustment_mix_effect &&
+        !ensure_session_shader_effect(
+            session, session->adjustment_mix_effect, "core:adjustment-mix",
+            "Adjustment mix", kGpuAdjustmentMixEffect,
+            "obs-bgs-adjustment-mix.effect",
+            &session->adjustment_mix_effect))
         return original;
-    }
     struct vec4 clear;
     vec4_zero(&clear);
     if (!begin_gpu_target(target, session->width, session->height, clear))
@@ -1035,6 +1042,21 @@ static struct matrix4 qmatrix4x4_to_gs(const QMatrix4x4 &source)
     return result;
 }
 
+static QMatrix4x4 gpu_canvas_camera_model_view(
+    const QMatrix4x4 &qt_model_view)
+{
+    /* Qt projects into Y-up NDC and project_point() explicitly converts that
+     * result to the canvas' Y-down coordinates. libobs' gs_perspective/ortho
+     * already owns the top-to-bottom viewport convention, so feeding it the
+     * unadjusted Qt camera mirrors world translation on Y. Convert only the
+     * camera-space Y basis at this API boundary; authored positions, parent
+     * matrices, keyframes and editor hit-testing remain consistently Y-down. */
+    QMatrix4x4 qt_to_gs_camera;
+    qt_to_gs_camera.setToIdentity();
+    qt_to_gs_camera.scale(1.0f, -1.0f, 1.0f);
+    return qt_to_gs_camera * qt_model_view;
+}
+
 static struct matrix4 gpu_qtransform_to_gs_matrix(
     const QTransform &transform)
 {
@@ -1053,6 +1075,322 @@ static struct matrix4 gpu_qtransform_to_gs_matrix(
              static_cast<float>(transform.dy()),
              0.0f, static_cast<float>(transform.m33()));
     return result;
+}
+
+static bool set_gpu_layer_lighting_params(
+    TitleGpuRenderSession *session, gs_effect_t *effect,
+    gs_texture_t *fallback_texture, const Title &title, const Layer &layer,
+    double title_time, double local_time, const QPointF &origin,
+    double logical_width, double logical_height, double sx, double sy,
+    double local_z_offset)
+{
+    if (!session || !effect || !fallback_texture)
+        return false;
+
+    auto param = [effect](const char *name) {
+        return bgl_effect_param(effect, name);
+    };
+    gs_eparam_t *lighting_enabled = param("lightingEnabled");
+    gs_eparam_t *plane_origin = param("planeOrigin");
+    gs_eparam_t *plane_axis_u = param("planeAxisU");
+    gs_eparam_t *plane_axis_v = param("planeAxisV");
+    gs_eparam_t *world_normal = param("worldNormal");
+    gs_eparam_t *camera_world_position = param("cameraWorldPosition");
+    gs_eparam_t *material_primary = param("materialPrimary");
+    gs_eparam_t *material_pbr = param("materialPbr");
+    gs_eparam_t *material_emissive = param("materialEmissive");
+    gs_eparam_t *environment_exposure = param("environmentExposure");
+    if (!lighting_enabled || !plane_origin || !plane_axis_u || !plane_axis_v ||
+        !world_normal || !camera_world_position || !material_primary ||
+        !material_pbr || !material_emissive || !environment_exposure)
+        return false;
+
+    const bool enabled = title.lighting_enabled &&
+        layer.material_accepts_lights &&
+        bgs::transform3d::layer_supports_3d(layer) &&
+        bgs::transform3d::layer_or_ancestor_uses_3d(title, layer);
+    gs_effect_set_int(lighting_enabled, enabled ? 1 : 0);
+
+    const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(
+        title, layer, title_time);
+    const float local_x0 = static_cast<float>(sx * origin.x());
+    const float local_y0 = static_cast<float>(sy * origin.y());
+    const float local_x1 = local_x0 + static_cast<float>(sx * logical_width);
+    const float local_y1 = local_y0 + static_cast<float>(sy * logical_height);
+    const float local_z = static_cast<float>(local_z_offset);
+    const QVector3D p00 = world.map(QVector3D(local_x0, local_y0, local_z));
+    const QVector3D p10 = world.map(QVector3D(local_x1, local_y0, local_z));
+    const QVector3D p01 = world.map(QVector3D(local_x0, local_y1, local_z));
+    const bgs::transform3d::EvaluatedTransform evaluated =
+        bgs::transform3d::evaluate(title, layer, title_time);
+
+    auto set_vec3 = [](gs_eparam_t *destination, const QVector3D &value) {
+        struct vec3 v;
+        vec3_set(&v, value.x(), value.y(), value.z());
+        gs_effect_set_vec3(destination, &v);
+    };
+    auto set_vec4 = [](gs_eparam_t *destination, float x, float y,
+                       float z, float w) {
+        struct vec4 v;
+        vec4_set(&v, x, y, z, w);
+        gs_effect_set_vec4(destination, &v);
+    };
+    set_vec3(plane_origin, p00);
+    set_vec3(plane_axis_u, p10 - p00);
+    set_vec3(plane_axis_v, p01 - p00);
+    set_vec3(world_normal, evaluated.world_normal);
+    set_vec3(camera_world_position, evaluated.camera_position);
+
+    set_vec4(material_primary,
+             static_cast<float>(std::clamp(
+                 layer.material_ambient.evaluate(local_time), 0.0, 4.0)),
+             static_cast<float>(std::clamp(
+                 layer.material_diffuse.evaluate(local_time), 0.0, 4.0)),
+             static_cast<float>(std::clamp(
+                 layer.material_specular.evaluate(local_time), 0.0, 4.0)),
+             static_cast<float>(std::clamp(
+                 layer.material_shininess.evaluate(local_time), 1.0, 512.0)));
+    set_vec4(material_pbr,
+             static_cast<float>(std::clamp(
+                 layer.material_metallic.evaluate(local_time), 0.0, 1.0)),
+             static_cast<float>(std::clamp(
+                 layer.material_roughness.evaluate(local_time), 0.02, 1.0)),
+             layer.material_appears_in_reflections
+                 ? static_cast<float>(std::clamp(
+                       layer.material_reflection_intensity.evaluate(local_time),
+                       0.0, 4.0))
+                 : 0.0f,
+             static_cast<float>(std::clamp(
+                 layer.material_emissive_intensity.evaluate(local_time),
+                 0.0, 16.0)));
+    const uint32_t emissive = evaluated_material_emissive_color(layer, local_time);
+    set_vec4(material_emissive,
+             static_cast<float>((emissive >> 16) & 0xFFu) / 255.0f,
+             static_cast<float>((emissive >> 8) & 0xFFu) / 255.0f,
+             static_cast<float>(emissive & 0xFFu) / 255.0f,
+             static_cast<float>((emissive >> 24) & 0xFFu) / 255.0f);
+    gs_effect_set_float(environment_exposure,
+        static_cast<float>(std::pow(2.0,
+            std::clamp(title.environment_exposure, -16.0, 16.0))));
+
+    struct EvaluatedLightSlot {
+        TitleLightType type = TitleLightType::Ambient;
+        TitleLightFalloff falloff = TitleLightFalloff::None;
+        QVector3D position;
+        QVector3D direction {0.0f, 0.0f, 1.0f};
+        QVector3D color {0.0f, 0.0f, 0.0f};
+        float intensity = 0.0f;
+        float source_size = 0.0f;
+        float falloff_start = 0.0f;
+        float falloff_distance = 1.0f;
+        float cone_outer_cos = -1.0f;
+        float cone_inner_cos = -1.0f;
+        bool enabled = false;
+    };
+    std::array<EvaluatedLightSlot, 4> light_slots {};
+    std::size_t slot_count = 0;
+
+    auto append_light = [&](const TitleLight &light) {
+        if (!light.enabled || slot_count >= light_slots.size())
+            return;
+        EvaluatedLightSlot &slot = light_slots[slot_count++];
+        slot.type = light.type;
+        slot.falloff = light.falloff;
+        const Vec3Value position_value = evaluated_light_position(light, title_time);
+        const Vec3Value target_value = evaluated_light_target(light, title_time);
+        slot.position = QVector3D(static_cast<float>(position_value.x),
+                                  static_cast<float>(position_value.y),
+                                  static_cast<float>(position_value.z));
+        const QVector3D target(static_cast<float>(target_value.x),
+                               static_cast<float>(target_value.y),
+                               static_cast<float>(target_value.z));
+        slot.direction = target - slot.position;
+        if (slot.direction.lengthSquared() <= 0.000001f)
+            slot.direction = QVector3D(0.0f, 0.0f, 1.0f);
+        else
+            slot.direction.normalize();
+        const uint32_t color = evaluated_light_color(light, title_time);
+        const float alpha = static_cast<float>((color >> 24) & 0xFFu) / 255.0f;
+        slot.color = QVector3D(
+            static_cast<float>((color >> 16) & 0xFFu) / 255.0f,
+            static_cast<float>((color >> 8) & 0xFFu) / 255.0f,
+            static_cast<float>(color & 0xFFu) / 255.0f);
+        slot.intensity = static_cast<float>(std::max(
+            0.0, light.intensity.evaluate(title_time) / 100.0)) * alpha;
+        slot.source_size = static_cast<float>(std::clamp(
+            light.source_size.evaluate(title_time), 0.0, 100000.0));
+        /* Falloff start is no longer authored independently. It tracks the
+         * emitter Source Size so the lit core and soft source representation
+         * stay coherent. */
+        slot.falloff_start = slot.source_size;
+        slot.falloff_distance = static_cast<float>(std::max(
+            0.0001, light.falloff_distance.evaluate(title_time)));
+        const double outer_half = std::clamp(
+            light.cone_angle.evaluate(title_time), 0.1, 179.0) *
+            0.5 * 3.14159265358979323846 / 180.0;
+        const double feather = std::clamp(
+            light.cone_feather.evaluate(title_time) / 100.0, 0.0, 1.0);
+        const double inner_half = outer_half * (1.0 - feather);
+        slot.cone_outer_cos = static_cast<float>(std::cos(outer_half));
+        slot.cone_inner_cos = static_cast<float>(std::cos(inner_half));
+        slot.enabled = slot.intensity > 0.000001f;
+    };
+
+    std::size_t authored_light_count = 0;
+    for (const auto &light_layer : title.layers) {
+        if (!light_layer || light_layer->type != LayerType::Light || !light_layer->visible) continue;
+        TitleLight evaluated = light_layer->light;
+        evaluated.enabled = evaluated.enabled && light_layer->visible;
+        evaluated.id = light_layer->id; evaluated.name = light_layer->name;
+        const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(title, *light_layer, title_time);
+        const QVector3D world_position = world.map(QVector3D(static_cast<float>(evaluated.position.evaluate(title_time).x), static_cast<float>(evaluated.position.evaluate(title_time).y), static_cast<float>(evaluated.position.evaluate(title_time).z)));
+        const Vec3Value local_target = evaluated.target.evaluate(title_time);
+        const QVector3D world_target = world.map(QVector3D(static_cast<float>(local_target.x), static_cast<float>(local_target.y), static_cast<float>(local_target.z)));
+        evaluated.position.static_value = {world_position.x(), world_position.y(), world_position.z()};
+        evaluated.position.keyframes.clear();
+        evaluated.target.static_value = {world_target.x(), world_target.y(), world_target.z()};
+        evaluated.target.keyframes.clear();
+        append_light(evaluated); ++authored_light_count;
+    }
+    for (const TitleLight &light : title.lights) { append_light(light); ++authored_light_count; }
+    if (authored_light_count == 0 && title.default_light_enabled &&
+        slot_count < light_slots.size()) {
+        EvaluatedLightSlot &slot = light_slots[slot_count++];
+        slot.type = TitleLightType::Parallel;
+        slot.falloff = TitleLightFalloff::None;
+        slot.position = QVector3D(static_cast<float>(title.width) * 0.5f,
+                                  static_cast<float>(title.height) * 0.5f,
+                                  -1000.0f);
+        slot.direction = QVector3D(0.0f, 0.0f, 1.0f);
+        slot.color = QVector3D(1.0f, 1.0f, 1.0f);
+        slot.intensity = 1.0f;
+        slot.enabled = true;
+    }
+
+    for (std::size_t index = 0; index < light_slots.size(); ++index) {
+        const std::string suffix = std::to_string(index);
+        gs_eparam_t *position_type = param(
+            (std::string("lightPositionType") + suffix).c_str());
+        gs_eparam_t *direction_intensity = param(
+            (std::string("lightDirectionIntensity") + suffix).c_str());
+        gs_eparam_t *color_enabled = param(
+            (std::string("lightColorEnabled") + suffix).c_str());
+        gs_eparam_t *light_params = param(
+            (std::string("lightParams") + suffix).c_str());
+        gs_eparam_t *source_size = param(
+            (std::string("lightSourceSize") + suffix).c_str());
+        gs_eparam_t *falloff = param(
+            (std::string("lightFalloff") + suffix).c_str());
+        gs_eparam_t *shadow_map = param(
+            (std::string("shadowMap") + suffix).c_str());
+        gs_eparam_t *shadow_enabled = param(
+            (std::string("shadowEnabled") + suffix).c_str());
+        gs_eparam_t *shadow_kind = param(
+            (std::string("shadowKind") + suffix).c_str());
+        gs_eparam_t *shadow_view_projection = param(
+            (std::string("shadowViewProj") + suffix).c_str());
+        gs_eparam_t *shadow_light_position = param(
+            (std::string("shadowLightPosition") + suffix).c_str());
+        gs_eparam_t *shadow_near = param(
+            (std::string("shadowNear") + suffix).c_str());
+        gs_eparam_t *shadow_far = param(
+            (std::string("shadowFar") + suffix).c_str());
+        gs_eparam_t *shadow_projection_span = param(
+            (std::string("shadowProjectionSpan") + suffix).c_str());
+        gs_eparam_t *shadow_darkness = param(
+            (std::string("shadowDarkness") + suffix).c_str());
+        gs_eparam_t *shadow_bias = param(
+            (std::string("shadowBias") + suffix).c_str());
+        gs_eparam_t *shadow_softness = param(
+            (std::string("shadowSoftness") + suffix).c_str());
+        gs_eparam_t *shadow_texel_size = param(
+            (std::string("shadowTexelSize") + suffix).c_str());
+        if (!position_type || !direction_intensity || !color_enabled ||
+            !light_params || !source_size || !falloff || !shadow_map ||
+            !shadow_enabled || !shadow_kind || !shadow_view_projection ||
+            !shadow_light_position || !shadow_near || !shadow_far ||
+            !shadow_projection_span || !shadow_darkness || !shadow_bias ||
+            !shadow_softness || !shadow_texel_size)
+            return false;
+        const EvaluatedLightSlot &slot = light_slots[index];
+        set_vec4(position_type, slot.position.x(), slot.position.y(),
+                 slot.position.z(), static_cast<float>(slot.type));
+        set_vec4(direction_intensity, slot.direction.x(), slot.direction.y(),
+                 slot.direction.z(), slot.intensity);
+        set_vec4(color_enabled, slot.color.x(), slot.color.y(), slot.color.z(),
+                 slot.enabled ? 1.0f : 0.0f);
+        set_vec4(light_params, slot.falloff_start, slot.falloff_distance,
+                 slot.cone_outer_cos, slot.cone_inner_cos);
+        gs_effect_set_float(source_size, slot.source_size);
+        gs_effect_set_int(falloff, static_cast<int>(slot.falloff));
+
+        gs_texrender_t *shadow_target = session->shadow_targets[index];
+        gs_texture_t *shadow_texture = shadow_target
+            ? gs_texrender_get_texture(shadow_target) : nullptr;
+        const bool receives_shadow = enabled &&
+            layer.dimension_mode == LayerDimensionMode::ThreeD &&
+            layer.material_accepts_shadows &&
+            session->shadow_map_kind[index] != 0 &&
+            session->shadow_map_valid[index] && shadow_texture;
+        if (!session->shadow_receiver_binding_logged[index] &&
+            layer.dimension_mode == LayerDimensionMode::ThreeD &&
+            session->shadow_map_valid[index]) {
+            session->shadow_receiver_binding_logged[index] = true;
+            BGL_LOG_INFO("Shadows", QStringLiteral(
+                "stage=receiver-bind slot=%1 result=%2 layer=%3 acceptsLights=%4 acceptsShadows=%5 mapValid=%6 texture=%7 kind=%8 darkness=%9 bias=%10 softness=%11 sourceSize=%12 light=(%13,%14,%15) plane=(%16,%17,%18)")
+                .arg(static_cast<qulonglong>(index))
+                .arg(receives_shadow ? QStringLiteral("enabled")
+                                     : QStringLiteral("disabled"))
+                .arg(QString::fromStdString(layer.name))
+                .arg(layer.material_accepts_lights ? 1 : 0)
+                .arg(layer.material_accepts_shadows ? 1 : 0)
+                .arg(session->shadow_map_valid[index] ? 1 : 0)
+                .arg(shadow_texture ? 1 : 0)
+                .arg(session->shadow_map_kind[index])
+                .arg(session->shadow_darkness[index], 0, 'f', 4)
+                .arg(session->shadow_bias[index], 0, 'f', 7)
+                .arg(session->shadow_softness[index], 0, 'f', 4)
+                .arg(slot.source_size, 0, 'f', 4)
+                .arg(session->shadow_light_positions[index].x(), 0, 'f', 3)
+                .arg(session->shadow_light_positions[index].y(), 0, 'f', 3)
+                .arg(session->shadow_light_positions[index].z(), 0, 'f', 3)
+                .arg(p00.x(), 0, 'f', 3)
+                .arg(p00.y(), 0, 'f', 3)
+                .arg(p00.z(), 0, 'f', 3));
+        }
+        gs_effect_set_texture(shadow_map,
+            receives_shadow ? shadow_texture : fallback_texture);
+        gs_effect_set_int(shadow_enabled, receives_shadow ? 1 : 0);
+        gs_effect_set_int(shadow_kind,
+            receives_shadow ? session->shadow_map_kind[index] : 0);
+        const struct matrix4 shadow_matrix = qmatrix4x4_to_gs(
+            session->shadow_view_projections[index]);
+        gs_effect_set_matrix4(shadow_view_projection, &shadow_matrix);
+        set_vec3(shadow_light_position,
+                 session->shadow_light_positions[index]);
+        gs_effect_set_float(shadow_near,
+            session->shadow_near_plane[index]);
+        gs_effect_set_float(shadow_far,
+            session->shadow_far_plane[index]);
+        struct vec2 shadow_projection;
+        vec2_set(&shadow_projection,
+            session->shadow_projection_span_x[index],
+            session->shadow_projection_span_y[index]);
+        gs_effect_set_vec2(shadow_projection_span, &shadow_projection);
+        gs_effect_set_float(shadow_darkness,
+            session->shadow_darkness[index]);
+        gs_effect_set_float(shadow_bias, session->shadow_bias[index]);
+        gs_effect_set_float(shadow_softness,
+            session->shadow_softness[index]);
+        struct vec2 shadow_texel;
+        vec2_set(&shadow_texel,
+            1.0f / static_cast<float>(std::max(
+                1u, session->shadow_map_width[index])),
+            1.0f / static_cast<float>(std::max(
+                1u, session->shadow_map_height[index])));
+        gs_effect_set_vec2(shadow_texel_size, &shadow_texel);
+    }
+    return true;
 }
 
 static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
@@ -1077,13 +1415,12 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     const double resolved_time = gpu_layer_render_time(title, layer, title_time);
     if (!session || !texture || weight <= 0.0f)
         return false;
-    if (!session->copy_effect)
-        session->copy_effect = gs_effect_create(
-            kGpuLayerCopyEffect, "obs-bgs-gpu-layer-copy.effect", nullptr);
-    if (!session->copy_effect) {
-        session->last_error = "Could not compile GPU layer-copy shader.";
+    if (!session->copy_effect &&
+        !ensure_session_shader_effect(
+            session, session->copy_effect, "core:layer-copy",
+            "GPU layer copy", kGpuLayerCopyEffect,
+            "obs-bgs-gpu-layer-copy.effect", &session->copy_effect))
         return false;
-    }
     gs_eparam_t *image = bgl_effect_param(session->copy_effect, "image");
     gs_eparam_t *weight_param = bgl_effect_param(session->copy_effect, "weight");
     gs_eparam_t *clip_enabled = bgl_effect_param(session->copy_effect, "imageClipEnabled");
@@ -1161,6 +1498,11 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
         ? logical_height / std::max(1.0, static_cast<double>(texture_height))
         : 1.0;
 
+    if (!set_gpu_layer_lighting_params(
+            session, session->copy_effect, texture, title, layer, resolved_time,
+            local_time, origin, logical_width, logical_height, sx, sy, 0.0))
+        return false;
+
     /* The bounding-box overlay already projects the real local rectangle.
      * The fallback artwork path previously projected a unit square and then
      * extrapolated that homography to texture coordinates. With an off-centre
@@ -1191,7 +1533,7 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
                    << QPointF(local_x0, local_y1);
         exact_projected_raster =
             bgs::transform3d::projected_local_quad_transform(
-                title, layer, title_time, texture_quad, local_quad,
+                title, layer, resolved_time, texture_quad, local_quad,
                 texture_to_canvas);
         const double frame_scale = session->editor_draft
             ? std::clamp(static_cast<double>(session->preview_quality_scale),
@@ -1217,9 +1559,9 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     if (hardware_depth) {
         bgs::transform3d::CameraRenderState camera_state;
         const std::string render_camera_id =
-            bgs::transform3d::resolved_layer_camera_id(title, layer, title_time);
+            bgs::transform3d::resolved_layer_camera_id(title, layer, resolved_time);
         if (!bgs::transform3d::camera_render_state(
-                title, title_time, camera_state, render_camera_id)) {
+                title, resolved_time, camera_state, render_camera_id)) {
             gs_matrix_pop();
             return false;
         }
@@ -1235,8 +1577,9 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
             gs_perspective(camera_state.vertical_fov, camera_state.aspect,
                            camera_state.near_clip, camera_state.far_clip);
         }
-        const QMatrix4x4 model_view = camera_state.view *
-            bgs::transform3d::layer_world_matrix(title, layer, title_time);
+        const QMatrix4x4 model_view = gpu_canvas_camera_model_view(
+            camera_state.view * bgs::transform3d::layer_world_matrix(
+                title, layer, resolved_time));
         const struct matrix4 model_view_gs = qmatrix4x4_to_gs(model_view);
         gs_matrix_set(&model_view_gs);
     } else if (exact_projected_raster) {
@@ -1248,7 +1591,7 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
         const float frame_scale = session->editor_draft
             ? std::clamp(session->preview_quality_scale, 0.25f, 1.0f) : 1.0f;
         gs_matrix_scale3f(frame_scale, frame_scale, 1.0f);
-        apply_layer_world_transform_gs(title, layer, title_time, 0);
+        apply_layer_world_transform_gs(title, layer, resolved_time, 0);
     }
 
     if (!exact_projected_raster) {
@@ -1303,15 +1646,125 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
                 eval_origin_x(layer, local_time), eval_origin_y(layer, local_time), local_time);
         }
     }
-    while (gs_effect_loop(session->copy_effect,
-                          hardware_depth ? "DepthDraw" : "Draw")) {
-        if (transform_grid) {
-            gs_load_vertexbuffer(transform_grid);
-            gs_draw(GS_TRIS, 0, 0);
-            gs_load_vertexbuffer(nullptr);
-        } else {
-            gs_draw_sprite(texture, 0, texture_width, texture_height);
+    auto draw_geometry_pass = [&]() {
+        while (gs_effect_loop(session->copy_effect, hardware_depth ? "DepthDraw" : "Draw")) {
+            if (transform_grid) {
+                gs_load_vertexbuffer(transform_grid); gs_draw(GS_TRIS, 0, 0); gs_load_vertexbuffer(nullptr);
+            } else {
+                gs_draw_sprite(texture, 0, texture_width, texture_height);
+            }
         }
+    };
+    /* Development Version 330: legacy slice extrusion is deliberately inert.
+     * Preserve the old code below only as a short-lived migration reference;
+     * no production draw can enter it. */
+    constexpr bool legacy_slice_extrusion_production_enabled = false;
+    const bool extrudable = legacy_slice_extrusion_production_enabled &&
+        hardware_depth && layer.geometry_extrusion_enabled &&
+        (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+         layer.type == LayerType::Ticker || layer.type == LayerType::Shape);
+    const double extrusion_depth = extrudable ? std::max(0.0, layer.geometry_extrusion_depth.evaluate(local_time)) : 0.0;
+    const double bevel_depth = extrudable ? std::min(extrusion_depth * 0.5, std::max(0.0, layer.geometry_bevel_depth.evaluate(local_time))) : 0.0;
+    if (extrusion_depth > 0.001) {
+        ++session->diagnostics_extrusion_pass_count;
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=extrusion-pass-begin session=%1 render=%2 layer=%3 type=%4 titleTime=%5 localTime=%6 hardwareDepth=%7 depth=%8 bevel=%9 authoredSegments=%10 bevelSegments=%11 texture=%12x%13 logical=%14x%15 origin=%16,%17")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(session->diagnostics_render_serial)
+            .arg(QString::fromStdString(layer.id))
+            .arg(static_cast<int>(layer.type))
+            .arg(title_time, 0, 'f', 9)
+            .arg(local_time, 0, 'f', 9)
+            .arg(hardware_depth ? 1 : 0)
+            .arg(extrusion_depth, 0, 'f', 4)
+            .arg(bevel_depth, 0, 'f', 4)
+            .arg(layer.geometry_extrusion_segments)
+            .arg(layer.geometry_bevel_segments)
+            .arg(texture_width)
+            .arg(texture_height)
+            .arg(logical_width, 0, 'f', 3)
+            .arg(logical_height, 0, 'f', 3)
+            .arg(origin.x(), 0, 'f', 3)
+            .arg(origin.y(), 0, 'f', 3));
+        /* Preserve the authored minimum while adding enough shells for smooth
+         * depth motion.  The cap keeps realtime broadcast scenes bounded. */
+        const int authored_body_segments =
+            std::clamp(layer.geometry_extrusion_segments, 1, 64);
+        const int adaptive_body_segments = std::clamp(
+            static_cast<int>(std::ceil(extrusion_depth / 6.0)), 1, 64);
+        const int body_segments =
+            std::max(authored_body_segments, adaptive_body_segments);
+        const int bevel_segments = std::clamp(layer.geometry_bevel_segments, 1, 16);
+        const int total_segments = body_segments +
+            (bevel_depth > 0.001 ? bevel_segments * 2 : 0);
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=extrusion-pass-geometry session=%1 render=%2 layer=%3 bodySegments=%4 adaptiveSegments=%5 totalSegments=%6 frontBevel=%7 backBevel=%8")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(session->diagnostics_render_serial)
+            .arg(QString::fromStdString(layer.id))
+            .arg(body_segments)
+            .arg(adaptive_body_segments)
+            .arg(total_segments)
+            .arg(layer.geometry_bevel_front ? 1 : 0)
+            .arg(layer.geometry_bevel_back ? 1 : 0));
+        for (int slice = total_segments; slice >= 1; --slice) {
+            const double t = static_cast<double>(slice) / total_segments;
+            const double z = -extrusion_depth * t;
+            double inset = 0.0;
+            if (bevel_depth > 0.001) {
+                const double distance_from_front = -z;
+                const double distance_from_back = extrusion_depth + z;
+                if (layer.geometry_bevel_front && distance_from_front < bevel_depth) inset = std::max(inset, 1.0 - distance_from_front / bevel_depth);
+                if (layer.geometry_bevel_back && distance_from_back < bevel_depth) inset = std::max(inset, 1.0 - distance_from_back / bevel_depth);
+            }
+            const double bevel_scale = std::max(0.01, 1.0 - inset * std::min(0.45, bevel_depth / std::max(1.0, std::min(logical_width, logical_height))));
+            gs_matrix_push();
+            gs_matrix_translate3f(static_cast<float>(texture_width * 0.5), static_cast<float>(texture_height * 0.5), static_cast<float>(z));
+            gs_matrix_scale3f(static_cast<float>(bevel_scale), static_cast<float>(bevel_scale), 1.0f);
+            gs_matrix_translate3f(static_cast<float>(-texture_width * 0.5), static_cast<float>(-texture_height * 0.5), 0.0f);
+            /* Lighting and shadow lookup use the actual shell plane instead of
+             * reusing the front-face world position for every depth slice. */
+            set_gpu_layer_lighting_params(
+                session, session->copy_effect, texture, title, layer, title_time,
+                local_time, origin, logical_width, logical_height, sx, sy, z);
+            draw_geometry_pass();
+            gs_matrix_pop();
+        }
+    }
+    set_gpu_layer_lighting_params(
+        session, session->copy_effect, texture, title, layer, title_time,
+        local_time, origin, logical_width, logical_height, sx, sy, 0.0);
+    /* A front bevel needs an inset front face. Drawing the original full-size
+     * face after the shells covers the entire bevel ring and makes the option
+     * appear to do nothing. Keep the outer body silhouette at full size while
+     * shrinking only the face, matching the front-to-body bevel profile. */
+    const double front_face_scale =
+        extrudable && layer.geometry_bevel_front && bevel_depth > 0.001
+            ? std::max(0.01, 1.0 - std::min(
+                  0.45, bevel_depth / std::max(
+                            1.0, std::min(logical_width, logical_height))))
+            : 1.0;
+    if (front_face_scale < 0.999999) {
+        gs_matrix_push();
+        gs_matrix_translate3f(static_cast<float>(texture_width * 0.5),
+                              static_cast<float>(texture_height * 0.5), 0.0f);
+        gs_matrix_scale3f(static_cast<float>(front_face_scale),
+                          static_cast<float>(front_face_scale), 1.0f);
+        gs_matrix_translate3f(static_cast<float>(-texture_width * 0.5),
+                              static_cast<float>(-texture_height * 0.5), 0.0f);
+        draw_geometry_pass();
+        gs_matrix_pop();
+    } else {
+        draw_geometry_pass();
+    }
+    if (extrusion_depth > 0.001) {
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=extrusion-pass-end session=%1 render=%2 layer=%3 frontScale=%4 extrusionPasses=%5")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(session->diagnostics_render_serial)
+            .arg(QString::fromStdString(layer.id))
+            .arg(front_face_scale, 0, 'f', 6)
+            .arg(session->diagnostics_extrusion_pass_count));
     }
     if (transform_grid && !raster_entry) gs_vertexbuffer_destroy(transform_grid);
     gs_matrix_pop();
@@ -1323,6 +1776,198 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
 static bool copy_full_canvas_gpu_texture(TitleGpuRenderSession *session,
                                          gs_texture_t *texture,
                                          gs_texrender_t *target);
+
+static bool append_gpu_temporal_sample(
+    TitleGpuRenderSession *session, gs_texture_t *sample,
+    float sample_weight, gs_texrender_t *target)
+{
+    if (!session || !sample || !target || sample_weight <= 0.0f)
+        return false;
+    if (!session->motion_composite_effect &&
+        !ensure_session_shader_effect(
+            session, session->motion_composite_effect, "core:temporal-composite",
+            "GPU temporal composite", kGpuTemporalCompositeEffect,
+            "obs-bgs-gpu-temporal-composite.effect",
+            &session->motion_composite_effect))
+        return false;
+    gs_effect_t *effect = session->motion_composite_effect;
+    gs_eparam_t *sample_param = bgl_effect_param(effect, "sampleImage");
+    gs_eparam_t *weight_param = bgl_effect_param(effect, "sampleWeight");
+    if (!sample_param || !weight_param)
+        return false;
+
+    /* The target is cleared once before the shutter loop. Reset only re-arms
+     * the existing texrender for another begin/end cycle; at unchanged
+     * dimensions it preserves the texture contents. Do not clear here: each
+     * weighted premultiplied sample must be added in place. This removes the
+     * previous read-previous/write-next full-canvas ping-pong pass. */
+    gs_texrender_reset(target);
+    if (!gs_texrender_begin(target, session->width, session->height))
+        return false;
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_ortho(0.0f, static_cast<float>(session->width), 0.0f,
+             static_cast<float>(session->height), -100.0f, 100.0f);
+    gs_effect_set_texture(sample_param, sample);
+    gs_effect_set_float(weight_param, sample_weight);
+    gs_blend_state_push();
+    gs_enable_blending(true);
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
+    gs_matrix_push();
+    gs_matrix_identity();
+    while (gs_effect_loop(effect, "Accumulate"))
+        gs_draw_sprite(sample, 0, session->width, session->height);
+    gs_matrix_pop();
+    gs_blend_state_pop();
+    gs_texrender_end(target);
+    return true;
+}
+
+static bool append_gpu_temporal_coverage(
+    TitleGpuRenderSession *session, gs_texture_t *sample,
+    gs_texrender_t *target)
+{
+    if (!session || !sample || !target)
+        return false;
+    if (!session->motion_composite_effect &&
+        !ensure_session_shader_effect(
+            session, session->motion_composite_effect, "core:temporal-composite",
+            "GPU temporal composite", kGpuTemporalCompositeEffect,
+            "obs-bgs-gpu-temporal-composite.effect",
+            &session->motion_composite_effect))
+        return false;
+    gs_effect_t *effect = session->motion_composite_effect;
+    gs_eparam_t *sample_param = bgl_effect_param(effect, "sampleImage");
+    if (!sample_param)
+        return false;
+
+    gs_texrender_reset(target);
+    if (!gs_texrender_begin(target, session->width, session->height))
+        return false;
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_ortho(0.0f, static_cast<float>(session->width), 0.0f,
+             static_cast<float>(session->height), -100.0f, 100.0f);
+    gs_effect_set_texture(sample_param, sample);
+    gs_blend_state_push();
+    gs_enable_blending(true);
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
+    gs_blend_op(GS_BLEND_OP_MAX);
+    gs_matrix_push();
+    gs_matrix_identity();
+    while (gs_effect_loop(effect, "Coverage"))
+        gs_draw_sprite(sample, 0, session->width, session->height);
+    gs_matrix_pop();
+    gs_blend_state_pop();
+    gs_texrender_end(target);
+    return true;
+}
+
+static bool resolve_gpu_motion_blur(
+    TitleGpuRenderSession *session, gs_texture_t *exposure,
+    gs_texture_t *coverage, gs_texture_t *current_frame,
+    float effect_mix, gs_texrender_t *target)
+{
+    if (!session || !exposure || !coverage || !current_frame || !target)
+        return false;
+    if (!session->motion_composite_effect &&
+        !ensure_session_shader_effect(
+            session, session->motion_composite_effect, "core:temporal-composite",
+            "GPU temporal composite", kGpuTemporalCompositeEffect,
+            "obs-bgs-gpu-temporal-composite.effect",
+            &session->motion_composite_effect))
+        return false;
+    gs_effect_t *effect = session->motion_composite_effect;
+    gs_eparam_t *trail_param = bgl_effect_param(effect, "accumulatedImage");
+    gs_eparam_t *coverage_param = bgl_effect_param(effect, "coverageImage");
+    gs_eparam_t *sharp_param = bgl_effect_param(effect, "sampleImage");
+    gs_eparam_t *opacity_param = bgl_effect_param(effect, "sampleWeight");
+    gs_eparam_t *has_param = bgl_effect_param(effect, "hasAccumulated");
+    if (!trail_param || !coverage_param || !sharp_param ||
+        !opacity_param || !has_param)
+        return false;
+
+    struct vec4 clear;
+    vec4_zero(&clear);
+    if (!begin_gpu_target(target, session->width, session->height, clear))
+        return false;
+    gs_effect_set_texture(trail_param, exposure);
+    gs_effect_set_texture(coverage_param, coverage);
+    gs_effect_set_texture(sharp_param, current_frame);
+    gs_effect_set_float(opacity_param, std::clamp(effect_mix, 0.0f, 1.0f));
+    gs_effect_set_int(has_param, 1);
+    gs_blend_state_push();
+    gs_enable_blending(false);
+    gs_matrix_push();
+    gs_matrix_identity();
+    while (gs_effect_loop(effect, "Resolve"))
+        gs_draw_sprite(current_frame, 0, session->width, session->height);
+    gs_matrix_pop();
+    gs_blend_state_pop();
+    gs_texrender_end(target);
+    return true;
+}
+
+static int gpu_motion_blur_realtime_sample_cap(
+    const TitleGpuRenderSession *session, bool complete_temporal_pipeline,
+    bool requires_cpu_raster = false)
+{
+    if (!session || !title_gpu_render_session_is_realtime_output(session))
+        return 64;
+
+    const uint64_t pixels = static_cast<uint64_t>(
+        std::max(1u, session->width)) * static_cast<uint64_t>(
+        std::max(1u, session->height));
+    if (complete_temporal_pipeline) {
+        /* CPU geometry generation/upload (animated Trim Paths, text geometry)
+         * remains the genuinely expensive source path. GPU-only effect sampling
+         * such as animated Noise/Grain is allowed a higher temporal density so
+         * the effect itself participates in the exposure instead of appearing
+         * frozen or posterized. */
+        if (requires_cpu_raster)
+            return pixels >= 3000000ull ? 2 : 3;
+        if (pixels >= 7000000ull)
+            return 6;
+        if (pixels >= 3000000ull)
+            return 8;
+        return 12;
+    }
+    /* Resident-texture transform sampling is only a draw call per exposure
+     * sample. Do not apply the old full-pipeline 2-6 sample budget here. */
+    if (pixels >= 7000000ull)
+        return 32;
+    if (pixels >= 3000000ull)
+        return 48;
+    return 64;
+}
+
+static double gpu_motion_blur_temporal_raster_scale(
+    const TitleGpuRenderSession *session)
+{
+    if (!session)
+        return 1.0;
+    if (session->editor_draft)
+        return std::clamp(
+            static_cast<double>(session->preview_quality_scale), 0.25, 1.0);
+    if (!title_gpu_render_session_is_realtime_output(session))
+        return 1.0;
+
+    /* The sharp current frame remains full resolution. Only historical trail
+     * samples use this reduced source raster, which is visually tolerant of the
+     * reduction and removes the source-only CPU raster/upload spike. */
+    const uint64_t pixels = static_cast<uint64_t>(
+        std::max(1u, session->width)) * static_cast<uint64_t>(
+        std::max(1u, session->height));
+    if (pixels >= 7000000ull)
+        return 0.375;
+    if (pixels >= 1900000ull)
+        return 0.5;
+    return 0.625;
+}
 
 /* Ordinary artwork effects execute on the transform-neutral, padded layer
  * raster. This preserves effect order and layer-space coordinates; the final
@@ -1338,8 +1983,14 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                                        double opacity_override = -1.0,
                                        const std::string &visibility_group_id = std::string(),
                                        bool ignore_visibility = false,
-                                       gs_texture_t *composition_background = nullptr)
+                                       gs_texture_t *composition_background = nullptr,
+                                       TitleGpuRenderSession::LayerRaster *raster_override = nullptr)
 {
+    /* Light and Empty controls never produce a foreground texture. Return failure instead of
+     * a successful no-op so direct callers cannot consume stale reusable
+     * layer-target storage if visibility filtering is ever bypassed. */
+    if (layer.type == LayerType::Light) return false;
+    if (layer.type == LayerType::Empty) return false;
     if (layer.type == LayerType::TransitionInput &&
         (title.graphic_type != TitleGraphicType::Stinger ||
          title.stinger_switch_mode != StingerSwitchMode::ManualSceneAnimation))
@@ -1348,18 +1999,545 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
 
     const std::string resolved_raster_id = raster_id.empty()
         ? gpu_session_layer_id(layer) : raster_id;
-    auto found = session->layers.find(resolved_raster_id);
-    if (found == session->layers.end())
-        return false;
-    auto &entry = found->second;
+    TitleGpuRenderSession::LayerRaster *entry_ptr = raster_override;
+    if (!entry_ptr) {
+        auto found = session->layers.find(resolved_raster_id);
+        if (found == session->layers.end())
+            return false;
+        entry_ptr = &found->second;
+    }
+    auto &entry = *entry_ptr;
     const bool transition_input = layer.type == LayerType::TransitionInput &&
         layer.transition_input_slot >= 0 && layer.transition_input_slot <= 1 &&
         session->transition_input_textures[layer.transition_input_slot];
-    if (!transition_input && !entry.texture)
-        return false;
     if (layer.type == LayerType::TransitionInput && !transition_input &&
         !session->transition_input_preview_enabled)
         return false;
+
+    bool use_transform_motion_fast_path = false;
+    double motion_shutter_start = title_time;
+    double motion_shutter_end = title_time;
+    int motion_transform_samples = 0;
+    float motion_trail_opacity = 0.0f;
+
+    const LayerEffect *motion_config = layer_motion_blur_effect(layer);
+    const bool persistence_motion_bypass = motion_config &&
+        gpu_layer_uses_cue_persistence(title, layer);
+    const ResolvedLayerEffect motion = motion_config
+        ? resolve_gpu_layer_effect(*motion_config,
+                                   std::max(0.0, resolved_time - layer.in_time))
+        : ResolvedLayerEffect{};
+    if (persistence_motion_bypass && motion.effect_opacity > 0.0f &&
+        motion.effect_size > 0.0f) {
+        /* Background Persistence freezes this layer's complete visual clock.
+         * A frozen layer has no shutter travel, so temporal accumulation is
+         * both semantically wrong and unsafe: it repeatedly clears/reuses the
+         * shared Motion Blur targets for samples that must be identical. The
+         * incoming/non-persistent cue layers still execute Motion Blur. */
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=motion-blur-persistence-bypass title=%1 layer=%2 time=%3 resolvedTime=%4 asset=%5")
+            .arg(QString::fromStdString(title.id))
+            .arg(QString::fromStdString(layer.id))
+            .arg(title_time, 0, 'f', 9)
+            .arg(resolved_time, 0, 'f', 9)
+            .arg(layer.asset_owner_id.empty() ? 0 : 1));
+    }
+    if (!persistence_motion_bypass && motion_config &&
+        motion.effect_opacity > 0.0f &&
+        motion.effect_size > 0.0f && layer.type != LayerType::Clock) {
+        Layer temporal_layer = layer_without_motion_blur_effects(layer);
+        const bool text_like = temporal_layer.type == LayerType::Text ||
+                               temporal_layer.type == LayerType::Clock ||
+                               temporal_layer.type == LayerType::Ticker;
+        const bool has_text_transition_descriptor = std::any_of(
+            temporal_layer.transitions.begin(), temporal_layer.transitions.end(),
+            [](const LayerTransition &transition) {
+                return layer_transition_type_is_text(transition.type);
+            });
+
+        const double frame_seconds = std::max(1.0 / 240.0,
+                                              source_frame_duration());
+        const double shutter_seconds = frame_seconds *
+            std::clamp(static_cast<double>(motion.effect_size), 0.0, 720.0) /
+            360.0;
+        const double start = std::clamp(
+            title_time + shutter_seconds *
+                (motion.effect_centered ? -0.5 : -1.0),
+            0.0, std::max(0.0, title.duration));
+        const double end = std::clamp(
+            title_time + shutter_seconds *
+                (motion.effect_centered ? 0.5 : 0.0),
+            0.0, std::max(0.0, title.duration));
+        const double travel = layer_shutter_travel_pixels(
+            title, temporal_layer, start, end);
+
+        const bool active_text_transition = text_like &&
+            has_text_transition_descriptor &&
+            layer_has_text_transition_during_shutter(
+                title, temporal_layer, start, end);
+        const bool active_general_blur =
+            layer_has_general_blur_during_shutter(
+                title, temporal_layer, start, end);
+        const bool active_screen_space_effect =
+            layer_has_screen_space_effect_during_shutter(
+                title, temporal_layer, start, end);
+
+        /* Transition-managed text animators remain in the saved/runtime stack
+         * even outside their entrance/exit window. Exclude them from the motion
+         * probe unless the shutter actually overlaps that window, otherwise one
+         * dormant transition makes Motion Blur rerender the complete text/effect
+         * pipeline for the entire title. */
+        Layer temporal_probe = temporal_layer;
+        if (!active_text_transition) {
+            temporal_probe.text_animators.animators.erase(
+                std::remove_if(
+                    temporal_probe.text_animators.animators.begin(),
+                    temporal_probe.text_animators.animators.end(),
+                    [](const TextAnimator &animator) {
+                        return animator.transition_managed;
+                    }),
+                temporal_probe.text_animators.animators.end());
+        }
+        const double temporal_resolved_start = gpu_layer_render_time(
+            title, temporal_probe, start);
+        const double temporal_resolved_end = gpu_layer_render_time(
+            title, temporal_probe, end);
+        const double temporal_local_start = std::max(
+            0.0, temporal_resolved_start - temporal_probe.in_time);
+        const double temporal_local_end = std::max(
+            0.0, temporal_resolved_end - temporal_probe.in_time);
+        const bool temporal_source_change =
+            layer_non_transform_animation_changes_during_interval(
+                temporal_probe, temporal_local_start, temporal_local_end) ||
+            active_text_transition || active_general_blur ||
+            temporal_layer.type == LayerType::Ticker ||
+            temporal_layer.type == LayerType::TransitionInput;
+        const bool requires_full_temporal_pipeline =
+            temporal_source_change ||
+            (apply_pixel_effects && active_screen_space_effect);
+
+        const bool projected_motion =
+            bgs::transform3d::layer_or_ancestor_uses_3d(title, temporal_layer);
+        const bool image_or_video_motion =
+            layer_type_is_image_like(temporal_layer.type);
+        const double blur_mix = std::clamp(
+            static_cast<double>(motion.effect_opacity), 0.0, 1.0);
+
+        /* Development Version 288 performance audit:
+         *
+         * The dev286/287 implementation recursively rendered the complete layer
+         * and every effect once per shutter sample, then issued another full-HD/
+         * UHD ping-pong composite for every sample. A configured transition was
+         * enough to select that path even while it was inactive. On ordinary
+         * transform motion this multiplied OBS render cost by 14-96.
+         *
+         * Static visual content now takes the transform-only path below: the
+         * already effected local texture is reused, while transform, parent,
+         * camera, wipe and general transition parameters are still evaluated at
+         * each shutter time. Full temporal rendering remains for animated Trim
+         * Paths, active text transitions, animated source/effect geometry,
+         * ticker content, active transition blur and screen-space effects. */
+        if (!requires_full_temporal_pipeline) {
+            if (travel < 0.01) {
+                return render_gpu_layer_to_target(
+                    session, title, temporal_layer, title_time, target,
+                    apply_pixel_effects, resolved_raster_id, opacity_override,
+                    visibility_group_id, ignore_visibility,
+                    composition_background, raster_override);
+            }
+
+            /* Match the dense pre-regression GPU sampler. The large source
+             * slowdown fixed in dev288 came from recursively rebuilding the full
+             * layer/effect pipeline per sample, not from these resident-texture
+             * transform draws. Restore distance-adaptive density here while the
+             * expensive temporal branch below keeps its separate budget. */
+            int sample_cap = projected_motion
+                ? (image_or_video_motion ? 96 : 48)
+                : (image_or_video_motion ? 64 : 40);
+            sample_cap = std::min(
+                sample_cap,
+                gpu_motion_blur_realtime_sample_cap(session, false, false));
+            if (session->editor_draft)
+                sample_cap = std::min(sample_cap, 24);
+            sample_cap = std::max(2, sample_cap);
+            const double density = projected_motion
+                ? (image_or_video_motion ? 1.25 : 0.90)
+                : (image_or_video_motion ? 0.95 : 0.80);
+
+            use_transform_motion_fast_path = true;
+            motion_shutter_start = start;
+            motion_shutter_end = end;
+            motion_transform_samples = motion_blur_quality_sample_count(
+                motion.effect_samples, travel, density, sample_cap);
+            motion_trail_opacity = static_cast<float>(blur_mix);
+        } else {
+            if (active_text_transition) {
+                temporal_layer.text_animators =
+                    resolved_text_transition_animator_stack(
+                        temporal_layer.transitions,
+                        temporal_layer.text_animators,
+                        temporal_layer.in_time, temporal_layer.out_time);
+            }
+
+            /* Only source/geometry properties require a fresh base raster at
+             * each shutter time. Ordinary pixel effects are removed from this
+             * probe because the recursive sample render resolves them on the GPU
+             * after the source raster. Trim Paths is retained because it changes
+             * stroke geometry before rasterization. */
+            Layer raster_probe = temporal_layer;
+            raster_probe.effects.erase(
+                std::remove_if(
+                    raster_probe.effects.begin(), raster_probe.effects.end(),
+                    [](const LayerEffect &effect) {
+                        return effect.type != LayerEffectType::TrimPaths;
+                    }),
+                raster_probe.effects.end());
+            const bool temporal_base_raster =
+                layer_non_transform_animation_changes_during_interval(
+                    raster_probe, temporal_local_start, temporal_local_end) ||
+                temporal_layer.type == LayerType::Ticker;
+
+            /* A complete sampled layer can include several effect passes. When
+             * temporal_base_raster is true it additionally performs CPU geometry
+             * rasterization and a GPU upload per sample. Give that path its own
+             * stricter source budget instead of treating all temporal work as
+             * equivalent. */
+            int sample_cap = temporal_base_raster
+                ? (projected_motion ? 8 : 6)
+                : (projected_motion
+                    ? (image_or_video_motion ? 20 : 16)
+                    : (image_or_video_motion ? 16 : 12));
+            if (temporal_base_raster && image_or_video_motion)
+                sample_cap += 2;
+            sample_cap = std::min(
+                sample_cap,
+                gpu_motion_blur_realtime_sample_cap(
+                    session, true, temporal_base_raster));
+            if (session->editor_draft)
+                sample_cap = std::min(sample_cap, temporal_base_raster ? 4 : 6);
+            sample_cap = std::max(2, sample_cap);
+            const double density = temporal_base_raster
+                ? (projected_motion ? 0.18 : 0.12)
+                : (projected_motion ? 0.42 : 0.30);
+            const int samples = motion_blur_quality_sample_count(
+                motion.effect_samples, travel, density, sample_cap);
+
+            gs_texrender_t *local_motion_sample_target = nullptr;
+            gs_texrender_t *local_motion_accum_target = nullptr;
+            gs_texrender_t *local_motion_coverage_target = nullptr;
+            const bool nested_temporal_pass = session->motion_temporal_depth > 0;
+            if (nested_temporal_pass) {
+                local_motion_sample_target = bgl_create_motion_blur_sample_target();
+                local_motion_accum_target = bgl_create_motion_blur_accumulation_target();
+                local_motion_coverage_target = bgl_create_motion_blur_accumulation_target();
+                if (!local_motion_sample_target ||
+                    !local_motion_accum_target ||
+                    !local_motion_coverage_target) {
+                    if (local_motion_sample_target)
+                        gs_texrender_destroy(local_motion_sample_target);
+                    if (local_motion_accum_target)
+                        gs_texrender_destroy(local_motion_accum_target);
+                    if (local_motion_coverage_target)
+                        gs_texrender_destroy(local_motion_coverage_target);
+                    session->last_error =
+                        "Could not allocate nested Motion Blur render targets.";
+                    return false;
+                }
+            }
+            gs_texrender_t *motion_sample_target = nested_temporal_pass
+                ? local_motion_sample_target : session->motion_sample_target;
+            gs_texrender_t *motion_accum_target = nested_temporal_pass
+                ? local_motion_accum_target : session->motion_accum_target;
+            gs_texrender_t *motion_coverage_target = nested_temporal_pass
+                ? local_motion_coverage_target : session->motion_coverage_target;
+            ++session->motion_temporal_depth;
+
+            TitleGpuRenderSession::LayerRaster temporal_entry;
+            auto release_temporal_entry = [&]() {
+                if (temporal_entry.text_layer)
+                    release_gpu_text_layer(session, temporal_entry);
+                for (gs_texrender_t *&primitive_target :
+                     temporal_entry.primitive_targets) {
+                    if (primitive_target)
+                        gs_texrender_destroy(primitive_target);
+                    primitive_target = nullptr;
+                }
+                if (temporal_entry.texture)
+                    gs_texture_destroy(temporal_entry.texture);
+                if (temporal_entry.effect_cache)
+                    gs_texrender_destroy(temporal_entry.effect_cache);
+                if (temporal_entry.transform_grid)
+                    gs_vertexbuffer_destroy(temporal_entry.transform_grid);
+                temporal_entry.texture = nullptr;
+                temporal_entry.effect_cache = nullptr;
+                temporal_entry.transform_grid = nullptr;
+            };
+            bool temporal_resources_released = false;
+            auto release_temporal_resources = [&]() noexcept {
+                if (temporal_resources_released)
+                    return;
+                release_temporal_entry();
+                if (session->motion_temporal_depth > 0)
+                    --session->motion_temporal_depth;
+                if (local_motion_sample_target)
+                    gs_texrender_destroy(local_motion_sample_target);
+                if (local_motion_accum_target)
+                    gs_texrender_destroy(local_motion_accum_target);
+                if (local_motion_coverage_target)
+                    gs_texrender_destroy(local_motion_coverage_target);
+                local_motion_sample_target = nullptr;
+                local_motion_accum_target = nullptr;
+                local_motion_coverage_target = nullptr;
+                temporal_resources_released = true;
+            };
+            auto temporal_resource_deleter = [&](void *) noexcept {
+                release_temporal_resources();
+            };
+            std::unique_ptr<void, decltype(temporal_resource_deleter)>
+                temporal_resource_guard(
+                    static_cast<void *>(&temporal_entry), temporal_resource_deleter);
+
+            struct vec4 accumulation_clear;
+            vec4_zero(&accumulation_clear);
+            bool accumulation_ok = begin_gpu_target(
+                motion_accum_target, session->width, session->height,
+                accumulation_clear);
+            bool temporal_sample_exception = false;
+            std::string temporal_sample_exception_message;
+            if (accumulation_ok)
+                gs_texrender_end(motion_accum_target);
+            if (accumulation_ok) {
+                accumulation_ok = begin_gpu_target(
+                    motion_coverage_target, session->width, session->height,
+                    accumulation_clear);
+                if (accumulation_ok)
+                    gs_texrender_end(motion_coverage_target);
+            }
+            int accumulated_samples = 0;
+            auto accumulate_texture = [&](gs_texture_t *sample_texture,
+                                          float sample_weight) -> bool {
+                if (!sample_texture || sample_weight <= 0.0f)
+                    return false;
+                if (!append_gpu_temporal_sample(
+                        session, sample_texture, sample_weight,
+                        motion_accum_target) ||
+                    !append_gpu_temporal_coverage(
+                        session, sample_texture, motion_coverage_target))
+                    return false;
+                ++accumulated_samples;
+                return true;
+            };
+            auto render_temporal_sample = [&](double sample_time) -> bool {
+                TitleGpuRenderSession::LayerRaster *sample_entry =
+                    raster_override;
+                if (temporal_base_raster) {
+                    const double sample_resolved_time = gpu_layer_render_time(
+                        title, temporal_layer, sample_time);
+                    const double sample_local_time = std::max(
+                        0.0, sample_resolved_time - temporal_layer.in_time);
+                    double raster_scale =
+                        gpu_motion_blur_temporal_raster_scale(session);
+
+                    /* Development Version 291: a trimmed geometry sample with
+                     * a legacy layer shadow (or a layer-space Drop Shadow /
+                     * Long Shadow effect) must keep a 1:1 local raster. The
+                     * real-time source path normally downsamples historical
+                     * temporal rasters; with Trim Paths the visible alpha bounds
+                     * change every sample, and resampling an already-offset
+                     * shadow against that changing local surface introduced an
+                     * apparent shadow translation. The editor did not show it
+                     * because its temporal raster stayed at full resolution.
+                     * Keep only this coordinate-sensitive combination exact;
+                     * ordinary Trim Paths motion blur retains the source budget. */
+                    const bool has_active_trim_paths = std::any_of(
+                        temporal_layer.effects.begin(), temporal_layer.effects.end(),
+                        [sample_local_time](const LayerEffect &effect) {
+                            return effect.type == LayerEffectType::TrimPaths &&
+                                   eval_effect_enabled(effect, sample_local_time);
+                        });
+                    const ShadowRenderParams sampled_shadow =
+                        evaluated_shadow_params(temporal_layer, sample_local_time);
+                    const bool has_legacy_shadow =
+                        sampled_shadow.drop_enabled || sampled_shadow.long_enabled;
+                    const bool has_layer_space_shadow_effect = std::any_of(
+                        temporal_layer.effects.begin(), temporal_layer.effects.end(),
+                        [sample_local_time](const LayerEffect &effect) {
+                            if (!eval_effect_enabled(effect, sample_local_time) ||
+                                effect_execution_space(effect) !=
+                                    LayerEffectSpace::LayerSpace)
+                                return false;
+                            return effect.type == LayerEffectType::DropShadow ||
+                                   effect.type == LayerEffectType::LongShadow;
+                        });
+                    if (has_active_trim_paths &&
+                        (has_legacy_shadow || has_layer_space_shadow_effect))
+                        raster_scale = 1.0;
+
+                    MotionBaseRaster raster;
+                    try {
+                        raster = render_gpu_layer_base_raster(
+                            title, temporal_layer, sample_resolved_time,
+                            raster_scale,
+                            session->scene_mask_placeholder_preview_enabled,
+                            session->video_decode_client);
+                    } catch (const std::exception &error) {
+                        temporal_sample_exception = true;
+                        temporal_sample_exception_message = error.what();
+                        BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+                            "stage=temporal-sample-exception title=%1 layer=%2 sampleTime=%3 error=%4 fallback=current-transition-frame")
+                            .arg(QString::fromStdString(title.id))
+                            .arg(QString::fromStdString(layer.id))
+                            .arg(sample_time, 0, 'f', 9)
+                            .arg(QString::fromUtf8(error.what())));
+                        return false;
+                    } catch (...) {
+                        temporal_sample_exception = true;
+                        temporal_sample_exception_message =
+                            "unknown temporal raster exception";
+                        BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+                            "stage=temporal-sample-exception title=%1 layer=%2 sampleTime=%3 error=unknown fallback=current-transition-frame")
+                            .arg(QString::fromStdString(title.id))
+                            .arg(QString::fromStdString(layer.id))
+                            .arg(sample_time, 0, 'f', 9));
+                        return false;
+                    }
+
+                    if (raster.image.isNull()) {
+                        /* Empty Trim Paths/text-transition samples are real
+                         * transparent exposure samples, not render failures. */
+                        return copy_full_canvas_gpu_texture(
+                            session, nullptr, motion_sample_target);
+                    }
+
+                    temporal_entry.pending_image = raster.image;
+                    temporal_entry.origin = raster.origin;
+                    temporal_entry.logical_width = raster.logical_width > 0.0
+                        ? raster.logical_width : raster.image.width();
+                    temporal_entry.logical_height = raster.logical_height > 0.0
+                        ? raster.logical_height : raster.image.height();
+                    temporal_entry.base_box_width = std::max(
+                        0.0001, eval_box_width(
+                            temporal_layer, sample_local_time));
+                    temporal_entry.base_box_height = std::max(
+                        0.0001, eval_box_height(
+                            temporal_layer, sample_local_time));
+                    temporal_entry.layer_box_rect = raster.layer_box_rect;
+                    temporal_entry.image_clip_rect = raster.image_clip_rect;
+                    temporal_entry.gpu_text = false;
+                    temporal_entry.gpu_primitive = false;
+                    temporal_entry.pending_upload = true;
+                    if (!upload_gpu_layer_raster(session, temporal_entry))
+                        return false;
+                    sample_entry = &temporal_entry;
+                }
+
+                try {
+                    return render_gpu_layer_to_target(
+                        session, title, temporal_layer, sample_time,
+                        motion_sample_target, apply_pixel_effects,
+                        resolved_raster_id, opacity_override,
+                        visibility_group_id, ignore_visibility,
+                        composition_background, sample_entry);
+                } catch (const std::exception &error) {
+                    temporal_sample_exception = true;
+                    temporal_sample_exception_message = error.what();
+                    BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+                        "stage=temporal-sample-render-exception title=%1 layer=%2 sampleTime=%3 error=%4 fallback=current-transition-frame")
+                        .arg(QString::fromStdString(title.id))
+                        .arg(QString::fromStdString(layer.id))
+                        .arg(sample_time, 0, 'f', 9)
+                        .arg(QString::fromUtf8(error.what())));
+                    return false;
+                } catch (...) {
+                    temporal_sample_exception = true;
+                    temporal_sample_exception_message =
+                        "unknown temporal sample render exception";
+                    BGL_LOG_ERROR("GpuPipeline", QStringLiteral(
+                        "stage=temporal-sample-render-exception title=%1 layer=%2 sampleTime=%3 error=unknown fallback=current-transition-frame")
+                        .arg(QString::fromStdString(title.id))
+                        .arg(QString::fromStdString(layer.id))
+                        .arg(sample_time, 0, 'f', 9));
+                    return false;
+                }
+            };
+            auto render_and_accumulate = [&](double sample_time,
+                                             float sample_weight) -> bool {
+                if (!render_temporal_sample(sample_time))
+                    return false;
+                return accumulate_texture(
+                    gs_texrender_get_texture(motion_sample_target),
+                    sample_weight);
+            };
+
+            /* Integrate a normalized shutter exposure plus the max-alpha
+             * envelope of the same samples. Development Version 296 resolves
+             * temporal color against that envelope; the current frame is only
+             * rendered for an authored partial dry/wet mix. */
+            const float sample_weight =
+                1.0f / static_cast<float>(samples);
+            for (int i = 0; accumulation_ok && i < samples; ++i) {
+                const double f = (static_cast<double>(i) + 0.5) /
+                                 static_cast<double>(samples);
+                const double sample_time = start + (end - start) * f;
+                if (!render_and_accumulate(sample_time, sample_weight)) {
+                    accumulation_ok = false;
+                    break;
+                }
+            }
+
+            if (accumulation_ok && accumulated_samples > 0) {
+                gs_texture_t *exposure_texture =
+                    gs_texrender_get_texture(motion_accum_target);
+                gs_texture_t *coverage_texture =
+                    gs_texrender_get_texture(motion_coverage_target);
+                gs_texture_t *current_texture = exposure_texture;
+                if (blur_mix < 0.9999) {
+                    accumulation_ok = render_temporal_sample(title_time);
+                    if (accumulation_ok)
+                        current_texture =
+                            gs_texrender_get_texture(motion_sample_target);
+                }
+                if (accumulation_ok) {
+                    accumulation_ok = resolve_gpu_motion_blur(
+                        session, exposure_texture, coverage_texture,
+                        current_texture, static_cast<float>(blur_mix), target);
+                }
+            }
+            release_temporal_resources();
+            if (!accumulation_ok) {
+                /* A transition sample may fail because its dynamic text raster
+                 * throws, a first-use temporal shader is still compiling, or a
+                 * nested target cannot be acquired. Motion Blur is optional;
+                 * the authored transition is not. Re-render the displayed frame
+                 * through the normal stack with Motion Blur removed instead of
+                 * letting an exception escape into Qt/OBS or dropping the layer. */
+                BGL_LOG_WARNING("GpuPipeline", QStringLiteral(
+                    "stage=temporal-fallback title=%1 layer=%2 time=%3 activeTextTransition=%4 exception=%5 reason=%6")
+                    .arg(QString::fromStdString(title.id))
+                    .arg(QString::fromStdString(layer.id))
+                    .arg(title_time, 0, 'f', 9)
+                    .arg(active_text_transition ? 1 : 0)
+                    .arg(temporal_sample_exception ? 1 : 0)
+                    .arg(temporal_sample_exception_message.empty()
+                        ? QStringLiteral("temporal-pass-unavailable")
+                        : QString::fromStdString(
+                              temporal_sample_exception_message)));
+                return render_gpu_layer_to_target(
+                    session, title, temporal_layer, title_time, target,
+                    apply_pixel_effects, resolved_raster_id, opacity_override,
+                    visibility_group_id, ignore_visibility,
+                    composition_background, raster_override);
+            }
+            return true;
+        }
+    }
+
+    /* A time-sampled geometry/text source may be transparent at the displayed
+     * frame while still contributing visible shutter samples. Defer the normal
+     * missing-raster rejection until after Motion Blur has had that chance. */
+    if (!transition_input && !entry.texture)
+        return false;
+
     gs_texture_t *source_texture = transition_input
         ? session->transition_input_textures[layer.transition_input_slot]
         : entry.texture;
@@ -1408,131 +2586,182 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
     if (!local_texture)
         return false;
 
+    const bool compositor_visible = visibility_group_id.empty()
+        ? gpu_layer_chain_visible(title, layer, title_time)
+        : gpu_layer_visible_in_group_compositor(title, layer, title_time,
+                                                visibility_group_id);
+    const double current_opacity = (ignore_visibility || compositor_visible)
+        ? (opacity_override >= 0.0
+            ? std::clamp(opacity_override, 0.0, 1.0)
+            : std::clamp(gpu_layer_chain_opacity(title, layer, title_time),
+                         0.0, 1.0))
+        : 0.0;
+
+    if (use_transform_motion_fast_path && current_opacity > 0.0 &&
+        motion_transform_samples >= 2) {
+        /* The fast path uses the same normalized exposure plus temporal
+         * authored-alpha ceiling as the complete effect/transition path. The
+         * shared resolver converts exposure/coverage into occupancy alpha. At
+         * full strength no current-frame color is rendered; partial effect
+         * opacity alone creates a conventional premultiplied dry/wet mix. */
+        gs_texrender_t *local_motion_sample_target = nullptr;
+        gs_texrender_t *local_motion_accum_target = nullptr;
+        gs_texrender_t *local_motion_coverage_target = nullptr;
+        const bool nested_temporal_pass = session->motion_temporal_depth > 0;
+        if (nested_temporal_pass) {
+            local_motion_sample_target = bgl_create_motion_blur_sample_target();
+            local_motion_accum_target = bgl_create_motion_blur_accumulation_target();
+            local_motion_coverage_target = bgl_create_motion_blur_accumulation_target();
+            if (!local_motion_sample_target || !local_motion_accum_target ||
+                !local_motion_coverage_target) {
+                if (local_motion_sample_target)
+                    gs_texrender_destroy(local_motion_sample_target);
+                if (local_motion_accum_target)
+                    gs_texrender_destroy(local_motion_accum_target);
+                if (local_motion_coverage_target)
+                    gs_texrender_destroy(local_motion_coverage_target);
+                session->last_error =
+                    "Could not allocate nested fast Motion Blur render targets.";
+                return false;
+            }
+        }
+        gs_texrender_t *motion_sample_target = nested_temporal_pass
+            ? local_motion_sample_target : session->motion_sample_target;
+        gs_texrender_t *motion_accum_target = nested_temporal_pass
+            ? local_motion_accum_target : session->motion_accum_target;
+        gs_texrender_t *motion_coverage_target = nested_temporal_pass
+            ? local_motion_coverage_target : session->motion_coverage_target;
+        ++session->motion_temporal_depth;
+
+        struct vec4 motion_clear;
+        vec4_zero(&motion_clear);
+        bool motion_ok = begin_gpu_target(
+            motion_accum_target, session->width, session->height, motion_clear);
+        if (motion_ok) {
+            gs_blend_state_push();
+            gs_enable_blending(true);
+            gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
+            gs_blend_op(GS_BLEND_OP_ADD);
+            const float sample_weight = static_cast<float>(
+                current_opacity / static_cast<double>(motion_transform_samples));
+            for (int i = 0; i < motion_transform_samples; ++i) {
+                const double f = (static_cast<double>(i) + 0.5) /
+                                 static_cast<double>(motion_transform_samples);
+                const double sample_time = motion_shutter_start +
+                    (motion_shutter_end - motion_shutter_start) * f;
+                const bool sample_visible = ignore_visibility ||
+                    (visibility_group_id.empty()
+                        ? gpu_layer_chain_visible(title, layer, sample_time)
+                        : gpu_layer_visible_in_group_compositor(
+                              title, layer, sample_time, visibility_group_id));
+                if (!sample_visible)
+                    continue;
+                draw_gpu_layer_texture(
+                    session, &entry, title, layer, local_texture,
+                    draw_origin, source_width, source_height,
+                    draw_logical_width, draw_logical_height,
+                    draw_clip_rect, draw_base_box_width,
+                    draw_base_box_height, sample_time, sample_weight);
+            }
+            gs_blend_state_pop();
+            gs_texrender_end(motion_accum_target);
+        }
+
+        if (motion_ok) {
+            motion_ok = begin_gpu_target(
+                motion_coverage_target, session->width, session->height,
+                motion_clear);
+            if (motion_ok) {
+                gs_blend_state_push();
+                gs_enable_blending(true);
+                gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
+                gs_blend_op(GS_BLEND_OP_MAX);
+                for (int i = 0; i < motion_transform_samples; ++i) {
+                    const double f = (static_cast<double>(i) + 0.5) /
+                                     static_cast<double>(motion_transform_samples);
+                    const double sample_time = motion_shutter_start +
+                        (motion_shutter_end - motion_shutter_start) * f;
+                    const bool sample_visible = ignore_visibility ||
+                        (visibility_group_id.empty()
+                            ? gpu_layer_chain_visible(title, layer, sample_time)
+                            : gpu_layer_visible_in_group_compositor(
+                                  title, layer, sample_time,
+                                  visibility_group_id));
+                    if (!sample_visible)
+                        continue;
+                    draw_gpu_layer_texture(
+                        session, &entry, title, layer, local_texture,
+                        draw_origin, source_width, source_height,
+                        draw_logical_width, draw_logical_height,
+                        draw_clip_rect, draw_base_box_width,
+                        draw_base_box_height, sample_time,
+                        static_cast<float>(current_opacity));
+                }
+                gs_blend_state_pop();
+                gs_texrender_end(motion_coverage_target);
+            }
+        }
+
+        gs_texture_t *exposure_texture = motion_ok
+            ? gs_texrender_get_texture(motion_accum_target) : nullptr;
+        gs_texture_t *coverage_texture = motion_ok
+            ? gs_texrender_get_texture(motion_coverage_target) : nullptr;
+        gs_texture_t *current_texture = exposure_texture;
+        if (motion_ok && motion_trail_opacity < 0.9999f) {
+            motion_ok = begin_gpu_target(
+                motion_sample_target, session->width, session->height,
+                motion_clear);
+            if (motion_ok) {
+                gs_enable_blending(true);
+                gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+                draw_gpu_layer_texture(
+                    session, &entry, title, layer, local_texture,
+                    draw_origin, source_width, source_height,
+                    draw_logical_width, draw_logical_height,
+                    draw_clip_rect, draw_base_box_width,
+                    draw_base_box_height, title_time,
+                    static_cast<float>(current_opacity));
+                gs_texrender_end(motion_sample_target);
+                current_texture =
+                    gs_texrender_get_texture(motion_sample_target);
+            }
+        }
+        if (motion_ok) {
+            motion_ok = resolve_gpu_motion_blur(
+                session, exposure_texture, coverage_texture, current_texture,
+                motion_trail_opacity, target);
+        }
+
+        --session->motion_temporal_depth;
+        if (local_motion_sample_target)
+            gs_texrender_destroy(local_motion_sample_target);
+        if (local_motion_accum_target)
+            gs_texrender_destroy(local_motion_accum_target);
+        if (local_motion_coverage_target)
+            gs_texrender_destroy(local_motion_coverage_target);
+        return motion_ok;
+    }
+
     struct vec4 clear;
     vec4_zero(&clear);
     if (!begin_gpu_target(target, session->width, session->height, clear))
         return false;
-
-    const bool compositor_visible = visibility_group_id.empty()
-        ? gpu_layer_chain_visible(title, layer, title_time)
-        : gpu_layer_visible_in_group_compositor(title, layer, title_time,
-                                            visibility_group_id);
-    const double current_opacity = (ignore_visibility || compositor_visible)
-        ? (opacity_override >= 0.0
-            ? std::clamp(opacity_override, 0.0, 1.0)
-            : std::clamp(gpu_layer_chain_opacity(title, layer, title_time), 0.0, 1.0))
-        : 0.0;
-    const LayerEffect *motion_config = layer_motion_blur_effect(layer);
-    const ResolvedLayerEffect motion = motion_config
-        ? resolve_gpu_layer_effect(*motion_config,
-                                   std::max(0.0, resolved_time - layer.in_time))
-        : ResolvedLayerEffect{};
-    if (current_opacity > 0.0 && motion_config && motion.effect_opacity > 0.0f &&
-        motion.effect_size > 0.0f && layer.type != LayerType::Clock) {
-        const double frame_seconds = std::max(1.0 / 240.0, source_frame_duration());
-        const double shutter_seconds = frame_seconds *
-            std::clamp((double)motion.effect_size, 0.0, 720.0) / 360.0;
-        const double start = std::clamp(
-            title_time + shutter_seconds * (motion.effect_centered ? -0.5 : -1.0),
-            0.0, std::max(0.0, title.duration));
-        const double end = std::clamp(
-            title_time + shutter_seconds * (motion.effect_centered ? 0.5 : 0.0),
-            0.0, std::max(0.0, title.duration));
-        const double travel = layer_shutter_travel_pixels(title, layer, start, end);
-        /* Temporal supersampling stays fully on the GPU, but unbounded sample
-         * counts turn one blurred layer into dozens of full-frame draws. Use a
-         * perceptual density and a strict real-time budget; the current sharp
-         * sample is preserved separately, so long moves remain readable. */
-        /* Development Version 209: projected 3D rotation and camera movement
-         * can move different parts of a layer by very different distances.
-         * Keep a real-time ceiling, but allow enough temporal density to avoid
-         * separated silhouettes on perspective rotation and camera dolly. */
-        const bool projected_motion =
-            bgs::transform3d::layer_or_ancestor_uses_3d(title, layer);
-        const bool image_or_video_motion = layer_type_is_image_like(layer.type);
-        /* Development Version 239: the previous real-time ceiling was too low
-         * for bitmap/video layers and produced visible posterized ghosts.  Text
-         * and vector layers retain the lower budget, while image/video layers
-         * get a continuous-looking shutter density. */
-        const int sample_cap = projected_motion
-            ? (image_or_video_motion ? 96 : 24)
-            : (image_or_video_motion ? 64 : 14);
-        const int configured = std::clamp(motion.effect_samples, 2, sample_cap);
-        const double density = projected_motion
-            ? (image_or_video_motion ? 1.25 : 0.52)
-            : (image_or_video_motion ? 0.95 : 0.32);
-        const int adaptive = static_cast<int>(std::ceil(travel * density)) + 1;
-        const int samples = std::clamp(std::max(configured, adaptive), 2,
-                                       sample_cap);
-        const double mix = std::clamp(static_cast<double>(motion.effect_opacity),
-                                      0.0, 1.0);
-        const double sharp_preserve = std::clamp(
-            mix * (image_or_video_motion ? 0.35 : 0.20), 0.0, mix);
-        const double blur_mix = std::max(0.0, mix - sharp_preserve);
-        const double sharp_mix = std::clamp((1.0 - mix) + sharp_preserve,
-                                            0.0, 1.0);
-        gs_enable_blending(true);
-        gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
-        if (travel < 0.01) {
-            draw_gpu_layer_texture(session, &entry, title, layer, local_texture, draw_origin,
-                                   source_width, source_height,
-                                   draw_logical_width, draw_logical_height,
-                                   draw_clip_rect, draw_base_box_width, draw_base_box_height,
-                                   title_time, static_cast<float>(current_opacity));
-        } else {
-            if (sharp_mix > 0.0)
-                draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
-                                       draw_origin, source_width, source_height,
-                                       draw_logical_width, draw_logical_height,
-                                       draw_clip_rect, draw_base_box_width, draw_base_box_height,
-                                       title_time,
-                                       static_cast<float>(current_opacity *
-                                                          sharp_mix));
-
-            std::vector<double> visible_samples;
-            visible_samples.reserve(static_cast<std::size_t>(samples));
-            for (int i = 0; i < samples; ++i) {
-                const double f = (static_cast<double>(i) + 0.5) /
-                                 static_cast<double>(samples);
-                const double sample_time = start + (end - start) * f;
-                const bool sample_visible = visibility_group_id.empty()
-                    ? gpu_layer_chain_visible(title, layer, sample_time)
-                    : gpu_layer_visible_in_group_compositor(
-                          title, layer, sample_time, visibility_group_id);
-                if (sample_visible)
-                    visible_samples.push_back(sample_time);
-            }
-            /* Shutter intervals outside the layer's visibility range are
-             * transparent samples. Divide by the requested sample count, not
-             * by visible_samples.size(); renormalizing only the visible samples
-             * caused the final blur frame to pop to a different opacity. */
-            const float sample_weight = blur_mix > 0.0 ? static_cast<float>(
-                current_opacity * blur_mix / static_cast<double>(samples)) : 0.0f;
-            for (double sample_time : visible_samples) {
-                draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
-                                       draw_origin, source_width,
-                                       source_height, draw_logical_width,
-                                       draw_logical_height, draw_clip_rect,
-                                       draw_base_box_width, draw_base_box_height, sample_time,
-                                       sample_weight);
-            }
-        }
-    } else if (current_opacity > 0.0) {
+    if (current_opacity > 0.0) {
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-        draw_gpu_layer_texture(session, &entry, title, layer, local_texture, draw_origin,
-                               source_width, source_height, draw_logical_width,
-                               draw_logical_height, draw_clip_rect,
-                               draw_base_box_width, draw_base_box_height, title_time,
-                               (float)current_opacity);
+        draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
+                               draw_origin, source_width, source_height,
+                               draw_logical_width, draw_logical_height,
+                               draw_clip_rect, draw_base_box_width,
+                               draw_base_box_height, title_time,
+                               static_cast<float>(current_opacity));
     }
     gs_texrender_end(target);
 
-    /* Screen-space effects consume the already transformed, full-composition
-     * layer surface. This keeps optical radii and edge extraction stable in
-     * output pixels and allows source-aware effects to sample the real
-     * composition behind the layer. PostTransform motion blur remains in the
-     * dedicated temporal path above. */
+    /* Screen-space effects consume the already transformed full-canvas layer.
+     * Motion Blur recursively executes this complete normal path for every
+     * shutter sample, therefore these effects are inside (below) Motion Blur
+     * instead of being applied once to the already blurred result. */
     if (apply_pixel_effects) {
         gs_texture_t *projected = gs_texrender_get_texture(target);
         gs_texture_t *screen_effected = apply_gpu_layer_effect_stack(
@@ -1593,11 +2822,11 @@ static gs_texture_t *apply_gpu_mask(TitleGpuRenderSession *session,
         mask_texture = gs_texrender_get_texture(mask_snapshot);
     }
 
-    if (!session->mask_effect)
-        session->mask_effect = gs_effect_create(
-            kGpuMaskEffect, "obs-bgs-gpu-mask.effect", nullptr);
-    if (!session->mask_effect) {
-        session->last_error = "Could not compile GPU mask shader.";
+    if (!session->mask_effect &&
+        !ensure_session_shader_effect(
+            session, session->mask_effect, "core:mask", "GPU mask",
+            kGpuMaskEffect, "obs-bgs-gpu-mask.effect",
+            &session->mask_effect)) {
         if (layer_snapshot) gs_texrender_destroy(layer_snapshot);
         if (mask_snapshot) gs_texrender_destroy(mask_snapshot);
         return nullptr;
@@ -1671,6 +2900,36 @@ static bool copy_full_canvas_gpu_texture(TitleGpuRenderSession *session,
     return true;
 }
 
+static bool replace_full_canvas_gpu_texture(TitleGpuRenderSession *session,
+                                            gs_texture_t *texture,
+                                            gs_texrender_t *target)
+{
+    if (!session || !texture || !target ||
+        gs_texture_get_width(texture) != session->width ||
+        gs_texture_get_height(texture) != session->height)
+        return false;
+
+    /* Publication is not a composition pass. Allocate and canonically clear
+     * the inactive presentation target, then replace its complete resource.
+     * This cannot inherit a projection/model matrix from a preceding 3D draw,
+     * and a transparent frame overwrites every pixel of the older frame. */
+    struct vec4 clear;
+    vec4_zero(&clear);
+    if (!begin_gpu_target(target, session->width, session->height, clear))
+        return false;
+    gs_texrender_end(target);
+
+    gs_texture_t *destination = gs_texrender_get_texture(target);
+    if (!destination || destination == texture ||
+        gs_texture_get_width(destination) != session->width ||
+        gs_texture_get_height(destination) != session->height ||
+        gs_texture_get_color_format(destination) !=
+            gs_texture_get_color_format(texture))
+        return false;
+    gs_copy_texture(destination, texture);
+    return true;
+}
+
 
 enum class ExternalBackgroundMapping {
     Rectangle = 0,
@@ -1719,9 +2978,12 @@ static gs_texture_t *render_external_background_local_locked(
         session->external_background_local =
             gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     if (!session->external_background_effect)
-        session->external_background_effect = gs_effect_create(
+        (void)ensure_session_shader_effect(
+            session, session->external_background_effect,
+            "core:external-background", "External background",
             kGpuExternalBackgroundEffect,
-            "obs-bgs-external-background.effect", nullptr);
+            "obs-bgs-external-background.effect",
+            &session->external_background_effect);
     if (!session->external_background_local ||
         !session->external_background_effect)
         return nullptr;
@@ -1787,4 +3049,3 @@ static gs_texture_t *render_external_background_local_locked(
     gs_texrender_end(session->external_background_local);
     return gs_texrender_get_texture(session->external_background_local);
 }
-

@@ -154,7 +154,10 @@
             this, &TitleEditor::cut_selected_layer);
     connect(canvas_, &CanvasPreview::paste_layers_requested,
             this, [this]() {
-                if (!layer_clipboard_.empty())
+                if ((!layer_clipboard_.empty() ||
+                    (QApplication::clipboard() && QApplication::clipboard()->mimeData() &&
+                     QApplication::clipboard()->mimeData()->hasFormat(
+                         "application/x-bgl-layer-clipboard+json"))))
                     paste_layer_from_clipboard();
                 else
                     paste_external_clipboard_to_canvas();
@@ -353,12 +356,53 @@ void TitleEditor::flip_selected_layers(bool horizontal)
         if (!layer || layer->locked) continue;
         const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                      std::max(0.0, layer->out_time - layer->in_time));
-        Vec2Value scale = layer->scale.evaluate(lt);
-        if (horizontal)
-            scale.x = -scale.x;
-        else
-            scale.y = -scale.y;
-        set_animated_value(layer->scale, lt, scale);
+
+        /* A perspective-projected 3D reflection cannot be losslessly encoded
+         * by the legacy 2D rotation/scale channels. Keep its authored 3D
+         * orientation intact; the canvas-basis decomposition below is for the
+         * 2D transform contract used by this command. */
+        if (layer->dimension_mode == LayerDimensionMode::ThreeD ||
+            layer->position_3d_path_enabled) {
+            Vec2Value scale = layer->scale.evaluate(lt);
+            if (horizontal) scale.x = -scale.x;
+            else scale.y = -scale.y;
+            set_animated_value(layer->scale, lt, scale);
+            last_layer = layer;
+            continue;
+        }
+
+        /* Flip in the canvas basis, not in the layer's rotated/object basis.
+         * The reflection is applied after the complete authored world
+         * transform and then converted back through the structural parent
+         * basis so rotated, grouped and transform-parented layers all mirror
+         * around the horizontal/vertical axes visible on the canvas. */
+        const QTransform world =
+            editor_layer_world_transform_for_parenting(title_, *layer, playhead_);
+        const QPointF anchor = world.map(QPointF(0.0, 0.0));
+        const QTransform reflection = horizontal
+            ? QTransform(-1.0, 0.0, 0.0, 1.0, 2.0 * anchor.x(), 0.0)
+            : QTransform(1.0, 0.0, 0.0, -1.0, 0.0, 2.0 * anchor.y());
+
+        const QTransform parent =
+            editor_parent_world_transform_for_parenting(title_, *layer, playhead_);
+        bool parent_invertible = false;
+        const QTransform parent_inverse = parent.inverted(&parent_invertible);
+        if (!parent_invertible) continue;
+
+        const QTransform local = (world * reflection) * parent_inverse;
+        const double scale_x = std::hypot(local.m11(), local.m12());
+        if (scale_x <= 1e-9) continue;
+        const double determinant =
+            local.m11() * local.m22() - local.m12() * local.m21();
+        const double scale_y = determinant / scale_x;
+        const double rotation =
+            std::atan2(local.m12(), local.m11()) *
+            57.295779513082320876798154814105;
+
+        editor_set_local_position_xy_for_parenting(
+            *layer, lt, local.map(QPointF(0.0, 0.0)));
+        set_animated_value(layer->rotation, lt, rotation);
+        set_animated_value(layer->scale, lt, Vec2Value{scale_x, scale_y});
         last_layer = layer;
     }
 
@@ -923,17 +967,47 @@ void TitleEditor::build_toolbar()
                                        bgl_tr("OBSTitles.FreeDistortMode")});
     transform_toolbar_mode_->setToolTip(bgl_tr("OBSTitles.FreeTransformToolTooltip"));
     transform_toolbar_keyframe_ = new QToolButton(transform_toolbar_widget_);
-    transform_toolbar_keyframe_->setIcon(obs_icon("keyframe-outline.svg"));
+    transform_toolbar_keyframe_->setIcon(bgl_keyframe_diamond_icon(false));
     transform_toolbar_keyframe_->setCheckable(true);
-    transform_toolbar_keyframe_->setAutoRaise(true);
     transform_toolbar_keyframe_->setToolTip(QStringLiteral("Toggle Free Transform keyframe"));
+    bgl_style_keyframe_button(transform_toolbar_keyframe_);
+    auto *transform_keyframe_controls = bgl_make_keyframe_controls(
+        transform_toolbar_keyframe_, transform_toolbar_widget_,
+        [this]() {
+            std::vector<double> times;
+            const auto selected = selected_layer_ids_for_operation();
+            if (!title_ || selected.size() != 1) return times;
+            const auto layer = title_->find_layer(selected.front());
+            if (!layer) return times;
+            for (const AnimatedVec2Property *property : {&layer->transform_quad_tl,
+                                                         &layer->transform_quad_tr,
+                                                         &layer->transform_quad_br,
+                                                         &layer->transform_quad_bl})
+                for (const VectorKeyframe &key : property->keyframes)
+                    times.push_back(key.time);
+            return times;
+        },
+        [this]() {
+            const auto selected = selected_layer_ids_for_operation();
+            if (!title_ || selected.size() != 1) return 0.0;
+            const auto layer = title_->find_layer(selected.front());
+            return layer ? std::clamp(playhead_ - layer->in_time, 0.0,
+                                      std::max(0.0, layer->out_time - layer->in_time))
+                         : 0.0;
+        },
+        [this](double local_time) {
+            const auto selected = selected_layer_ids_for_operation();
+            if (!title_ || selected.size() != 1) return;
+            if (const auto layer = title_->find_layer(selected.front()))
+                on_playhead_changed(layer->in_time + local_time);
+        });
     transform_toolbar_reset_ = new QToolButton(transform_toolbar_widget_);
     transform_toolbar_reset_->setIcon(obs_icon("undo.svg"));
     transform_toolbar_reset_->setAutoRaise(true);
     transform_toolbar_reset_->setToolTip(QStringLiteral("Reset Free Transform"));
     transform_toolbar_layout->addWidget(transform_toolbar_mode_);
-    transform_toolbar_layout->addWidget(transform_toolbar_keyframe_);
     transform_toolbar_layout->addWidget(transform_toolbar_reset_);
+    transform_toolbar_layout->addWidget(transform_keyframe_controls);
     dynamic_toolbar_layout->addWidget(transform_toolbar_widget_);
 
     anchor_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
@@ -1089,7 +1163,25 @@ void TitleEditor::build_toolbar()
     connect(transform_toolbar_keyframe_, &QToolButton::clicked, this, [this]() {
         if (!updating_corner_toolbar_ && canvas_) canvas_->toggle_free_transform_keyframe();
     });
+    transform_toolbar_keyframe_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(transform_toolbar_keyframe_, &QWidget::customContextMenuRequested,
+            this, [this](const QPoint &position) {
+        const auto selected = selected_layer_ids_for_operation();
+        const auto layer = title_ && selected.size() == 1
+            ? title_->find_layer(selected.front()) : nullptr;
+        QMenu menu(transform_toolbar_keyframe_);
+        QAction *clear = menu.addAction(bgl_tr("OBSTitles.DeleteAllKeyframes"));
+        clear->setEnabled(layer && canvas_ && canvas_->free_transform_keyframed());
+        if (menu.exec(transform_toolbar_keyframe_->mapToGlobal(position)) != clear || !layer)
+            return;
+        layer->transform_quad_tl.keyframes.clear();
+        layer->transform_quad_tr.keyframes.clear();
+        layer->transform_quad_br.keyframes.clear();
+        layer->transform_quad_bl.keyframes.clear();
+        bgl_refresh_keyframe_navigation(transform_toolbar_keyframe_);
+        on_title_modified(true);
+        update_corner_toolbar();
+    });
     connect(transform_toolbar_reset_, &QToolButton::clicked, this, [this]() {
         if (!updating_corner_toolbar_ && canvas_) canvas_->reset_free_transform();
     });
-

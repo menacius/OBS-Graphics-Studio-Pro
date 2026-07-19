@@ -1,6 +1,29 @@
 #include "title-editor-internal.h"
 #include "bgl-modern-controls.h"
 #include <array>
+#include <QColorDialog>
+
+void TitlePropertiesPanel::register_keyframe_times(
+    QAbstractButton *button, std::function<std::vector<double>()> provider)
+{
+    if (!button)
+        return;
+    keyframe_time_providers_[button] = std::move(provider);
+    bgl_refresh_keyframe_navigation(button);
+}
+
+QWidget *TitlePropertiesPanel::make_keyframe_controls(QAbstractButton *button,
+                                                       QWidget *parent)
+{
+    return bgl_make_keyframe_controls(
+        button, parent,
+        [this, button]() {
+            const auto found = keyframe_time_providers_.find(button);
+            return found == keyframe_time_providers_.end()
+                ? std::vector<double>{} : found->second();
+        }, [this]() { return playhead_; },
+        [this](double time) { emit keyframe_navigation_requested(time); });
+}
 
 TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     : QGroupBox(parent)
@@ -87,6 +110,13 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_loop_end_->setToolTip(bgl_tr("OBSTitles.LoopEndTooltip"));
     spn_loop_end_->setFixedHeight(20);
 
+    scene_controls_ = new QWidget(this);
+    scene_controls_->setObjectName(QStringLiteral("Bgl3DSceneControls"));
+    auto *scene_controls_layout = new QVBoxLayout(scene_controls_);
+    scene_controls_layout->setContentsMargins(0, 0, 0, 0);
+    scene_controls_layout->setSpacing(3);
+    scene_controls_layout->setAlignment(Qt::AlignTop);
+
     loop_area_row_ = new QWidget(this);
     auto *loop_area_layout = new QHBoxLayout(loop_area_row_);
     loop_area_layout->setContentsMargins(0, 0, 0, 0);
@@ -172,6 +202,27 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
         }
         return row;
     };
+    auto make_camera_keyframe_button = [this](const QString &property_name) {
+        auto *button = new QToolButton(camera_box_);
+        button->setIcon(bgl_keyframe_diamond_icon(false));
+        button->setToolTip(QStringLiteral("Toggle %1 keyframe at current time")
+                               .arg(property_name));
+        button->setAccessibleName(button->toolTip());
+        button->setProperty("active", false);
+        button->setProperty("outlined", false);
+        bgl_style_keyframe_button(button);
+        return button;
+    };
+    auto make_camera_keyframed_row = [this](QWidget *field,
+                                             QToolButton *button) {
+        auto *row = new QWidget(camera_box_);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(2);
+        layout->addWidget(field, 1);
+        layout->addWidget(make_keyframe_controls(button, row));
+        return row;
+    };
 
     auto *camera_select_row = new QWidget(camera_box_);
     auto *camera_select_layout = new QHBoxLayout(camera_select_row);
@@ -203,7 +254,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     camera_select_layout->addWidget(btn_camera_delete_);
     add_camera_row(QStringLiteral("Active"), camera_select_row, cmb_camera_);
 
-    chk_camera_canvas_default_ = new QCheckBox(
+    chk_camera_canvas_default_ = new BglSwitch(
         QStringLiteral("Match canvas (legacy 2D view)"), camera_box_);
     chk_camera_canvas_default_->setStyleSheet(QStringLiteral("font-size:10px;"));
     add_camera_row(QString(), chk_camera_canvas_default_);
@@ -213,53 +264,250 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     cmb_camera_projection_->addItem(QStringLiteral("Orthographic"),
                                     static_cast<int>(CameraProjection::Orthographic));
     cmb_camera_projection_->setFixedHeight(20);
-    add_camera_row(QStringLiteral("Projection"), cmb_camera_projection_);
+    btn_kf_camera_projection_ = make_camera_keyframe_button(
+        QStringLiteral("camera projection"));
+    add_camera_row(QStringLiteral("Projection"),
+                   make_camera_keyframed_row(cmb_camera_projection_,
+                                              btn_kf_camera_projection_),
+                   cmb_camera_projection_);
 
     spn_camera_pos_x_ = make_camera_spin(-1000000.0, 1000000.0);
     spn_camera_pos_y_ = make_camera_spin(-1000000.0, 1000000.0);
     spn_camera_pos_z_ = make_camera_spin(-1000000.0, 1000000.0);
     QWidget *camera_position_row = make_xyz_row(
         spn_camera_pos_x_, spn_camera_pos_y_, spn_camera_pos_z_);
-    add_camera_row(QStringLiteral("Position"), camera_position_row,
+    btn_kf_camera_position_ = make_camera_keyframe_button(
+        QStringLiteral("camera position"));
+    add_camera_row(QStringLiteral("Position"),
+                   make_camera_keyframed_row(camera_position_row,
+                                              btn_kf_camera_position_),
                    spn_camera_pos_x_);
     spn_camera_target_x_ = make_camera_spin(-1000000.0, 1000000.0);
     spn_camera_target_y_ = make_camera_spin(-1000000.0, 1000000.0);
     spn_camera_target_z_ = make_camera_spin(-1000000.0, 1000000.0);
     QWidget *camera_target_row = make_xyz_row(
         spn_camera_target_x_, spn_camera_target_y_, spn_camera_target_z_);
-    add_camera_row(QStringLiteral("Target"), camera_target_row,
+    btn_kf_camera_target_ = make_camera_keyframe_button(
+        QStringLiteral("camera target"));
+    add_camera_row(QStringLiteral("Target"),
+                   make_camera_keyframed_row(camera_target_row,
+                                              btn_kf_camera_target_),
                    spn_camera_target_x_);
     spn_camera_orientation_x_ = make_camera_spin(-360000.0, 360000.0);
     spn_camera_orientation_y_ = make_camera_spin(-360000.0, 360000.0);
     spn_camera_orientation_z_ = make_camera_spin(-360000.0, 360000.0);
     QWidget *camera_orientation_row = make_xyz_row(
         spn_camera_orientation_x_, spn_camera_orientation_y_, spn_camera_orientation_z_);
-    add_camera_row(QStringLiteral("Orientation"), camera_orientation_row,
+    btn_kf_camera_orientation_ = make_camera_keyframe_button(
+        QStringLiteral("camera orientation"));
+    add_camera_row(QStringLiteral("Orientation"),
+                   make_camera_keyframed_row(camera_orientation_row,
+                                              btn_kf_camera_orientation_),
                    spn_camera_orientation_x_);
     spn_camera_rot_x_ = make_camera_spin(-360000.0, 360000.0);
     spn_camera_rot_y_ = make_camera_spin(-360000.0, 360000.0);
     spn_camera_rot_z_ = make_camera_spin(-360000.0, 360000.0);
     QWidget *camera_rotation_row = make_xyz_row(
         spn_camera_rot_x_, spn_camera_rot_y_, spn_camera_rot_z_);
-    add_camera_row(QStringLiteral("Rotation"), camera_rotation_row,
+    btn_kf_camera_rotation_ = make_camera_keyframe_button(
+        QStringLiteral("camera rotation"));
+    add_camera_row(QStringLiteral("Rotation"),
+                   make_camera_keyframed_row(camera_rotation_row,
+                                              btn_kf_camera_rotation_),
                    spn_camera_rot_x_);
     spn_camera_focal_ = make_camera_spin(1.0, 1000000.0);
     spn_camera_fov_ = make_camera_spin(0.1, 179.0);
     spn_camera_zoom_ = make_camera_spin(0.0001, 10000.0, 4);
     spn_camera_near_ = make_camera_spin(0.0001, 1000000.0, 4);
     spn_camera_far_ = make_camera_spin(0.001, 1000000000.0);
-    add_camera_row(QStringLiteral("Focal length"), spn_camera_focal_);
-    add_camera_row(QStringLiteral("Field of view"), spn_camera_fov_);
-    add_camera_row(QStringLiteral("Zoom"), spn_camera_zoom_);
-    add_camera_row(QStringLiteral("Near clip"), spn_camera_near_);
-    add_camera_row(QStringLiteral("Far clip"), spn_camera_far_);
+    btn_kf_camera_focal_ = make_camera_keyframe_button(
+        QStringLiteral("camera focal length"));
+    btn_kf_camera_fov_ = make_camera_keyframe_button(
+        QStringLiteral("camera field of view"));
+    btn_kf_camera_zoom_ = make_camera_keyframe_button(
+        QStringLiteral("camera zoom"));
+    btn_kf_camera_near_ = make_camera_keyframe_button(
+        QStringLiteral("camera near clip"));
+    btn_kf_camera_far_ = make_camera_keyframe_button(
+        QStringLiteral("camera far clip"));
+    add_camera_row(QStringLiteral("Focal length"),
+                   make_camera_keyframed_row(spn_camera_focal_,
+                                              btn_kf_camera_focal_),
+                   spn_camera_focal_);
+    add_camera_row(QStringLiteral("Field of view"),
+                   make_camera_keyframed_row(spn_camera_fov_,
+                                              btn_kf_camera_fov_),
+                   spn_camera_fov_);
+    add_camera_row(QStringLiteral("Zoom"),
+                   make_camera_keyframed_row(spn_camera_zoom_,
+                                              btn_kf_camera_zoom_),
+                   spn_camera_zoom_);
+    add_camera_row(QStringLiteral("Near clip"),
+                   make_camera_keyframed_row(spn_camera_near_,
+                                              btn_kf_camera_near_),
+                   spn_camera_near_);
+    add_camera_row(QStringLiteral("Far clip"),
+                   make_camera_keyframed_row(spn_camera_far_,
+                                              btn_kf_camera_far_),
+                   spn_camera_far_);
 
     camera_panel_ = new BglCollapsiblePanel(QStringLiteral("3D Camera"),
-                                            camera_box_, this);
+                                            camera_box_, scene_controls_);
     camera_panel_->setPersistenceKey(QStringLiteral("title-properties"),
                                      QStringLiteral("3d-camera"));
     camera_panel_->setOrderPersistenceEnabled(false);
-    fl->addRow(camera_panel_);
+    scene_controls_layout->addWidget(camera_panel_);
+
+    light_box_ = new QWidget(this);
+    light_box_->setObjectName(QStringLiteral("BglTitleLightContent"));
+    auto *light_form = new QFormLayout(light_box_);
+    light_form->setContentsMargins(5, 4, 5, 5);
+    light_form->setHorizontalSpacing(4);
+    light_form->setVerticalSpacing(2);
+    light_form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto add_light_row = [light_form](const QString &label, QWidget *field) {
+        light_form->addRow(label, field);
+    };
+    auto make_light_spin = [this](double minimum, double maximum,
+                                  double step = 1.0, int decimals = 2) {
+        auto *spin = new QDoubleSpinBox(light_box_);
+        spin->setRange(minimum, maximum);
+        spin->setSingleStep(step);
+        spin->setDecimals(decimals);
+        spin->setKeyboardTracking(true);
+        spin->setFixedHeight(20);
+        spin->setMinimumWidth(66);
+        spin->setStyleSheet(QStringLiteral("font-size:10px;padding:0 2px;"));
+        return spin;
+    };
+    auto make_light_xyz_row = [this](QDoubleSpinBox *x, QDoubleSpinBox *y,
+                                     QDoubleSpinBox *z) {
+        auto *row = new QWidget(light_box_);
+        auto *layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(2);
+        const std::array<std::pair<const char *, QDoubleSpinBox *>, 3> entries{{
+            {"X", x}, {"Y", y}, {"Z", z}
+        }};
+        for (const auto &entry : entries) {
+            auto *label = new QLabel(QString::fromLatin1(entry.first), row);
+            label->setMinimumWidth(9);
+            label->setAlignment(Qt::AlignCenter);
+            label->setStyleSheet(QStringLiteral("font-size:9px;"));
+            layout->addWidget(label);
+            layout->addWidget(entry.second, 1);
+        }
+        return row;
+    };
+
+    chk_lighting_enabled_ = new BglSwitch(QStringLiteral("Enable 3D Lighting"),
+                                           light_box_);
+    chk_default_light_ = new BglSwitch(
+        QStringLiteral("Use compatibility light when no lights exist"), light_box_);
+    chk_lighting_enabled_->setStyleSheet(QStringLiteral("font-size:10px;"));
+    chk_default_light_->setStyleSheet(QStringLiteral("font-size:10px;"));
+    add_light_row(QString(), chk_lighting_enabled_);
+    add_light_row(QString(), chk_default_light_);
+    spn_environment_exposure_ = make_light_spin(-16.0, 16.0, 0.1, 2);
+    spn_environment_exposure_->setSuffix(QStringLiteral(" EV"));
+    add_light_row(QStringLiteral("Environment"), spn_environment_exposure_);
+
+    auto *light_select_row = new QWidget(light_box_);
+    auto *light_select_layout = new QHBoxLayout(light_select_row);
+    light_select_layout->setContentsMargins(0, 0, 0, 0);
+    light_select_layout->setSpacing(2);
+    cmb_light_ = new QComboBox(light_select_row);
+    cmb_light_->setFixedHeight(20);
+    btn_light_add_ = new QPushButton(QStringLiteral("+"), light_select_row);
+    btn_light_delete_ = new QPushButton(QStringLiteral("−"), light_select_row);
+    btn_light_add_->setFixedSize(22, 20);
+    btn_light_delete_->setFixedSize(22, 20);
+    btn_light_add_->setToolTip(QStringLiteral("Add light (maximum four renderer slots)"));
+    btn_light_delete_->setToolTip(QStringLiteral("Delete selected light"));
+    light_select_layout->addWidget(cmb_light_, 1);
+    light_select_layout->addWidget(btn_light_add_);
+    light_select_layout->addWidget(btn_light_delete_);
+    add_light_row(QStringLiteral("Light"), light_select_row);
+
+    chk_light_enabled_ = new BglSwitch(QStringLiteral("Enabled"), light_box_);
+    chk_light_enabled_->setStyleSheet(QStringLiteral("font-size:10px;"));
+    add_light_row(QString(), chk_light_enabled_);
+    cmb_light_type_ = new QComboBox(light_box_);
+    cmb_light_type_->addItem(QStringLiteral("Ambient"),
+                             static_cast<int>(TitleLightType::Ambient));
+    cmb_light_type_->addItem(QStringLiteral("Point"),
+                             static_cast<int>(TitleLightType::Point));
+    cmb_light_type_->addItem(QStringLiteral("Spot"),
+                             static_cast<int>(TitleLightType::Spot));
+    cmb_light_type_->addItem(QStringLiteral("Parallel"),
+                             static_cast<int>(TitleLightType::Parallel));
+    cmb_light_type_->addItem(QStringLiteral("Environment"),
+                             static_cast<int>(TitleLightType::Environment));
+    cmb_light_type_->setFixedHeight(20);
+    add_light_row(QStringLiteral("Type"), cmb_light_type_);
+
+    btn_light_color_ = new QPushButton(QStringLiteral("Color"), light_box_);
+    btn_light_color_->setFixedHeight(20);
+    add_light_row(QStringLiteral("Color"), btn_light_color_);
+    spn_light_intensity_ = make_light_spin(0.0, 100000.0, 1.0, 2);
+    spn_light_intensity_->setSuffix(QStringLiteral(" %"));
+    add_light_row(QStringLiteral("Intensity"), spn_light_intensity_);
+    spn_light_source_size_ = make_light_spin(0.0, 100000.0, 1.0, 2);
+    spn_light_source_size_->setSuffix(QStringLiteral(" px"));
+    spn_light_source_size_->setToolTip(QStringLiteral(
+        "Finite emitter size in scene units; softens lighting and supported shadows."));
+    add_light_row(QStringLiteral("Source Size"), spn_light_source_size_);
+
+    spn_light_pos_x_ = make_light_spin(-1000000.0, 1000000.0);
+    spn_light_pos_y_ = make_light_spin(-1000000.0, 1000000.0);
+    spn_light_pos_z_ = make_light_spin(-1000000.0, 1000000.0);
+    add_light_row(QStringLiteral("Position"), make_light_xyz_row(
+        spn_light_pos_x_, spn_light_pos_y_, spn_light_pos_z_));
+    spn_light_target_x_ = make_light_spin(-1000000.0, 1000000.0);
+    spn_light_target_y_ = make_light_spin(-1000000.0, 1000000.0);
+    spn_light_target_z_ = make_light_spin(-1000000.0, 1000000.0);
+    add_light_row(QStringLiteral("Target"), make_light_xyz_row(
+        spn_light_target_x_, spn_light_target_y_, spn_light_target_z_));
+
+    cmb_light_falloff_ = new QComboBox(light_box_);
+    cmb_light_falloff_->addItem(QStringLiteral("None"),
+                                static_cast<int>(TitleLightFalloff::None));
+    cmb_light_falloff_->addItem(QStringLiteral("Linear"),
+                                static_cast<int>(TitleLightFalloff::Linear));
+    cmb_light_falloff_->addItem(QStringLiteral("Inverse Square"),
+                                static_cast<int>(TitleLightFalloff::InverseSquare));
+    cmb_light_falloff_->setFixedHeight(20);
+    add_light_row(QStringLiteral("Falloff"), cmb_light_falloff_);
+    spn_light_falloff_start_ = make_light_spin(0.0, 10000000.0);
+    spn_light_falloff_distance_ = make_light_spin(0.0001, 10000000.0);
+    /* Falloff Start is derived from Source Size and is intentionally not shown. */
+    add_light_row(QStringLiteral("Falloff Distance"), spn_light_falloff_distance_);
+    spn_light_cone_angle_ = make_light_spin(0.1, 179.0, 0.5, 2);
+    spn_light_cone_angle_->setSuffix(QStringLiteral("°"));
+    spn_light_cone_feather_ = make_light_spin(0.0, 100.0, 1.0, 2);
+    spn_light_cone_feather_->setSuffix(QStringLiteral(" %"));
+    add_light_row(QStringLiteral("Cone Angle"), spn_light_cone_angle_);
+    add_light_row(QStringLiteral("Cone Feather"), spn_light_cone_feather_);
+
+    chk_light_casts_shadows_ = new BglSwitch(
+        QStringLiteral("Cast Shadows"), light_box_);
+    chk_light_casts_shadows_->setStyleSheet(QStringLiteral("font-size:10px;"));
+    add_light_row(QString(), chk_light_casts_shadows_);
+    spn_light_shadow_darkness_ = make_light_spin(0.0, 100.0, 1.0, 2);
+    spn_light_shadow_darkness_->setSuffix(QStringLiteral(" %"));
+    spn_light_shadow_softness_ = make_light_spin(0.0, 256.0, 0.5, 2);
+    spn_light_shadow_bias_ = make_light_spin(0.0, 10.0, 0.0001, 5);
+    add_light_row(QStringLiteral("Shadow Darkness"), spn_light_shadow_darkness_);
+    add_light_row(QStringLiteral("Shadow Softness"), spn_light_shadow_softness_);
+    add_light_row(QStringLiteral("Shadow Bias"), spn_light_shadow_bias_);
+
+    light_panel_ = new BglCollapsiblePanel(QStringLiteral("3D Lights & Environment"),
+                                           light_box_, scene_controls_);
+    light_panel_->setPersistenceKey(QStringLiteral("title-properties"),
+                                    QStringLiteral("3d-lights"));
+    light_panel_->setOrderPersistenceEnabled(false);
+    scene_controls_layout->addWidget(light_panel_);
+    scene_controls_layout->addStretch(1);
 
     cmb_stinger_switch_mode_ = new QComboBox(this);
     cmb_stinger_switch_mode_->addItem(
@@ -276,8 +524,8 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_stinger_transition_timecode_->setFixedHeight(20);
     add_form_row(fl, bgl_tr("OBSTitles.StingerTransitionPoint"), spn_stinger_transition_timecode_);
 
-    chk_stinger_audio_ = new QCheckBox(bgl_tr("OBSTitles.StingerOptionalAudio"), this);
-    chk_stinger_alpha_ = new QCheckBox(bgl_tr("OBSTitles.StingerAlphaOutput"), this);
+    chk_stinger_audio_ = new BglSwitch(bgl_tr("OBSTitles.StingerOptionalAudio"), this);
+    chk_stinger_alpha_ = new BglSwitch(bgl_tr("OBSTitles.StingerAlphaOutput"), this);
     fl->addRow(QString(), chk_stinger_audio_);
     fl->addRow(QString(), chk_stinger_alpha_);
 
@@ -321,7 +569,11 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
         TitleCamera camera;
         camera.id = TitleDataStore::make_uuid();
         camera.name = QStringLiteral("Camera %1")
-                          .arg(title_->cameras.size() + 1).toStdString();
+                          .arg(std::count_if(
+                              title_->cameras.begin(), title_->cameras.end(),
+                              [](const TitleCamera &existing) {
+                                  return existing.asset_space_owner_id.empty();
+                              }) + 1).toStdString();
         camera.use_canvas_default = false;
         camera.position_x.static_value = title_->width * 0.5;
         camera.position_y.static_value = title_->height * 0.5;
@@ -468,6 +720,364 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     connect_camera_property(spn_camera_zoom_, &TitleCamera::zoom);
     connect_camera_property(spn_camera_near_, &TitleCamera::near_clip);
     connect_camera_property(spn_camera_far_, &TitleCamera::far_clip);
+
+    auto finish_camera_keyframe_toggle = [this]() {
+        load_values();
+        emit title_changed(true);
+    };
+    connect(btn_kf_camera_projection_, &QToolButton::clicked, this,
+            [this, finish_camera_keyframe_toggle]() {
+        if (loading_values_) return;
+        if (TitleCamera *camera = current_camera()) {
+            toggle_keyframe(camera->projection_mode, playhead_,
+                            camera->projection_mode.evaluate(playhead_) >= 0.5
+                                ? 1.0 : 0.0);
+            for (Keyframe &key : camera->projection_mode.keyframes) {
+                if (std::abs(key.time - playhead_) > 1.0 / 240.0) continue;
+                key.easing = EasingType::Hold;
+                key.temporal_mode = TemporalInterpolationMode::Hold;
+                key.temporal_velocity_explicit = true;
+            }
+            finish_camera_keyframe_toggle();
+        }
+    });
+    auto connect_camera_vector_keyframe =
+        [this, finish_camera_keyframe_toggle](QToolButton *button, bool target) {
+        connect(button, &QToolButton::clicked, this,
+                [this, target, finish_camera_keyframe_toggle]() {
+            if (loading_values_) return;
+            if (TitleCamera *camera = current_camera()) {
+                AnimatedVec3Property *property = nullptr;
+                if (target) {
+                    promote_camera_vector_track(
+                        camera->target_3d, camera->target_3d_path_enabled,
+                        camera->target_x, camera->target_y, camera->target_z);
+                    property = &camera->target_3d;
+                } else {
+                    promote_camera_vector_track(
+                        camera->position_3d, camera->position_3d_path_enabled,
+                        camera->position_x, camera->position_y,
+                        camera->position_z);
+                    property = &camera->position_3d;
+                }
+                toggle_keyframe(*property, playhead_,
+                                property->evaluate(playhead_));
+                if (target)
+                    mirror_camera_vector_track_to_legacy(
+                        camera->target_3d, playhead_, camera->target_x,
+                        camera->target_y, camera->target_z);
+                else
+                    mirror_camera_vector_track_to_legacy(
+                        camera->position_3d, playhead_, camera->position_x,
+                        camera->position_y, camera->position_z);
+                finish_camera_keyframe_toggle();
+            }
+        });
+    };
+    connect_camera_vector_keyframe(btn_kf_camera_position_, false);
+    connect_camera_vector_keyframe(btn_kf_camera_target_, true);
+
+    auto connect_camera_scalar_group_keyframe =
+        [this, finish_camera_keyframe_toggle](
+            QToolButton *button, AnimatedProperty TitleCamera::*x,
+            AnimatedProperty TitleCamera::*y,
+            AnimatedProperty TitleCamera::*z) {
+        connect(button, &QToolButton::clicked, this,
+                [this, x, y, z, finish_camera_keyframe_toggle]() {
+            if (loading_values_) return;
+            if (TitleCamera *camera = current_camera()) {
+                AnimatedProperty *properties[] = {
+                    &(camera->*x), &(camera->*y), &(camera->*z)};
+                const bool remove = any_keyframe_at_time(
+                    {properties[0], properties[1], properties[2]}, playhead_);
+                for (AnimatedProperty *property : properties) {
+                    if (remove)
+                        remove_keyframe_at(*property, playhead_);
+                    else
+                        add_or_replace_keyframe(
+                            *property, playhead_, property->evaluate(playhead_));
+                }
+                finish_camera_keyframe_toggle();
+            }
+        });
+    };
+    connect_camera_scalar_group_keyframe(
+        btn_kf_camera_orientation_, &TitleCamera::orientation_x,
+        &TitleCamera::orientation_y, &TitleCamera::orientation_z);
+    connect_camera_scalar_group_keyframe(
+        btn_kf_camera_rotation_, &TitleCamera::rotation_x,
+        &TitleCamera::rotation_y, &TitleCamera::rotation_z);
+
+    auto connect_camera_scalar_keyframe =
+        [this, finish_camera_keyframe_toggle](
+            QToolButton *button, AnimatedProperty TitleCamera::*member) {
+        connect(button, &QToolButton::clicked, this,
+                [this, member, finish_camera_keyframe_toggle]() {
+            if (loading_values_) return;
+            if (TitleCamera *camera = current_camera()) {
+                AnimatedProperty &property = camera->*member;
+                toggle_keyframe(property, playhead_, property.evaluate(playhead_));
+                finish_camera_keyframe_toggle();
+            }
+        });
+    };
+    connect_camera_scalar_keyframe(btn_kf_camera_focal_,
+                                   &TitleCamera::focal_length);
+    connect_camera_scalar_keyframe(btn_kf_camera_fov_,
+                                   &TitleCamera::field_of_view);
+    connect_camera_scalar_keyframe(btn_kf_camera_zoom_, &TitleCamera::zoom);
+    connect_camera_scalar_keyframe(btn_kf_camera_near_, &TitleCamera::near_clip);
+    connect_camera_scalar_keyframe(btn_kf_camera_far_, &TitleCamera::far_clip);
+
+    auto scalar_times = [this](AnimatedProperty TitleCamera::*member) {
+        return [this, member]() {
+            std::vector<double> times;
+            if (const TitleCamera *camera = current_camera())
+                for (const Keyframe &key : (camera->*member).keyframes)
+                    times.push_back(key.time);
+            return times;
+        };
+    };
+    auto install_camera_keyframe_menu =
+        [this](QToolButton *button,
+               std::function<std::vector<double>()> times,
+               std::function<void(TitleCamera &)> clear) {
+        register_keyframe_times(button, times);
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(button, &QWidget::customContextMenuRequested, this,
+                [this, button, times, clear](const QPoint &position) {
+            QMenu menu(button);
+            QAction *remove_all = menu.addAction(
+                bgl_tr("OBSTitles.DeleteAllKeyframes"));
+            remove_all->setEnabled(!times().empty());
+            if (menu.exec(button->mapToGlobal(position)) != remove_all)
+                return;
+            if (TitleCamera *camera = current_camera()) {
+                clear(*camera);
+                load_values();
+                emit title_changed(true);
+            }
+        });
+    };
+    auto install_scalar = [&](QToolButton *button,
+                              AnimatedProperty TitleCamera::*member) {
+        install_camera_keyframe_menu(button, scalar_times(member),
+            [member](TitleCamera &camera) { (camera.*member).keyframes.clear(); });
+    };
+    install_scalar(btn_kf_camera_projection_, &TitleCamera::projection_mode);
+    install_camera_keyframe_menu(btn_kf_camera_position_, [this]() {
+        std::vector<double> times;
+        if (const TitleCamera *camera = current_camera()) {
+            for (const Vector3Keyframe &key : camera->position_3d.keyframes)
+                times.push_back(key.time);
+            for (const Keyframe &key : camera->position_x.keyframes) times.push_back(key.time);
+            for (const Keyframe &key : camera->position_y.keyframes) times.push_back(key.time);
+            for (const Keyframe &key : camera->position_z.keyframes) times.push_back(key.time);
+        }
+        return times;
+    }, [](TitleCamera &camera) {
+        camera.position_3d.keyframes.clear();
+        camera.position_x.keyframes.clear();
+        camera.position_y.keyframes.clear();
+        camera.position_z.keyframes.clear();
+    });
+    install_camera_keyframe_menu(btn_kf_camera_target_, [this]() {
+        std::vector<double> times;
+        if (const TitleCamera *camera = current_camera()) {
+            for (const Vector3Keyframe &key : camera->target_3d.keyframes)
+                times.push_back(key.time);
+            for (const Keyframe &key : camera->target_x.keyframes) times.push_back(key.time);
+            for (const Keyframe &key : camera->target_y.keyframes) times.push_back(key.time);
+            for (const Keyframe &key : camera->target_z.keyframes) times.push_back(key.time);
+        }
+        return times;
+    }, [](TitleCamera &camera) {
+        camera.target_3d.keyframes.clear();
+        camera.target_x.keyframes.clear();
+        camera.target_y.keyframes.clear();
+        camera.target_z.keyframes.clear();
+    });
+    install_camera_keyframe_menu(btn_kf_camera_orientation_, [this]() {
+        std::vector<double> times;
+        if (const TitleCamera *camera = current_camera())
+            for (const AnimatedProperty *property : {&camera->orientation_x,
+                                                     &camera->orientation_y,
+                                                     &camera->orientation_z})
+                for (const Keyframe &key : property->keyframes) times.push_back(key.time);
+        return times;
+    }, [](TitleCamera &camera) {
+        camera.orientation_x.keyframes.clear();
+        camera.orientation_y.keyframes.clear();
+        camera.orientation_z.keyframes.clear();
+    });
+    install_camera_keyframe_menu(btn_kf_camera_rotation_, [this]() {
+        std::vector<double> times;
+        if (const TitleCamera *camera = current_camera())
+            for (const AnimatedProperty *property : {&camera->rotation_x,
+                                                     &camera->rotation_y,
+                                                     &camera->rotation_z})
+                for (const Keyframe &key : property->keyframes) times.push_back(key.time);
+        return times;
+    }, [](TitleCamera &camera) {
+        camera.rotation_x.keyframes.clear();
+        camera.rotation_y.keyframes.clear();
+        camera.rotation_z.keyframes.clear();
+    });
+    install_scalar(btn_kf_camera_focal_, &TitleCamera::focal_length);
+    install_scalar(btn_kf_camera_fov_, &TitleCamera::field_of_view);
+    install_scalar(btn_kf_camera_zoom_, &TitleCamera::zoom);
+    install_scalar(btn_kf_camera_near_, &TitleCamera::near_clip);
+    install_scalar(btn_kf_camera_far_, &TitleCamera::far_clip);
+
+    connect(chk_lighting_enabled_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (!title_ || loading_values_) return;
+        title_->lighting_enabled = enabled;
+        emit title_changed(true);
+    });
+    connect(chk_default_light_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (!title_ || loading_values_) return;
+        title_->default_light_enabled = enabled;
+        emit title_changed(true);
+    });
+    connect(spn_environment_exposure_,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value) {
+                if (!title_ || loading_values_) return;
+                title_->environment_exposure = std::clamp(value, -16.0, 16.0);
+                emit title_changed(!numeric_label_dragging_);
+            });
+    connect(cmb_light_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (loading_values_) return;
+                load_values();
+            });
+    connect(btn_light_add_, &QPushButton::clicked, this, [this]() {
+        if (!title_ || loading_values_) return;
+        const auto light_count = std::count_if(title_->layers.begin(), title_->layers.end(), [](const auto &layer) { return layer && layer->type == LayerType::Light; });
+        if (light_count >= 4) return;
+        auto layer = std::make_shared<Layer>();
+        layer->id = TitleDataStore::make_uuid();
+        layer->name = unique_light_name("Light");
+        layer->type = LayerType::Light;
+        layer->dimension_mode = LayerDimensionMode::ThreeD;
+        layer->position.static_value = {title_->width * 0.5, title_->height * 0.5};
+        layer->position_z.static_value = -1000.0;
+        layer->light.id = layer->id; layer->light.name = layer->name;
+        layer->light.type = TitleLightType::Point;
+        const QString id = QString::fromStdString(layer->id);
+        title_->layers.push_back(layer);
+        title_->default_light_enabled = false;
+        load_values();
+        const int index = cmb_light_->findData(id);
+        if (index >= 0) cmb_light_->setCurrentIndex(index);
+        load_values();
+        emit title_changed(true);
+    });
+    connect(btn_light_delete_, &QPushButton::clicked, this, [this]() {
+        if (!title_ || loading_values_) return;
+        const std::string id = cmb_light_->currentData().toString().toStdString();
+        const auto it = std::find_if(title_->layers.begin(), title_->layers.end(), [&id](const auto &layer) { return layer && layer->type == LayerType::Light && layer->id == id; });
+        if (it == title_->layers.end()) return;
+        title_->layers.erase(it);
+        const bool any = std::any_of(title_->layers.begin(), title_->layers.end(), [](const auto &layer) { return layer && layer->type == LayerType::Light; });
+        if (!any) title_->default_light_enabled = true;
+        load_values(); emit title_changed(true);
+    });
+    connect(chk_light_enabled_, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (loading_values_) return;
+        if (TitleLight *light = current_light()) {
+            light->enabled = enabled;
+            emit title_changed(true);
+        }
+    });
+    connect(cmb_light_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (loading_values_ || index < 0) return;
+                if (TitleLight *light = current_light()) {
+                    light->type = static_cast<TitleLightType>(
+                        cmb_light_type_->itemData(index).toInt());
+                    load_values();
+                    emit title_changed(true);
+                }
+            });
+    connect(cmb_light_falloff_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (loading_values_ || index < 0) return;
+                if (TitleLight *light = current_light()) {
+                    light->falloff = static_cast<TitleLightFalloff>(
+                        cmb_light_falloff_->itemData(index).toInt());
+                    load_values();
+                    emit title_changed(true);
+                }
+            });
+    connect(chk_light_casts_shadows_, &QCheckBox::toggled,
+            this, [this](bool enabled) {
+                if (loading_values_) return;
+                if (TitleLight *light = current_light()) {
+                    light->casts_shadows = enabled;
+                    load_values();
+                    emit title_changed(true);
+                }
+            });
+    auto connect_light_property = [this](QDoubleSpinBox *spin,
+                                         AnimatedProperty TitleLight::*member) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, member](double value) {
+                    if (loading_values_) return;
+                    if (TitleLight *light = current_light()) {
+                        set_animated_value(light->*member, playhead_, value);
+                        emit title_changed(!numeric_label_dragging_);
+                    }
+                });
+    };
+    auto connect_light_vector_component = [this](QDoubleSpinBox *spin,
+                                                  bool target, int component) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, target, component](double value) {
+                    if (loading_values_) return;
+                    if (TitleLight *light = current_light()) {
+                        AnimatedVec3Property &property = target
+                            ? light->target : light->position;
+                        Vec3Value next = property.evaluate(playhead_);
+                        if (component == 0) next.x = value;
+                        else if (component == 1) next.y = value;
+                        else next.z = value;
+                        set_animated_value(property, playhead_, next);
+                        emit title_changed(!numeric_label_dragging_);
+                    }
+                });
+    };
+    connect_light_vector_component(spn_light_pos_x_, false, 0);
+    connect_light_vector_component(spn_light_pos_y_, false, 1);
+    connect_light_vector_component(spn_light_pos_z_, false, 2);
+    connect_light_vector_component(spn_light_target_x_, true, 0);
+    connect_light_vector_component(spn_light_target_y_, true, 1);
+    connect_light_vector_component(spn_light_target_z_, true, 2);
+    connect_light_property(spn_light_intensity_, &TitleLight::intensity);
+    connect_light_property(spn_light_source_size_, &TitleLight::source_size);
+    connect_light_property(spn_light_falloff_distance_, &TitleLight::falloff_distance);
+    connect_light_property(spn_light_cone_angle_, &TitleLight::cone_angle);
+    connect_light_property(spn_light_cone_feather_, &TitleLight::cone_feather);
+    connect_light_property(spn_light_shadow_darkness_, &TitleLight::shadow_darkness);
+    connect_light_property(spn_light_shadow_softness_, &TitleLight::shadow_softness);
+    connect_light_property(spn_light_shadow_bias_, &TitleLight::shadow_bias);
+    connect(btn_light_color_, &QPushButton::clicked, this, [this]() {
+        if (loading_values_) return;
+        TitleLight *light = current_light();
+        if (!light) return;
+        const QColor initial = QColor::fromRgba(
+            static_cast<QRgb>(evaluated_light_color(*light, playhead_)));
+        const QColor selected = QColorDialog::getColor(
+            initial, this, QStringLiteral("Light Color"),
+            QColorDialog::ShowAlphaChannel);
+        if (!selected.isValid()) return;
+        set_animated_value(light->color_a, playhead_, selected.alpha());
+        set_animated_value(light->color_r, playhead_, selected.red());
+        set_animated_value(light->color_g, playhead_, selected.green());
+        set_animated_value(light->color_b, playhead_, selected.blue());
+        load_values();
+        emit title_changed(true);
+    });
 
     connect(grp_playback_mode_, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
             this, [this](QAbstractButton *button) {
@@ -651,7 +1261,8 @@ void TitlePropertiesPanel::apply_theme_style()
         "border-radius:2px;padding:2px;}"
         "QToolButton:hover{background:%8;border-color:%3;}"
         "QToolButton:checked{background:%9;color:%10;border-color:%9;}"
-        "QLabel{color:%11;font-size:10px;background:transparent;}")
+        "QLabel{color:%11;font-size:10px;font-weight:normal;background:transparent;}"
+        "QCheckBox{color:%11;font-size:10px;font-weight:normal;background:transparent;}")
         .arg(text.name(QColor::HexRgb),
              section_bg.name(QColor::HexRgb),
              border.name(QColor::HexRgb),
@@ -742,6 +1353,7 @@ void TitlePropertiesPanel::insert_camera_copy(const TitleCamera &source)
     TitleCamera camera = source;
     camera.id = TitleDataStore::make_uuid();
     camera.name = unique_camera_name(source.name);
+    camera.asset_space_owner_id.clear();
     const std::string camera_id = camera.id;
     title_->cameras.push_back(std::move(camera));
     if (title_->active_camera.is_animated()) {
@@ -752,6 +1364,44 @@ void TitlePropertiesPanel::insert_camera_copy(const TitleCamera &source)
     }
     load_values();
     emit title_changed(true);
+}
+
+TitleLight *TitlePropertiesPanel::current_light()
+{
+    if (!title_ || !cmb_light_) return nullptr;
+    const std::string id = cmb_light_->currentData().toString().toStdString();
+    for (auto &layer : title_->layers) if (layer && layer->type == LayerType::Light && layer->id == id) return &layer->light;
+    for (auto &layer : title_->layers) if (layer && layer->type == LayerType::Light) return &layer->light;
+    return nullptr;
+}
+
+const TitleLight *TitlePropertiesPanel::current_light() const
+{
+    if (!title_ || !cmb_light_) return nullptr;
+    const std::string id = cmb_light_->currentData().toString().toStdString();
+    for (const auto &layer : title_->layers) if (layer && layer->type == LayerType::Light && layer->id == id) return &layer->light;
+    for (const auto &layer : title_->layers) if (layer && layer->type == LayerType::Light) return &layer->light;
+    return nullptr;
+}
+
+std::string TitlePropertiesPanel::unique_light_name(const std::string &base) const
+{
+    const QString stem = QString::fromStdString(base).trimmed().isEmpty()
+        ? QStringLiteral("Light") : QString::fromStdString(base).trimmed();
+    std::set<std::string> used;
+    if (title_) {
+        for (const auto &layer : title_->layers)
+            if (layer && layer->type == LayerType::Light) used.insert(layer->name);
+    }
+    if (used.find(stem.toStdString()) == used.end())
+        return stem.toStdString();
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        const QString candidate = QStringLiteral("%1 %2").arg(stem).arg(suffix);
+        if (used.find(candidate.toStdString()) == used.end())
+            return candidate.toStdString();
+    }
+    return (stem + QStringLiteral(" ") +
+            QString::fromStdString(TitleDataStore::make_uuid().substr(0, 8))).toStdString();
 }
 
 void TitlePropertiesPanel::load_values()
@@ -788,9 +1438,12 @@ void TitlePropertiesPanel::load_values()
     if (cmb_camera_) {
         cmb_camera_->clear();
         if (title_) {
-            for (const TitleCamera &camera : title_->cameras)
+            for (const TitleCamera &camera : title_->cameras) {
+                if (!camera.asset_space_owner_id.empty())
+                    continue;
                 cmb_camera_->addItem(QString::fromStdString(camera.name),
                                      QString::fromStdString(camera.id));
+            }
             const std::string evaluated_camera = title_->active_camera.evaluate(playhead_);
             int camera_index = cmb_camera_->findData(
                 QString::fromStdString(evaluated_camera));
@@ -832,6 +1485,68 @@ void TitlePropertiesPanel::load_values()
         spn_camera_far_->setMinimum(camera->near_clip.evaluate(playhead_) + 0.001);
         spn_camera_far_->setValue(std::max(camera->far_clip.evaluate(playhead_),
                                            camera->near_clip.evaluate(playhead_) + 0.001));
+        auto set_camera_keyframe_icon = [](QToolButton *button, bool active,
+                                           bool has_keyframes) {
+            if (!button) return;
+            bgl_refresh_keyframe_navigation(button);
+            const bool outlined = has_keyframes && !active;
+            button->setIcon(bgl_keyframe_diamond_icon(active, outlined));
+            button->setProperty("active", active);
+            button->setProperty("outlined", outlined);
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        };
+        auto set_camera_scalar_keyframe_icon =
+            [&](QToolButton *button, const AnimatedProperty &property) {
+                set_camera_keyframe_icon(
+                    button, keyframe_at_time(property, playhead_),
+                    property.is_animated());
+            };
+        auto set_camera_scalar_group_keyframe_icon =
+            [&](QToolButton *button,
+                std::initializer_list<const AnimatedProperty *> properties) {
+                set_camera_keyframe_icon(
+                    button, any_keyframe_at_time(properties, playhead_),
+                    any_keyframes(properties));
+            };
+        auto set_camera_vector_keyframe_icon =
+            [&](QToolButton *button, const AnimatedVec3Property &vector,
+                bool vector_enabled, const AnimatedProperty &x,
+                const AnimatedProperty &y, const AnimatedProperty &z) {
+                const bool vector_active = keyframe_at_time(vector, playhead_);
+                const bool legacy_active = any_keyframe_at_time(
+                    {&x, &y, &z}, playhead_);
+                const bool active = vector_enabled ? vector_active
+                                                   : vector_active || legacy_active;
+                const bool animated = vector_enabled ? vector.is_animated()
+                    : vector.is_animated() || any_keyframes({&x, &y, &z});
+                set_camera_keyframe_icon(button, active, animated);
+            };
+        set_camera_scalar_keyframe_icon(btn_kf_camera_projection_,
+                                        camera->projection_mode);
+        set_camera_vector_keyframe_icon(
+            btn_kf_camera_position_, camera->position_3d,
+            camera->position_3d_path_enabled, camera->position_x,
+            camera->position_y, camera->position_z);
+        set_camera_vector_keyframe_icon(
+            btn_kf_camera_target_, camera->target_3d,
+            camera->target_3d_path_enabled, camera->target_x,
+            camera->target_y, camera->target_z);
+        set_camera_scalar_group_keyframe_icon(
+            btn_kf_camera_orientation_, {&camera->orientation_x,
+                                         &camera->orientation_y,
+                                         &camera->orientation_z});
+        set_camera_scalar_group_keyframe_icon(
+            btn_kf_camera_rotation_, {&camera->rotation_x,
+                                      &camera->rotation_y,
+                                      &camera->rotation_z});
+        set_camera_scalar_keyframe_icon(btn_kf_camera_focal_,
+                                        camera->focal_length);
+        set_camera_scalar_keyframe_icon(btn_kf_camera_fov_,
+                                        camera->field_of_view);
+        set_camera_scalar_keyframe_icon(btn_kf_camera_zoom_, camera->zoom);
+        set_camera_scalar_keyframe_icon(btn_kf_camera_near_, camera->near_clip);
+        set_camera_scalar_keyframe_icon(btn_kf_camera_far_, camera->far_clip);
         const bool custom = !camera->use_canvas_default;
         for (QWidget *widget : {static_cast<QWidget *>(spn_camera_pos_x_),
                                 static_cast<QWidget *>(spn_camera_pos_y_),
@@ -847,6 +1562,127 @@ void TitlePropertiesPanel::load_values()
                                 static_cast<QWidget *>(spn_camera_rot_z_)})
             widget->setEnabled(custom);
         btn_camera_delete_->setEnabled(title_->cameras.size() > 1 && camera->id != "default");
+    }
+
+    if (chk_lighting_enabled_)
+        chk_lighting_enabled_->setChecked(title_ ? title_->lighting_enabled : true);
+    if (chk_default_light_)
+        chk_default_light_->setChecked(title_ ? title_->default_light_enabled : true);
+    if (spn_environment_exposure_)
+        spn_environment_exposure_->setValue(
+            title_ ? title_->environment_exposure : 0.0);
+    QString selected_light_id;
+    if (cmb_light_)
+        selected_light_id = cmb_light_->currentData().toString();
+    if (cmb_light_) {
+        cmb_light_->clear();
+        if (title_) {
+            for (const auto &layer : title_->layers)
+                if (layer && layer->type == LayerType::Light)
+                    cmb_light_->addItem(QString::fromStdString(layer->name), QString::fromStdString(layer->id));
+        }
+        int index = cmb_light_->findData(selected_light_id);
+        if (index < 0 && cmb_light_->count() > 0)
+            index = 0;
+        cmb_light_->setCurrentIndex(index);
+    }
+    const TitleLight *light = current_light();
+    const bool has_light = light != nullptr;
+    if (btn_light_add_)
+        btn_light_add_->setEnabled(title_ && std::count_if(title_->layers.begin(), title_->layers.end(), [](const auto &layer) { return layer && layer->type == LayerType::Light; }) < 4);
+    if (btn_light_delete_) btn_light_delete_->setEnabled(has_light);
+    for (QWidget *widget : {
+             static_cast<QWidget *>(chk_light_enabled_),
+             static_cast<QWidget *>(cmb_light_type_),
+             static_cast<QWidget *>(btn_light_color_),
+             static_cast<QWidget *>(spn_light_intensity_),
+             static_cast<QWidget *>(spn_light_source_size_),
+             static_cast<QWidget *>(spn_light_pos_x_),
+             static_cast<QWidget *>(spn_light_pos_y_),
+             static_cast<QWidget *>(spn_light_pos_z_),
+             static_cast<QWidget *>(spn_light_target_x_),
+             static_cast<QWidget *>(spn_light_target_y_),
+             static_cast<QWidget *>(spn_light_target_z_),
+             static_cast<QWidget *>(cmb_light_falloff_),
+             static_cast<QWidget *>(spn_light_falloff_distance_),
+             static_cast<QWidget *>(spn_light_cone_angle_),
+             static_cast<QWidget *>(spn_light_cone_feather_),
+             static_cast<QWidget *>(chk_light_casts_shadows_),
+             static_cast<QWidget *>(spn_light_shadow_darkness_),
+             static_cast<QWidget *>(spn_light_shadow_softness_),
+             static_cast<QWidget *>(spn_light_shadow_bias_)}) {
+        if (widget) widget->setEnabled(has_light);
+    }
+    if (light) {
+        chk_light_enabled_->setChecked(light->enabled);
+        const int type_index = cmb_light_type_->findData(
+            static_cast<int>(light->type));
+        cmb_light_type_->setCurrentIndex(type_index >= 0 ? type_index : 0);
+        const uint32_t argb = evaluated_light_color(*light, playhead_);
+        const QColor light_color = QColor::fromRgba(static_cast<QRgb>(argb));
+        btn_light_color_->setText(light_color.name(QColor::HexRgb).toUpper());
+        btn_light_color_->setStyleSheet(QStringLiteral(
+            "QPushButton{background:%1;color:%2;border:1px solid palette(mid);"
+            "border-radius:2px;font-size:10px;}")
+            .arg(light_color.name(QColor::HexArgb),
+                 light_color.lightnessF() < 0.5 ? QStringLiteral("white")
+                                                : QStringLiteral("black")));
+        spn_light_intensity_->setValue(light->intensity.evaluate(playhead_));
+        spn_light_source_size_->setValue(
+            light->source_size.evaluate(playhead_));
+        const Vec3Value position = evaluated_light_position(*light, playhead_);
+        const Vec3Value target = evaluated_light_target(*light, playhead_);
+        spn_light_pos_x_->setValue(position.x);
+        spn_light_pos_y_->setValue(position.y);
+        spn_light_pos_z_->setValue(position.z);
+        spn_light_target_x_->setValue(target.x);
+        spn_light_target_y_->setValue(target.y);
+        spn_light_target_z_->setValue(target.z);
+        const int falloff_index = cmb_light_falloff_->findData(
+            static_cast<int>(light->falloff));
+        cmb_light_falloff_->setCurrentIndex(
+            falloff_index >= 0 ? falloff_index : 0);
+        spn_light_falloff_distance_->setValue(
+            light->falloff_distance.evaluate(playhead_));
+        spn_light_cone_angle_->setValue(light->cone_angle.evaluate(playhead_));
+        spn_light_cone_feather_->setValue(light->cone_feather.evaluate(playhead_));
+        chk_light_casts_shadows_->setChecked(light->casts_shadows);
+        spn_light_shadow_darkness_->setValue(
+            light->shadow_darkness.evaluate(playhead_));
+        spn_light_shadow_softness_->setValue(
+            light->shadow_softness.evaluate(playhead_));
+        spn_light_shadow_bias_->setValue(light->shadow_bias.evaluate(playhead_));
+
+        const bool positional = light->type == TitleLightType::Point ||
+                                light->type == TitleLightType::Spot ||
+                                light->type == TitleLightType::Parallel;
+        const bool distance_falloff = light->type == TitleLightType::Point ||
+                                      light->type == TitleLightType::Spot;
+        const bool spot = light->type == TitleLightType::Spot;
+        const bool shadow_capable = distance_falloff ||
+                                    light->type == TitleLightType::Parallel;
+        const bool finite_source = distance_falloff ||
+                                   light->type == TitleLightType::Parallel;
+        for (QWidget *widget : {static_cast<QWidget *>(spn_light_pos_x_),
+                                static_cast<QWidget *>(spn_light_pos_y_),
+                                static_cast<QWidget *>(spn_light_pos_z_),
+                                static_cast<QWidget *>(spn_light_target_x_),
+                                static_cast<QWidget *>(spn_light_target_y_),
+                                static_cast<QWidget *>(spn_light_target_z_)})
+            widget->setEnabled(positional);
+        cmb_light_falloff_->setEnabled(distance_falloff);
+        spn_light_source_size_->setEnabled(finite_source);
+        spn_light_falloff_distance_->setEnabled(
+            distance_falloff && light->falloff != TitleLightFalloff::None);
+        spn_light_cone_angle_->setEnabled(spot);
+        spn_light_cone_feather_->setEnabled(spot);
+        chk_light_casts_shadows_->setEnabled(shadow_capable);
+        spn_light_shadow_darkness_->setEnabled(
+            shadow_capable && light->casts_shadows);
+        spn_light_shadow_softness_->setEnabled(
+            shadow_capable && light->casts_shadows);
+        spn_light_shadow_bias_->setEnabled(
+            shadow_capable && light->casts_shadows);
     }
 
     bool show_loop = playback_mode == 1;

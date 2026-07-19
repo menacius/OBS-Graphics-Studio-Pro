@@ -51,6 +51,7 @@ class QPaintEvent;
 class QPainter;
 class QScrollBar;
 class BglCollapsiblePanel;
+class BglSwitch;
 /* ══════════════════════════════════════════════════════════════════
  *  PropertiesPanel  – right-side inspector
  * ══════════════════════════════════════════════════════════════════ */
@@ -74,6 +75,7 @@ signals:
     void property_changed(bool push_undo_snapshot = true);
     void audio_property_changed(bool push_undo_snapshot = true);
     void extension_canvas_handles_changed(const QJsonArray &handles);
+    void keyframe_navigation_requested(double timeline_time);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -109,6 +111,7 @@ private:
     void update_bound_controls();
     void publish_canvas_handles(bool force = false);
     double current_local_time() const;
+    QWidget *make_keyframe_controls(QPushButton *button, QWidget *parent);
 
     struct NumericBinding {
         QPointer<QDoubleSpinBox> spin;
@@ -135,6 +138,7 @@ private:
         std::function<bool(const LayerEffect &, double)> has_keyframe;
         std::function<bool(const LayerEffect &)> has_keyframes;
         std::function<void(LayerEffect &)> clear_keyframes;
+        std::function<std::vector<double>(const LayerEffect &)> keyframe_times;
         int effect_index = -1;
     };
 
@@ -158,7 +162,7 @@ private:
     QWidget *settings_container_ = nullptr;
     QVBoxLayout *settings_layout_ = nullptr;
     QToolButton *btn_respect_masks_ = nullptr;
-    QToolButton *btn_stack_enabled_ = nullptr;
+    BglSwitch *btn_stack_enabled_ = nullptr;
     QToolButton *btn_stack_menu_ = nullptr;
     std::vector<QPointer<BglCollapsiblePanel>> effect_panels_;
 };

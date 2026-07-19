@@ -9,6 +9,21 @@ TitleDock::TitleDock(QWidget *parent)
                 QDockWidget::DockWidgetFloatable);
     build_ui();
 
+    const QPointer<TitleDock> hotkey_guard(this);
+    title_hotkeys_set_program_command_handler(
+        [hotkey_guard](TitleProgramHotkeyCommand command,
+                       const std::string &title_id) {
+            if (!hotkey_guard)
+                return;
+            QMetaObject::invokeMethod(
+                hotkey_guard,
+                [hotkey_guard, command, title_id]() {
+                    if (hotkey_guard)
+                        hotkey_guard->handle_program_hotkey(command, title_id);
+                },
+                Qt::QueuedConnection);
+        });
+
     // Accept external template file drops anywhere over the dock/template list.
     // QListWidget uses a viewport child for DnD, so installing the filter on
     // every child avoids lost drops when the cursor is over labels, toolbars,
@@ -19,6 +34,15 @@ TitleDock::TitleDock(QWidget *parent)
     for (QWidget *w : dock_drop_widgets) {
         if (!w)
             continue;
+        /* The Cue Preview section is an output monitor, not an editor or drop
+         * target. Keep its canvas strictly read-only even though the rest of
+         * the dock accepts template drops. Take/Cancel remain normal commands. */
+        if (live_cue_preview_panel_ &&
+            (w == live_cue_preview_panel_ ||
+             live_cue_preview_panel_->isAncestorOf(w))) {
+            w->setAcceptDrops(false);
+            continue;
+        }
         w->setAcceptDrops(true);
         w->installEventFilter(this);
     }
@@ -28,19 +52,22 @@ TitleDock::TitleDock(QWidget *parent)
      */
     change_callback_id_ = TitleDataStore::instance().on_change([this]() {
         QTimer::singleShot(0, this, [this]() {
-            if (!updating_exposed_text_)
+            if (!updating_exposed_text_) {
                 refresh();
+                if (isPreviewReady())
+                    refresh_live_cue_preview();
+            }
         });
     });
     const QPointer<TitleDock> external_table_guard(this);
     external_data_callback_id_ = ExternalDataManager::instance().on_change(
         [external_table_guard](const ExternalDataUpdate &update) {
-            if (!external_table_guard || !update.table_changed)
+            if (!external_table_guard)
                 return;
             ExternalDataLog::write_lazy(
                 ExternalDataLogLevel::Debug, "Dock", [&]() {
                     std::ostringstream stream;
-                    stream << "table update received source="
+                    stream << "external update received source="
                            << ExternalDataLog::sanitize(update.source_id, 160)
                            << " table=" << ExternalDataLog::sanitize(update.table_path, 320)
                            << " sequence=" << update.sequence;
@@ -51,8 +78,14 @@ TitleDock::TitleDock(QWidget *parent)
                     if (!external_table_guard)
                         return;
                     bool selected_changed = false;
+                    bool preview_changed = false;
                     for (const auto &title : TitleDataStore::instance().titles()) {
                         if (!title || !title_uses_external_update(*title, update))
+                            continue;
+                        if (QString::fromStdString(title->id) ==
+                            external_table_guard->live_cue_preview_title_id_)
+                            preview_changed = true;
+                        if (!update.table_changed)
                             continue;
                         if (!synchronize_live_text_table_bindings(*title, update.source_id))
                             continue;
@@ -63,13 +96,15 @@ TitleDock::TitleDock(QWidget *parent)
                     }
                     ExternalDataLog::write_lazy(
                         ExternalDataLogLevel::Debug, "Dock", [&]() {
-                            return std::string("table update applied source=") +
+                            return std::string("external update applied source=") +
                                    ExternalDataLog::sanitize(update.source_id, 160) +
                                    " selectedChanged=" + (selected_changed ? "1" : "0");
                         });
                     if (selected_changed &&
                         !external_table_guard->updating_exposed_text_)
                         external_table_guard->populate_exposed_text();
+                    if (preview_changed)
+                        external_table_guard->refresh_live_cue_preview();
                 });
         });
 
@@ -84,6 +119,8 @@ TitleDock::TitleDock(QWidget *parent)
     live_refresh_timer_->setInterval(100);
     connect(live_refresh_timer_, &QTimer::timeout, this, [this]() {
         update_live_cue_timer_label();
+        if (isPreviewReady())
+            sync_live_cue_preview_output_route();
         uint64_t revision = TitleDataStore::instance().revision();
         if (revision == seen_store_revision_ || updating_exposed_text_) return;
         seen_store_revision_ = revision;
@@ -277,11 +314,16 @@ void TitleDock::update_live_text_runtime_status_fast(const std::shared_ptr<Title
         if (auto *cue = live_cue_button(text_table_, row, cue_col)) {
             const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
                 cache_waiting_cue_row_ == row;
-            const bool ending = row == title->current_cue_row && title->cue_uncue_requested;
+            const bool preview = isPreviewReady() &&
+                live_cue_preview_title_id_ == title_id &&
+                live_cue_preview_row_ == row;
+            const bool preview_on_program = preview &&
+                row == title->current_cue_row;
+            const bool ending = live_cue_row_is_ending(*title, row);
             cue->setIcon(obs_icon("cue.svg", live_cue_state_color(
                 row == title->current_cue_row,
-                row == title->pending_cue_row || waiting_for_prerender,
-                ending)));
+                row == title->pending_cue_row || waiting_for_prerender || preview,
+                ending && !preview_on_program)));
         }
     };
 
@@ -325,11 +367,16 @@ void TitleDock::update_live_text_runtime_status(const std::shared_ptr<Title> &ti
         cue->setEnabled(title_has_bound_obs_source(title->id));
         const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
             cache_waiting_cue_row_ == row;
-        const bool ending = row == title->current_cue_row && title->cue_uncue_requested;
+        const bool preview = isPreviewReady() &&
+            live_cue_preview_title_id_ == title_id &&
+            live_cue_preview_row_ == row;
+        const bool preview_on_program = preview &&
+            row == title->current_cue_row;
+        const bool ending = live_cue_row_is_ending(*title, row);
         cue->setIcon(obs_icon("cue.svg", live_cue_state_color(
             row == title->current_cue_row,
-            row == title->pending_cue_row || waiting_for_prerender,
-            ending)));
+            row == title->pending_cue_row || waiting_for_prerender || preview,
+            ending && !preview_on_program)));
     }
 
     schedule_title_list_cache_icon_update(title_id);
@@ -449,9 +496,13 @@ void TitleDock::update_live_text_select_cell_status(int row)
     const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
         cache_waiting_cue_row_ == row;
     const bool current = row == title->current_cue_row;
-    const bool queued = row == title->pending_cue_row || waiting_for_prerender;
-    const bool ending = current && title->cue_uncue_requested;
-    const QColor status_color = live_cue_select_cell_color(current, queued, ending);
+    const bool preview = isPreviewReady() &&
+        live_cue_preview_title_id_ == title_id &&
+        live_cue_preview_row_ == row;
+    const bool queued = row == title->pending_cue_row || waiting_for_prerender || preview;
+    const bool ending = live_cue_row_is_ending(*title, row);
+    const QColor status_color = live_cue_select_cell_color(
+        current, queued, ending && !(preview && current));
     const QString background_style = status_color.isValid()
         ? QStringLiteral("background-color: rgba(%1, %2, %3, %4);")
               .arg(status_color.red()).arg(status_color.green()).arg(status_color.blue()).arg(status_color.alpha())
@@ -546,9 +597,32 @@ void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
 
 TitleDock::~TitleDock()
 {
+    title_hotkeys_set_program_command_handler({});
+    leavePreview();
+    release_live_cue_preview_source();
+    if (live_cue_preview_canvas_)
+        live_cue_preview_canvas_->prepare_for_shutdown();
     save_dock_settings();
     BGL_LOG_INFO("Dock", QStringLiteral("Dock destroyed"));
     remove_obs_state_callbacks();
+
+    /* The detached editor owns the one authoritative cue table while it is
+     * open. Reparent it before deleting the top-level window so Qt cannot
+     * destroy the table ahead of the dock. */
+    if (live_text_columns_dialog_) {
+        QDialog *dialog = live_text_columns_dialog_;
+        live_text_columns_dialog_ = nullptr;
+        disconnect(dialog, nullptr, this, nullptr);
+        if (live_text_header_widget_)
+            live_text_header_widget_->setParent(container_);
+        if (text_table_)
+            text_table_->setParent(container_);
+        if (live_text_toolbar_)
+            live_text_toolbar_->setParent(container_);
+        if (live_cue_preview_panel_)
+            live_cue_preview_panel_->setParent(container_);
+        delete dialog;
+    }
 
     TitleDataStore::instance().remove_change_callback(change_callback_id_);
     change_callback_id_ = 0;
@@ -598,6 +672,14 @@ void TitleDock::load_dock_settings()
                                                          live_text_lines_per_row_).toInt(),
                                           kMinLiveTextLinesPerRow,
                                           kMaxLiveTextLinesPerRow);
+    const QString select_row_key = QString::fromUtf8(kSelectRowBeforeCueKey);
+    const QString legacy_preview_key =
+        QString::fromUtf8(kLegacyShowPreviewBeforeCueKey);
+    select_row_before_cue_ = settings.contains(select_row_key)
+        ? settings.value(select_row_key, false).toBool()
+        : settings.value(legacy_preview_key, false).toBool();
+    show_cue_preview_ = settings.value(
+        QString::fromUtf8(kShowCuePreviewKey), true).toBool();
 
     titles_collapsed_ = settings.value(QString::fromUtf8(kTitlesCollapsedKey),
                                         titles_collapsed_).toBool();
@@ -652,6 +734,10 @@ void TitleDock::save_dock_settings() const
     settings.setValue(QString::fromUtf8(kBackgroundPersistenceKey), background_persistence_);
     settings.setValue(QString::fromUtf8(kTextPersistenceKey), text_persistence_);
     settings.setValue(QString::fromUtf8(kLiveTextLinesPerRowKey), live_text_lines_per_row_);
+    settings.setValue(QString::fromUtf8(kSelectRowBeforeCueKey),
+                      select_row_before_cue_);
+    settings.setValue(QString::fromUtf8(kShowCuePreviewKey),
+                      show_cue_preview_);
     settings.setValue(QString::fromUtf8(kTitlesCollapsedKey), titles_collapsed_);
     settings.setValue(QString::fromUtf8(kTitlesExpandedWidthKey), titles_expanded_width_);
     settings.setValue(QString::fromUtf8(kTitlesExpandedSplitterSizeKey),
@@ -733,7 +819,14 @@ void TitleDock::on_obs_frontend_event(obs_frontend_event event, void *priv)
     switch (event) {
     case OBS_FRONTEND_EVENT_SCENE_CHANGED:
     case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
-        QTimer::singleShot(0, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
+    case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
+    case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
+    case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
+        QTimer::singleShot(0, dock, [dock]() {
+            dock->refresh_for_obs_source_state_change();
+            if (dock->isPreviewReady())
+                dock->sync_live_cue_preview_output_route();
+        });
         break;
     default:
         break;
@@ -902,12 +995,15 @@ void TitleDock::build_ui()
     titles_section_layout->addWidget(titles_compact_rail_);
     titles_compact_rail_->hide();
 
-    auto *live_section = new QWidget(sections_);
-    auto *live_layout = new QVBoxLayout(live_section);
+    live_text_section_ = new QWidget(sections_);
+    auto *live_section = live_text_section_;
+    live_text_section_layout_ = new QVBoxLayout(live_section);
+    auto *live_layout = live_text_section_layout_;
     live_layout->setContentsMargins(0, 0, 0, 0);
     live_layout->setSpacing(obs_layout_spacing(live_section));
 
-    auto *live_header = new QHBoxLayout();
+    live_text_header_widget_ = new QWidget(live_section);
+    auto *live_header = new QHBoxLayout(live_text_header_widget_);
     live_header->setContentsMargins(0, 0, 0, 0);
     live_header->setSpacing(0);
 
@@ -923,7 +1019,8 @@ void TitleDock::build_ui()
     live_cue_timer_lbl_->setMinimumWidth(58);
     live_cue_timer_lbl_->setVisible(false);
 
-    auto *live_toolbar = make_obs_dock_toolbar(live_section);
+    live_text_toolbar_ = make_obs_dock_toolbar(live_section);
+    auto *live_toolbar = live_text_toolbar_;
     btn_add_text_row_ = make_obs_dock_tool_button(live_toolbar, bgl_tr("OBSTitles.AddRow"), obs_icon("add.svg"),
                                                   bgl_tr("OBSTitles.AddCueRowTooltip"));
     btn_delete_text_row_ = make_obs_dock_tool_button(live_toolbar, bgl_tr("OBSTitles.Delete"), obs_icon("delete.svg"),
@@ -991,9 +1088,85 @@ void TitleDock::build_ui()
     live_header->addWidget(text_editor_lbl_);
     live_header->addStretch();
     live_header->addWidget(live_cue_timer_lbl_);
-    live_layout->addLayout(live_header);
+    live_layout->addWidget(live_text_header_widget_);
 
-    text_table_ = new LiveTextCueTable(live_section);
+    /* Cue Preview is a separate, read-only splitter section while the Live
+     * Text Cues editor is docked. The authoritative panel is reparented into
+     * the external Live Text window while that window is open. When OBS
+     * Duplicate Scene is active it remains hidden and the same frozen snapshot
+     * is routed to the OBS Preview bus. */
+    live_cue_preview_panel_ = new QFrame(sections_);
+    live_cue_preview_panel_->setObjectName(
+        QStringLiteral("BroadcastGraphicsLiveCuePreviewPanel"));
+    live_cue_preview_panel_->setFrameShape(QFrame::StyledPanel);
+    live_cue_preview_panel_->setProperty("bglReadOnly", true);
+    live_cue_preview_panel_->setFocusPolicy(Qt::NoFocus);
+    live_cue_preview_panel_->setToolTip(
+        bgl_tr("OBSTitles.CuePreviewReadOnlyTooltip"));
+    auto *preview_layout = new QVBoxLayout(live_cue_preview_panel_);
+    preview_layout->setContentsMargins(6, 6, 6, 6);
+    preview_layout->setSpacing(6);
+    auto *preview_header = new QHBoxLayout();
+    preview_header->setContentsMargins(0, 0, 0, 0);
+    auto *preview_section_label = new QLabel(
+        bgl_tr("OBSTitles.CuePreviewReadOnly"), live_cue_preview_panel_);
+    set_bold_label(preview_section_label);
+    preview_header->addWidget(preview_section_label);
+    live_cue_preview_status_ = new QLabel(live_cue_preview_panel_);
+    preview_header->addWidget(live_cue_preview_status_, 1);
+    btn_live_cue_cancel_preview_ = new QPushButton(
+        bgl_tr("OBSTitles.CancelPreview"), live_cue_preview_panel_);
+    btn_live_cue_take_ = new QPushButton(
+        bgl_tr("OBSTitles.TakePreviewToProgram"), live_cue_preview_panel_);
+    btn_live_cue_take_->setDefault(true);
+    preview_header->addWidget(btn_live_cue_cancel_preview_);
+    preview_header->addWidget(btn_live_cue_take_);
+    preview_layout->addLayout(preview_header);
+
+    live_cue_preview_canvas_ = new CanvasPreview(live_cue_preview_panel_);
+    live_cue_preview_canvas_->setObjectName(
+        QStringLiteral("BroadcastGraphicsLiveCuePreviewCanvas"));
+    live_cue_preview_canvas_->set_read_only(true);
+    live_cue_preview_canvas_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    live_cue_preview_canvas_->setAttribute(Qt::WA_NoMousePropagation, true);
+    live_cue_preview_canvas_->setFocusPolicy(Qt::NoFocus);
+    live_cue_preview_canvas_->setAcceptDrops(false);
+    live_cue_preview_canvas_->setMinimumHeight(225);
+    preview_layout->addWidget(live_cue_preview_canvas_, 1);
+    live_cue_preview_panel_->hide();
+
+    live_text_table_host_ = new QWidget(live_section);
+    live_text_table_host_layout_ = new QVBoxLayout(live_text_table_host_);
+    live_text_table_host_layout_->setContentsMargins(0, 0, 0, 0);
+    live_text_table_host_layout_->setSpacing(0);
+
+    live_text_table_placeholder_ = new QWidget(live_text_table_host_);
+    auto *detached_layout = new QVBoxLayout(live_text_table_placeholder_);
+    detached_layout->setContentsMargins(12, 12, 12, 12);
+    detached_layout->setSpacing(8);
+    detached_layout->addStretch();
+    auto *detached_label = new QLabel(
+        bgl_tr("OBSTitles.LiveTextColumnsDetached"),
+        live_text_table_placeholder_);
+    detached_label->setAlignment(Qt::AlignCenter);
+    detached_label->setWordWrap(true);
+    detached_layout->addWidget(detached_label);
+    auto *show_detached = new QPushButton(
+        bgl_tr("OBSTitles.ShowLiveTextColumnsWindow"),
+        live_text_table_placeholder_);
+    connect(show_detached, &QPushButton::clicked, this, [this]() {
+        if (!live_text_columns_dialog_)
+            return;
+        live_text_columns_dialog_->show();
+        live_text_columns_dialog_->raise();
+        live_text_columns_dialog_->activateWindow();
+    });
+    detached_layout->addWidget(show_detached, 0, Qt::AlignHCenter);
+    detached_layout->addStretch();
+    live_text_table_placeholder_->hide();
+    live_text_table_host_layout_->addWidget(live_text_table_placeholder_, 1);
+
+    text_table_ = new LiveTextCueTable(live_text_table_host_);
     text_table_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(text_table_, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         if (!text_table_)
@@ -1061,13 +1234,16 @@ void TitleDock::build_ui()
     text_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     text_table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    live_layout->addWidget(text_table_, 1);
-    live_layout->addWidget(live_toolbar);
+    live_text_table_host_layout_->insertWidget(0, text_table_, 1);
+    live_layout->addWidget(live_text_table_host_, 1);
+    live_layout->addWidget(live_text_toolbar_);
 
     sections_->addWidget(titles_section_);
     sections_->addWidget(live_section);
+    sections_->addWidget(live_cue_preview_panel_);
     sections_->setStretchFactor(0, 2);
     sections_->setStretchFactor(1, 1);
+    sections_->setStretchFactor(2, 1);
 
     /* ── status ── */
     status_lbl_ = new QLabel(bgl_tr("OBSTitles.NoTitleSelected"), container_);
@@ -1114,10 +1290,20 @@ void TitleDock::build_ui()
     connect(btn_add_text_row_, &QToolButton::clicked, this, &TitleDock::on_add_live_text_row);
     connect(btn_delete_text_row_, &QToolButton::clicked, this, &TitleDock::on_delete_live_text_rows);
     connect(btn_row_up_, &QToolButton::clicked, this, &TitleDock::on_move_live_text_row_up);
+    connect(btn_live_cue_cancel_preview_, &QPushButton::clicked,
+            this, &TitleDock::leavePreview);
+    connect(btn_live_cue_take_, &QPushButton::clicked, this, [this]() {
+        if (!isPreviewReady())
+            return;
+        auto title = TitleDataStore::instance().get_title(
+            live_cue_preview_title_id_.toStdString());
+        const int row = live_cue_preview_row_;
+        if (title && row >= 0)
+            cue_live_text_row_for_title(title, row, true);
+    });
     auto *persistence_menu = new QMenu(btn_persistence_settings_);
     act_background_persistence_ = persistence_menu->addAction(bgl_tr("OBSTitles.BackgroundPersistence"));
     act_background_persistence_->setCheckable(true);
     act_text_persistence_ = persistence_menu->addAction(bgl_tr("OBSTitles.TextPersistence"));
     act_text_persistence_->setCheckable(true);
     btn_persistence_settings_->setMenu(persistence_menu);
-

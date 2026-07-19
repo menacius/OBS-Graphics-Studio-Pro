@@ -22,79 +22,95 @@ bool g_session_started = false;
 const QVector<TitleLogCategory> &all_categories()
 {
     static const QVector<TitleLogCategory> categories = {
-        {QStringLiteral("General"), QStringLiteral("General"),
-         QStringLiteral("Unclassified application messages."), true},
+        {QStringLiteral("General"), QStringLiteral("General messages"),
+         QStringLiteral("Unclassified application messages."), QStringLiteral("Core and application"), true},
         {QStringLiteral("Plugin"), QStringLiteral("Plugin lifecycle"),
-         QStringLiteral("Module load, unload and OBS frontend events."), true},
-        {QStringLiteral("Source"), QStringLiteral("OBS sources"),
-         QStringLiteral("Source creation, activation, visibility and presentation state."), true},
-        {QStringLiteral("Audio"), QStringLiteral("Audio"),
-         QStringLiteral("Audio decode, editor monitoring, packet scheduling, transport and underrun diagnostics."), true},
-        {QStringLiteral("TitleStore"), QStringLiteral("Titles and persistence"),
-         QStringLiteral("Title loading, saving, revision and project storage."), true},
-        {QStringLiteral("Dock"), QStringLiteral("Dock"),
-         QStringLiteral("Dock lifecycle, title selection and cue controls."), true},
-        {QStringLiteral("Editor"), QStringLiteral("Editor"),
-         QStringLiteral("Editor lifecycle, title changes and preview synchronization."), true},
-        {QStringLiteral("Canvas"), QStringLiteral("Canvas"),
-         QStringLiteral("Canvas presentation, interactions and display rendering."), true},
-        {QStringLiteral("Properties"), QStringLiteral("Properties"),
-         QStringLiteral("Properties-panel edits and live visual updates."), true},
-        {QStringLiteral("Layers"), QStringLiteral("Layers"),
-         QStringLiteral("Layer creation, deletion, ordering, visibility and parenting."), true},
-        {QStringLiteral("Grouping"), QStringLiteral("Grouping and parenting"),
-         QStringLiteral("Group membership, reparent conversion, keyframe preservation and group-render diagnostics."), true},
-        {QStringLiteral("Coordinates"), QStringLiteral("Coordinate systems"),
-         QStringLiteral("Local, parent and world-space conversion diagnostics."), true},
-        {QStringLiteral("Text"), QStringLiteral("Text model"),
-         QStringLiteral("Rich-text layout, inline editing and text model changes."), true},
-        {QStringLiteral("GpuPipeline"), QStringLiteral("GPU compositor"),
-         QStringLiteral("GPU graph updates, frame publication and draw failures."), true},
-        {QStringLiteral("GpuText"), QStringLiteral("GPU text"),
-         QStringLiteral("Glyph layout, atlas rendering and text-raster readiness."), true},
-        {QStringLiteral("Effects"), QStringLiteral("Effects"),
-         QStringLiteral("Effect compilation, passes and effect-stack changes."), true},
-        {QStringLiteral("Extensions"), QStringLiteral("Extensions"),
-         QStringLiteral("Extension discovery, validation and shader loading."), true},
-        {QStringLiteral("Masks"), QStringLiteral("Masks and mattes"),
-         QStringLiteral("Layer masks, track mattes and OBS scene-mask composition."), true},
-        {QStringLiteral("Cache"), QStringLiteral("Cache"),
-         QStringLiteral("General frame-cache state, invalidation and diagnostics."), true},
-        {QStringLiteral("CacheQueue"), QStringLiteral("Cache queue"),
-         QStringLiteral("Prerender queue scheduling, cancellation and retries."), true},
-        {QStringLiteral("CachePlayback"), QStringLiteral("Cache playback (verbose)"),
-         QStringLiteral("Per-frame cache lookup and presentation decisions."), false},
-        {QStringLiteral("RamCache"), QStringLiteral("RAM cache"),
-         QStringLiteral("GPU/RAM cache publication, eviction and memory use."), true},
-        {QStringLiteral("DiskCache"), QStringLiteral("Disk cache"),
-         QStringLiteral("Disk-cache restore, compression, writes and failures."), true},
-        {QStringLiteral("Prerender"), QStringLiteral("Prerender pipeline"),
-         QStringLiteral("GPU readback submission, resolution and frame publication."), true},
-        {QStringLiteral("LiveCue"), QStringLiteral("Live text cues"),
-         QStringLiteral("Live-cue state, payload and render lifecycle."), true},
-        {QStringLiteral("LiveCueUI"), QStringLiteral("Live cue UI"),
-         QStringLiteral("Live-cue table editing and user-interface state."), true},
-        {QStringLiteral("Playlist"), QStringLiteral("Playlist"),
-         QStringLiteral("Playlist transitions, timing and cue selection."), true},
-        {QStringLiteral("Timeline"), QStringLiteral("Timeline"),
-         QStringLiteral("Timeline edits, playback, work area and keyframes."), true},
-        {QStringLiteral("Animation"), QStringLiteral("Animation"),
-         QStringLiteral("Animation evaluation, interpolation and transitions."), true},
-        {QStringLiteral("Ticker"), QStringLiteral("Ticker playback"),
-         QStringLiteral("Ticker pause, resume, stop, cue gates and adaptive auto-pause."), true},
-        {QStringLiteral("Transitions"), QStringLiteral("Transitions"),
-         QStringLiteral("Layer and title transition setup and evaluation."), true},
-        {QStringLiteral("ImportExport"), QStringLiteral("Import and export"),
-         QStringLiteral("Title/template import, append and export operations."), true},
-        {QStringLiteral("Assets"), QStringLiteral("Assets"),
-         QStringLiteral("Images, fonts, media and external asset loading."), true},
-        {QStringLiteral("ExternalData"), QStringLiteral("External data"),
-         QStringLiteral("Provider lifecycle, refreshes, parsing, bindings, table mapping and render-queue diagnostics."), true},
+         QStringLiteral("Module load, unload and OBS frontend events."), QStringLiteral("Core and application"), true},
         {QStringLiteral("Preferences"), QStringLiteral("Preferences"),
-         QStringLiteral("Application preference changes and configuration."), true},
+         QStringLiteral("Application preference changes and configuration."), QStringLiteral("Core and application"), true},
+        {QStringLiteral("TitleStore"), QStringLiteral("Titles and persistence"),
+         QStringLiteral("Title loading, saving, revision and project storage."), QStringLiteral("Core and application"), true},
+        {QStringLiteral("ImportExport"), QStringLiteral("Import and export"),
+         QStringLiteral("Title/template import, append and export operations."), QStringLiteral("Core and application"), true},
+
+        {QStringLiteral("Source"), QStringLiteral("Source lifecycle and visibility"),
+         QStringLiteral("Source creation, update, activation, visibility, title binding and presentation resets."), QStringLiteral("OBS source"), true},
+        {QStringLiteral("SourceTiming"), QStringLiteral("Source timing and animation"),
+         QStringLiteral("OBS tick cadence, playhead progression, cue phases, animation frame selection and discontinuities."), QStringLiteral("OBS source"), true},
+        {QStringLiteral("SourcePresentation"), QStringLiteral("Source frame presentation"),
+         QStringLiteral("Tick-to-render handoff, dirty state, frame publication, skipped draws, stale-frame holds and generation mismatches."), QStringLiteral("OBS source"), true},
+        {QStringLiteral("SourceFlicker"), QStringLiteral("Source flicker and frame consistency"),
+         QStringLiteral("Detect transparent/missing frames, alternating publication state, repeated first-frame recovery and rapid visible-output changes."), QStringLiteral("OBS source"), false},
+        {QStringLiteral("SourceMasks"), QStringLiteral("Source scene masks"),
+         QStringLiteral("OBS scene-mask source acquisition, render passes, dimensions and failures."), QStringLiteral("OBS source"), true},
+        {QStringLiteral("Audio"), QStringLiteral("Source and editor audio"),
+         QStringLiteral("Audio decode, editor monitoring, packet scheduling, transport and underrun diagnostics."), QStringLiteral("OBS source"), true},
+
+        {QStringLiteral("Editor"), QStringLiteral("Editor lifecycle"),
+         QStringLiteral("Editor lifecycle, title changes and preview synchronization."), QStringLiteral("Editor and interface"), true},
+        {QStringLiteral("Dock"), QStringLiteral("Docks and layout"),
+         QStringLiteral("Dock lifecycle, layout restoration, title selection and cue controls."), QStringLiteral("Editor and interface"), true},
+        {QStringLiteral("Canvas"), QStringLiteral("Canvas"),
+         QStringLiteral("Canvas presentation, interactions and display rendering."), QStringLiteral("Editor and interface"), true},
+        {QStringLiteral("Properties"), QStringLiteral("Properties panels"),
+         QStringLiteral("Properties-panel edits and live visual updates."), QStringLiteral("Editor and interface"), true},
+        {QStringLiteral("Timeline"), QStringLiteral("Timeline and transport"),
+         QStringLiteral("Timeline edits, playback, work area and keyframes."), QStringLiteral("Editor and interface"), true},
+        {QStringLiteral("LiveCueUI"), QStringLiteral("Live cue interface"),
+         QStringLiteral("Live-cue table editing and user-interface state."), QStringLiteral("Editor and interface"), true},
+
+        {QStringLiteral("Layers"), QStringLiteral("Layers"),
+         QStringLiteral("Layer creation, deletion, ordering, visibility and parenting."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Grouping"), QStringLiteral("Grouping and parenting"),
+         QStringLiteral("Group membership, reparent conversion, keyframe preservation and group-render diagnostics."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Coordinates"), QStringLiteral("Coordinate systems"),
+         QStringLiteral("Local, parent and world-space conversion diagnostics."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Text"), QStringLiteral("Text model"),
+         QStringLiteral("Rich-text layout, inline editing and text model changes."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Animation"), QStringLiteral("Animation evaluation"),
+         QStringLiteral("Keyframe evaluation, interpolation, temporal sampling and animation transitions."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Transitions"), QStringLiteral("Transitions"),
+         QStringLiteral("Layer and title transition setup and evaluation."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Ticker"), QStringLiteral("Ticker playback"),
+         QStringLiteral("Ticker pause, resume, stop, cue gates and adaptive auto-pause."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("LiveCue"), QStringLiteral("Live text cues"),
+         QStringLiteral("Live-cue state, payload and render lifecycle."), QStringLiteral("Title model and animation"), true},
+        {QStringLiteral("Playlist"), QStringLiteral("Playlist"),
+         QStringLiteral("Playlist transitions, timing and cue selection."), QStringLiteral("Title model and animation"), true},
+
+        {QStringLiteral("GpuPipeline"), QStringLiteral("GPU compositor"),
+         QStringLiteral("GPU graph updates, frame publication and draw failures."), QStringLiteral("Rendering"), true},
+        {QStringLiteral("RenderDiagnostics"), QStringLiteral("Correlated render diagnostics"),
+         QStringLiteral("Editor transport, canvas scheduling, GPU-session state, depth-run and extrusion diagnostics."), QStringLiteral("Rendering"), true},
+        {QStringLiteral("GpuText"), QStringLiteral("GPU text"),
+         QStringLiteral("Glyph layout, atlas rendering and text-raster readiness."), QStringLiteral("Rendering"), true},
+        {QStringLiteral("Effects"), QStringLiteral("Effects"),
+         QStringLiteral("Effect compilation, passes and effect-stack changes."), QStringLiteral("Rendering"), true},
+        {QStringLiteral("Extensions"), QStringLiteral("Effect extensions"),
+         QStringLiteral("Extension discovery, validation and shader loading."), QStringLiteral("Rendering"), true},
+        {QStringLiteral("Masks"), QStringLiteral("Layer masks and mattes"),
+         QStringLiteral("Layer masks, track mattes and internal mask composition."), QStringLiteral("Rendering"), true},
         {QStringLiteral("Performance"), QStringLiteral("Performance (verbose)"),
-         QStringLiteral("Render timing, resource and high-frequency diagnostics."), false},
+         QStringLiteral("Render timing, resource and high-frequency diagnostics."), QStringLiteral("Rendering"), false},
+
+        {QStringLiteral("Cache"), QStringLiteral("Cache state"),
+         QStringLiteral("General frame-cache state, invalidation and diagnostics."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("CacheQueue"), QStringLiteral("Cache queue"),
+         QStringLiteral("Prerender queue scheduling, cancellation and retries."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("CachePlayback"), QStringLiteral("Cache playback (verbose)"),
+         QStringLiteral("Per-frame cache lookup and presentation decisions."), QStringLiteral("Cache and media"), false},
+        {QStringLiteral("RamCache"), QStringLiteral("RAM/GPU cache"),
+         QStringLiteral("GPU/RAM cache publication, eviction and memory use."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("DiskCache"), QStringLiteral("Disk cache"),
+         QStringLiteral("Disk-cache restore, compression, writes and failures."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("Prerender"), QStringLiteral("Prerender pipeline"),
+         QStringLiteral("GPU readback submission, resolution and frame publication."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("Assets"), QStringLiteral("Assets and media"),
+         QStringLiteral("Images, fonts, video, media decode and external asset loading."), QStringLiteral("Cache and media"), true},
+        {QStringLiteral("ExternalData"), QStringLiteral("External data"),
+         QStringLiteral("Provider lifecycle, refreshes, parsing, bindings, table mapping and render-queue diagnostics."), QStringLiteral("Cache and media"), true},
     };
+
     return categories;
 }
 
@@ -258,16 +274,21 @@ bool categoryEnabled(const QString &category)
         clean, category_default_enabled(clean));
 }
 
-void log(TitleLogLevel level, const char *category, const QString &message)
+bool wouldLog(TitleLogLevel level, const char *category)
 {
     if (level == TitleLogLevel::Off || !TitlePreferences::logging_enabled())
-        return;
+        return false;
     if ((int)level > (int)TitlePreferences::logging_level())
+        return false;
+    return categoryEnabled(normalized_category(category));
+}
+
+void log(TitleLogLevel level, const char *category, const QString &message)
+{
+    if (!wouldLog(level, category))
         return;
 
     const QString clean_category = normalized_category(category);
-    if (!categoryEnabled(clean_category))
-        return;
 
     const QString line = QStringLiteral("%1 [%2] [%3] %4")
                              .arg(QDateTime::currentDateTime().toString(Qt::ISODateWithMs),

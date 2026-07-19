@@ -15,7 +15,7 @@ start=registry.index(marker)+len(marker); end=registry.index(')BGLFX";',start)
 assert registry[start:end] == shader
 assert "kEmbeddedLegacyNoiseFallbackEffect" not in registry
 assert "try_legacy_noise_fallback" not in registry
-assert "gpu-effects-v17-keying-matte" in gpu
+assert "gpu-effects-v26-3d-lighting-materials-shadows" in gpu
 assert "v41-procedural-noise-schema3-detail-core" in cache
 assert "tests/noise_shader_runtime_recovery_revision_221_contract_test.py" in manifest["areas"]["rendering_2d_3d"]["python"]
 print("Current Noise shader safety contract passed")

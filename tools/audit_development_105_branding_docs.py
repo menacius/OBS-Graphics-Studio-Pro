@@ -29,15 +29,15 @@ gitignore = read(".gitignore")
 
 check(
     "public and development versions are synchronized",
-    "project(broadcast-graphics-live VERSION 0.8.12)" in cmake
+    "project(broadcast-graphics-live VERSION 0.8.13)" in cmake
     and 'set(OBS_BGS_PRERELEASE "alpha")' in cmake
     and (cmake_dev := re.search(r'set\(OBS_BGS_DEVELOPMENT_VERSION "([0-9]+)"\)', cmake)) is not None
     and (header_dev := re.search(r'#define BGL_DEVELOPMENT_VERSION "([0-9]+)"', build_info)) is not None
     and cmake_dev.group(1) == header_dev.group(1)
     and int(cmake_dev.group(1)) >= 105
-    and '#define PLUGIN_VERSION "0.8.12-alpha"' in build_info
-    and '#define PLUGIN_VERSION "0.8.12-alpha"' in plugin_main
-    and "v0.8.12-alpha" in readme
+    and '#define PLUGIN_VERSION "0.8.13-alpha"' in build_info
+    and '#define PLUGIN_VERSION "0.8.13-alpha"' in plugin_main
+    and "v0.8.13-alpha" in readme
     and "Development Version" in readme,
 )
 
@@ -77,9 +77,12 @@ canonical_docs = {
     "EFFECTS_AND_EXTENSIONS.md",
     "ARCHITECTURE_AND_BUILD.md",
     "CHANGELOG.md",
+    "PACKED-TITLE-FORMAT.md",
+    "visual-effects-sdk.md",
+    "MOTION_BLUR_DEV294_AUDIT.md",
 }
 actual_docs = {p.name for p in (ROOT / "docs").iterdir() if p.is_file()}
-check("documentation is consolidated to eight canonical files", actual_docs == canonical_docs)
+check("documentation inventory matches the maintained canonical and audit files", actual_docs == canonical_docs)
 check(
     "machine-readable module map moved out of documentation",
     (ROOT / "tools/modular-source-map.json").is_file()

@@ -15,6 +15,13 @@ static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t
     set_animated_value(g, time, (argb >> 8) & 0xFF);
     set_animated_value(b, time, argb & 0xFF);
 }
+static void set_stroke_color_channels_at(Layer &layer, double time, uint32_t argb)
+{
+    set_animated_value(layer.stroke_color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(layer.stroke_color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(layer.stroke_color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(layer.stroke_color_b, time, argb & 0xFF);
+}
 static void set_shadow_color_channels_at(Layer &layer, double time, uint32_t argb)
 {
     set_animated_value(layer.shadow_color_a, time, (argb >> 24) & 0xFF);
@@ -334,7 +341,7 @@ static void set_button_group_mixed(QButtonGroup *group, bool mixed)
 
 static QColor keyframe_color(EasingType)
 {
-    return C_KF_DOT;
+    return bgl_keyframe_color();
 }
 
 static QPainterPath keyframe_shape_path(EasingType easing, const QPointF &center, qreal radius)
@@ -1339,14 +1346,48 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
         props.push_back(scalar_group_timeline_property(
             "orientation", {&layer.orientation_x, &layer.orientation_y,
                               &layer.orientation_z}));
+        props.push_back({&layer.material_ambient, nullptr});
+        props.push_back({&layer.material_diffuse, nullptr});
+        props.push_back({&layer.material_specular, nullptr});
+        props.push_back({&layer.material_shininess, nullptr});
+        props.push_back({&layer.material_metallic, nullptr});
+        props.push_back({&layer.material_roughness, nullptr});
+        props.push_back({&layer.material_reflection_intensity, nullptr});
+        props.push_back(scalar_group_timeline_property(
+            "material_emissive_color", {&layer.material_emissive_color_a,
+                                         &layer.material_emissive_color_r,
+                                         &layer.material_emissive_color_g,
+                                         &layer.material_emissive_color_b}));
+        props.push_back({&layer.material_emissive_intensity, nullptr});
+        if (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+            layer.type == LayerType::Ticker || layer.type == LayerType::Shape) {
+        }
     } else {
         props.push_back({nullptr, &layer.position});
         props.push_back({nullptr, &layer.scale});
         props.push_back({&layer.rotation, nullptr});
     }
 
+    if (layer.type == LayerType::Light) {
+        TitleLight &light = layer.light;
+        props.push_back(vector3_timeline_channel(
+            light.target, 0, "light_target"));
+        props.push_back(scalar_group_timeline_property(
+            "light_color", {&light.color_a, &light.color_r,
+                            &light.color_g, &light.color_b}));
+        props.push_back({&light.intensity, nullptr});
+        props.push_back({&light.source_size, nullptr});
+        props.push_back({&light.falloff_distance, nullptr});
+        props.push_back({&light.cone_angle, nullptr});
+        props.push_back({&light.cone_feather, nullptr});
+        props.push_back({&light.shadow_darkness, nullptr});
+        props.push_back({&light.shadow_softness, nullptr});
+        props.push_back({&light.shadow_bias, nullptr});
+    }
+
     const std::vector<TimelinePropertyRef> common_props {
         {&layer.opacity, nullptr},
+        {&layer.stroke_offset_prop, nullptr},
         {nullptr, &layer.size},
         {nullptr, &layer.origin_prop},
         {&layer.paragraph_indent_left_prop, nullptr}, {&layer.paragraph_indent_right_prop, nullptr},
@@ -1359,6 +1400,8 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             &layer.text_color_r, &layer.text_color_g, &layer.text_color_b}),
         scalar_group_timeline_property("fill_color", {&layer.fill_color_a,
             &layer.fill_color_r, &layer.fill_color_g, &layer.fill_color_b}),
+        scalar_group_timeline_property("stroke_color", {&layer.stroke_color_a,
+            &layer.stroke_color_r, &layer.stroke_color_g, &layer.stroke_color_b}),
         {nullptr, nullptr, nullptr, QString(), std::string(), QJsonValue(),
          EasingType::Linear, {}, &layer.camera_assignment}
     };
@@ -1429,6 +1472,11 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             name_group("stroke_color", {&effect.stroke_color_a,
                 &effect.stroke_color_r, &effect.stroke_color_g,
                 &effect.stroke_color_b});
+            break;
+        case LayerEffectType::TrimPaths:
+            name(effect.trim_start_prop, "trim_start");
+            name(effect.trim_end_prop, "trim_end");
+            name(effect.trim_offset_prop, "trim_offset");
             break;
         case LayerEffectType::Outline:
             name(effect.size_prop, "width");
@@ -1890,37 +1938,110 @@ static std::vector<TimelinePropertyRef> timeline_camera_properties(TitleCamera &
     };
 }
 
+static std::string light_timeline_owner_id(const std::string &light_id)
+{
+    return std::string("light:") + light_id;
+}
+
+static TitleLight *timeline_light_from_owner(Title &title,
+                                              const std::string &owner_id)
+{
+    static const std::string prefix = "light:";
+    if (owner_id.rfind(prefix, 0) != 0) return nullptr;
+    const std::string light_id = owner_id.substr(prefix.size());
+    for (auto &light : title.lights)
+        if (light.id == light_id) return &light;
+    return nullptr;
+}
+
+static const TitleLight *timeline_light_from_owner(
+    const Title &title, const std::string &owner_id)
+{
+    static const std::string prefix = "light:";
+    if (owner_id.rfind(prefix, 0) != 0) return nullptr;
+    const std::string light_id = owner_id.substr(prefix.size());
+    for (const auto &light : title.lights)
+        if (light.id == light_id) return &light;
+    return nullptr;
+}
+
+static std::vector<TimelinePropertyRef> timeline_light_properties(
+    TitleLight &light)
+{
+    return {
+        vector3_timeline_channel(light.position, 0, "light_position"),
+        vector3_timeline_channel(light.target, 0, "light_target"),
+        scalar_group_timeline_property(
+            "light_color", {&light.color_a, &light.color_r,
+                            &light.color_g, &light.color_b}),
+        {&light.intensity, nullptr},
+        {&light.source_size, nullptr},
+        {&light.falloff_distance, nullptr},
+        {&light.cone_angle, nullptr},
+        {&light.cone_feather, nullptr},
+        {&light.shadow_darkness, nullptr},
+        {&light.shadow_softness, nullptr},
+        {&light.shadow_bias, nullptr},
+        {&light.environment_rotation, nullptr}
+    };
+}
+
 static TimelinePropertyRef timeline_property_for_owner(Title &title,
                                                         const std::string &owner_id,
                                                         const std::string &property_name)
 {
+    auto properties_for_owner = [&]() {
+        std::vector<TimelinePropertyRef> properties;
+        if (owner_id == kTitleCameraSwitchOwner) {
+            TimelinePropertyRef result;
+            result.discrete = &title.active_camera;
+            properties.push_back(result);
+            return properties;
+        }
+        if (TitleCamera *camera = timeline_camera_from_owner(title, owner_id))
+            return timeline_camera_properties(*camera);
+        if (TitleLight *light = timeline_light_from_owner(title, owner_id))
+            return timeline_light_properties(*light);
+        if (auto layer = title.find_layer(owner_id))
+            return timeline_properties(*layer);
+        return properties;
+    };
+    for (auto property : properties_for_owner())
+        if (property.name() == property_name) return property;
+    return {};
+}
+
+static std::vector<TimelinePropertyRef> timeline_properties_for_owner(
+    Title &title, const std::string &owner_id)
+{
     if (owner_id == kTitleCameraSwitchOwner) {
         TimelinePropertyRef result;
         result.discrete = &title.active_camera;
-        return result.name() == property_name ? result : TimelinePropertyRef{};
+        return {result};
     }
-    if (TitleCamera *camera = timeline_camera_from_owner(title, owner_id)) {
-        for (auto property : timeline_camera_properties(*camera))
-            if (property.name() == property_name) return property;
-        return {};
-    }
-    if (auto layer = title.find_layer(owner_id)) {
-        for (auto property : timeline_properties(*layer))
-            if (property.name() == property_name) return property;
-    }
+    if (TitleCamera *camera = timeline_camera_from_owner(title, owner_id))
+        return timeline_camera_properties(*camera);
+    if (TitleLight *light = timeline_light_from_owner(title, owner_id))
+        return timeline_light_properties(*light);
+    if (auto layer = title.find_layer(owner_id))
+        return timeline_properties(*layer);
     return {};
 }
 
 static double timeline_owner_in_time(const Title &title, const std::string &owner_id)
 {
-    if (owner_id == kTitleCameraSwitchOwner || timeline_camera_from_owner(title, owner_id)) return 0.0;
+    if (owner_id == kTitleCameraSwitchOwner ||
+        timeline_camera_from_owner(title, owner_id) ||
+        timeline_light_from_owner(title, owner_id)) return 0.0;
     if (auto layer = title.find_layer(owner_id)) return layer->in_time;
     return 0.0;
 }
 
 static double timeline_owner_out_time(const Title &title, const std::string &owner_id)
 {
-    if (owner_id == kTitleCameraSwitchOwner || timeline_camera_from_owner(title, owner_id)) return title.duration;
+    if (owner_id == kTitleCameraSwitchOwner ||
+        timeline_camera_from_owner(title, owner_id) ||
+        timeline_light_from_owner(title, owner_id)) return title.duration;
     if (auto layer = title.find_layer(owner_id)) return layer->out_time;
     return title.duration;
 }
@@ -1950,6 +2071,29 @@ static QString property_label(const std::string &name)
 {
     if (name == "active_camera") return QStringLiteral("Active Camera");
     if (name == "camera_assignment") return QStringLiteral("Camera Assignment");
+    if (name == "light_position") return QStringLiteral("Position");
+    if (name == "light_target") return QStringLiteral("Point of Interest");
+    if (name == "light_color") return QStringLiteral("Color");
+    if (name == "light_intensity") return QStringLiteral("Intensity");
+    if (name == "light_source_size") return QStringLiteral("Source Size");
+    if (name == "light_falloff_distance") return QStringLiteral("Falloff Distance");
+    if (name == "light_cone_angle") return QStringLiteral("Cone Angle");
+    if (name == "light_cone_feather") return QStringLiteral("Cone Feather");
+    if (name == "light_shadow_darkness") return QStringLiteral("Shadow Darkness");
+    if (name == "light_shadow_softness") return QStringLiteral("Shadow Softness");
+    if (name == "light_shadow_bias") return QStringLiteral("Shadow Bias");
+    if (name == "light_environment_rotation") return QStringLiteral("Environment Rotation");
+    if (name == "material_ambient") return QStringLiteral("Material Ambient");
+    if (name == "material_diffuse") return QStringLiteral("Material Diffuse");
+    if (name == "material_specular") return QStringLiteral("Material Specular");
+    if (name == "material_shininess") return QStringLiteral("Material Shininess");
+    if (name == "material_metallic") return QStringLiteral("Material Metallic");
+    if (name == "material_roughness") return QStringLiteral("Material Roughness");
+    if (name == "material_reflection_intensity") return QStringLiteral("Reflection Intensity");
+    if (name == "material_emissive_color") return QStringLiteral("Emissive Color");
+    if (name == "material_emissive_intensity") return QStringLiteral("Emission Intensity");
+    if (name == "geometry_extrusion_depth") return QStringLiteral("Extrusion Depth");
+    if (name == "geometry_bevel_depth") return QStringLiteral("Bevel Depth");
     if (name == "position_x") return QStringLiteral("Position X");
     if (name == "position_y") return QStringLiteral("Position Y");
     if (name == "orientation") return QStringLiteral("Orientation");
@@ -2055,6 +2199,8 @@ static QString property_label(const std::string &name)
         name == "text_color_g" || name == "text_color_b") return bgl_tr("OBSTitles.TextColor");
     if (name == "fill_color" || name == "fill_color_a" || name == "fill_color_r" ||
         name == "fill_color_g" || name == "fill_color_b") return bgl_tr("OBSTitles.FillColor");
+    if (name == "stroke_color" || name == "stroke_color_a" || name == "stroke_color_r" ||
+        name == "stroke_color_g" || name == "stroke_color_b") return bgl_tr("OBSTitles.StrokeColor");
     if (name == "shadow_color_a" || name == "shadow_color_r" ||
         name == "shadow_color_g" || name == "shadow_color_b") return bgl_tr("OBSTitles.ShadowColor");
     if (name == "background_color_a" || name == "background_color_r" ||
@@ -2072,6 +2218,7 @@ static QString property_label(const std::string &name)
     if (name == "background_corner_radius_tr") return bgl_tr("OBSTitles.CornerTR");
     if (name == "background_corner_radius_br") return bgl_tr("OBSTitles.CornerBR");
     if (name == "background_corner_radius_bl") return bgl_tr("OBSTitles.CornerBL");
+    if (name == "stroke_offset") return bgl_tr("OBSTitles.StrokeOffset");
     if (name == "background_stroke_width") return bgl_tr("OBSTitles.BackgroundStrokeWidth");
     if (name == "background_stroke_opacity") return bgl_tr("OBSTitles.BackgroundStrokeOpacity");
     if (name == "background_stroke_color_a" || name == "background_stroke_color_r" || name == "background_stroke_color_g" || name == "background_stroke_color_b") return bgl_tr("OBSTitles.BackgroundStroke");
@@ -2285,6 +2432,20 @@ static bool layer_keyframe_sections_expanded(const Layer &layer)
         (layer.type == LayerType::Group && !layer.group_collapsed);
 }
 
+static bool timeline_owner_keyframe_sections_expanded(
+    const Title &title, const std::string &owner_id)
+{
+    if (owner_id == kTitleCameraSwitchOwner)
+        return title.camera_switches_expanded;
+    if (const TitleCamera *camera = timeline_camera_from_owner(title, owner_id))
+        return camera->timeline_expanded;
+    if (const TitleLight *light = timeline_light_from_owner(title, owner_id))
+        return light->timeline_expanded;
+    if (auto layer = title.find_layer(owner_id))
+        return layer_keyframe_sections_expanded(*layer);
+    return false;
+}
+
 struct TimelineRow {
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef prop;
@@ -2370,16 +2531,10 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
 
     // AE-style disclosure: owner rows are always visible, while the actual
     // keyframe channels appear only after their disclosure caret is opened.
-    const bool has_custom_camera = title_has_custom_camera(*title);
-    const bool default_camera_animated =
-        title_default_camera_has_authored_keyframes(*title);
-    const bool show_camera_switches = has_custom_camera ||
-                                      default_camera_animated ||
-                                      title->active_camera.is_animated();
+    const bool show_camera_switches = title->active_camera.is_animated();
 
-    /* The implicit canvas/default camera is UI-noise until it is authored.
-     * Camera rows become visible as soon as a custom camera exists or the
-     * default camera receives its first keyframe. */
+    /* Camera Switches is an authored track, not a permanent camera header.
+     * Keep it absent until the active-camera property owns a keyframe. */
     if (show_camera_switches) {
         TimelinePropertyRef camera_switch;
         camera_switch.discrete = &title->active_camera;
@@ -2389,7 +2544,7 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         rows.push_back({switch_proxy, {}, false, kTitleCameraSwitchOwner,
                         switch_label, 0.0, title->duration,
                         false, false, true});
-        if (title->camera_switches_expanded) {
+        if (title->camera_switches_expanded && camera_switch.is_animated()) {
             append_timeline_property_rows(
                 rows, *title, switch_proxy, camera_switch,
                 kTitleCameraSwitchOwner, property_label(camera_switch.name()),
@@ -2398,6 +2553,8 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
     }
 
     for (auto &camera : title->cameras) {
+        if (!camera.asset_space_owner_id.empty())
+            continue;
         const bool default_camera = camera.id == "default";
         if (default_camera && !title_camera_has_authored_keyframes(camera))
             continue;
@@ -2410,8 +2567,34 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         if (!camera.timeline_expanded)
             continue;
         for (auto property : timeline_camera_properties(camera)) {
+            if (!property.is_animated())
+                continue;
             append_timeline_property_rows(
                 rows, *title, camera_proxy, property, owner_id,
+                property_label(property.name()), 0.0, title->duration,
+                false, true, false);
+        }
+    }
+
+    for (auto &light : title->lights) {
+        const std::vector<TimelinePropertyRef> light_properties =
+            timeline_light_properties(light);
+        const std::string owner_id = light_timeline_owner_id(light.id);
+        const QString light_label = QStringLiteral("Light: %1")
+            .arg(QString::fromStdString(light.name));
+        auto light_proxy = timeline_owner_proxy(*title, owner_id, light_label);
+        /* Title-owned 3D rows share the camera-row plumbing so the Layer List
+         * and Timeline remain backed by one flattened model. The owner prefix
+         * distinguishes light UI, disclosure and property resolution. */
+        rows.push_back({light_proxy, {}, false, owner_id,
+                        light_label, 0.0, title->duration, false, true, false});
+        if (!light.timeline_expanded)
+            continue;
+        for (auto property : light_properties) {
+            if (!property.is_animated())
+                continue;
+            append_timeline_property_rows(
+                rows, *title, light_proxy, property, owner_id,
                 property_label(property.name()), 0.0, title->duration,
                 false, true, false);
         }
@@ -2429,9 +2612,6 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         std::set<std::string> seen;
         std::map<int, std::vector<TimelinePropertyRef>> effect_properties;
         for (auto prop : timeline_properties(*layer)) {
-            const bool authorable_camera_assignment =
-                prop.name() == "camera_assignment" &&
-                layer->dimension_mode == LayerDimensionMode::ThreeD;
             const QString encoded = QString::fromStdString(prop.name());
             if (encoded.startsWith(QStringLiteral("__effect__"))) {
                 const QStringList parts = encoded.split(QStringLiteral("__"));
@@ -2447,7 +2627,7 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
                     effect_properties[effect_index].push_back(prop);
                 continue;
             }
-            if (!prop.is_animated() && !authorable_camera_assignment) continue;
+            if (!prop.is_animated()) continue;
             const QString label = property_label(prop.name());
             if (seen.insert(label.toStdString()).second)
                 append_timeline_property_rows(

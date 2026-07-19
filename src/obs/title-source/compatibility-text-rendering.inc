@@ -337,14 +337,28 @@ static void draw_exact_rich_text_fill(QPainter &painter,
     }
 }
 
+
+static std::vector<QPainterPath> exact_rich_text_stroke_paths(
+    const ExactRichTextRaster &raster, const Layer &layer, double local_time)
+{
+    std::vector<QPainterPath> sources;
+    sources.reserve(raster.pieces.size());
+    for (const ExactRichTextGlyphPiece &piece : raster.pieces)
+        sources.push_back(piece.path);
+    return apply_layer_trim_paths_partitioned(layer, local_time, sources);
+}
+
 static void draw_exact_rich_text_strokes(QPainter &painter,
                                          const ExactRichTextRaster &raster,
                                          const QRectF &text_rect,
+                                         const Layer &layer,
+                                         double local_time,
                                          bool on_front,
                                          size_t cluster_begin = 0,
                                          size_t cluster_count =
                                              std::numeric_limits<size_t>::max(),
-                                         const QPointF &surface_origin = QPointF())
+                                         const QPointF &surface_origin = QPointF(),
+                                         const std::vector<QPainterPath> *prepared_paths = nullptr)
 {
     if (!raster.valid || !painter.device())
         return;
@@ -357,6 +371,13 @@ static void draw_exact_rich_text_strokes(QPainter &painter,
     const auto cluster_selected = [&](size_t cluster_index) {
         return cluster_index >= cluster_begin && cluster_index < cluster_end;
     };
+
+    std::vector<QPainterPath> generated_paths;
+    if (!prepared_paths) {
+        generated_paths = exact_rich_text_stroke_paths(raster, layer, local_time);
+        prepared_paths = &generated_paths;
+    }
+    const std::vector<QPainterPath> &stroke_piece_paths = *prepared_paths;
 
     for (size_t paint_index = 0; paint_index < raster.paint_runs.size();
          ++paint_index) {
@@ -376,13 +397,21 @@ static void draw_exact_rich_text_strokes(QPainter &painter,
             stroke_painter.setPen(rich_text_stroke_pen(stroke, text_rect));
             stroke_painter.setBrush(Qt::NoBrush);
             QPainterPath continuous_path;
-            for (const ExactRichTextGlyphPiece &piece : raster.pieces) {
+            for (std::size_t piece_index = 0;
+                 piece_index < raster.pieces.size(); ++piece_index) {
+                const ExactRichTextGlyphPiece &piece = raster.pieces[piece_index];
                 if (piece.paint_index != paint_index)
                     continue;
                 if (!cluster_selected(piece.cluster_index))
                     continue;
+                const QPainterPath &stroke_path =
+                    piece_index < stroke_piece_paths.size()
+                        ? stroke_piece_paths[piece_index]
+                        : piece.path;
+                if (stroke_path.isEmpty())
+                    continue;
                 if (!piece.clip_required) {
-                    continuous_path.addPath(piece.path);
+                    continuous_path.addPath(stroke_path);
                     continue;
                 }
                 /* A split ligature still needs a style boundary, but the
@@ -398,7 +427,7 @@ static void draw_exact_rich_text_strokes(QPainter &painter,
                     piece.clip.adjusted(-stroke_guard, -stroke_guard,
                                         stroke_guard, stroke_guard),
                     Qt::IntersectClip);
-                stroke_painter.drawPath(piece.path);
+                stroke_painter.drawPath(stroke_path);
                 stroke_painter.restore();
             }
             /* Draw all ordinary glyph subpaths in one operation. This prevents
@@ -494,9 +523,10 @@ static QRect exact_text_transition_unit_render_bounds(
 
 static QImage render_exact_rich_text_transition_unit(
     const ExactRichTextRaster &raster, const Layer &layer,
-    const QRectF &text_rect, const QRect &render_bounds,
+    const QRectF &text_rect, double local_time, const QRect &render_bounds,
     const ShadowRenderParams &shadow_params, bool render_shadow,
-    size_t cluster_index)
+    size_t cluster_index,
+    const std::vector<QPainterPath> *prepared_stroke_paths)
 {
     if (!raster.valid || render_bounds.isEmpty())
         return {};
@@ -534,13 +564,13 @@ static QImage render_exact_rich_text_transition_unit(
     }
 
     draw_exact_rich_text_strokes(
-        painter, raster, text_rect, false, cluster_index, 1,
-        render_bounds.topLeft());
+        painter, raster, text_rect, layer, local_time, false, cluster_index, 1,
+        render_bounds.topLeft(), prepared_stroke_paths);
     draw_exact_rich_text_fill(
         painter, raster, text_rect, false, cluster_index, 1);
     draw_exact_rich_text_strokes(
-        painter, raster, text_rect, true, cluster_index, 1,
-        render_bounds.topLeft());
+        painter, raster, text_rect, layer, local_time, true, cluster_index, 1,
+        render_bounds.topLeft(), prepared_stroke_paths);
     painter.end();
     return unit_image;
 }
@@ -1146,6 +1176,9 @@ static bool apply_unified_text_animator_raster(
         }
 
         const bool use_exact_units = exact_raster && exact_raster->valid;
+        const std::vector<QPainterPath> exact_stroke_paths = use_exact_units
+            ? exact_rich_text_stroke_paths(*exact_raster, layer, local_time)
+            : std::vector<QPainterPath>{};
         std::unique_ptr<QTextDocument> shaped_document;
         if (!use_exact_units) {
             shaped_document = rich_text_document_for_layer(
@@ -1196,8 +1229,9 @@ static bool apply_unified_text_animator_raster(
                     *exact_raster, layer, text_rect, local_time, cluster_index,
                     shadow_params, render_shadow, image.rect());
                 unit_image = render_exact_rich_text_transition_unit(
-                    *exact_raster, layer, text_rect, render_bounds,
-                    shadow_params, render_shadow, cluster_index);
+                    *exact_raster, layer, text_rect, local_time, render_bounds,
+                    shadow_params, render_shadow, cluster_index,
+                    &exact_stroke_paths);
             } else {
                 isolated_document = rich_text_document_for_layer(
                     layer, font, text_rect, local_time, &range);

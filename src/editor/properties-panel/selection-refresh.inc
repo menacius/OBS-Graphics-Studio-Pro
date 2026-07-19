@@ -74,6 +74,7 @@
                                 current_shape != ShapeType::RoundedRectangle;
     const bool show_transform_scale = !is_shape_geometry || is_three_d_transform;
     const bool show_transform_size = is_shape_geometry && !is_three_d_transform;
+    const bool show_transform_lock = show_transform_scale || show_transform_size;
     const bool show_shape_panel_size = !is_shape_geometry && (is_text_like || is_image);
     auto set_visible = [](QWidget *widget, bool visible) {
         if (widget) widget->setVisible(visible);
@@ -88,7 +89,8 @@
     set_visible(transform_size_field_w_, show_transform_size);
     set_visible(chk_transform_size_lock_, show_transform_size);
     set_visible(transform_size_field_h_, show_transform_size);
-    set_visible(row_shape_scale_options_, is_authored_shape || is_image || is_transition_input);
+    set_visible(row_shape_scale_options_, show_transform_lock || is_authored_shape ||
+                                          is_image || is_transition_input);
     set_visible(chk_shape_scale_stroke_, is_authored_shape);
     set_visible(chk_shape_scale_corners_, is_authored_shape || is_image || is_transition_input);
     set_visible(btn_kf_width_, show_shape_panel_size);
@@ -228,14 +230,23 @@
         cmb_layer_camera_->clear();
         cmb_layer_camera_->addItem(QStringLiteral("Active Camera"), QString());
         if (title_) {
-            for (const TitleCamera &camera : title_->cameras)
+            for (const TitleCamera &camera : title_->cameras) {
+                if (!camera.asset_space_owner_id.empty())
+                    continue;
                 cmb_layer_camera_->addItem(QString::fromStdString(camera.name),
                                            QString::fromStdString(camera.id));
+            }
         }
         const std::string evaluated_camera = layer_->camera_assignment.evaluate(lt);
         const int index = cmb_layer_camera_->findData(
             QString::fromStdString(evaluated_camera));
         cmb_layer_camera_->setCurrentIndex(index >= 0 ? index : 0);
+    }
+    if (cmb_depth_mode_) {
+        QSignalBlocker blocker(cmb_depth_mode_);
+        const int index = cmb_depth_mode_->findData(
+            static_cast<int>(layer_->depth_mode));
+        cmb_depth_mode_->setCurrentIndex(index >= 0 ? index : 0);
     }
     update_transform_dimension_ui(supports_3d, layer_->dimension_mode);
     if (spn_pz_) spn_pz_->setValue(evaluated_position.z);
@@ -248,8 +259,135 @@
     if (spn_orientation_z_) spn_orientation_z_->setValue(layer_->orientation_z.evaluate(lt));
     if (chk_depth_test_) chk_depth_test_->setChecked(layer_->depth_test);
     if (chk_write_depth_) chk_write_depth_->setChecked(layer_->write_to_depth);
+    const bool uses_scene_depth =
+        layer_->depth_mode == LayerDepthMode::Automatic;
+    if (chk_depth_test_) chk_depth_test_->setEnabled(uses_scene_depth);
+    if (chk_write_depth_) chk_write_depth_->setEnabled(uses_scene_depth);
     if (chk_double_sided_) chk_double_sided_->setChecked(layer_->double_sided);
     if (chk_backface_culling_) chk_backface_culling_->setChecked(layer_->backface_culling);
+    if (chk_material_accepts_lights_)
+        chk_material_accepts_lights_->setChecked(layer_->material_accepts_lights);
+    if (chk_material_casts_shadows_)
+        chk_material_casts_shadows_->setChecked(layer_->material_casts_shadows);
+    if (chk_material_accepts_shadows_)
+        chk_material_accepts_shadows_->setChecked(layer_->material_accepts_shadows);
+    if (chk_material_reflections_)
+        chk_material_reflections_->setChecked(layer_->material_appears_in_reflections);
+    if (spn_material_ambient_)
+        spn_material_ambient_->setValue(layer_->material_ambient.evaluate(lt));
+    if (spn_material_diffuse_)
+        spn_material_diffuse_->setValue(layer_->material_diffuse.evaluate(lt));
+    if (spn_material_specular_)
+        spn_material_specular_->setValue(layer_->material_specular.evaluate(lt));
+    if (spn_material_shininess_)
+        spn_material_shininess_->setValue(layer_->material_shininess.evaluate(lt));
+    if (spn_material_metallic_)
+        spn_material_metallic_->setValue(layer_->material_metallic.evaluate(lt));
+    if (spn_material_roughness_)
+        spn_material_roughness_->setValue(layer_->material_roughness.evaluate(lt));
+    if (spn_material_reflection_)
+        spn_material_reflection_->setValue(
+            layer_->material_reflection_intensity.evaluate(lt));
+    if (spn_material_emissive_intensity_)
+        spn_material_emissive_intensity_->setValue(
+            layer_->material_emissive_intensity.evaluate(lt));
+    const bool material_supported = is_three_d_transform &&
+        layer_->type != LayerType::Light && layer_->type != LayerType::Empty &&
+        !layer_type_is_audio(layer_->type);
+    if (material_options_box_) {
+        material_options_box_->setVisible(material_supported);
+        if (auto *panel = bgl_panel_for_content(material_options_box_))
+            panel->setVisible(material_supported);
+    }
+    if (layer_->type == LayerType::Light && light_options_box_) {
+        TitleLight &light = layer_->light;
+        chk_light_enabled_->setChecked(light.enabled);
+        const int type_index = cmb_light_type_->findData(
+            static_cast<int>(light.type));
+        cmb_light_type_->setCurrentIndex(type_index >= 0 ? type_index : 0);
+        style_color_button(btn_light_color_,
+                           evaluated_light_color(light, playhead_));
+        btn_light_color_->setText(QString());
+        spn_light_intensity_->setValue(light.intensity.evaluate(playhead_));
+        spn_light_source_size_->setValue(
+            light.source_size.evaluate(playhead_));
+        const int falloff_index = cmb_light_falloff_->findData(
+            static_cast<int>(light.falloff));
+        cmb_light_falloff_->setCurrentIndex(
+            falloff_index >= 0 ? falloff_index : 0);
+        spn_light_falloff_distance_->setValue(
+            light.falloff_distance.evaluate(playhead_));
+        spn_light_cone_angle_->setValue(
+            light.cone_angle.evaluate(playhead_));
+        spn_light_cone_feather_->setValue(
+            light.cone_feather.evaluate(playhead_));
+        const Vec3Value light_target = light.target.evaluate(playhead_);
+        spn_light_target_x_->setValue(light_target.x);
+        spn_light_target_y_->setValue(light_target.y);
+        spn_light_target_z_->setValue(light_target.z);
+        chk_light_casts_shadows_->setChecked(light.casts_shadows);
+        spn_light_shadow_darkness_->setValue(
+            light.shadow_darkness.evaluate(playhead_));
+        spn_light_shadow_softness_->setValue(
+            light.shadow_softness.evaluate(playhead_));
+        spn_light_shadow_bias_->setValue(
+            light.shadow_bias.evaluate(playhead_));
+
+        const bool distance_falloff = light.type == TitleLightType::Point ||
+                                      light.type == TitleLightType::Spot;
+        const bool finite_source = distance_falloff ||
+                                   light.type == TitleLightType::Parallel;
+        const bool spot = light.type == TitleLightType::Spot;
+        const bool targeted = spot ||
+                              light.type == TitleLightType::Parallel;
+        const bool shadow_capable = distance_falloff ||
+                                    light.type == TitleLightType::Parallel;
+        const bool has_falloff = distance_falloff &&
+            light.falloff != TitleLightFalloff::None;
+        set_form_row_visible(spn_light_source_size_, finite_source);
+        set_form_row_visible(cmb_light_falloff_, distance_falloff);
+        set_form_row_visible(spn_light_falloff_distance_, has_falloff);
+        set_form_row_visible(spn_light_cone_angle_, spot);
+        set_form_row_visible(spn_light_cone_feather_, spot);
+        set_form_row_visible(row_light_target_, targeted);
+        set_form_row_visible(chk_light_casts_shadows_, shadow_capable);
+        set_form_row_visible(spn_light_shadow_darkness_, shadow_capable);
+        set_form_row_visible(spn_light_shadow_softness_, shadow_capable);
+        set_form_row_visible(spn_light_shadow_bias_, shadow_capable);
+        spn_light_shadow_darkness_->setEnabled(light.casts_shadows);
+        spn_light_shadow_softness_->setEnabled(light.casts_shadows);
+        spn_light_shadow_bias_->setEnabled(light.casts_shadows);
+    }
+    if (btn_material_emissive_color_) {
+        style_color_button(btn_material_emissive_color_,
+                           evaluated_material_emissive_color(*layer_, lt));
+        btn_material_emissive_color_->setText(QString());
+        btn_material_emissive_color_->setVisible(material_supported);
+    }
+    if (btn_kf_material_emissive_color_)
+        btn_kf_material_emissive_color_->setVisible(material_supported);
+    if (btn_kf_material_emissive_intensity_)
+        btn_kf_material_emissive_intensity_->setVisible(material_supported);
+    if (spn_material_emissive_intensity_)
+        spn_material_emissive_intensity_->setVisible(material_supported);
+    if (appearance_emissive_color_label_)
+        appearance_emissive_color_label_->setVisible(material_supported);
+    if (appearance_emissive_intensity_label_)
+        appearance_emissive_intensity_label_->setVisible(material_supported);
+
+    if (geometry_options_box_) {
+        /* Legacy slice extrusion is migration-only in Development 330. */
+        geometry_options_box_->setVisible(false);
+        if (auto *panel = bgl_panel_for_content(geometry_options_box_))
+            panel->setVisible(false);
+    }
+    if (chk_geometry_extrusion_) chk_geometry_extrusion_->setChecked(layer_->geometry_extrusion_enabled);
+    if (spn_geometry_extrusion_depth_) spn_geometry_extrusion_depth_->setValue(layer_->geometry_extrusion_depth.evaluate(lt));
+    if (spn_geometry_bevel_depth_) spn_geometry_bevel_depth_->setValue(layer_->geometry_bevel_depth.evaluate(lt));
+    if (spn_geometry_bevel_segments_) spn_geometry_bevel_segments_->setValue(layer_->geometry_bevel_segments);
+    if (spn_geometry_extrusion_segments_) spn_geometry_extrusion_segments_->setValue(layer_->geometry_extrusion_segments);
+    if (chk_geometry_bevel_front_) chk_geometry_bevel_front_->setChecked(layer_->geometry_bevel_front);
+    if (chk_geometry_bevel_back_) chk_geometry_bevel_back_->setChecked(layer_->geometry_bevel_back);
     spn_opacity_->setValue(layer_->opacity.is_animated()
                            ? layer_->opacity.evaluate(lt)
                            : layer_->opacity.static_value);
@@ -278,7 +416,8 @@
                                   layer_->stroke_gradient_end_color,
                                   layer_->stroke_gradient_type);
         else
-            style_color_button(btn_appearance_stroke_color_, layer_->stroke_color);
+            style_color_button(btn_appearance_stroke_color_,
+                               eval_stroke_color(*layer_, lt));
         btn_appearance_stroke_color_->setText(QString());
         btn_appearance_stroke_color_->setEnabled(supports_outline);
         btn_appearance_stroke_color_->setVisible(supports_outline);
@@ -290,7 +429,7 @@
         spn_appearance_stroke_width_->setVisible(supports_outline);
     }
     if (btn_kf_appearance_stroke_) {
-        btn_kf_appearance_stroke_->setEnabled(false);
+        btn_kf_appearance_stroke_->setEnabled(supports_outline);
         btn_kf_appearance_stroke_->setVisible(supports_outline);
     }
     spn_origin_x_->setValue(eval_origin_x(*layer_, lt));
@@ -441,13 +580,26 @@
     if (spn_gradient_focal_y_) spn_gradient_focal_y_->setValue(layer_->gradient_focal_y);
     if (chk_text_box_width_to_text_) chk_text_box_width_to_text_->setChecked(layer_->text_box_width_to_text);
     if (chk_text_box_height_to_text_) chk_text_box_height_to_text_->setChecked(layer_->text_box_height_to_text);
-    if (spn_max_text_box_width_) { spn_max_text_box_width_->setValue(layer_->max_text_box_width); spn_max_text_box_width_->setEnabled(true); }
-    if (spn_max_text_box_height_) { spn_max_text_box_height_->setValue(layer_->max_text_box_height); spn_max_text_box_height_->setEnabled(true); }
+    if (spn_max_text_box_width_) {
+        spn_max_text_box_width_->setValue(
+            layer_->max_text_box_width_overridden
+                ? layer_->max_text_box_width
+                : std::max(1.0, eval_box_width(*layer_, lt)));
+        spn_max_text_box_width_->setEnabled(true);
+    }
+    if (spn_max_text_box_height_) {
+        spn_max_text_box_height_->setValue(
+            layer_->max_text_box_height_overridden
+                ? layer_->max_text_box_height
+                : std::max(1.0, eval_box_height(*layer_, lt)));
+        spn_max_text_box_height_->setEnabled(true);
+    }
 
     auto set_kf_icon = [](QPushButton *button, bool active, bool has_keyframes) {
         if (!button) return;
+        bgl_refresh_keyframe_navigation(button);
         const bool outlined = has_keyframes && !active;
-        button->setIcon(keyframe_diamond_icon(active, outlined));
+        button->setIcon(bgl_keyframe_diamond_icon(active, outlined));
         button->setProperty("active", active);
         button->setProperty("outlined", outlined);
         button->style()->unpolish(button);
@@ -512,6 +664,21 @@
     set_prop_kf_icon(btn_kf_orientation_y_, layer_->orientation_y);
     set_prop_kf_icon(btn_kf_orientation_z_, layer_->orientation_z);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
+    set_prop_kf_icon(btn_kf_material_ambient_, layer_->material_ambient);
+    set_prop_kf_icon(btn_kf_material_diffuse_, layer_->material_diffuse);
+    set_prop_kf_icon(btn_kf_material_specular_, layer_->material_specular);
+    set_prop_kf_icon(btn_kf_material_shininess_, layer_->material_shininess);
+    set_prop_kf_icon(btn_kf_material_metallic_, layer_->material_metallic);
+    set_prop_kf_icon(btn_kf_material_roughness_, layer_->material_roughness);
+    set_prop_kf_icon(btn_kf_material_reflection_, layer_->material_reflection_intensity);
+    set_group_kf_icon(btn_kf_material_emissive_color_,
+                      {&layer_->material_emissive_color_a,
+                       &layer_->material_emissive_color_r,
+                       &layer_->material_emissive_color_g,
+                       &layer_->material_emissive_color_b});
+    set_prop_kf_icon(btn_kf_material_emissive_intensity_, layer_->material_emissive_intensity);
+    set_prop_kf_icon(btn_kf_geometry_extrusion_depth_, layer_->geometry_extrusion_depth);
+    set_prop_kf_icon(btn_kf_geometry_bevel_depth_, layer_->geometry_bevel_depth);
     set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
@@ -535,7 +702,9 @@
     else
         set_group_kf_icon(btn_kf_appearance_fill_, {&layer_->fill_color_a, &layer_->fill_color_r,
                                                     &layer_->fill_color_g, &layer_->fill_color_b});
-    set_kf_icon(btn_kf_appearance_stroke_, false, false);
+    set_group_kf_icon(btn_kf_appearance_stroke_,
+                      {&layer_->stroke_color_a, &layer_->stroke_color_r,
+                       &layer_->stroke_color_g, &layer_->stroke_color_b});
 
     const QString panel_text = is_clock
         ? QString::fromStdString(layer_->clock_format)
@@ -629,7 +798,8 @@
                                 btn_kf_paragraph_indent_first_line_,
                                 btn_kf_paragraph_space_before_,
                                 btn_kf_paragraph_space_after_, btn_kf_text_color_,
-                                btn_kf_appearance_fill_}) {
+                                btn_kf_appearance_fill_,
+                                btn_kf_appearance_stroke_}) {
         if (button)
             button->setEnabled(keyframe_text_defaults_enabled);
     }
@@ -1017,17 +1187,17 @@ void PropertiesPanel::update_transform_dimension_ui(bool supports_3d,
     if (transform_rotation_field_x_) transform_rotation_field_x_->setVisible(show_3d);
     if (transform_rotation_field_y_) transform_rotation_field_y_->setVisible(show_3d);
     if (transform_rotation_field_z_) transform_rotation_field_z_->setVisible(true);
-    if (transform_rotation_axis_label_)
-        transform_rotation_axis_label_->setText(show_3d ? QStringLiteral("Z") : QString());
+    if (transform_rotation_axis_label_) {
+        transform_rotation_axis_label_->setText(QStringLiteral("Z"));
+        transform_rotation_axis_label_->setVisible(show_3d);
+    }
     if (transform_grid_ && transform_rotation_field_z_) {
         transform_grid_->removeWidget(transform_rotation_field_z_);
-        transform_grid_->addWidget(transform_rotation_field_z_, 3, show_3d ? 4 : 2,
-                                   Qt::AlignLeft);
-    }
-    if (transform_grid_ && chk_scale_lock_) {
-        transform_grid_->removeWidget(chk_scale_lock_);
-        transform_grid_->addWidget(chk_scale_lock_, 1, show_3d ? 5 : 4,
-                                   Qt::AlignCenter);
+        if (show_3d)
+            transform_grid_->addWidget(transform_rotation_field_z_, 3, 3);
+        else
+            transform_grid_->addWidget(transform_rotation_field_z_, 3, 1, 1, 3);
+        transform_grid_->setColumnStretch(3, show_3d ? 1 : 0);
     }
     if (transform_orientation_row_) transform_orientation_row_->setVisible(show_3d);
     if (three_d_controls_) three_d_controls_->setVisible(show_3d);

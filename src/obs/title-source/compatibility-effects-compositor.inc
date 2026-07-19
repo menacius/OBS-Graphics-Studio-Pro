@@ -194,8 +194,10 @@ static std::vector<uint8_t> render_background_effect_behind_surface(
                                         ? effect.corner_radius_bl_prop.evaluate(t)
                                         : (double)effect.effect_corner_radius_bl);
 
-    cairo_add_rounded_rect_corners(under_cr.get(), x, y, bw, bh, tl, tr, br, bl,
-                                   legacy_corner_type_roundness((CornerType)effect.effect_corner_type));
+    const QPainterPath background_path = painter_rounded_rect_corners(
+        QRectF(x, y, bw, bh), tl, tr, br, bl,
+        legacy_corner_type_roundness((CornerType)effect.effect_corner_type));
+    cairo_append_qpainter_path(under_cr.get(), background_path, true);
     const bool gradient = effect.effect_fill_type == 1;
     QColor fill = color_from_argb(eval_effect_color(effect, t));
     const double fill_opacity = std::clamp(effect.opacity_prop.is_animated()
@@ -227,9 +229,15 @@ static std::vector<uint8_t> render_background_effect_behind_surface(
                                                  0.0, 1.0);
         stroke.setAlphaF(std::clamp(stroke.alphaF() * stroke_opacity, 0.0, 1.0));
         if (stroke.alpha() > 0) {
-            cairo_set_line_width(under_cr.get(), stroke_w);
-            cairo_set_source_rgba(under_cr.get(), stroke.redF(), stroke.greenF(), stroke.blueF(), stroke.alphaF());
-            cairo_stroke(under_cr.get());
+            const QPainterPath stroke_path =
+                apply_layer_trim_paths(layer, t, background_path);
+            cairo_new_path(under_cr.get());
+            if (!stroke_path.isEmpty()) {
+                cairo_append_qpainter_path(under_cr.get(), stroke_path, false);
+                cairo_set_line_width(under_cr.get(), stroke_w);
+                cairo_set_source_rgba(under_cr.get(), stroke.redF(), stroke.greenF(), stroke.blueF(), stroke.alphaF());
+                cairo_stroke(under_cr.get());
+            }
         } else {
             cairo_new_path(under_cr.get());
         }
@@ -423,6 +431,8 @@ static bool layer_effects_can_run_as_gpu_surface_passes(const Layer &layer, doub
     bool has_gpu_effect = false;
     for (const auto &effect : layer.effects) {
         if (!eval_effect_enabled(effect, t))
+            continue;
+        if (effect.type == LayerEffectType::TrimPaths)
             continue;
         if (!effect_can_run_as_gpu_surface_pass(effect.type))
             return false;
@@ -962,7 +972,8 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
     success = true;
 
     for (const auto &effect_config : layer.effects) {
-        if (!eval_effect_enabled(effect_config, t))
+        if (!eval_effect_enabled(effect_config, t) ||
+            effect_config.type == LayerEffectType::TrimPaths)
             continue;
 
         const ResolvedLayerEffect resolved = resolve_layer_effect(effect_config, t);
@@ -983,6 +994,11 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
             break;
         }
 
+        gs_enable_color(true, true, true, true);
+        gs_enable_depth_test(false);
+        gs_depth_function(GS_LEQUAL);
+        gs_set_cull_mode(GS_NEITHER);
+        gs_enable_blending(false);
         gs_ortho(0.0f, static_cast<float>(width), 0.0f,
                  static_cast<float>(height), -100.0f, 100.0f);
         struct vec4 clear;
@@ -1087,6 +1103,11 @@ static bool layer_has_non_transform_animation(const Layer &layer)
            layer.fill_color_r.is_animated() ||
            layer.fill_color_g.is_animated() ||
            layer.fill_color_b.is_animated() ||
+           layer.stroke_color_a.is_animated() ||
+           layer.stroke_color_r.is_animated() ||
+           layer.stroke_color_g.is_animated() ||
+           layer.stroke_color_b.is_animated() ||
+           layer.stroke_offset_prop.is_animated() ||
            layer.background_enabled_prop.is_animated() ||
            layer.background_opacity_prop.is_animated() ||
            layer.background_padding_x_prop.is_animated() ||
@@ -1294,7 +1315,8 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
     if (outline > 0.0) {
         /* Outside/center strokes plus antialiasing and joins may consume more
          * than one nominal width at sharp corners. Reserve the full diameter. */
-        const double stroke_extent = outline * 2.0 + 4.0;
+        const double stroke_extent = outline * 2.0 +
+            std::abs(eval_layer_stroke_offset(layer, t)) + 4.0;
         bounds = bounds.adjusted(-stroke_extent, -stroke_extent,
                                  stroke_extent, stroke_extent);
     }
@@ -1389,6 +1411,7 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
     key << "|box=" << eval_box_width(layer, t) << 'x' << eval_box_height(layer, t)
         << "|origin=" << eval_origin_x(layer, t) << ',' << eval_origin_y(layer, t)
         << "|stack=" << layer.effects.size()
+        << "|strokeoffset=" << eval_layer_stroke_offset(layer, t)
         << "|textanim=" << text_animator_stack_signature(layer.text_animators);
 
     const bool transition_active =
@@ -1438,7 +1461,11 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << effect.effect_center_y << ',' << effect.effect_complexity << ','
             << effect.effect_evolution << ',' << effect.effect_affect_alpha << ','
             << effect.effect_clamp_output << ',' << effect.effect_temporal_stability << ','
-            << effect.effect_secondary_color;
+            << effect.effect_secondary_color << ','
+            << (effect.trim_start_prop.is_animated() ? effect.trim_start_prop.evaluate(t) : (double)effect.effect_trim_start) << ','
+            << (effect.trim_end_prop.is_animated() ? effect.trim_end_prop.evaluate(t) : (double)effect.effect_trim_end) << ','
+            << (effect.trim_offset_prop.is_animated() ? effect.trim_offset_prop.evaluate(t) : (double)effect.effect_trim_offset) << ','
+            << effect.effect_trim_multiple_shapes;
     }
     return key.str();
 }
@@ -1749,4 +1776,3 @@ static double layer_shutter_travel_pixels(const Title &title, const Layer &layer
     }
     return max_distance;
 }
-

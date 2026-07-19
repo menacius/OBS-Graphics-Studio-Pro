@@ -36,17 +36,19 @@ int main(int argc, char **argv)
 
     require(helpers, "live_cue_state_color(bool current, bool queued, bool ending = false)");
     require(helpers, "live_cue_select_cell_color(bool current, bool queued, bool ending = false)");
+    require(helpers, "live_cue_row_is_ending(const Title &title, int row)");
+    require(helpers, "title.cue_uncue_requested || title.pending_cue_row >= 0");
     require(helpers, "return QColor(255, 202, 74);");
     require(helpers, "return QColor(255, 202, 74, 88);");
     require_before(helpers, "if (ending)", "if (current)");
 
-    require(lifecycle, "const bool ending = row == title->current_cue_row && title->cue_uncue_requested;");
+    require(lifecycle, "const bool ending = live_cue_row_is_ending(*title, row);");
     require(lifecycle, "live_cue_select_cell_color(current, queued, ending)");
     require(lifecycle, "row == title->pending_cue_row || waiting_for_prerender,\n                ending" );
 
-    require(population, "live_cue_state_color(true, false, current_title->cue_uncue_requested)");
-    require(population, "current, queued, current && title->cue_uncue_requested");
-    require(population, "const bool ending = row == title->current_cue_row && title->cue_uncue_requested;");
+    require(population, "live_cue_row_is_ending(*current_title, row)");
+    require(population, "live_cue_row_is_ending(*title, 0)");
+    require(population, "const bool ending = live_cue_row_is_ending(*title, row);");
 
     require(runtime, "data->cue_phase = TitleSourceData::CuePhase::OutroOnly;");
     require(runtime, "title->cue_uncue_requested = false;");

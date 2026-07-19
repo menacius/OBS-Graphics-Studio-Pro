@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic BGL Development Version 239 automated test-suite runner.
+"""Deterministic BGL automated test-suite runner.
 
 The source profile needs only Python. Native profiles additionally consume a
 configured CMake/CTest build directory containing the plugin's test targets.
+The manifest version is validated against the current CMake development build
+instead of a historical hard-coded delivery number.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,13 +32,25 @@ class Result:
     stderr: str = ""
 
 
+def current_development_version(root: Path) -> int:
+    cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(
+        r'set\(OBS_BGS_DEVELOPMENT_VERSION\s+"([0-9]+)"\)', cmake)
+    if not match:
+        raise ValueError("cannot determine the current development version")
+    return int(match.group(1))
+
+
 def load_manifest(root: Path) -> dict:
     path = root / "tests" / "test-suite-manifest.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
         raise ValueError("unsupported test-suite manifest schema")
-    if data.get("development_version") != 239:
-        raise ValueError("test-suite manifest is not synchronized with Development Version 239")
+    current = current_development_version(root)
+    if data.get("development_version") != current:
+        raise ValueError(
+            "test-suite manifest is not synchronized with "
+            f"Development Version {current}")
     return data
 
 
@@ -66,7 +81,6 @@ def validate_manifest(root: Path, manifest: dict) -> list[str]:
         errors.append("manifest references Python files outside the contract suite")
 
     cmake_text = (root / "CMakeLists.txt").read_text(encoding="utf-8")
-    import re
     ctest_names = set(re.findall(r"add_test\(NAME\s+([A-Za-z0-9_\-]+)", cmake_text))
     native_references = {item for area in areas.values() for item in area.get("native", [])}
     for profile in profiles.values():
@@ -137,9 +151,10 @@ def run_native_suite(root: Path, build_dir: Path, tests: object,
     return [result]
 
 
-def write_report(path: Path, profile: str, results: list[Result]) -> None:
+def write_report(path: Path, profile: str, results: list[Result],
+                 development_version: int) -> None:
     payload = {
-        "development_version": 228,
+        "development_version": development_version,
         "profile": profile,
         "passed": sum(result.status == "passed" for result in results),
         "failed": sum(result.status != "passed" for result in results),
@@ -180,7 +195,8 @@ def main() -> int:
         results.extend(run_python_suite(root, timeout, args.fail_fast))
         if args.fail_fast and any(result.status != "passed" for result in results):
             if args.json_report:
-                write_report(args.json_report, args.profile, results)
+                write_report(args.json_report, args.profile, results,
+                             int(manifest["development_version"]))
             return 1
 
     if profile.get("run_native", False):
@@ -192,7 +208,8 @@ def main() -> int:
                                         timeout, args.jobs))
 
     if args.json_report:
-        write_report(args.json_report, args.profile, results)
+        write_report(args.json_report, args.profile, results,
+                             int(manifest["development_version"]))
     passed = sum(result.status == "passed" for result in results)
     print(f"Automated suite: {passed}/{len(results)} passed")
     return 0 if all(result.status == "passed" for result in results) else 1

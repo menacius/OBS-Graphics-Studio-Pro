@@ -30,10 +30,54 @@
 #include <QMessageBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QColorDialog>
 #include <QSplitter>
 
 
 #include "open-color-palette.h"
+
+namespace {
+constexpr double kAudioMinimumDb = -96.0;
+constexpr double kAudioMaximumDb = 12.0;
+
+static double audio_gain_to_db(double gain)
+{
+    if (!std::isfinite(gain) || gain <= 0.0)
+        return kAudioMinimumDb;
+    return std::clamp(20.0 * std::log10(gain), kAudioMinimumDb,
+                      kAudioMaximumDb);
+}
+
+static double audio_db_to_gain(double db)
+{
+    if (!std::isfinite(db) || db <= kAudioMinimumDb)
+        return 0.0;
+    return std::clamp(std::pow(10.0, db / 20.0), 0.0, 4.0);
+}
+
+static int audio_db_to_slider(double db)
+{
+    return qRound(std::clamp(db, kAudioMinimumDb, kAudioMaximumDb) * 10.0);
+}
+
+/* QDoubleSpinBox accepts an explicit leading plus sign, but normally removes
+ * it when displaying the committed value. Audio controls keep the authored
+ * sign visible so pan reads +100 / 0 / -100 and positive gain reads +dB. */
+class SignedAudioSpinBox final : public QDoubleSpinBox {
+public:
+    using QDoubleSpinBox::QDoubleSpinBox;
+
+protected:
+    QString textFromValue(double value) const override
+    {
+        const double zero_threshold = 0.5 * std::pow(10.0, -decimals());
+        if (std::abs(value) < zero_threshold)
+            value = 0.0;
+        const QString number = locale().toString(value, 'f', decimals());
+        return value > 0.0 ? QStringLiteral("+") + number : number;
+    }
+};
+}
 
 /* Ordered implementation modules. Keep this list in source order. */
 #include "properties-panel/popup-state.inc"

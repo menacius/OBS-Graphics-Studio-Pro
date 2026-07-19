@@ -1,5 +1,27 @@
     sample_time = time;
     add_discrete(title.active_camera);
+    add(title.lighting_enabled);
+    add(title.default_light_enabled);
+    add(quant(title.environment_exposure, 0.001));
+    add(TitlePreferences::shadow_map_size_px());
+    for (const TitleLight &light : title.lights) {
+        add(light.enabled); add((int)light.type); add((int)light.falloff);
+        add_vec3(light.position, 0.25); add_vec3(light.target, 0.25);
+        add_anim(light.color_a, 1.0 / 255.0);
+        add_anim(light.color_r, 1.0 / 255.0);
+        add_anim(light.color_g, 1.0 / 255.0);
+        add_anim(light.color_b, 1.0 / 255.0);
+        add_anim(light.intensity, 0.001);
+        add_anim(light.source_size, 0.05);
+        add_anim(light.falloff_distance, 0.25);
+        add_anim(light.cone_angle, 0.05);
+        add_anim(light.cone_feather, 0.05);
+        add(light.casts_shadows);
+        add_anim(light.shadow_darkness, 0.001);
+        add_anim(light.shadow_softness, 0.05);
+        add_anim(light.shadow_bias, 0.00001);
+        add_anim(light.environment_rotation, 0.05);
+    }
     for (const TitleCamera &camera : title.cameras) {
         add_anim(camera.position_x, 0.25); add_anim(camera.position_y, 0.25);
         add_anim(camera.position_z, 0.25);
@@ -36,6 +58,22 @@
         add(quant(layer->transform_quad_br_x, 0.0005)); add(quant(layer->transform_quad_br_y, 0.0005));
         add(quant(layer->transform_quad_bl_x, 0.0005)); add(quant(layer->transform_quad_bl_y, 0.0005));
         add_anim(layer->opacity, 0.002);
+        add(layer->material_accepts_lights);
+        add(layer->material_casts_shadows);
+        add(layer->material_accepts_shadows);
+        add(layer->material_appears_in_reflections);
+        add_anim(layer->material_ambient, 0.001);
+        add_anim(layer->material_diffuse, 0.001);
+        add_anim(layer->material_specular, 0.001);
+        add_anim(layer->material_shininess, 0.05);
+        add_anim(layer->material_metallic, 0.001);
+        add_anim(layer->material_roughness, 0.001);
+        add_anim(layer->material_reflection_intensity, 0.001);
+        add_anim(layer->material_emissive_color_a, 1.0 / 255.0);
+        add_anim(layer->material_emissive_color_r, 1.0 / 255.0);
+        add_anim(layer->material_emissive_color_g, 1.0 / 255.0);
+        add_anim(layer->material_emissive_color_b, 1.0 / 255.0);
+        add_anim(layer->material_emissive_intensity, 0.001);
         add_vec(layer->size, 0.25);
         add_vec(layer->image_size, 0.25);
         add_vec(layer->origin_prop, 0.25);
@@ -53,6 +91,9 @@
         add_anim(layer->paragraph_space_after_prop, 0.25);
         add_anim(layer->fill_color_a, 1.0 / 255.0); add_anim(layer->fill_color_r, 1.0 / 255.0);
         add_anim(layer->fill_color_g, 1.0 / 255.0); add_anim(layer->fill_color_b, 1.0 / 255.0);
+        add_anim(layer->stroke_color_a, 1.0 / 255.0); add_anim(layer->stroke_color_r, 1.0 / 255.0);
+        add_anim(layer->stroke_color_g, 1.0 / 255.0); add_anim(layer->stroke_color_b, 1.0 / 255.0);
+        add_anim(layer->stroke_offset_prop, 0.25);
         add_anim(layer->background_enabled_prop, 1.0);
         add_anim(layer->background_opacity_prop, 0.002);
         add_anim(layer->background_padding_x_prop, 0.25);
@@ -152,19 +193,33 @@ QVector<CacheFrameKey> CacheManager::frameKeysForTitle(const Title &title) const
 
 bool CacheManager::titleHasTimelineChanges(const Title &title) const
 {
+    if (std::any_of(title.lights.begin(), title.lights.end(),
+                    [](const TitleLight &light) {
+                        return title_light_has_authored_keyframes(light);
+                    }))
+        return true;
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         if (layer->type == LayerType::Clock || layer->type == LayerType::Ticker ||
             layer->type == LayerType::Video ||
-            (layer->type == LayerType::Asset && layer->asset_animated &&
-             layer->asset_playback_mode == 1))
+            bgs::asset_runtime::layer_uses_independent_playback(*layer))
             return true;
         if (std::any_of(layer->transitions.begin(), layer->transitions.end(),
                         [](const LayerTransition &transition) { return transition.enabled; }))
             return true;
         auto animated = [](const auto &prop) { return !prop.keyframes.empty(); };
         if (animated(layer->position) || animated(layer->scale) || animated(layer->rotation) ||
-            animated(layer->opacity) || animated(layer->size) || animated(layer->image_size) || animated(layer->origin_prop) ||
+            animated(layer->opacity) || animated(layer->material_ambient) ||
+            animated(layer->material_diffuse) || animated(layer->material_specular) ||
+            animated(layer->material_shininess) || animated(layer->material_metallic) ||
+            animated(layer->material_roughness) ||
+            animated(layer->material_reflection_intensity) ||
+            animated(layer->material_emissive_color_a) ||
+            animated(layer->material_emissive_color_r) ||
+            animated(layer->material_emissive_color_g) ||
+            animated(layer->material_emissive_color_b) ||
+            animated(layer->material_emissive_intensity) ||
+            animated(layer->size) || animated(layer->image_size) || animated(layer->origin_prop) ||
             animated(layer->font_size_prop) || animated(layer->char_tracking_prop) ||
             animated(layer->char_scale_x_prop) || animated(layer->char_scale_y_prop) ||
             animated(layer->baseline_shift_prop) || animated(layer->paragraph_indent_left_prop) ||
@@ -174,6 +229,8 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
             animated(layer->text_color_g) || animated(layer->text_color_b) ||
             animated(layer->fill_color_a) || animated(layer->fill_color_r) ||
             animated(layer->fill_color_g) || animated(layer->fill_color_b) ||
+            animated(layer->stroke_color_a) || animated(layer->stroke_color_r) ||
+            animated(layer->stroke_color_g) || animated(layer->stroke_color_b) ||
             animated(layer->background_enabled_prop) || animated(layer->background_opacity_prop) ||
             animated(layer->background_padding_x_prop) || animated(layer->background_padding_y_prop) ||
             animated(layer->background_padding_left_prop) || animated(layer->background_padding_right_prop) ||
@@ -1075,4 +1132,3 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
         w = frame_size.width();
         h = frame_size.height();
     }
-

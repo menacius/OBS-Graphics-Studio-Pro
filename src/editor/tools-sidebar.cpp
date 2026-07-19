@@ -19,6 +19,9 @@ ForegroundBackgroundSwatch::ForegroundBackgroundSwatch(QWidget *parent) : QWidge
 void ForegroundBackgroundSwatch::set_foreground_color(const QColor &color)
 {
     if (!color.isValid()) return;
+    if (!foreground_mixed_ && foreground_fill_.type == 0 &&
+        foreground_color_ == color && foreground_fill_.color == color)
+        return;
     foreground_mixed_ = false;
     foreground_color_ = color;
     foreground_fill_.type = 0;
@@ -31,6 +34,9 @@ void ForegroundBackgroundSwatch::set_foreground_color(const QColor &color)
 void ForegroundBackgroundSwatch::set_background_color(const QColor &color)
 {
     if (!color.isValid()) return;
+    if (!background_mixed_ && background_fill_.type == 0 &&
+        background_color_ == color && background_fill_.color == color)
+        return;
     background_mixed_ = false;
     background_color_ = color;
     background_fill_.type = 0;
@@ -43,6 +49,10 @@ void ForegroundBackgroundSwatch::set_background_color(const QColor &color)
 void ForegroundBackgroundSwatch::set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type)
 {
     if (!start.isValid() || !end.isValid()) return;
+    if (!foreground_mixed_ && foreground_fill_.type == 1 &&
+        foreground_fill_.start == start && foreground_fill_.end == end &&
+        foreground_fill_.gradient_type == gradient_type)
+        return;
     foreground_mixed_ = false;
     foreground_color_ = start;
     foreground_fill_.type = 1;
@@ -55,6 +65,10 @@ void ForegroundBackgroundSwatch::set_foreground_gradient(const QColor &start, co
 void ForegroundBackgroundSwatch::set_background_gradient(const QColor &start, const QColor &end, int gradient_type)
 {
     if (!start.isValid() || !end.isValid()) return;
+    if (!background_mixed_ && background_fill_.type == 1 &&
+        background_fill_.start == start && background_fill_.end == end &&
+        background_fill_.gradient_type == gradient_type)
+        return;
     background_mixed_ = false;
     background_color_ = start;
     background_fill_.type = 1;

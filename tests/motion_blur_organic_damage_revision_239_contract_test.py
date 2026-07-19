@@ -33,9 +33,11 @@ runtime = read('src/effects/effect-runtime.cpp')
 # made bitmap and video exposures look like posterized ghost frames.
 assert 'sharp_image_layer ? 2.25 : 1.0' in cpu_motion
 assert 'sharp_image_layer ? 96 : 48' in cpu_motion
-assert 'image_or_video_motion ? 64 : 14' in gpu_motion
-assert 'image_or_video_motion ? 96 : 24' in gpu_motion
-assert 'gpu-effects-v21-organic-damage-motion239' in gpu_motion
+assert '? (image_or_video_motion ? 96 : 24)' in gpu_motion
+assert ': (image_or_video_motion ? 64 : 14);' in gpu_motion
+assert '? (image_or_video_motion ? 20 : 16)' in gpu_motion
+assert ': (image_or_video_motion ? 16 : 12));' in gpu_motion
+assert 'gpu-effects-v26-3d-lighting-materials-shadows' in gpu_motion
 assert 'gpu-effects-v20-unified-effect-technique-video238' not in gpu_motion
 
 # The damage shader should be layered and organic, not a single noise overlay.

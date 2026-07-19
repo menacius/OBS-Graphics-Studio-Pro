@@ -31,8 +31,11 @@
 #include <QColor>
 #include <QPixmap>
 #include <QElapsedTimer>
+#include <QAbstractButton>
 #include <memory>
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <set>
 
@@ -57,11 +60,11 @@ public:
     explicit PropertiesPanel(QWidget *parent = nullptr);
 
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
+    void set_undo_redo_available(bool undo_available, bool redo_available);
     void update_playhead(double playhead);
     void refresh_media_range_controls();
     void set_title(std::shared_ptr<Title> t);
     void set_active_text_edit_layer(const std::string &layer_id);
-    void set_undo_redo_available(bool undo_available, bool redo_available);
     void set_text_style_editor_mode(bool enabled);
 
 public slots:
@@ -73,6 +76,8 @@ public slots:
     bool apply_external_picked_color(const QColor &color, bool commit);
 
 signals:
+    void undo_requested();
+    void redo_requested();
     void property_changed(bool push_undo_snapshot = true);
     void audio_property_changed(bool commit_undo = false);
     void live_visual_changed();
@@ -88,8 +93,7 @@ signals:
     void recent_colors_changed();
     void color_library_add_requested(const QColor &color);
     void asset_overrides_requested(const std::string &layer_id);
-    void undo_requested();
-    void redo_requested();
+    void keyframe_navigation_requested(double timeline_time);
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);
@@ -102,6 +106,10 @@ private:
     TextAnimatorProperty *selected_text_animator_property();
     TextSelector *selected_text_animator_selector();
     void notify_text_animator_changed(bool rebuild = true);
+    QWidget *make_keyframe_controls(QAbstractButton *button, QWidget *parent);
+    void register_keyframe_times(
+        QAbstractButton *button,
+        std::function<std::vector<double>()> provider);
 
     void load_values();
     void apply_text_style_editor_mode_visibility();
@@ -119,10 +127,12 @@ private:
     QTimer *ticker_status_timer_ = nullptr;
     bool numeric_label_dragging_ = false;
     bool text_style_editor_mode_ = false;
-    QWidget *properties_history_row_ = nullptr;
     std::string active_text_edit_layer_id_;
     QToolButton     *btn_properties_undo_ = nullptr;
     QToolButton     *btn_properties_redo_ = nullptr;
+    std::unordered_map<QAbstractButton *,
+                       std::function<std::vector<double>()>>
+        keyframe_time_providers_;
     std::string external_gradient_layer_id_;
     int external_gradient_stop_index_ = -1;
     bool external_gradient_stroke_ = false;
@@ -441,7 +451,29 @@ private:
     QComboBox       *cmb_dimension_mode_ = nullptr;
     QComboBox       *cmb_transform_axis_space_ = nullptr;
     QComboBox       *cmb_layer_camera_ = nullptr;
+    QComboBox       *cmb_depth_mode_ = nullptr;
     QWidget         *three_d_controls_ = nullptr;
+    QWidget         *light_options_box_ = nullptr;
+    QCheckBox       *chk_light_enabled_ = nullptr;
+    QComboBox       *cmb_light_type_ = nullptr;
+    QPushButton     *btn_light_color_ = nullptr;
+    QDoubleSpinBox  *spn_light_intensity_ = nullptr;
+    QDoubleSpinBox  *spn_light_source_size_ = nullptr;
+    QComboBox       *cmb_light_falloff_ = nullptr;
+    QDoubleSpinBox  *spn_light_falloff_start_ = nullptr;
+    QDoubleSpinBox  *spn_light_falloff_distance_ = nullptr;
+    QDoubleSpinBox  *spn_light_cone_angle_ = nullptr;
+    QDoubleSpinBox  *spn_light_cone_feather_ = nullptr;
+    QDoubleSpinBox  *spn_light_target_x_ = nullptr;
+    QDoubleSpinBox  *spn_light_target_y_ = nullptr;
+    QDoubleSpinBox  *spn_light_target_z_ = nullptr;
+    QWidget         *row_light_target_ = nullptr;
+    QCheckBox       *chk_light_casts_shadows_ = nullptr;
+    QDoubleSpinBox  *spn_light_shadow_darkness_ = nullptr;
+    QDoubleSpinBox  *spn_light_shadow_softness_ = nullptr;
+    QDoubleSpinBox  *spn_light_shadow_bias_ = nullptr;
+    QWidget         *material_options_box_ = nullptr;
+    QWidget         *geometry_options_box_ = nullptr;
     QDoubleSpinBox  *spn_pz_ = nullptr;
     QDoubleSpinBox  *spn_rot_x_ = nullptr;
     QDoubleSpinBox  *spn_rot_y_ = nullptr;
@@ -454,6 +486,39 @@ private:
     QCheckBox       *chk_write_depth_ = nullptr;
     QCheckBox       *chk_double_sided_ = nullptr;
     QCheckBox       *chk_backface_culling_ = nullptr;
+    QCheckBox       *chk_material_accepts_lights_ = nullptr;
+    QCheckBox       *chk_material_casts_shadows_ = nullptr;
+    QCheckBox       *chk_material_accepts_shadows_ = nullptr;
+    QCheckBox       *chk_material_reflections_ = nullptr;
+    QDoubleSpinBox  *spn_material_ambient_ = nullptr;
+    QDoubleSpinBox  *spn_material_diffuse_ = nullptr;
+    QDoubleSpinBox  *spn_material_specular_ = nullptr;
+    QDoubleSpinBox  *spn_material_shininess_ = nullptr;
+    QDoubleSpinBox  *spn_material_metallic_ = nullptr;
+    QDoubleSpinBox  *spn_material_roughness_ = nullptr;
+    QDoubleSpinBox  *spn_material_reflection_ = nullptr;
+    QPushButton     *btn_material_emissive_color_ = nullptr;
+    QDoubleSpinBox  *spn_material_emissive_intensity_ = nullptr;
+    QPushButton     *btn_kf_material_ambient_ = nullptr;
+    QPushButton     *btn_kf_material_diffuse_ = nullptr;
+    QPushButton     *btn_kf_material_specular_ = nullptr;
+    QPushButton     *btn_kf_material_shininess_ = nullptr;
+    QPushButton     *btn_kf_material_metallic_ = nullptr;
+    QPushButton     *btn_kf_material_roughness_ = nullptr;
+    QPushButton     *btn_kf_material_reflection_ = nullptr;
+    QPushButton     *btn_kf_material_emissive_color_ = nullptr;
+    QPushButton     *btn_kf_material_emissive_intensity_ = nullptr;
+    QWidget         *appearance_emissive_color_label_ = nullptr;
+    QWidget         *appearance_emissive_intensity_label_ = nullptr;
+    QCheckBox       *chk_geometry_extrusion_ = nullptr;
+    QDoubleSpinBox  *spn_geometry_extrusion_depth_ = nullptr;
+    QDoubleSpinBox  *spn_geometry_bevel_depth_ = nullptr;
+    QSpinBox        *spn_geometry_bevel_segments_ = nullptr;
+    QSpinBox        *spn_geometry_extrusion_segments_ = nullptr;
+    QCheckBox       *chk_geometry_bevel_front_ = nullptr;
+    QCheckBox       *chk_geometry_bevel_back_ = nullptr;
+    QPushButton     *btn_kf_geometry_extrusion_depth_ = nullptr;
+    QPushButton     *btn_kf_geometry_bevel_depth_ = nullptr;
     QWidget         *transform_box_ = nullptr;
     QGridLayout      *transform_grid_ = nullptr;
     QWidget         *transform_scale_label_ = nullptr;

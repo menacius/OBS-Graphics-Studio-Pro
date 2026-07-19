@@ -1,8 +1,10 @@
 #pragma once
 
 #include "title-data.h"
+#include "asset-runtime.h"
 #include "ticker-runtime.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <unordered_map>
@@ -13,6 +15,19 @@ struct TitleDynamicLayerAnalysis {
     std::size_t first_dynamic_layer = 0;
     bool has_cacheable_prefix = false;
 };
+
+/* A partial cache is an authored-order prefix. That boundary is not stable
+ * once any layer participates in 3D composition: camera-depth ordering can
+ * cross the flattened/live boundary. Complete cached frames remain valid. */
+inline bool title_has_3d_compositing(const Title &title)
+{
+    return std::any_of(
+        title.layers.begin(), title.layers.end(),
+        [](const std::shared_ptr<Layer> &layer) {
+            return layer &&
+                   layer->dimension_mode == LayerDimensionMode::ThreeD;
+        });
+}
 
 /*
  * Runtime-dynamic layers cannot be baked into the frame cache.  Clock and
@@ -46,16 +61,14 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
         const auto &layer = title.layers[i];
         if (!layer)
             continue;
-        bool independent_asset_time = layer->type == LayerType::Asset &&
-                                      layer->asset_animated &&
-                                      layer->asset_playback_mode == 1;
+        bool independent_asset_time =
+            bgs::asset_runtime::layer_uses_independent_playback(*layer);
         if (!independent_asset_time && !layer->asset_owner_id.empty()) {
             const auto owner_it = index_by_id.find(layer->asset_owner_id);
             if (owner_it != index_by_id.end()) {
                 const auto &owner = title.layers[owner_it->second];
-                independent_asset_time = owner && owner->type == LayerType::Asset &&
-                                         owner->asset_animated &&
-                                         owner->asset_playback_mode == 1;
+                independent_asset_time = owner &&
+                    bgs::asset_runtime::layer_uses_independent_playback(*owner);
             }
         }
         dynamic[i] = independent_asset_time ||
@@ -101,7 +114,8 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
         break;
     }
 
-    analysis.has_cacheable_prefix = analysis.has_dynamic_layers &&
+    analysis.has_cacheable_prefix = !title_has_3d_compositing(title) &&
+                                    analysis.has_dynamic_layers &&
                                     analysis.first_dynamic_layer > 0 &&
                                     analysis.first_dynamic_layer < count;
     return analysis;

@@ -48,7 +48,7 @@ constexpr int kCacheTileSize = bgs::cache_tile_payload::kTileSize;
  * visual cache identity and prevents stale prerenders from surviving renderer
  * fixes. */
 constexpr const char *kGpuRendererCacheAbi =
-    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur-v37-live-cue-transition-persistence-v38-camera-timeline-animation-static-compatible-v39-parent-bind-matrix-3d-pipeline-completion-v41-procedural-noise-schema3-detail-core-v43-obs-effect-entrypoint-fix-v44-source-aware-effects";
+    "gpu-renderer-v31-lens-flare-dx11-keyword-fix-v32-asset-layers-v33-effects-cleanup-4-color-gradient-v34-linux-alpha8-text-temporal-frame-alias-v35-layer-space-effects-stack-v36-text-transition-ink-gutter-shared-blur-v37-live-cue-transition-persistence-v38-camera-timeline-animation-static-compatible-v39-parent-bind-matrix-3d-pipeline-completion-v41-procedural-noise-schema3-detail-core-v43-obs-effect-entrypoint-fix-v44-source-aware-effects-v48-3d-lighting-materials-v49-legacy-slice-retired-transactional-presentation-v50-negative-rotation-target-reset-v51-single-3d-exact-publication-v52-light-control-no-artwork-v53-axis-space-double-sided-v54-per-light-source-size-shadows-scene-depth-v55-complete-3d-point-shadows-v56-matrix-exact-rgb24-point-shadows-v57-float32-receiver-plane-point-shadows-v58-shared-point-cube-projection-v59-distance-stable-point-shadows-v60-pcss-contact-hardening-v61-shadow-runtime-recovery-v62-stable-multiscale-poisson-shadows-v63-restored-3d-shadow-visibility-v64-signed-point-shadow-clip-depth-v65-realtime-receiver-matched-point-pcf-v66-compile-safe-receiver-matched-point-pcf-v67-async-shader-compile-progress";
 
 static bool gpu_ram_frame_contains(const CacheFrameKey &key)
 {
@@ -226,7 +226,7 @@ static bool cache_layer_uses_cue_persistence(const Title &title,
     const bool persistence = title.cue_background_persistence &&
         title.cue_persistence_transition && title.current_cue_row >= 0 &&
         !title.live_text_rows.empty() && !layer.ignore_persistence;
-    if (!persistence || !layer.asset_owner_id.empty())
+    if (!persistence)
         return false;
 
     const auto exposed = bgs::live_text::exposed_text_layers(title);
@@ -1116,4 +1116,3 @@ void DiskFrameCache::rebuildIndex()
             QFile::remove(file.absoluteFilePath());
         return;
     }
-

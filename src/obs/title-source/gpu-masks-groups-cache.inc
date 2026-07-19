@@ -1,3 +1,10 @@
+    enum class PresentationTargetState : uint8_t {
+        Free = 0,
+        Rendering,
+        Complete,
+        Published,
+    };
+
     std::mutex mutex;
     std::atomic<bool> destroying {false};
     /* Prefix submission is a two-stage CPU transaction (update dynamic range,
@@ -19,6 +26,15 @@
     std::size_t first_layer = 0;
     std::size_t last_layer = std::numeric_limits<std::size_t>::max();
     bool frame_dirty = true;
+    /* Correlation counters used by Development Version 307 diagnostics. They
+     * never participate in rendering or cache identity. */
+    uint64_t diagnostics_update_serial = 0;
+    uint64_t diagnostics_render_serial = 0;
+    uint64_t diagnostics_publish_serial = 0;
+    double diagnostics_last_published_time = 0.0;
+    std::size_t diagnostics_hardware_depth_run_count = 0;
+    std::size_t diagnostics_hardware_depth_layer_count = 0;
+    std::size_t diagnostics_extrusion_pass_count = 0;
     std::unordered_map<std::string, LayerRaster> layers;
     /* Prevent source-aware effects from recursively evaluating dependency
      * cycles (for example A displaces B while B displaces A). */
@@ -33,7 +49,57 @@
      * blend modes intentionally remain texture-based. */
     gs_texrender_t *depth_target = nullptr;
     bool depth_target_unavailable = false;
+    /* Development Version 375: one portable shadow texture per GPU light
+     * slot. Spot/Parallel lights use a conventional 2D map; Point lights use
+     * a six-face 3x2 atlas in the same texture, avoiding cube-sampler and
+     * texture-unit portability limits across OBS graphics backends. */
+    std::array<gs_texrender_t *, 4> shadow_targets {};
+    std::array<bool, 4> shadow_target_unavailable {};
+    /* R32F is the preferred numeric depth surface. Some OBS graphics
+     * backends/drivers expose the enum but cannot begin an R32F texrender with
+     * a Z24/S8 attachment. In that case retain floating-point depth in the
+     * broadly supported RGBA16F target instead of silently disabling every
+     * shadow for the lifetime of the session. */
+    std::array<bool, 4> shadow_target_uses_rgba16f {};
+    /* Tracks the preference value that created the current shadow-map targets.
+     * If a driver rejects a large target and the user lowers Preferences >
+     * Advanced > Shadowmap Size, previously disabled shadow slots are retried
+     * instead of remaining unavailable for the lifetime of the session. */
+    uint32_t shadow_map_preference_size = 0u;
+    std::array<bool, 4> shadow_failure_logged {};
+    std::array<bool, 4> shadow_success_logged {};
+    std::array<bool, 4> shadow_receiver_binding_logged {};
+    std::array<bool, 4> shadow_map_valid {};
+    std::array<QMatrix4x4, 4> shadow_view_projections {};
+    std::array<float, 4> shadow_darkness {};
+    std::array<float, 4> shadow_softness {};
+    std::array<float, 4> shadow_bias {0.002f, 0.002f, 0.002f, 0.002f};
+    std::array<uint32_t, 4> shadow_map_width {1u, 1u, 1u, 1u};
+    std::array<uint32_t, 4> shadow_map_height {1u, 1u, 1u, 1u};
+    /* 0 none, 1 perspective/Spot, 2 Point cube atlas,
+     * 3 orthographic/Parallel. */
+    std::array<int, 4> shadow_map_kind {};
+    std::array<QVector3D, 4> shadow_light_positions {};
+    std::array<float, 4> shadow_near_plane {0.01f, 0.01f, 0.01f, 0.01f};
+    std::array<float, 4> shadow_far_plane {1.0f, 1.0f, 1.0f, 1.0f};
+    /* Perspective entries store 2*tan(fov/2); orthographic entries store
+     * the world-space projection span. Both let PCSS convert Source Size to
+     * a receiver-space search/filter radius without baking one distance. */
+    std::array<float, 4> shadow_projection_span_x {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> shadow_projection_span_y {1.0f, 1.0f, 1.0f, 1.0f};
+    /* The receiver reuses the exact matrices that wrote each Point-atlas
+     * face. This avoids backend-dependent Y/origin assumptions in manual
+     * cube-face UV reconstruction. */
+    std::array<std::array<QMatrix4x4, 6>, 4>
+        shadow_point_face_view_projections {};
     gs_texrender_t *presentation_targets[2] = {nullptr, nullptr};
+    PresentationTargetState presentation_target_states[2] = {
+        PresentationTargetState::Free,
+        PresentationTargetState::Free,
+    };
+    uint64_t presentation_target_generations[2] = {0, 0};
+    uint64_t next_presentation_generation = 0;
+    uint64_t published_presentation_generation = 0;
     int active_presentation_target = -1;
     gs_texrender_t *layer_target = nullptr;
     gs_texrender_t *mask_target = nullptr;
@@ -43,6 +109,20 @@
     gs_texrender_t *effect_b = nullptr;
     gs_texrender_t *blur_a = nullptr;
     gs_texrender_t *blur_b = nullptr;
+    /* Complete effected/transitioned shutter samples use one isolated sample
+     * target and one normalized in-place accumulation target. The former
+     * ping-pong spare was removed in Development Version 288. */
+    gs_texrender_t *motion_sample_target = nullptr;
+    gs_texrender_t *motion_accum_target = nullptr;
+    /* Max-alpha envelope of the same shutter samples. It is intentionally
+     * separate from the normalized premultiplied exposure: keeping both lets
+     * the resolve restore authored coverage without reintroducing a sharp
+     * current-frame color or accumulating translucent shadows/glows. */
+    gs_texrender_t *motion_coverage_target = nullptr;
+    /* Source-aware effects can recursively render another layer while an outer
+     * Motion Blur exposure is still being accumulated. Nested passes use
+     * isolated temporary targets instead of clearing the outer accumulation. */
+    int motion_temporal_depth = 0;
     /* Immediate readback remains for compatibility callers. Phase 14 prerender
      * uses the independent triple-buffered slots below. */
     gs_stagesurf_t *stage = nullptr;
@@ -102,6 +182,8 @@
      * whole frame and could make Preview/Program output disappear. */
     gs_effect_t *blit_effect = nullptr;
     gs_effect_t *copy_effect = nullptr;
+    gs_effect_t *shadow_effect = nullptr;
+    gs_effect_t *motion_composite_effect = nullptr;
     gs_effect_t *adjustment_mix_effect = nullptr;
     gs_effect_t *adjustment_coverage_effect = nullptr;
     gs_effect_t *primitive_shape_effect = nullptr;
@@ -141,11 +223,325 @@
     uint32_t stage_height = 0;
     float preview_quality_scale = 1.0f;
     bool editor_draft = false;
+    /* Set only for the display-rate canvas transform path. Reuse the last
+     * complete shadow maps during the gesture; the settled model update
+     * rebuilds exact shadows once without blocking overlay presentation. */
+    bool interactive_transform_update = false;
+    /* Live OBS sources must stay inside the graphics-thread frame budget.
+     * Editor/cache sessions keep their authored/offline quality contract. */
+    std::atomic<bool> realtime_output { false };
+    /* Development Version 388: shader/effect compilation is never performed
+     * inline inside frame presentation. Missing shaders are queued for the
+     * session compile worker and the canvas/source keeps the previous stable
+     * texture visible while the worker progresses. */
+    std::mutex shader_compile_mutex;
+    std::condition_variable shader_compile_cv;
+    std::thread shader_compile_thread;
+    std::deque<ShaderCompileJob> shader_compile_queue;
+    std::unordered_set<std::string> shader_compile_queued_ids;
+    bool shader_compile_stop = false;
+    bool shader_compile_active = false;
+    std::string shader_compile_active_id;
+    std::string shader_compile_label;
+    uint32_t shader_compile_completed_jobs = 0;
+    uint32_t shader_compile_total_jobs = 0;
+    int shader_compile_progress_percent = 100;
     bgl::video::VideoDecodeClient video_decode_client =
         bgl::video::VideoDecodeClient::LiveOutput;
     std::string last_error_storage;
     const char *last_error = nullptr;
+    /* True when the latest draw deliberately presented the last stable texture
+     * because a required replacement raster was not ready. This is separate
+     * from draw success: callers may keep the old texture visible while the
+     * editor immediately schedules a full compatibility rebuild. */
+    bool last_draw_deferred = false;
 };
+
+
+static int shader_compile_progress_locked(const TitleGpuRenderSession *session)
+{
+    if (!session)
+        return 100;
+    if (session->shader_compile_total_jobs == 0)
+        return 100;
+    const uint32_t completed = std::min(session->shader_compile_completed_jobs,
+                                        session->shader_compile_total_jobs);
+    const int base = static_cast<int>(std::floor(
+        (static_cast<double>(completed) * 100.0) /
+        std::max<uint32_t>(1, session->shader_compile_total_jobs)));
+    return std::clamp(session->shader_compile_active ? std::max(1, base) : base,
+                      0, 100);
+}
+
+static void mark_shader_compile_pending(TitleGpuRenderSession *session,
+                                        const char *label)
+{
+    if (!session)
+        return;
+    session->last_draw_deferred = true;
+    session->last_error_storage = std::string("Shader compile pending: ") +
+        (label && *label ? label : "GPU effect");
+    session->last_error = session->last_error_storage.c_str();
+}
+
+static void start_shader_compile_worker_if_needed(TitleGpuRenderSession *session);
+
+static bool queue_shader_compile_job(TitleGpuRenderSession *session,
+                                     const std::string &id,
+                                     const std::string &label,
+                                     std::function<bool()> run)
+{
+    if (!session || id.empty() || !run)
+        return false;
+    start_shader_compile_worker_if_needed(session);
+    std::lock_guard<std::mutex> lock(session->shader_compile_mutex);
+    if (session->shader_compile_stop)
+        return false;
+    if (session->shader_compile_active_id == id ||
+        session->shader_compile_queued_ids.find(id) !=
+            session->shader_compile_queued_ids.end()) {
+        return true;
+    }
+    if (!session->shader_compile_active && session->shader_compile_queue.empty() &&
+        session->shader_compile_completed_jobs >= session->shader_compile_total_jobs) {
+        session->shader_compile_completed_jobs = 0;
+        session->shader_compile_total_jobs = 0;
+    }
+    session->shader_compile_queue.push_back(
+        TitleGpuRenderSession::ShaderCompileJob{id, label, std::move(run)});
+    session->shader_compile_queued_ids.insert(id);
+    ++session->shader_compile_total_jobs;
+    session->shader_compile_progress_percent = shader_compile_progress_locked(session);
+    session->shader_compile_cv.notify_one();
+    BGL_LOG_INFO("GpuPipeline", QStringLiteral(
+        "stage=shader-compile-queue session=%1 id=%2 label=%3 queued=%4 total=%5 progress=%6")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(QString::fromStdString(id))
+        .arg(QString::fromStdString(label))
+        .arg(static_cast<qulonglong>(session->shader_compile_queue.size()))
+        .arg(static_cast<qulonglong>(session->shader_compile_total_jobs))
+        .arg(session->shader_compile_progress_percent));
+    return true;
+}
+
+static void shader_compile_worker_loop(TitleGpuRenderSession *session)
+{
+    if (!session)
+        return;
+    for (;;) {
+        TitleGpuRenderSession::ShaderCompileJob job;
+        {
+            std::unique_lock<std::mutex> lock(session->shader_compile_mutex);
+            session->shader_compile_cv.wait(lock, [&]() {
+                return session->shader_compile_stop ||
+                       !session->shader_compile_queue.empty();
+            });
+            if (session->shader_compile_stop)
+                break;
+            job = std::move(session->shader_compile_queue.front());
+            session->shader_compile_queue.pop_front();
+            session->shader_compile_queued_ids.erase(job.id);
+            session->shader_compile_active = true;
+            session->shader_compile_active_id = job.id;
+            session->shader_compile_label = job.label;
+            session->shader_compile_progress_percent = shader_compile_progress_locked(session);
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        bool ok = false;
+        obs_enter_graphics();
+        try {
+            ok = job.run();
+        } catch (...) {
+            ok = false;
+        }
+        obs_leave_graphics();
+        const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
+
+        {
+            std::lock_guard<std::mutex> lock(session->shader_compile_mutex);
+            ++session->shader_compile_completed_jobs;
+            session->shader_compile_active = false;
+            session->shader_compile_active_id.clear();
+            session->shader_compile_label.clear();
+            session->shader_compile_progress_percent = shader_compile_progress_locked(session);
+        }
+        {
+            std::lock_guard<std::mutex> lock(session->mutex);
+            if (!session->destroying.load(std::memory_order_acquire)) {
+                session->frame_dirty = true;
+                session->last_draw_deferred = false;
+                if (ok) {
+                    session->last_error = nullptr;
+                    session->last_error_storage.clear();
+                }
+            }
+        }
+        BGL_LOG_INFO("GpuPipeline", QStringLiteral(
+            "stage=shader-compile-complete session=%1 id=%2 label=%3 result=%4 elapsedUs=%5")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(QString::fromStdString(job.id))
+            .arg(QString::fromStdString(job.label))
+            .arg(ok ? QStringLiteral("ok") : QStringLiteral("failed"))
+            .arg(static_cast<qlonglong>(elapsed_us)));
+    }
+}
+
+static void start_shader_compile_worker_if_needed(TitleGpuRenderSession *session)
+{
+    if (!session)
+        return;
+    std::lock_guard<std::mutex> lock(session->shader_compile_mutex);
+    if (session->shader_compile_thread.joinable())
+        return;
+    session->shader_compile_stop = false;
+    session->shader_compile_thread = std::thread([session]() {
+        shader_compile_worker_loop(session);
+    });
+}
+
+static void stop_shader_compile_worker(TitleGpuRenderSession *session)
+{
+    if (!session)
+        return;
+    {
+        std::lock_guard<std::mutex> lock(session->shader_compile_mutex);
+        session->shader_compile_stop = true;
+        session->shader_compile_cv.notify_all();
+    }
+    if (session->shader_compile_thread.joinable())
+        session->shader_compile_thread.join();
+}
+
+static bool ensure_session_shader_effect(
+    TitleGpuRenderSession *session, gs_effect_t *current,
+    const std::string &id, const char *label,
+    const char *source, const char *filename,
+    gs_effect_t **destination)
+{
+    if (!session)
+        return false;
+    if (current || (destination && *destination))
+        return true;
+    const std::string human_label = label && *label ? label : id;
+    queue_shader_compile_job(session, id, human_label,
+        [session, source, filename, destination, id, human_label]() -> bool {
+            gs_effect_t *compiled = gs_effect_create(source, filename, nullptr);
+            std::lock_guard<std::mutex> lock(session->mutex);
+            if (session->destroying.load(std::memory_order_acquire)) {
+                if (compiled)
+                    gs_effect_destroy(compiled);
+                return false;
+            }
+            if (destination && !*destination)
+                *destination = compiled;
+            else if (compiled)
+                gs_effect_destroy(compiled);
+            const bool ok = destination && *destination;
+            if (!ok) {
+                session->last_error_storage = "Could not compile shader: " +
+                    human_label;
+                session->last_error = session->last_error_storage.c_str();
+            }
+            return ok;
+        });
+    mark_shader_compile_pending(session, human_label.c_str());
+    return false;
+}
+
+static const char *session_effect_compile_label(LayerEffectType type)
+{
+    const TitleEffectDefinition *definition =
+        TitleEffectRegistry::definition(type);
+    if (definition && definition->display_name && *definition->display_name)
+        return definition->display_name;
+    if (definition && definition->stable_id && *definition->stable_id)
+        return definition->stable_id;
+    return "GPU effect";
+}
+
+static gs_effect_t *session_registry_effect_or_queue(
+    TitleGpuRenderSession *session, LayerEffectType type,
+    const char *label)
+{
+    if (!session)
+        return nullptr;
+    /* Contract: effect lookup runs only from the GPU compositor while the
+     * caller already owns session->mutex (render_gpu_session_locked()).  The
+     * Dev388 async-compile conversion added a second non-recursive lock here;
+     * an active transition that first touched a registry effect therefore
+     * threw std::system_error(EDEADLK) on every frame.  The registry has its
+     * own recursive mutex for find()/compile(), so do not reacquire the session
+     * mutex in this locked render helper. */
+    if (!session->effect_registry)
+        session->effect_registry = std::make_unique<TitleEffectRegistry>();
+    const std::string id = std::string("registry:") + std::to_string((int)type);
+    const std::string human_label = label && *label ? label : id;
+    gs_effect_t *compiled = session->effect_registry->find(type);
+    if (compiled)
+        return compiled;
+    queue_shader_compile_job(session, id, human_label,
+        [session, type, human_label]() -> bool {
+            std::unique_ptr<TitleEffectRegistry> *registry = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                if (session->destroying.load(std::memory_order_acquire))
+                    return false;
+                if (!session->effect_registry)
+                    session->effect_registry = std::make_unique<TitleEffectRegistry>();
+                registry = &session->effect_registry;
+            }
+            gs_effect_t *effect = (*registry)->compile(type);
+            if (!effect) {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                session->last_error_storage = "Could not compile effect shader: " +
+                    human_label;
+                session->last_error = session->last_error_storage.c_str();
+            }
+            return effect != nullptr;
+        });
+    mark_shader_compile_pending(session, human_label.c_str());
+    return nullptr;
+}
+
+static gs_effect_t *session_registry_effect_or_queue(
+    TitleGpuRenderSession *session, const std::string &stable_id,
+    const char *label)
+{
+    if (!session || stable_id.empty())
+        return nullptr;
+    /* Same locked-render contract as the built-in overload above. */
+    if (!session->effect_registry)
+        session->effect_registry = std::make_unique<TitleEffectRegistry>();
+    const std::string id = std::string("registry:") + stable_id;
+    const std::string human_label = label && *label ? label : stable_id;
+    gs_effect_t *compiled = session->effect_registry->find(stable_id);
+    if (compiled)
+        return compiled;
+    queue_shader_compile_job(session, id, human_label,
+        [session, stable_id, human_label]() -> bool {
+            std::unique_ptr<TitleEffectRegistry> *registry = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                if (session->destroying.load(std::memory_order_acquire))
+                    return false;
+                if (!session->effect_registry)
+                    session->effect_registry = std::make_unique<TitleEffectRegistry>();
+                registry = &session->effect_registry;
+            }
+            gs_effect_t *effect = (*registry)->compile(stable_id);
+            if (!effect) {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                session->last_error_storage = "Could not compile extension shader: " +
+                    human_label;
+                session->last_error = session->last_error_storage.c_str();
+            }
+            return effect != nullptr;
+        });
+    mark_shader_compile_pending(session, human_label.c_str());
+    return nullptr;
+}
 
 /* Phase 14 RAM tier, corrected to use sparse content-addressed GPU tiles.
  * A full-canvas render target per frame makes a 1920x1080 frame cost ~8 MiB
@@ -327,6 +723,8 @@ static bool layer_can_use_gpu_primitive_raster(const Layer &layer,
         return false;
 
     const double local_time = std::max(0.0, title_time - layer.in_time);
+    if (layer_has_stroke_geometry_modifiers(layer, local_time))
+        return false;
     if (layer.fill_type != 0)
         return false;
 
@@ -618,6 +1016,18 @@ static bool begin_gpu_target(gs_texrender_t *target, uint32_t width, uint32_t he
     gs_texrender_reset(target);
     if (!gs_texrender_begin(target, width, height))
         return false;
+    /* Every compositor surface is a replacement transaction. A preceding
+     * hardware-depth/read-only pass may have disabled one or more colour
+     * channels or left depth/cull state active. Clearing before restoring that
+     * state can preserve pixels from the previous transform, which is most
+     * visible when a negative rotation moves the new raster away from its old
+     * position. Establish a canonical target state before the clear so a layer
+     * can never move another layer or leave an upright stale copy behind. */
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_enable_blending(false);
     gs_ortho(0.0f, (float)width, 0.0f, (float)height, -100.0f, 100.0f);
     gs_clear(GS_CLEAR_COLOR, &clear_color, 1.0f, 0);
     return true;
@@ -678,6 +1088,8 @@ static bool layer_can_use_gpu_text_raster(const Layer &layer,
      * overlapping rectangular unit clips, so neighbouring glyphs can travel
      * with the wrong unit and legacy text transitions visibly break. */
     const double local_time = std::max(0.0, title_time - layer.in_time);
+    if (layer_has_stroke_geometry_modifiers(layer, local_time))
+        return false;
     if (max_rich_text_stroke_width(layer, local_time) > 0.0001 &&
         !text_animator_stack_has_enabled_animators(layer.text_animators))
         return false;
@@ -881,6 +1293,27 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
             &text_animation, failure_reason))
         return false;
 
+    /* Prepare a one-shot CPU fallback only before the first valid texture is
+     * published. This runs on the model/update thread, never inside the OBS
+     * graphics callback. If the GPU glyph vertex buffer fails, the graphics
+     * thread can upload this exact frame transactionally instead of deferring
+     * publication until an unrelated scene edit changes the model revision. */
+    if (!entry.texture && entry.gpu_text_fallback_image.isNull()) {
+        const MotionBaseRaster fallback = render_gpu_layer_base_raster(
+            session->title, layer, layer_time,
+            session->editor_draft ? session->preview_quality_scale : 1.0,
+            session->scene_mask_placeholder_preview_enabled,
+            session->video_decode_client);
+        if (!fallback.image.isNull()) {
+            entry.gpu_text_fallback_image = fallback.image;
+            entry.gpu_text_fallback_origin = fallback.origin;
+            entry.gpu_text_fallback_logical_width = fallback.logical_width;
+            entry.gpu_text_fallback_logical_height = fallback.logical_height;
+            entry.gpu_text_fallback_layer_box_rect = fallback.layer_box_rect;
+            entry.gpu_text_fallback_image_clip_rect = fallback.image_clip_rect;
+        }
+    }
+
     entry.gpu_text = true;
     entry.gpu_primitive = false;
     entry.pending_image = QImage();
@@ -903,6 +1336,16 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
             target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
         return target != nullptr;
     };
+    auto create_motion_sample_target = [](gs_texrender_t *&target) {
+        if (!target)
+            target = bgl_create_motion_blur_sample_target();
+        return target != nullptr;
+    };
+    auto create_motion_precision_target = [](gs_texrender_t *&target) {
+        if (!target)
+            target = bgl_create_motion_blur_accumulation_target();
+        return target != nullptr;
+    };
     /* Hardware depth is an optional acceleration/correctness path for
      * compatible opaque 3D runs. If a graphics backend cannot allocate a
      * Z24/S8 attachment, preserve the established 2D/compatibility compositor
@@ -911,23 +1354,49 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
         session->depth_target = gs_texrender_create(GS_BGRA, GS_Z24_S8);
         session->depth_target_unavailable = session->depth_target == nullptr;
     }
+    for (std::size_t index = 0; index < session->shadow_targets.size(); ++index) {
+        if (!session->shadow_targets[index] &&
+            !session->shadow_target_unavailable[index]) {
+            /* Shadow depth is numeric data, not display colour.  A floating
+             * point target avoids both sRGB transfer functions and packed
+             * UNORM quantisation corrupting radial Point-light distances. */
+            session->shadow_targets[index] = gs_texrender_create(
+                GS_R32F, GS_Z24_S8);
+            if (!session->shadow_targets[index]) {
+                session->shadow_targets[index] = gs_texrender_create(
+                    GS_RGBA16F, GS_Z24_S8);
+                session->shadow_target_uses_rgba16f[index] =
+                    session->shadow_targets[index] != nullptr;
+            }
+            session->shadow_target_unavailable[index] =
+                session->shadow_targets[index] == nullptr;
+            if (session->shadow_target_unavailable[index] &&
+                !session->shadow_failure_logged[index]) {
+                session->shadow_failure_logged[index] = true;
+                BGL_LOG_WARNING("Shadows", QStringLiteral(
+                    "stage=target-create slot=%1 result=failed formats=R32F,RGBA16F")
+                    .arg(static_cast<qulonglong>(index)));
+            }
+        }
+    }
     if (!create_target(session->frame_a) || !create_target(session->frame_b) ||
         !create_target(session->presentation_targets[0]) ||
         !create_target(session->presentation_targets[1]) ||
         !create_target(session->layer_target) || !create_target(session->mask_target) ||
         !create_target(session->masked_target) || !create_target(session->adjustment_coverage_target) || !create_target(session->effect_a) ||
         !create_target(session->effect_b) || !create_target(session->blur_a) ||
-        !create_target(session->blur_b)) {
+        !create_target(session->blur_b) ||
+        !create_motion_sample_target(session->motion_sample_target) ||
+        !create_motion_precision_target(session->motion_accum_target) ||
+        !create_motion_precision_target(session->motion_coverage_target)) {
         session->last_error = "Could not allocate GPU render targets.";
         return false;
     }
-    if (!session->blit_effect)
-        session->blit_effect = gs_effect_create(kGpuFrameBlitEffect,
-                                                "obs-bgs-gpu-frame-blit.effect", nullptr);
-    if (!session->blit_effect) {
-        session->last_error = "Could not compile mandatory GPU frame-blit shader.";
+    if (!ensure_session_shader_effect(
+            session, session->blit_effect, "core:frame-blit",
+            "GPU frame blit", kGpuFrameBlitEffect,
+            "obs-bgs-gpu-frame-blit.effect", &session->blit_effect))
         return false;
-    }
     if (!session->effect_registry)
         session->effect_registry = std::make_unique<TitleEffectRegistry>();
     /* Staging is intentionally lazy. Interactive editor/live rendering never
@@ -967,6 +1436,27 @@ static void release_gpu_text_layer(
     }
 }
 
+static bool upload_gpu_layer_raster(
+    TitleGpuRenderSession *session,
+    TitleGpuRenderSession::LayerRaster &entry);
+
+static bool activate_gpu_text_cpu_fallback(
+    TitleGpuRenderSession *session,
+    TitleGpuRenderSession::LayerRaster &entry)
+{
+    if (!session || entry.gpu_text_fallback_image.isNull())
+        return false;
+    entry.gpu_text = false;
+    entry.pending_image = std::move(entry.gpu_text_fallback_image);
+    entry.origin = entry.gpu_text_fallback_origin;
+    entry.logical_width = entry.gpu_text_fallback_logical_width;
+    entry.logical_height = entry.gpu_text_fallback_logical_height;
+    entry.layer_box_rect = entry.gpu_text_fallback_layer_box_rect;
+    entry.image_clip_rect = entry.gpu_text_fallback_image_clip_rect;
+    entry.pending_upload = true;
+    return upload_gpu_layer_raster(session, entry);
+}
+
 static bool render_gpu_text_raster(
     TitleGpuRenderSession *session,
     TitleGpuRenderSession::LayerRaster &entry)
@@ -986,6 +1476,31 @@ static bool render_gpu_text_raster(
         session->text_renderer->owns_texture(*entry.text_layer, old_texture);
     const bool old_primitive_targets =
         entry.primitive_targets[0] || entry.primitive_targets[1];
+    if (!session->text_renderer->effect_ready()) {
+        queue_shader_compile_job(session, "core:gpu-text", "GPU text",
+            [session]() -> bool {
+                std::unique_lock<std::mutex> lock(session->mutex);
+                if (session->destroying.load(std::memory_order_acquire))
+                    return false;
+                if (!session->text_renderer)
+                    session->text_renderer =
+                        std::make_unique<bgs::gpu_text::Renderer>();
+                bgs::gpu_text::Renderer *renderer = session->text_renderer.get();
+                lock.unlock();
+                const bool ok = renderer->compile_effect();
+                if (!ok) {
+                    std::lock_guard<std::mutex> failure_lock(session->mutex);
+                    session->text_backend_unavailable = true;
+                    session->force_compatibility_raster_rebuild = true;
+                    if (const char *error = renderer->last_error())
+                        session->last_error = error;
+                }
+                return ok;
+            });
+        mark_shader_compile_pending(session, "GPU text");
+        entry.pending_upload = true;
+        return entry.texture != nullptr;
+    }
     if (!session->text_renderer->render(*entry.text_layer)) {
         /* Any Phase 12C draw failure is optional. Route the session back to
          * the stable CPU text raster on the next model refresh and retain the
@@ -1000,13 +1515,21 @@ static bool render_gpu_text_raster(
         entry.effect_cache_key.clear();
         if (const char *error = session->text_renderer->last_error())
             session->last_error = error;
+        const bool immediate_fallback =
+            activate_gpu_text_cpu_fallback(session, entry);
         BGL_LOG_WARNING("GpuText", QStringLiteral(
-            "stage=runtime-fallback reason=%1 retainedTexture=%2")
+            "stage=runtime-fallback reason=%1 retainedTexture=%2 immediateCpuFallback=%3")
             .arg(session->last_error
                      ? QString::fromUtf8(session->last_error)
                      : QStringLiteral("unknown GPU text failure"))
-            .arg(entry.texture ? 1 : 0));
-        return entry.texture != nullptr;
+            .arg(entry.texture ? 1 : 0)
+            .arg(immediate_fallback ? 1 : 0));
+        if (immediate_fallback) {
+            BGL_LOG_DEBUG("GpuPipeline", QStringLiteral(
+                "stage=transactional-publication action=cpu-text-fallback-ready"));
+            return true;
+        }
+        return false;
     }
 
     gs_texture_t *rendered =
@@ -1019,7 +1542,9 @@ static bool render_gpu_text_raster(
         entry.key.clear();
         entry.effect_cache_key.clear();
         session->last_error = "GPU text rendering returned no texture; falling back to the compatibility raster.";
-        return entry.texture != nullptr;
+        if (activate_gpu_text_cpu_fallback(session, entry))
+            return true;
+        return false;
     }
 
     if (old_primitive_targets) {
@@ -1039,6 +1564,9 @@ static bool render_gpu_text_raster(
     entry.gpu_text = true;
     entry.gpu_primitive = false;
     entry.pending_image = QImage();
+    entry.gpu_text_fallback_image = QImage();
+    entry.gpu_text_fallback_logical_width = 0.0;
+    entry.gpu_text_fallback_logical_height = 0.0;
     entry.pending_upload = false;
     entry.effect_cache_key.clear();
     return true;
@@ -1061,10 +1589,17 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
     /* Phase 11 remains lazy and optional: cache-only presentation does not
      * depend on this shader, and a backend compile failure is converted into a
      * per-layer CPU base-raster fallback on the next model update. */
-    if (!session->primitive_shape_effect)
-        session->primitive_shape_effect = gs_effect_create(
-            kGpuPrimitiveShapeEffect,
-            "obs-bgs-gpu-primitive-shape.effect", nullptr);
+    if (!session->primitive_shape_effect &&
+        !ensure_session_shader_effect(
+            session, session->primitive_shape_effect, "core:primitive-shape",
+            "GPU primitive shape", kGpuPrimitiveShapeEffect,
+            "obs-bgs-gpu-primitive-shape.effect",
+            &session->primitive_shape_effect)) {
+        entry.gpu_primitive = true;
+        entry.pending_upload = true;
+        session->last_error = "Shader compile pending: GPU primitive shape";
+        return entry.texture != nullptr;
+    }
     if (!session->primitive_shape_effect) {
         session->primitive_backend_unavailable = true;
         session->force_compatibility_raster_rebuild = true;
@@ -1309,7 +1844,8 @@ static gs_texture_t *render_separable_gaussian(
     if (radius <= 0.01 && prefilter_mode == 0)
         return source;
 
-    gs_effect_t *blur = session->effect_registry->compile(LayerEffectType::Blur);
+    gs_effect_t *blur = session_registry_effect_or_queue(
+        session, LayerEffectType::Blur, "Blur effect");
     if (!blur) {
         session->last_error = session->effect_registry->last_error();
         return source;
@@ -1427,4 +1963,3 @@ static gs_texture_t *render_long_shadow_mask(
     gs_texture_t *mask = gs_texrender_get_texture(session->blur_a);
     return mask ? mask : source;
 }
-

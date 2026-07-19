@@ -81,6 +81,8 @@ static gs_texture_t *render_gpu_group_graph_texture(
 static std::string gpu_hardware_depth_camera_id(const Title &title,
                                                 const Layer &layer,
                                                 double title_time);
+static bool gpu_layer_requires_self_depth_geometry(
+    const Title &title, const Layer &layer, double title_time);
 static gs_texture_t *render_gpu_hardware_depth_run(
     TitleGpuRenderSession *session, const Title &title,
     const std::vector<const Layer *> &layers, double title_time,
@@ -423,13 +425,43 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
 {
     if (!session || !background || !foreground || !target)
         return false;
-    if (!session->blend_effect)
-        session->blend_effect = gs_effect_create(
-            kGpuFrameBlendEffect, "obs-bgs-gpu-frame-blend.effect", nullptr);
-    if (!session->blend_effect) {
-        session->last_error = "Could not compile GPU frame-blend shader.";
+    struct ScopedAliasSnapshots {
+        std::vector<gs_texrender_t *> targets;
+        ~ScopedAliasSnapshots()
+        {
+            for (gs_texrender_t *owned : targets) {
+                if (owned)
+                    gs_texrender_destroy(owned);
+            }
+        }
+    } alias_snapshots;
+    const gs_texture_t *target_texture = gs_texrender_get_texture(target);
+    auto protect_target_alias = [&](gs_texture_t *&input) -> bool {
+        if (!target_texture || input != target_texture)
+            return true;
+        gs_texrender_t *snapshot = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        if (!snapshot ||
+            !copy_full_canvas_gpu_texture(session, input, snapshot)) {
+            if (snapshot)
+                gs_texrender_destroy(snapshot);
+            return false;
+        }
+        alias_snapshots.targets.push_back(snapshot);
+        input = gs_texrender_get_texture(snapshot);
+        return input != nullptr;
+    };
+    /* Sampling the texture owned by the target being written is undefined on
+     * both D3D11 and OpenGL. Shared 3D group/effect targets can otherwise show
+     * an earlier transform or move neighboring artwork intermittently. */
+    if (!protect_target_alias(background) ||
+        !protect_target_alias(foreground))
         return false;
-    }
+    if (!session->blend_effect &&
+        !ensure_session_shader_effect(
+            session, session->blend_effect, "core:frame-blend",
+            "GPU frame blend", kGpuFrameBlendEffect,
+            "obs-bgs-gpu-frame-blend.effect", &session->blend_effect))
+        return false;
     struct vec4 clear;
     vec4_zero(&clear);
     if (!begin_gpu_target(target, session->width, session->height, clear))
@@ -716,6 +748,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
         std::vector<const Layer *> layers;
         std::size_t writer_count = 0;
         std::size_t transparent_count = 0;
+        std::size_t self_depth_geometry_count = 0;
     };
     std::unordered_map<const Layer *, GroupHardwareDepthRun>
         group_hardware_depth_runs;
@@ -775,10 +808,16 @@ static gs_texture_t *render_gpu_group_graph_texture(
             if (bgs::transform3d::hardware_depth_transparent_candidate(
                     title, *candidate, title_time))
                 ++run.transparent_count;
+            if (gpu_layer_requires_self_depth_geometry(
+                    title, *candidate, title_time))
+                ++run.self_depth_geometry_count;
             ++run_cursor;
         }
-        if (run.layers.size() >= 2 &&
-            (run.writer_count >= 1 || run.transparent_count >= 2))
+        /* A single 3D plane must use the same camera/depth transform as a
+         * multi-plane scene. Falling back to the 2D homography only when the
+         * run has one member changes Y-rotation and back-face publication when
+         * an otherwise unrelated second layer is added. */
+        if (!run.layers.empty())
             group_hardware_depth_runs.emplace(run.layers.front(),
                                                std::move(run));
         depth_cursor = std::max(depth_cursor + 1, run_cursor);
@@ -1420,10 +1459,13 @@ static bool draw_global_gpu_frame_locked(TitleGpuRenderSession *session,
     return gs_texrender_get_texture(target) != nullptr;
 }
 
+static bool gpu_session_has_published_frame_for_current_title(
+    const TitleGpuRenderSession *session);
+
 static bool gpu_session_final_matches_model(
     const TitleGpuRenderSession *session)
 {
-    return session && session->final_texture && session->has_title &&
+    return gpu_session_has_published_frame_for_current_title(session) &&
            session->published_model_revision == session->model_revision &&
            session->published_title_id == session->title.id;
 }
@@ -1431,15 +1473,29 @@ static bool gpu_session_final_matches_model(
 static bool gpu_session_has_published_frame_for_current_title(
     const TitleGpuRenderSession *session)
 {
-    /* Interactive edits advance model_revision before the replacement raster
-     * reaches the graphics thread. The previously published frame is still a
-     * safe fallback when it belongs to the same non-empty title identity; it
-     * must not be rejected merely because its revision is one edit behind.
-     * Lifecycle invalidation clears final_texture/published_title_id before a
-     * title, project or scene-collection generation can be replaced. */
-    return session && session->final_texture && session->has_title &&
-           !session->title.id.empty() &&
-           session->published_title_id == session->title.id;
+    /* Live output may retain the last complete same-title frame while an
+     * asynchronous raster replacement is pending. The editor must not: its
+     * overlays already represent the new model revision, so presenting an old
+     * revision underneath them creates false coordinates and visible stale
+     * artwork during transform edits. */
+    if (!session || !session->final_texture || !session->has_title ||
+        session->title.id.empty() ||
+        session->published_title_id != session->title.id ||
+        session->published_presentation_generation == 0 ||
+        session->active_presentation_target < 0 ||
+        session->active_presentation_target > 1)
+        return false;
+    const int active = session->active_presentation_target;
+    const bool exact_editor_revision =
+        session->realtime_output.load(std::memory_order_relaxed) ||
+        session->published_model_revision == session->model_revision;
+    return exact_editor_revision && session->presentation_targets[active] &&
+           session->presentation_target_states[active] ==
+               TitleGpuRenderSession::PresentationTargetState::Published &&
+           session->presentation_target_generations[active] ==
+               session->published_presentation_generation &&
+           gs_texrender_get_texture(session->presentation_targets[active]) ==
+               session->final_texture;
 }
 
 static gs_texture_t *publish_stable_gpu_frame(TitleGpuRenderSession *session,
@@ -1449,20 +1505,66 @@ static gs_texture_t *publish_stable_gpu_frame(TitleGpuRenderSession *session,
         return nullptr;
     const int publish_index = session->active_presentation_target == 0 ? 1 : 0;
     gs_texrender_t *target = session->presentation_targets[publish_index];
-    if (!target ||
-        !draw_gpu_cached_image(session, frame,
-                               QRect(0, 0, static_cast<int>(session->width),
-                                     static_cast<int>(session->height)),
-                               target)) {
+    if (!target)
+        return nullptr;
+
+    /* A target becomes externally visible only after the complete copy has
+     * succeeded. The previous Published target remains untouched throughout
+     * Rendering, so a failed replacement cannot expose partial pixels. */
+    session->presentation_target_states[publish_index] =
+        TitleGpuRenderSession::PresentationTargetState::Rendering;
+    session->presentation_target_generations[publish_index] = 0;
+    /* Publication is a byte-for-byte full-canvas replacement. Alpha blending
+     * is correct for a layer over a background, but it is the wrong semantic
+     * for copying an already composited frame and can retain destination pixels
+     * when backend state is inherited from a previous 3D pass. */
+    if (!replace_full_canvas_gpu_texture(session, frame, target)) {
+        session->presentation_target_states[publish_index] =
+            TitleGpuRenderSession::PresentationTargetState::Free;
         return nullptr;
     }
     gs_texture_t *published = gs_texrender_get_texture(target);
-    if (!published)
+    if (!published) {
+        session->presentation_target_states[publish_index] =
+            TitleGpuRenderSession::PresentationTargetState::Free;
         return nullptr;
+    }
+    session->presentation_target_states[publish_index] =
+        TitleGpuRenderSession::PresentationTargetState::Complete;
+    uint64_t generation = ++session->next_presentation_generation;
+    if (generation == 0)
+        generation = ++session->next_presentation_generation;
+    session->presentation_target_generations[publish_index] = generation;
+    const int previous_index = session->active_presentation_target;
+    if (previous_index >= 0 && previous_index <= 1 &&
+        session->presentation_target_states[previous_index] ==
+            TitleGpuRenderSession::PresentationTargetState::Published) {
+        session->presentation_target_states[previous_index] =
+            TitleGpuRenderSession::PresentationTargetState::Complete;
+    }
+    session->presentation_target_states[publish_index] =
+        TitleGpuRenderSession::PresentationTargetState::Published;
     session->active_presentation_target = publish_index;
+    session->published_presentation_generation = generation;
     session->final_texture = published;
     session->published_title_id = session->title.id;
     session->published_model_revision = session->model_revision;
+    ++session->diagnostics_publish_serial;
+    session->diagnostics_last_published_time = session->time;
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=session-publish session=%1 publish=%2 generation=%3 render=%4 title=%5 time=%6 revision=%7 target=%8 texture=%9 depthRuns=%10 depthLayers=%11 extrusionPasses=%12")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(session->diagnostics_publish_serial)
+        .arg(session->published_presentation_generation)
+        .arg(session->diagnostics_render_serial)
+        .arg(QString::fromStdString(session->title.id))
+        .arg(session->time, 0, 'f', 9)
+        .arg(session->model_revision)
+        .arg(session->active_presentation_target)
+        .arg(reinterpret_cast<quintptr>(published), 0, 16)
+        .arg(session->diagnostics_hardware_depth_run_count)
+        .arg(session->diagnostics_hardware_depth_layer_count)
+        .arg(session->diagnostics_extrusion_pass_count));
     return published;
 }
 
@@ -1499,6 +1601,18 @@ static std::string gpu_hardware_depth_camera_id(const Title &title,
     return assigned.empty()
         ? bgs::transform3d::resolved_active_camera_id(title, title_time)
         : assigned;
+}
+
+static bool gpu_layer_requires_self_depth_geometry(
+    const Title &title, const Layer &layer, double title_time)
+{
+    /* Development Version 330 retires the alpha-slice extrusion experiment.
+     * Legacy serialized fields must never manufacture a solo hardware-depth
+     * run. Real self-depth geometry will return through MeshDrawItem in 331+. */
+    (void)title;
+    (void)layer;
+    (void)title_time;
+    return false;
 }
 
 static gs_texture_t *render_gpu_hardware_depth_run(
@@ -1744,6 +1858,11 @@ static gs_texture_t *render_gpu_hardware_depth_run(
 
         struct vec4 clear;
         vec4_zero(&clear);
+        gs_enable_color(true, true, true, true);
+        gs_enable_depth_test(false);
+        gs_depth_function(GS_LEQUAL);
+        gs_set_cull_mode(GS_NEITHER);
+        gs_enable_blending(false);
         gs_ortho(0.0f, static_cast<float>(session->width),
                  0.0f, static_cast<float>(session->height), -100.0f, 100.0f);
         gs_clear(GS_CLEAR_COLOR | GS_CLEAR_DEPTH | GS_CLEAR_STENCIL,
@@ -1834,19 +1953,665 @@ static gs_texture_t *render_gpu_hardware_depth_run(
     return success ? gs_texrender_get_texture(session->depth_target) : nullptr;
 }
 
+static float point_triangle_distance_squared(const QVector3D &point,
+                                             const QVector3D &a,
+                                             const QVector3D &b,
+                                             const QVector3D &c)
+{
+    const QVector3D ab = b - a;
+    const QVector3D ac = c - a;
+    const QVector3D ap = point - a;
+    const float d1 = QVector3D::dotProduct(ab, ap);
+    const float d2 = QVector3D::dotProduct(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f)
+        return ap.lengthSquared();
+
+    const QVector3D bp = point - b;
+    const float d3 = QVector3D::dotProduct(ab, bp);
+    const float d4 = QVector3D::dotProduct(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3)
+        return bp.lengthSquared();
+
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        const float v = d1 / std::max(d1 - d3, 0.000001f);
+        return (point - (a + ab * v)).lengthSquared();
+    }
+
+    const QVector3D cp = point - c;
+    const float d5 = QVector3D::dotProduct(ab, cp);
+    const float d6 = QVector3D::dotProduct(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6)
+        return cp.lengthSquared();
+
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        const float w = d2 / std::max(d2 - d6, 0.000001f);
+        return (point - (a + ac * w)).lengthSquared();
+    }
+
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f) {
+        const QVector3D edge = c - b;
+        const float w = (d4 - d3) /
+            std::max((d4 - d3) + (d5 - d6), 0.000001f);
+        return (point - (b + edge * w)).lengthSquared();
+    }
+
+    const float denominator = va + vb + vc;
+    if (std::abs(denominator) <= 0.000001f)
+        return std::min({ap.lengthSquared(), bp.lengthSquared(),
+                         cp.lengthSquared()});
+    const float inverse = 1.0f / denominator;
+    const float v = vb * inverse;
+    const float w = vc * inverse;
+    return (point - (a + ab * v + ac * w)).lengthSquared();
+}
+
+static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
+                                  const Title &title, double title_time,
+                                  const TitleLight &shadow_light,
+                                  std::size_t shadow_slot)
+{
+    if (!session || shadow_slot >= session->shadow_targets.size())
+        return false;
+    session->shadow_map_valid[shadow_slot] = false;
+    session->shadow_view_projections[shadow_slot].setToIdentity();
+    session->shadow_darkness[shadow_slot] = 0.0f;
+    session->shadow_softness[shadow_slot] = 0.0f;
+    session->shadow_bias[shadow_slot] = 0.002f;
+    session->shadow_map_kind[shadow_slot] = 0;
+    session->shadow_light_positions[shadow_slot] = QVector3D();
+    session->shadow_near_plane[shadow_slot] = 0.01f;
+    session->shadow_far_plane[shadow_slot] = 1.0f;
+    session->shadow_projection_span_x[shadow_slot] = 1.0f;
+    session->shadow_projection_span_y[shadow_slot] = 1.0f;
+    for (QMatrix4x4 &face_matrix :
+         session->shadow_point_face_view_projections[shadow_slot])
+        face_matrix.setToIdentity();
+    gs_texrender_t *shadow_target = session->shadow_targets[shadow_slot];
+    auto log_shadow_failure = [&](const QString &reason) {
+        if (session->shadow_failure_logged[shadow_slot])
+            return;
+        session->shadow_failure_logged[shadow_slot] = true;
+        BGL_LOG_WARNING("Shadows", QStringLiteral(
+            "stage=map-build slot=%1 result=failed reason=%2 light=%3 type=%4")
+            .arg(static_cast<qulonglong>(shadow_slot))
+            .arg(reason)
+            .arg(QString::fromStdString(shadow_light.name))
+            .arg(static_cast<int>(shadow_light.type)));
+    };
+    if (!title.lighting_enabled || !shadow_target ||
+        session->shadow_target_unavailable[shadow_slot] ||
+        !shadow_light.enabled || !shadow_light.casts_shadows ||
+        (shadow_light.type != TitleLightType::Point &&
+         shadow_light.type != TitleLightType::Spot &&
+         shadow_light.type != TitleLightType::Parallel))
+    {
+        if (title.lighting_enabled && shadow_light.enabled &&
+            shadow_light.casts_shadows &&
+            (!shadow_target ||
+             session->shadow_target_unavailable[shadow_slot]))
+            log_shadow_failure(QStringLiteral("target-unavailable"));
+        return false;
+    }
+
+    const Vec3Value authored_position = evaluated_light_position(
+        shadow_light, title_time);
+    const Vec3Value authored_target = evaluated_light_target(
+        shadow_light, title_time);
+    QVector3D light_position(static_cast<float>(authored_position.x),
+                             static_cast<float>(authored_position.y),
+                             static_cast<float>(authored_position.z));
+    QVector3D light_target(static_cast<float>(authored_target.x),
+                           static_cast<float>(authored_target.y),
+                           static_cast<float>(authored_target.z));
+    QVector3D forward = light_target - light_position;
+    if (forward.lengthSquared() <= 0.000001f)
+        forward = QVector3D(0.0f, 0.0f, 1.0f);
+    forward.normalize();
+    QVector3D up(0.0f, -1.0f, 0.0f);
+    if (std::abs(QVector3D::dotProduct(forward, up)) > 0.999f)
+        up = QVector3D(0.0f, 0.0f, -1.0f);
+    QMatrix4x4 light_view;
+    light_view.setToIdentity();
+    light_view.lookAt(light_position, light_position + forward, up);
+
+    struct ShadowCaster {
+        const Layer *layer = nullptr;
+        TitleGpuRenderSession::LayerRaster *entry = nullptr;
+        QVector3D origin;
+        QVector3D axis_u;
+        QVector3D axis_v;
+        double opacity = 1.0;
+    };
+    const bool point_shadow = shadow_light.type == TitleLightType::Point;
+    std::vector<ShadowCaster> casters;
+    std::size_t receiver_count = 0;
+    std::vector<QVector3D> light_space_points;
+    std::vector<QVector3D> scene_world_points;
+    std::vector<std::array<QVector3D, 4>> scene_world_quads;
+    for (const auto &layer_ptr : title.layers) {
+        const Layer *layer = layer_ptr.get();
+        if (!layer ||
+            !bgs::transform3d::layer_supports_3d(*layer) ||
+            layer->dimension_mode != LayerDimensionMode::ThreeD ||
+            layer_type_is_audio(layer->type) ||
+            layer->type == LayerType::Adjustment ||
+            layer->type == LayerType::Light ||
+            layer->type == LayerType::Empty ||
+            layer_type_is_container(layer->type) ||
+            !gpu_layer_chain_visible(title, *layer, title_time) ||
+            !bgs::transform3d::layer_passes_backface_culling(
+                title, *layer, title_time))
+            continue;
+        auto found = session->layers.find(gpu_session_layer_id(*layer));
+        if (found == session->layers.end() || !found->second.texture)
+            continue;
+        const bool casts_shadow = layer->material_casts_shadows;
+        const bool receives_shadow = layer->material_accepts_lights &&
+            layer->material_accepts_shadows;
+        if (!casts_shadow && !receives_shadow)
+            continue;
+        auto &entry = found->second;
+        const double resolved_time = gpu_layer_render_time(
+            title, *layer, title_time);
+        const double local_time = std::max(0.0, resolved_time - layer->in_time);
+        const double opacity = std::clamp(
+            gpu_layer_local_opacity(*layer, resolved_time), 0.0, 1.0);
+        if (opacity <= 0.000001)
+            continue;
+        if (receives_shadow)
+            ++receiver_count;
+        const double sx = std::max(0.0001, eval_box_width(*layer, local_time)) /
+            std::max(0.0001, entry.base_box_width);
+        const double sy = std::max(0.0001, eval_box_height(*layer, local_time)) /
+            std::max(0.0001, entry.base_box_height);
+        const float x0 = static_cast<float>(sx * entry.origin.x());
+        const float y0 = static_cast<float>(sy * entry.origin.y());
+        const float x1 = x0 + static_cast<float>(sx * entry.logical_width);
+        const float y1 = y0 + static_cast<float>(sy * entry.logical_height);
+        const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(
+            title, *layer, title_time);
+        const QVector3D p00 = world.map(QVector3D(x0, y0, 0.0f));
+        const QVector3D p10 = world.map(QVector3D(x1, y0, 0.0f));
+        const QVector3D p01 = world.map(QVector3D(x0, y1, 0.0f));
+        const QVector3D p11 = world.map(QVector3D(x1, y1, 0.0f));
+        scene_world_quads.push_back({p00, p10, p11, p01});
+        if (casts_shadow) {
+            casters.push_back({layer, &entry, p00, p10 - p00, p01 - p00,
+                               opacity});
+        }
+        for (const QVector3D &point : {p00, p10, p01, p11}) {
+            scene_world_points.push_back(point);
+            if (!point_shadow)
+                light_space_points.push_back(light_view.map(point));
+        }
+    }
+    if (casters.empty()) {
+        log_shadow_failure(QStringLiteral("no-ready-casters"));
+        return false;
+    }
+    if (receiver_count == 0) {
+        log_shadow_failure(QStringLiteral("no-shadow-receivers"));
+        return false;
+    }
+    if (scene_world_points.empty()) {
+        log_shadow_failure(QStringLiteral("empty-scene-bounds"));
+        return false;
+    }
+
+    float min_depth = std::numeric_limits<float>::max();
+    float max_depth = 0.0f;
+    float min_x = std::numeric_limits<float>::max();
+    float max_x = std::numeric_limits<float>::lowest();
+    float min_y = std::numeric_limits<float>::max();
+    float max_y = std::numeric_limits<float>::lowest();
+    if (point_shadow) {
+        for (const auto &quad : scene_world_quads) {
+            const float closest_squared = std::min(
+                point_triangle_distance_squared(
+                    light_position, quad[0], quad[1], quad[2]),
+                point_triangle_distance_squared(
+                    light_position, quad[0], quad[2], quad[3]));
+            if (closest_squared > 0.00000001f)
+                min_depth = std::min(min_depth,
+                    std::sqrt(closest_squared));
+            else
+                min_depth = 0.0001f;
+            for (const QVector3D &point : quad)
+                max_depth = std::max(
+                    max_depth, (point - light_position).length());
+        }
+    } else {
+        for (const QVector3D &point : light_space_points) {
+            min_x = std::min(min_x, point.x());
+            max_x = std::max(max_x, point.x());
+            min_y = std::min(min_y, point.y());
+            max_y = std::max(max_y, point.y());
+            const float depth = -point.z();
+            if (depth > 0.0001f) {
+                min_depth = std::min(min_depth, depth);
+                max_depth = std::max(max_depth, depth);
+            }
+        }
+    }
+    if (!std::isfinite(min_depth) || max_depth <= 0.0001f) {
+        log_shadow_failure(QStringLiteral("invalid-depth-range"));
+        return false;
+    }
+
+    const float depth_margin = std::max(10.0f, (max_depth - min_depth) * 0.1f);
+    /* Point-light depth used to start at 0.01 regardless of scene distance.
+     * With a remote light that spends nearly the complete Z24 range on empty
+     * space and leaves the caster/receiver depths indistinguishable. The
+     * exact point-to-quad minimum above lets every cube face use a tight safe
+     * range without clipping the middle of a large plane. */
+    /* The selected cube face uses the dominant axis as clip W. Its magnitude
+     * is at least radialDistance/sqrt(3); half the exact radial minimum is a
+     * conservative bound with useful precision on every face. */
+    const float near_plane = point_shadow
+        ? std::max(0.01f, min_depth * 0.5f - depth_margin)
+        : std::max(0.01f, min_depth - depth_margin);
+    const float far_plane = std::max(near_plane + 1.0f,
+                                     max_depth + depth_margin);
+    QMatrix4x4 light_projection;
+    light_projection.setToIdentity();
+    float projection_span_x = 1.0f;
+    float projection_span_y = 1.0f;
+    if (point_shadow) {
+        light_projection.perspective(90.0f, 1.0f, near_plane, far_plane);
+        projection_span_x = 2.0f;
+        projection_span_y = 2.0f;
+    } else if (shadow_light.type == TitleLightType::Spot) {
+        const float field_of_view = static_cast<float>(std::clamp(
+            shadow_light.cone_angle.evaluate(title_time), 0.1, 179.0));
+        light_projection.perspective(field_of_view, 1.0f,
+                                     near_plane, far_plane);
+        projection_span_x = std::max(
+            0.0001f, 2.0f * std::tan(field_of_view * 0.5f *
+                3.14159265358979323846f / 180.0f));
+        projection_span_y = projection_span_x;
+    } else {
+        const float span_x = std::max(1.0f, max_x - min_x);
+        const float span_y = std::max(1.0f, max_y - min_y);
+        const float margin = std::max(4.0f, std::max(span_x, span_y) * 0.08f);
+        projection_span_x = std::max(1.0f, span_x + margin * 2.0f);
+        projection_span_y = std::max(1.0f, span_y + margin * 2.0f);
+        light_projection.ortho(min_x - margin, max_x + margin,
+                               min_y - margin, max_y + margin,
+                               near_plane, far_plane);
+    }
+    session->shadow_view_projections[shadow_slot] = point_shadow
+        ? QMatrix4x4() : light_projection * light_view;
+    session->shadow_darkness[shadow_slot] = static_cast<float>(std::clamp(
+        shadow_light.shadow_darkness.evaluate(title_time) / 100.0,
+        0.0, 1.0));
+    const uint32_t authored_shadow_map_size = static_cast<uint32_t>(
+        std::clamp(TitlePreferences::shadow_map_size_px(), 256, 4096));
+    const uint32_t map_size = session->editor_draft
+        ? std::max<uint32_t>(256u, authored_shadow_map_size / 2u)
+        : authored_shadow_map_size;
+    /* PCSS derives physical penumbra from Source Size and blocker/receiver
+     * depths in the shader. Keep authored softness as a small artistic
+     * texel-space addition instead of baking it at one representative depth. */
+    session->shadow_softness[shadow_slot] = static_cast<float>(std::clamp(
+        shadow_light.shadow_softness.evaluate(title_time),
+        0.0, 64.0));
+    const double authored_shadow_bias = std::clamp(
+        shadow_light.shadow_bias.evaluate(title_time), 0.0, 0.25);
+    /* Point maps store radial distance divided by far_plane. Scale authored
+     * bias by the occupied depth interval so moving the light away does not
+     * turn the same value into an ever-growing world-space separation. */
+    const double occupied_point_depth_span = std::max(
+        1.0, static_cast<double>(max_depth - min_depth) +
+            2.0 * static_cast<double>(depth_margin));
+    const double normalized_shadow_bias = point_shadow
+        ? authored_shadow_bias * occupied_point_depth_span /
+            std::max(1.0, static_cast<double>(far_plane))
+        : authored_shadow_bias;
+    session->shadow_bias[shadow_slot] =
+        static_cast<float>(normalized_shadow_bias);
+    session->shadow_map_width[shadow_slot] = point_shadow
+        ? map_size * 3u : map_size;
+    session->shadow_map_height[shadow_slot] = point_shadow
+        ? map_size * 2u : map_size;
+    session->shadow_map_kind[shadow_slot] = point_shadow ? 2 :
+        (shadow_light.type == TitleLightType::Parallel ? 3 : 1);
+    session->shadow_light_positions[shadow_slot] = light_position;
+    session->shadow_near_plane[shadow_slot] = near_plane;
+    session->shadow_far_plane[shadow_slot] = far_plane;
+    session->shadow_projection_span_x[shadow_slot] = projection_span_x;
+    session->shadow_projection_span_y[shadow_slot] = projection_span_y;
+
+    if (!session->shadow_effect &&
+        !ensure_session_shader_effect(
+            session, session->shadow_effect, "core:shadow-map",
+            "GPU shadow map", kGpuShadowMapEffect,
+            "obs-bgs-gpu-shadow-map.effect", &session->shadow_effect)) {
+        log_shadow_failure(QStringLiteral("shadow-effect-compile-pending"));
+        return false;
+    }
+    gs_eparam_t *image = bgl_effect_param(session->shadow_effect, "image");
+    gs_eparam_t *matrix = bgl_effect_param(
+        session->shadow_effect, "shadowViewProj");
+    gs_eparam_t *plane_origin = bgl_effect_param(
+        session->shadow_effect, "planeOrigin");
+    gs_eparam_t *plane_axis_u = bgl_effect_param(
+        session->shadow_effect, "planeAxisU");
+    gs_eparam_t *plane_axis_v = bgl_effect_param(
+        session->shadow_effect, "planeAxisV");
+    gs_eparam_t *opacity_param = bgl_effect_param(
+        session->shadow_effect, "opacity");
+    gs_eparam_t *alpha_cutoff = bgl_effect_param(
+        session->shadow_effect, "alphaCutoff");
+    gs_eparam_t *point_shadow_param = bgl_effect_param(
+        session->shadow_effect, "pointShadow");
+    gs_eparam_t *point_face_param = bgl_effect_param(
+        session->shadow_effect, "pointShadowFace");
+    gs_eparam_t *point_position_param = bgl_effect_param(
+        session->shadow_effect, "pointLightPosition");
+    gs_eparam_t *point_far_param = bgl_effect_param(
+        session->shadow_effect, "pointShadowFar");
+    if (!image || !matrix || !plane_origin || !plane_axis_u ||
+        !plane_axis_v || !opacity_param || !alpha_cutoff ||
+        !point_shadow_param || !point_face_param || !point_position_param ||
+        !point_far_param) {
+        log_shadow_failure(QStringLiteral("shadow-effect-parameters"));
+        return false;
+    }
+
+    auto begin_shadow_target = [&]() {
+        gs_texrender_reset(shadow_target);
+        if (gs_texrender_begin(shadow_target,
+                               session->shadow_map_width[shadow_slot],
+                               session->shadow_map_height[shadow_slot]))
+            return true;
+        if (!session->shadow_target_uses_rgba16f[shadow_slot]) {
+            gs_texrender_destroy(shadow_target);
+            shadow_target = gs_texrender_create(GS_RGBA16F, GS_Z24_S8);
+            session->shadow_targets[shadow_slot] = shadow_target;
+            session->shadow_target_uses_rgba16f[shadow_slot] =
+                shadow_target != nullptr;
+            if (shadow_target) {
+                gs_texrender_reset(shadow_target);
+                if (gs_texrender_begin(
+                        shadow_target,
+                        session->shadow_map_width[shadow_slot],
+                        session->shadow_map_height[shadow_slot])) {
+                    BGL_LOG_WARNING("Shadows", QStringLiteral(
+                        "stage=target-begin slot=%1 primary=R32F fallback=RGBA16F result=success")
+                        .arg(static_cast<qulonglong>(shadow_slot)));
+                    return true;
+                }
+            }
+        }
+        if (shadow_target) {
+            gs_texrender_destroy(shadow_target);
+            shadow_target = nullptr;
+            session->shadow_targets[shadow_slot] = nullptr;
+        }
+        session->shadow_target_unavailable[shadow_slot] = true;
+        return false;
+    };
+    if (!begin_shadow_target()) {
+        log_shadow_failure(QStringLiteral("target-begin"));
+        return false;
+    }
+    struct vec4 clear_color;
+    vec4_set(&clear_color, 1.0f, 1.0f, 1.0f, 1.0f);
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_enable_blending(false);
+    gs_clear(GS_CLEAR_COLOR | GS_CLEAR_DEPTH | GS_CLEAR_STENCIL,
+             &clear_color, 1.0f, 0);
+    gs_enable_depth_test(true);
+    gs_depth_function(GS_LEQUAL);
+    gs_enable_blending(false);
+    gs_enable_color(true, true, true, true);
+    gs_set_cull_mode(GS_NEITHER);
+    gs_effect_set_float(alpha_cutoff, 0.0039215686f);
+    gs_effect_set_int(point_shadow_param, point_shadow ? 1 : 0);
+    auto set_vec3 = [](gs_eparam_t *destination, const QVector3D &value) {
+        struct vec3 v;
+        vec3_set(&v, value.x(), value.y(), value.z());
+        gs_effect_set_vec3(destination, &v);
+    };
+    set_vec3(point_position_param, light_position);
+    gs_effect_set_float(point_far_param, far_plane);
+    gs_matrix_push();
+    gs_matrix_identity();
+    bool drew = false;
+    auto draw_casters = [&]() {
+        for (const ShadowCaster &caster : casters) {
+            if (!caster.entry || !caster.entry->texture)
+                continue;
+            gs_effect_set_texture(image, caster.entry->texture);
+            set_vec3(plane_origin, caster.origin);
+            set_vec3(plane_axis_u, caster.axis_u);
+            set_vec3(plane_axis_v, caster.axis_v);
+            gs_effect_set_float(opacity_param,
+                                static_cast<float>(caster.opacity));
+            while (gs_effect_loop(session->shadow_effect, "Draw")) {
+                gs_draw_sprite(caster.entry->texture, 0,
+                               caster.entry->width, caster.entry->height);
+                drew = true;
+            }
+        }
+    };
+    if (point_shadow) {
+        const std::array<QVector3D, 6> face_directions {{
+            {1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}}};
+        const std::array<QVector3D, 6> face_ups {{
+            {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f},
+            {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}}};
+        for (std::size_t face = 0; face < face_directions.size(); ++face) {
+            gs_effect_set_int(point_face_param, static_cast<int>(face));
+            gs_set_viewport(static_cast<int>((face % 3u) * map_size),
+                            static_cast<int>((face / 3u) * map_size),
+                            static_cast<int>(map_size),
+                            static_cast<int>(map_size));
+            QMatrix4x4 face_view;
+            face_view.setToIdentity();
+            face_view.lookAt(light_position,
+                light_position + face_directions[face], face_ups[face]);
+            const QMatrix4x4 face_view_projection =
+                light_projection * face_view;
+            session->shadow_point_face_view_projections[shadow_slot][face] =
+                face_view_projection;
+            const struct matrix4 face_matrix_gs = qmatrix4x4_to_gs(
+                face_view_projection);
+            gs_effect_set_matrix4(matrix, &face_matrix_gs);
+            draw_casters();
+        }
+    } else {
+        /* gs_texrender_begin() does not guarantee a clean full-target viewport
+         * after the editor/program compositor or after a previous Point-light
+         * atlas pass changed it. Point shadows explicitly set each cube-face
+         * viewport; Spot and Parallel maps need the same explicit full-map
+         * viewport, otherwise their depth writer can draw into a stale canvas
+         * or atlas sub-rectangle and receivers sample an effectively empty
+         * map. */
+        gs_set_viewport(0, 0,
+                        static_cast<int>(session->shadow_map_width[shadow_slot]),
+                        static_cast<int>(session->shadow_map_height[shadow_slot]));
+        const struct matrix4 shadow_matrix = qmatrix4x4_to_gs(
+            session->shadow_view_projections[shadow_slot]);
+        gs_effect_set_matrix4(matrix, &shadow_matrix);
+        draw_casters();
+    }
+    gs_matrix_pop();
+    gs_enable_color(true, true, true, true);
+    gs_enable_depth_test(false);
+    gs_depth_function(GS_LEQUAL);
+    gs_enable_blending(true);
+    gs_texrender_end(shadow_target);
+    session->shadow_map_valid[shadow_slot] = drew;
+    if (!drew) {
+        log_shadow_failure(QStringLiteral("draw-technique-empty"));
+    } else if (!session->shadow_success_logged[shadow_slot]) {
+        session->shadow_success_logged[shadow_slot] = true;
+        BGL_LOG_INFO("Shadows", QStringLiteral(
+            "stage=map-build slot=%1 result=submitted light=%2 type=%3 casters=%4 receivers=%5 map=%6x%7 near=%8 far=%9 format=%10 writer=%11")
+            .arg(static_cast<qulonglong>(shadow_slot))
+            .arg(QString::fromStdString(shadow_light.name))
+            .arg(static_cast<int>(shadow_light.type))
+            .arg(static_cast<qulonglong>(casters.size()))
+            .arg(static_cast<qulonglong>(receiver_count))
+            .arg(session->shadow_map_width[shadow_slot])
+            .arg(session->shadow_map_height[shadow_slot])
+            .arg(near_plane, 0, 'f', 4)
+            .arg(far_plane, 0, 'f', 4)
+            .arg(session->shadow_target_uses_rgba16f[shadow_slot]
+                     ? QStringLiteral("RGBA16F")
+                     : QStringLiteral("R32F"))
+            .arg(point_shadow
+                     ? QStringLiteral("signed-face-depth")
+                     : QStringLiteral("view-projection-depth")));
+    }
+    return drew;
+}
+
+static bool render_gpu_shadow_maps(TitleGpuRenderSession *session,
+                                   const Title &title, double title_time)
+{
+    if (!session)
+        return false;
+    const uint32_t requested_shadow_map_size = static_cast<uint32_t>(
+        std::clamp(TitlePreferences::shadow_map_size_px(), 256, 4096));
+    if (session->shadow_map_preference_size != requested_shadow_map_size) {
+        session->shadow_map_preference_size = requested_shadow_map_size;
+        for (std::size_t index = 0; index < session->shadow_targets.size(); ++index) {
+            session->shadow_target_unavailable[index] = false;
+            session->shadow_failure_logged[index] = false;
+            session->shadow_success_logged[index] = false;
+            session->shadow_receiver_binding_logged[index] = false;
+        }
+    }
+    for (std::size_t index = 0; index < session->shadow_targets.size(); ++index) {
+        session->shadow_map_valid[index] = false;
+        session->shadow_view_projections[index].setToIdentity();
+        session->shadow_darkness[index] = 0.0f;
+        session->shadow_softness[index] = 0.0f;
+        session->shadow_bias[index] = 0.002f;
+        session->shadow_map_width[index] = 1u;
+        session->shadow_map_height[index] = 1u;
+        session->shadow_map_kind[index] = 0;
+        session->shadow_light_positions[index] = QVector3D();
+        session->shadow_near_plane[index] = 0.01f;
+        session->shadow_far_plane[index] = 1.0f;
+        session->shadow_projection_span_x[index] = 1.0f;
+        session->shadow_projection_span_y[index] = 1.0f;
+        for (QMatrix4x4 &face_matrix :
+             session->shadow_point_face_view_projections[index])
+            face_matrix.setToIdentity();
+    }
+    if (!title.lighting_enabled)
+        return false;
+
+    std::size_t light_slot = 0;
+    bool rendered_any = false;
+    auto append_light = [&](const TitleLight &light) {
+        if (!light.enabled || light_slot >= session->shadow_targets.size())
+            return;
+        const std::size_t current_slot = light_slot++;
+        if (!light.casts_shadows ||
+            (light.type != TitleLightType::Point &&
+             light.type != TitleLightType::Spot &&
+             light.type != TitleLightType::Parallel) ||
+            light.intensity.evaluate(title_time) <= 0.000001)
+            return;
+        rendered_any = render_gpu_shadow_map(
+            session, title, title_time, light, current_slot) || rendered_any;
+    };
+
+    /* Match set_gpu_layer_lighting_params() exactly: visible Light layers
+     * first, then legacy title lights. Disabled lights do not consume a slot;
+     * enabled non-shadow lights do, preserving 1:1 map/light alignment. */
+    for (const auto &light_layer : title.layers) {
+        if (!light_layer || light_layer->type != LayerType::Light ||
+            !light_layer->visible)
+            continue;
+        TitleLight evaluated = light_layer->light;
+        evaluated.enabled = evaluated.enabled && light_layer->visible;
+        evaluated.id = light_layer->id;
+        evaluated.name = light_layer->name;
+        const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(
+            title, *light_layer, title_time);
+        const Vec3Value local_position = evaluated_light_position(
+            evaluated, title_time);
+        const Vec3Value local_target = evaluated_light_target(
+            evaluated, title_time);
+        const QVector3D world_position = world.map(QVector3D(
+            static_cast<float>(local_position.x),
+            static_cast<float>(local_position.y),
+            static_cast<float>(local_position.z)));
+        const QVector3D world_target = world.map(QVector3D(
+            static_cast<float>(local_target.x),
+            static_cast<float>(local_target.y),
+            static_cast<float>(local_target.z)));
+        evaluated.position.static_value = {
+            world_position.x(), world_position.y(), world_position.z()};
+        evaluated.position.keyframes.clear();
+        evaluated.target.static_value = {
+            world_target.x(), world_target.y(), world_target.z()};
+        evaluated.target.keyframes.clear();
+        append_light(evaluated);
+    }
+    for (const TitleLight &light : title.lights)
+        append_light(light);
+    return rendered_any;
+}
+
 static gs_texture_t *render_gpu_session_locked(
     TitleGpuRenderSession *session, gs_texture_t *external_background = nullptr,
     bool isolate_editor_background_from_effects = false)
 {
     if (!session || !session->has_title)
         return nullptr;
+    const uint64_t diagnostic_render_serial =
+        ++session->diagnostics_render_serial;
     const bool destination_composite = external_background != nullptr;
-    if (session->state_transaction_pending.load(std::memory_order_acquire))
+    try {
+    session->diagnostics_hardware_depth_run_count = 0;
+    session->diagnostics_hardware_depth_layer_count = 0;
+    session->diagnostics_extrusion_pass_count = 0;
+    session->last_draw_deferred = false;
+    const bool transaction_pending =
+        session->state_transaction_pending.load(std::memory_order_acquire);
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=session-render-begin session=%1 render=%2 title=%3 time=%4 revision=%5 publishedRevision=%6 dirty=%7 destination=%8 transactionPending=%9 useSubmitted=%10 useGpuFinal=%11 useBase=%12 published=%13")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_render_serial)
+        .arg(QString::fromStdString(session->title.id))
+        .arg(session->time, 0, 'f', 9)
+        .arg(session->model_revision)
+        .arg(session->published_model_revision)
+        .arg(session->frame_dirty ? 1 : 0)
+        .arg(destination_composite ? 1 : 0)
+        .arg(transaction_pending ? 1 : 0)
+        .arg(session->use_submitted_final ? 1 : 0)
+        .arg(session->use_gpu_cached_final ? 1 : 0)
+        .arg(session->use_base_frame ? 1 : 0)
+        .arg(gpu_session_has_published_frame_for_current_title(session) ? 1 : 0));
+    if (transaction_pending) {
+        BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+            "stage=session-render-return session=%1 render=%2 reason=transaction-pending fallbackPublished=%3 time=%4")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(diagnostic_render_serial)
+            .arg(gpu_session_has_published_frame_for_current_title(session) ? 1 : 0)
+            .arg(session->time, 0, 'f', 9));
         return destination_composite
             ? nullptr
             : (gpu_session_has_published_frame_for_current_title(session)
                    ? session->final_texture
                    : nullptr);
+    }
     const double render_scale = session->editor_draft
         ? std::clamp(static_cast<double>(session->preview_quality_scale), 0.25, 1.0)
         : 1.0;
@@ -1873,8 +2638,16 @@ static gs_texture_t *render_gpu_session_locked(
      * OBS sources hit it nondeterministically depending on whether the live
      * first-frame raster happened to finish before the cache token arrived. */
     if (!destination_composite && !session->frame_dirty &&
-        gpu_session_final_matches_model(session))
+        gpu_session_final_matches_model(session)) {
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=session-render-return session=%1 render=%2 reason=clean-published time=%3 revision=%4 publishSerial=%5")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(diagnostic_render_serial)
+            .arg(session->time, 0, 'f', 9)
+            .arg(session->model_revision)
+            .arg(session->diagnostics_publish_serial));
         return session->final_texture;
+    }
 
     if (!destination_composite && session->use_gpu_cached_final) {
         if (!draw_global_gpu_frame_locked(
@@ -1953,14 +2726,20 @@ static gs_texture_t *render_gpu_session_locked(
      * rasters. Validate them transactionally after the full-frame cache paths
      * have had the opportunity to publish their self-contained output. */
     bool all_required_rasters_ready = true;
+    std::size_t diagnostic_required_rasters = 0;
+    std::size_t diagnostic_pending_rasters = 0;
+    std::size_t diagnostic_failed_rasters = 0;
     for (auto &pair : session->layers) {
         /* Scene-mask rasters are an auxiliary output family. They are uploaded
          * on demand by title_gpu_render_session_render_auxiliary_layer() and
          * must never gate the main title frame in OBS. */
         if (is_gpu_scene_mask_raster_id(pair.first))
             continue;
+        ++diagnostic_required_rasters;
         auto &entry = pair.second;
         const bool was_pending = entry.pending_upload;
+        if (was_pending)
+            ++diagnostic_pending_rasters;
         const bool optional_gpu_raster = entry.gpu_text || entry.gpu_primitive;
         /* A null pending image with no primitive is an intentional retirement,
          * not a failed replacement. The upload helper destroys the old texture
@@ -1972,18 +2751,35 @@ static gs_texture_t *render_gpu_session_locked(
                               entry.pending_image.isNull();
         const bool ready = upload_gpu_layer_raster(session, entry);
         if (was_pending && !ready && !retiring) {
+            ++diagnostic_failed_rasters;
+            BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+                "stage=raster-readiness session=%1 render=%2 layer=%3 pending=%4 ready=%5 retiring=%6 gpuText=%7 gpuPrimitive=%8 hasTexture=%9 pendingImage=%10 key=%11")
+                .arg(reinterpret_cast<quintptr>(session), 0, 16)
+                .arg(diagnostic_render_serial)
+                .arg(QString::fromStdString(pair.first))
+                .arg(was_pending ? 1 : 0)
+                .arg(ready ? 1 : 0)
+                .arg(retiring ? 1 : 0)
+                .arg(entry.gpu_text ? 1 : 0)
+                .arg(entry.gpu_primitive ? 1 : 0)
+                .arg(entry.texture ? 1 : 0)
+                .arg(entry.pending_image.isNull() ? 0 : 1)
+                .arg(QString::fromStdString(entry.key).left(160)));
             if (optional_gpu_raster && entry.texture) {
-                /* GPU text and primitive rasters are accelerators. A failure
-                 * must never suppress an already-visible complete title. Their
-                 * render helpers invalidate the layer key and request a
-                 * compatibility rebuild; publish all other ready layers while
-                 * retaining the last valid optional texture. */
+                /* A retained accelerator texture belongs to an older model
+                 * generation. Treating it as ready silently publishes a stale
+                 * layer while the playhead continues, which is especially
+                 * visible after a transient glyph-buffer failure. Preserve the
+                 * last complete compositor frame, but expose this draw as
+                 * deferred so the editor immediately rebuilds the exact CPU
+                 * compatibility raster for the current time. */
                 BGL_LOG_WARNING("GpuPipeline", QStringLiteral(
-                    "stage=optional-raster-fail-open layer=%1 kind=%2 retainedTexture=%3")
+                    "stage=optional-raster-defer layer=%1 kind=%2 retainedTexture=%3")
                     .arg(QString::fromStdString(pair.first))
                     .arg(entry.text_layer ? QStringLiteral("text")
                                           : QStringLiteral("primitive"))
                     .arg(entry.texture ? 1 : 0));
+                all_required_rasters_ready = false;
             } else {
                 /* Development Version 248: on a fresh editor session there may
                  * be no retained texture yet. Publishing anyway produces a
@@ -1995,11 +2791,22 @@ static gs_texture_t *render_gpu_session_locked(
         }
     }
 
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=raster-readiness-summary session=%1 render=%2 time=%3 required=%4 pending=%5 failed=%6 allReady=%7")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_render_serial)
+        .arg(session->time, 0, 'f', 9)
+        .arg(diagnostic_required_rasters)
+        .arg(diagnostic_pending_rasters)
+        .arg(diagnostic_failed_rasters)
+        .arg(all_required_rasters_ready ? 1 : 0));
+
     /* Live frame publication remains transactional for the first frame as well
      * as later replacements. A same-title complete frame may remain visible
      * while live rasters retry; a new session/title returns no texture. */
     if (!all_required_rasters_ready) {
         session->frame_dirty = true;
+        session->last_draw_deferred = true;
         session->last_error =
             "GPU raster set is incomplete; frame publication deferred.";
         BGL_LOG_DEBUG("GpuPipeline", QStringLiteral(
@@ -2012,6 +2819,13 @@ static gs_texture_t *render_gpu_session_locked(
         return gpu_session_has_published_frame_for_current_title(session)
             ? session->final_texture : nullptr;
     }
+
+    /* Shadow-map failure is deliberately fail-open: lighting remains active
+     * and the established compositor still publishes a complete frame.
+     * Transform-only editor updates already retain every resident layer
+     * raster, so rebuilding just the GPU depth atlases here is the exact and
+     * inexpensive path needed for shadows to follow 2D/3D drags in real time. */
+    (void)render_gpu_shadow_maps(session, session->title, session->time);
 
     if (!destination_composite && session->use_base_frame &&
         !session->use_gpu_cached_base &&
@@ -2132,6 +2946,7 @@ static gs_texture_t *render_gpu_session_locked(
         std::size_t writer_count = 0;
         std::size_t read_only_count = 0;
         std::size_t transparent_count = 0;
+        std::size_t self_depth_geometry_count = 0;
     };
     std::unordered_map<std::size_t, HardwareDepthRun> hardware_depth_runs;
     std::size_t depth_cursor = 0;
@@ -2198,16 +3013,50 @@ static gs_texture_t *render_gpu_session_locked(
             if (bgs::transform3d::hardware_depth_transparent_candidate(
                     session->title, *candidate, session->time))
                 ++run.transparent_count;
+            if (gpu_layer_requires_self_depth_geometry(
+                    session->title, *candidate, session->time))
+                ++run.self_depth_geometry_count;
             ++run_cursor;
         }
-        /* One persistent writer can occlude any later plane. A transparent-
-         * only run is also useful when at least two planes need deterministic
-         * far-to-near compositing, even if neither persists depth. */
-        if (run.layers.size() >= 2 &&
-            (run.writer_count >= 1 || run.transparent_count >= 2))
+        /* Keep one- and multi-layer 3D scenes on the identical native camera
+         * path. The hardware run supports a single writer/read-only plane and
+         * preserves exact back-face and Y-rotation semantics. */
+        if (!run.layers.empty())
             hardware_depth_runs.emplace(run.indices.front(), std::move(run));
         depth_cursor = std::max(depth_cursor + 1, run_cursor);
     }
+
+    session->diagnostics_hardware_depth_run_count = hardware_depth_runs.size();
+    session->diagnostics_hardware_depth_layer_count = 0;
+    for (const auto &pair : hardware_depth_runs) {
+        const HardwareDepthRun &run = pair.second;
+        session->diagnostics_hardware_depth_layer_count += run.layers.size();
+        QStringList layer_ids;
+        for (const Layer *member : run.layers) {
+            if (member)
+                layer_ids.push_back(QString::fromStdString(member->id));
+        }
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=depth-run-built session=%1 render=%2 time=%3 rootIndex=%4 layers=%5 writers=%6 readOnly=%7 transparent=%8 selfGeometry=%9 ids=%10")
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(diagnostic_render_serial)
+            .arg(session->time, 0, 'f', 9)
+            .arg(pair.first)
+            .arg(run.layers.size())
+            .arg(run.writer_count)
+            .arg(run.read_only_count)
+            .arg(run.transparent_count)
+            .arg(run.self_depth_geometry_count)
+            .arg(layer_ids.join(QStringLiteral(","))));
+    }
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=depth-run-summary session=%1 render=%2 time=%3 orderedRoots=%4 runs=%5 layers=%6")
+        .arg(reinterpret_cast<quintptr>(session), 0, 16)
+        .arg(diagnostic_render_serial)
+        .arg(session->time, 0, 'f', 9)
+        .arg(ordered_root_indices.size())
+        .arg(session->diagnostics_hardware_depth_run_count)
+        .arg(session->diagnostics_hardware_depth_layer_count));
 
     std::unordered_set<std::size_t> rendered_hardware_depth_layers;
     for (std::size_t index : ordered_root_indices) {
@@ -2219,12 +3068,28 @@ static gs_texture_t *render_gpu_session_locked(
             if (gs_texture_t *depth_frame = render_gpu_hardware_depth_run(
                     session, session->title, depth_run->second.layers,
                     session->time, frame)) {
+                BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+                    "stage=depth-run-render session=%1 render=%2 rootIndex=%3 result=ok layers=%4 extrusionPasses=%5")
+                    .arg(reinterpret_cast<quintptr>(session), 0, 16)
+                    .arg(diagnostic_render_serial)
+                    .arg(index)
+                    .arg(depth_run->second.layers.size())
+                    .arg(session->diagnostics_extrusion_pass_count));
                 frame = depth_frame;
                 rendered_hardware_depth_layers.insert(
                     depth_run->second.indices.begin(),
                     depth_run->second.indices.end());
                 continue;
             }
+            BGL_LOG_WARNING("RenderDiagnostics", QStringLiteral(
+                "stage=depth-run-render session=%1 render=%2 rootIndex=%3 result=failed layers=%4 error=%5")
+                .arg(reinterpret_cast<quintptr>(session), 0, 16)
+                .arg(diagnostic_render_serial)
+                .arg(index)
+                .arg(depth_run->second.layers.size())
+                .arg(session->last_error
+                         ? QString::fromUtf8(session->last_error)
+                         : QStringLiteral("none")));
         }
         const auto &layer_ptr = session->title.layers[index];
         if (!layer_ptr)
@@ -2292,4 +3157,3 @@ static gs_texture_t *render_gpu_session_locked(
             }
             if (has_group_backdrop_effect && !group_silhouette)
                 group_silhouette = foreground;
-

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numeric>
 #include <set>
 #include <unordered_set>
 #include <vector>
@@ -119,14 +120,14 @@ QMatrix4x4 local_matrix(const Title &title, const Layer &layer, double title_tim
                      static_cast<float>(p.y + transition.translate_y),
                      static_cast<float>(p.z));
 
-    /* Orientation establishes the local axes; the per-axis rotations are then
-     * applied in stable Z/Y/X order. Existing rotation remains Z rotation. */
-    result.rotate(static_cast<float>(rotation.z), 0.0f, 0.0f, 1.0f);
-    result.rotate(static_cast<float>(rotation.y), 0.0f, 1.0f, 0.0f);
-    result.rotate(static_cast<float>(rotation.x), 1.0f, 0.0f, 0.0f);
+    /* Orientation establishes the layer's base local axes. Rotation is then
+     * applied inside that oriented basis in stable Z/Y/X Euler order. */
     result.rotate(static_cast<float>(orientation.z), 0.0f, 0.0f, 1.0f);
     result.rotate(static_cast<float>(orientation.y), 0.0f, 1.0f, 0.0f);
     result.rotate(static_cast<float>(orientation.x), 1.0f, 0.0f, 0.0f);
+    result.rotate(static_cast<float>(rotation.z), 0.0f, 0.0f, 1.0f);
+    result.rotate(static_cast<float>(rotation.y), 0.0f, 1.0f, 0.0f);
+    result.rotate(static_cast<float>(rotation.x), 1.0f, 0.0f, 0.0f);
     result.scale(static_cast<float>(s.x * transition.scale),
                  static_cast<float>(s.y * transition.scale),
                  static_cast<float>(s.z * transition.scale));
@@ -258,14 +259,17 @@ struct CameraMatrices {
 };
 
 CameraMatrices camera_matrices(const Title &title, const TitleCamera &camera,
-                               double title_time)
+                               double title_time, int canvas_width = 0,
+                               int canvas_height = 0,
+                               double coordinate_offset_x = 0.0,
+                               double coordinate_offset_y = 0.0)
 {
     CameraMatrices result;
     result.view.setToIdentity();
     result.projection.setToIdentity();
 
-    const double w = std::max(1, title.width);
-    const double h = std::max(1, title.height);
+    const double w = std::max(1, canvas_width > 0 ? canvas_width : title.width);
+    const double h = std::max(1, canvas_height > 0 ? canvas_height : title.height);
     const double t = std::max(0.0, title_time);
     const double authored_focal = std::max(1.0, camera.focal_length.evaluate(t));
     const double zoom = std::max(0.0001, camera.zoom.evaluate(t));
@@ -289,6 +293,10 @@ CameraMatrices camera_matrices(const Title &title, const TitleCamera &camera,
                            static_cast<float>(target_value.y),
                            static_cast<float>(target_value.z));
     }
+    position -= QVector3D(static_cast<float>(coordinate_offset_x),
+                          static_cast<float>(coordinate_offset_y), 0.0f);
+    target -= QVector3D(static_cast<float>(coordinate_offset_x),
+                        static_cast<float>(coordinate_offset_y), 0.0f);
 
     QVector3D forward = target - position;
     if (forward.lengthSquared() < kEpsilon)
@@ -417,6 +425,16 @@ bool camera_animated(const TitleCamera &camera)
            scalar_animated(camera.projection_mode);
 }
 
+const Layer *isolated_asset_owner(const Title &title, const Layer &layer)
+{
+    if (layer.asset_owner_id.empty())
+        return nullptr;
+    const Layer *owner = find_layer(title, layer.asset_owner_id);
+    return owner && owner->type == LayerType::Asset &&
+                   owner->asset_isolated_3d_space
+        ? owner : nullptr;
+}
+
 bool evaluated_effect_enabled_3d(const LayerEffect &effect, double local_time)
 {
     return effect.enabled_prop.is_animated()
@@ -441,6 +459,7 @@ bool simple_planar_3d_candidate(const Title &title, const Layer &layer,
         !layer_or_ancestor_uses_3d(title, layer) ||
         layer.depth_mode != LayerDepthMode::Automatic ||
         layer.type == LayerType::Adjustment ||
+        layer.type == LayerType::Empty ||
         layer.type == LayerType::TransitionInput ||
         layer_type_is_container(layer.type))
         return false;
@@ -499,6 +518,7 @@ bool depth_sort_candidate(const Title &title, const Layer &layer,
         !layer_or_ancestor_uses_3d(title, layer) ||
         layer.depth_mode != LayerDepthMode::Automatic ||
         layer.type == LayerType::Adjustment ||
+        layer.type == LayerType::Empty ||
         layer.type == LayerType::TransitionInput ||
         layer_type_is_container(layer.type))
         return false;
@@ -513,7 +533,8 @@ bool depth_sort_candidate(const Title &title, const Layer &layer,
 std::string effective_camera_id(const Title &title, const Layer &layer,
                                 double title_time)
 {
-    if (!title.render_camera_override_id.empty())
+    if (!isolated_asset_owner(title, layer) &&
+        !title.render_camera_override_id.empty())
         return title.render_camera_override_id;
     const std::string assigned = resolved_layer_camera_id(title, layer, title_time);
     return assigned.empty() ? resolved_active_camera_id(title, title_time) : assigned;
@@ -609,7 +630,9 @@ bool title_camera_has_animation(const Title &title)
 bool layer_passes_backface_culling(const Title &title, const Layer &layer,
                                    double title_time)
 {
-    if (!layer.backface_culling || layer.double_sided ||
+    /* Double-sided and disabled-culling surfaces remain visible from either
+     * side for every planar artwork type, including Text/Clock/Ticker. */
+    if ((!layer.backface_culling || layer.double_sided) ||
         !layer_or_ancestor_uses_3d(title, layer))
         return true;
     const EvaluatedTransform transform = evaluate(title, layer, title_time);
@@ -629,7 +652,12 @@ bool hardware_depth_candidate(const Title &title, const Layer &layer,
      * they must read the destination color. Normal-blend layers can enter the
      * hardware Z pass even when they have a projected track matte or a padded
      * layer-space effect stack. */
-    return layer.blend_mode == EffectBlendMode::Normal &&
+    /* Isolated Asset Layers use a two-stage projection: authored 3D first,
+     * host placement second. OBS' single model-view hardware-depth pass cannot
+     * represent that composition boundary, so these planes use the ordered
+     * projected compositor within the asset instead. */
+    return !isolated_asset_owner(title, layer) &&
+           layer.blend_mode == EffectBlendMode::Normal &&
            (layer.depth_test || layer.write_to_depth) &&
            depth_compositor_surface_candidate(title, layer, title_time);
 }
@@ -704,7 +732,9 @@ std::string resolved_layer_camera_id(const Title &title, const Layer &layer,
 {
     if (!layer.camera_assignment.is_animated())
         return layer.camera_id;
-    const double t = local_time(title, layer, title_time);
+    const double t = layer.asset_camera_uses_owner_time
+        ? resolved_layer_time(title, layer, title_time)
+        : local_time(title, layer, title_time);
     const std::string evaluated = layer.camera_assignment.evaluate(t);
     return evaluated.empty() ? layer.camera_id : evaluated;
 }
@@ -761,6 +791,138 @@ bool camera_render_state(const Title &title, double title_time,
     return true;
 }
 
+namespace {
+
+struct LayerProjectionPoint {
+    QPointF canvas;
+    QVector3D camera_position;
+    double camera_depth = 0.0;
+};
+
+const TitleCamera *asset_space_camera(const Title &title,
+                                      const Layer &asset_owner,
+                                      const std::string &camera_id)
+{
+    if (!camera_id.empty()) {
+        for (const TitleCamera &camera : title.cameras) {
+            /* Duplicated Asset Layers may intentionally share the same hidden
+             * immutable camera snapshot. The explicit assignment is
+             * authoritative; the owner tag supplies fallback lookup and UI
+             * hiding, not camera identity. */
+            if (camera.id == camera_id &&
+                !camera.asset_space_owner_id.empty())
+                return &camera;
+        }
+    }
+    for (const TitleCamera &camera : title.cameras) {
+        if (camera.asset_space_owner_id == asset_owner.id)
+            return &camera;
+    }
+    return nullptr;
+}
+
+bool project_layer_local_point_impl(
+    const Title &title, const Layer &layer, double title_time,
+    const QVector3D &local_point, LayerProjectionPoint &result,
+    std::unordered_set<std::string> &visiting_assets)
+{
+    if (const Layer *asset_owner = isolated_asset_owner(title, layer)) {
+        if (!visiting_assets.insert(asset_owner->id).second)
+            return false;
+
+        bool invertible = false;
+        const QMatrix4x4 owner_inverse = world_matrix(
+            title, *asset_owner, title_time).inverted(&invertible);
+        if (!invertible) {
+            visiting_assets.erase(asset_owner->id);
+            return false;
+        }
+        const QMatrix4x4 relative_world = owner_inverse *
+            world_matrix(title, layer, title_time);
+        const double camera_time = resolved_layer_time(title, layer, title_time);
+        const std::string camera_id = resolved_layer_camera_id(
+            title, layer, title_time);
+        TitleCamera fallback;
+        const TitleCamera *camera = asset_space_camera(
+            title, *asset_owner, camera_id);
+        if (!camera)
+            camera = &fallback;
+        const int source_width = std::max(1, asset_owner->asset_space_width);
+        const int source_height = std::max(1, asset_owner->asset_space_height);
+        const CameraMatrices matrices = camera_matrices(
+            title, *camera, camera_time, source_width, source_height,
+            asset_owner->asset_space_center_x,
+            asset_owner->asset_space_center_y);
+        const QVector3D asset_world_point = relative_world.map(local_point);
+        QPointF source_point;
+        double source_depth = 0.0;
+        if (!project_point(matrices.projection * matrices.view,
+                           asset_world_point, source_width, source_height,
+                           source_point, &source_depth)) {
+            visiting_assets.erase(asset_owner->id);
+            return false;
+        }
+
+        const QVector3D owner_local_point(
+            static_cast<float>(source_point.x() -
+                               asset_owner->asset_space_center_x),
+            static_cast<float>(source_point.y() -
+                               asset_owner->asset_space_center_y),
+            0.0f);
+        LayerProjectionPoint placed;
+        const bool projected = project_layer_local_point_impl(
+            title, *asset_owner, title_time, owner_local_point,
+            placed, visiting_assets);
+        visiting_assets.erase(asset_owner->id);
+        if (!projected)
+            return false;
+        result = placed;
+        /* Sibling order inside this asset is determined exclusively by its
+         * authored camera, not by the host title camera or placement. */
+        result.camera_depth = source_depth;
+        result.camera_position = matrices.position;
+        return true;
+    }
+
+    const QMatrix4x4 world = world_matrix(title, layer, title_time);
+    const QVector3D world_point = world.map(local_point);
+    if (!layer_or_ancestor_uses_3d(title, layer)) {
+        result.canvas = QPointF(world_point.x(), world_point.y());
+        result.camera_depth = world_point.z();
+        result.camera_position = QVector3D();
+        return std::isfinite(result.canvas.x()) &&
+               std::isfinite(result.canvas.y());
+    }
+
+    TitleCamera fallback;
+    const std::string requested = !title.render_camera_override_id.empty()
+        ? title.render_camera_override_id
+        : resolved_layer_camera_id(title, layer, title_time);
+    const TitleCamera *camera = active_camera(
+        title, requested, title_time);
+    if (!camera)
+        camera = &fallback;
+    const CameraMatrices matrices = camera_matrices(
+        title, *camera, title_time);
+    result.camera_position = matrices.position;
+    return project_point(matrices.projection * matrices.view, world_point,
+                         title.width, title.height, result.canvas,
+                         &result.camera_depth);
+}
+
+bool project_layer_local_point(const Title &title, const Layer &layer,
+                               double title_time,
+                               const QVector3D &local_point,
+                               LayerProjectionPoint &result)
+{
+    std::unordered_set<std::string> visiting_assets;
+    return project_layer_local_point_impl(title, layer, title_time,
+                                          local_point, result,
+                                          visiting_assets);
+}
+
+} // namespace
+
 EvaluatedTransform evaluate(const Title &title, const Layer &layer,
                             double title_time)
 {
@@ -769,6 +931,75 @@ EvaluatedTransform evaluate(const Title &title, const Layer &layer,
     result.inherited_3d = layer_or_ancestor_uses_3d(title, layer);
     if (!result.inherited_3d || !layer_supports_3d(layer))
         return result;
+
+    if (isolated_asset_owner(title, layer)) {
+        const std::array<QVector3D, 4> local_points = {
+            QVector3D(0.0f, 0.0f, 0.0f),
+            QVector3D(1.0f, 0.0f, 0.0f),
+            QVector3D(1.0f, 1.0f, 0.0f),
+            QVector3D(0.0f, 1.0f, 0.0f)};
+        std::array<LayerProjectionPoint, 4> projected_points;
+        for (std::size_t index = 0; index < local_points.size(); ++index) {
+            if (!project_layer_local_point(title, layer, title_time,
+                                           local_points[index],
+                                           projected_points[index]))
+                return result;
+        }
+        const bool entirely_before_near = std::all_of(
+            projected_points.begin(), projected_points.end(),
+            [](const LayerProjectionPoint &point) {
+                return point.camera_depth < -1.0;
+            });
+        const bool entirely_beyond_far = std::all_of(
+            projected_points.begin(), projected_points.end(),
+            [](const LayerProjectionPoint &point) {
+                return point.camera_depth > 1.0;
+            });
+        if (entirely_before_near || entirely_beyond_far)
+            return result;
+
+        QPolygonF source;
+        source << QPointF(0.0, 0.0) << QPointF(1.0, 0.0)
+               << QPointF(1.0, 1.0) << QPointF(0.0, 1.0);
+        QPolygonF destination;
+        for (const LayerProjectionPoint &point : projected_points)
+            destination << point.canvas;
+        result.projectable = QTransform::quadToQuad(
+            source, destination, result.projected);
+        result.world = world_matrix(title, layer, title_time);
+        if (const Layer *owner = isolated_asset_owner(title, layer)) {
+            result.camera_position = world_matrix(
+                title, *owner, title_time).map(
+                    projected_points.front().camera_position);
+        } else {
+            result.camera_position = projected_points.front().camera_position;
+        }
+        result.camera_depth = std::accumulate(
+            projected_points.begin(), projected_points.end(), 0.0,
+            [](double total, const LayerProjectionPoint &point) {
+                return total + point.camera_depth;
+            }) * 0.25;
+        const QPointF &q00 = projected_points[0].canvas;
+        const QPointF &q10 = projected_points[1].canvas;
+        const QPointF &q01 = projected_points[3].canvas;
+        result.projected_winding =
+            (q10.x() - q00.x()) * (q01.y() - q00.y()) -
+            (q10.y() - q00.y()) * (q01.x() - q00.x());
+        result.front_facing = result.projected_winding >= -kEpsilon;
+        const QVector3D p00 = result.world.map(
+            QVector3D(0.0f, 0.0f, 0.0f));
+        const QVector3D p10 = result.world.map(
+            QVector3D(1.0f, 0.0f, 0.0f));
+        const QVector3D p01 = result.world.map(
+            QVector3D(0.0f, 1.0f, 0.0f));
+        QVector3D normal = QVector3D::crossProduct(p01 - p00, p10 - p00);
+        if (normal.lengthSquared() > kEpsilon)
+            normal.normalize();
+        else
+            normal = QVector3D(0.0f, 0.0f, -1.0f);
+        result.world_normal = normal;
+        return result;
+    }
 
     result.world = world_matrix(title, layer, title_time);
     TitleCamera fallback;
@@ -919,6 +1150,21 @@ bool layer_local_clip_point(const Title &title, const Layer &layer,
     if (!layer_supports_3d(layer) ||
         !layer_or_ancestor_uses_3d(title, layer))
         return false;
+    if (isolated_asset_owner(title, layer)) {
+        LayerProjectionPoint projected;
+        if (!project_layer_local_point(title, layer, title_time,
+                                       local_point, projected))
+            return false;
+        const double width = std::max(1, title.width);
+        const double height = std::max(1, title.height);
+        clip_point = QVector4D(
+            static_cast<float>(2.0 * projected.canvas.x() / width - 1.0),
+            static_cast<float>(1.0 - 2.0 * projected.canvas.y() / height),
+            static_cast<float>(projected.camera_depth), 1.0f);
+        return std::isfinite(clip_point.x()) &&
+               std::isfinite(clip_point.y()) &&
+               std::isfinite(clip_point.z());
+    }
     TitleCamera fallback;
     const std::string requested = !title.render_camera_override_id.empty()
         ? title.render_camera_override_id
@@ -945,6 +1191,23 @@ bool projected_local_quad_transform(
         !layer_supports_3d(layer) ||
         !layer_or_ancestor_uses_3d(title, layer))
         return false;
+
+    if (isolated_asset_owner(title, layer)) {
+        QPolygonF canvas_quad;
+        canvas_quad.reserve(4);
+        for (const QPointF &point : local_quad) {
+            LayerProjectionPoint projected;
+            if (!project_layer_local_point(
+                    title, layer, title_time,
+                    QVector3D(static_cast<float>(point.x()),
+                              static_cast<float>(point.y()), 0.0f),
+                    projected))
+                return false;
+            canvas_quad << projected.canvas;
+        }
+        return QTransform::quadToQuad(source_quad, canvas_quad,
+                                      source_to_canvas);
+    }
 
     TitleCamera fallback;
     const std::string requested = !title.render_camera_override_id.empty()
@@ -1008,6 +1271,29 @@ bool projected_local_polygon(const Title &title, const Layer &layer,
     if (local_polygon.size() < 3 || !layer_supports_3d(layer) ||
         !layer_or_ancestor_uses_3d(title, layer))
         return false;
+
+    if (isolated_asset_owner(title, layer)) {
+        QPolygonF canvas_polygon;
+        canvas_polygon.reserve(local_polygon.size());
+        for (const QPointF &point : local_polygon) {
+            LayerProjectionPoint projected;
+            if (!project_layer_local_point(
+                    title, layer, title_time,
+                    QVector3D(static_cast<float>(point.x()),
+                              static_cast<float>(point.y()), 0.0f),
+                    projected))
+                return false;
+            canvas_polygon << projected.canvas;
+        }
+        canvas_bounds = canvas_polygon.boundingRect();
+        if (clipped_polygon)
+            *clipped_polygon = canvas_polygon;
+        return canvas_bounds.isValid() &&
+               std::isfinite(canvas_bounds.left()) &&
+               std::isfinite(canvas_bounds.top()) &&
+               std::isfinite(canvas_bounds.right()) &&
+               std::isfinite(canvas_bounds.bottom());
+    }
 
     TitleCamera fallback;
     const std::string requested = !title.render_camera_override_id.empty()

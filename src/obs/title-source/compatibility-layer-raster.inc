@@ -95,7 +95,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
                     pen.setJoinStyle(Qt::MiterJoin);
                     painter.setBrush(Qt::NoBrush);
                     painter.setPen(pen);
-                    painter.drawPath(bg_path);
+                    painter.drawPath(apply_layer_trim_paths(layer, t, bg_path));
                 }
             }
         }
@@ -214,10 +214,16 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         painter.drawPath(text_path);
     };
 
+    const std::vector<QPainterPath> exact_stroke_paths =
+        has_rich_text && exact_rich_text.valid
+            ? exact_rich_text_stroke_paths(exact_rich_text, layer, t)
+            : std::vector<QPainterPath>{};
     auto draw_rich_stroke_phase = [&](bool on_front) {
         if (has_rich_text && exact_rich_text.valid) {
             draw_exact_rich_text_strokes(
-                painter, exact_rich_text, text_rect, on_front);
+                painter, exact_rich_text, text_rect, layer, t, on_front,
+                0, std::numeric_limits<size_t>::max(), QPointF(),
+                &exact_stroke_paths);
             return;
         }
         if (!has_rich_text || !rich_document)
@@ -259,7 +265,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
             text_ink_clip_pad, text_ink_clip_pad));
         stroke_painter.setPen(outline_pen);
         stroke_painter.setBrush(Qt::NoBrush);
-        stroke_painter.drawPath(text_path);
+        stroke_painter.drawPath(apply_layer_trim_paths(layer, t, text_path));
         stroke_painter.end();
 
         if (alignment != 1) {
@@ -376,6 +382,9 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     apply_layer_transition_clip(cr, layer, title_time, x, y, w, h);
     cairo_translate(cr, x, y);
 
+    const QPainterPath shape_path = painter_layer_shape_path(layer, w, h);
+    const QPainterPath stroke_shape_path = apply_layer_trim_paths(layer, t, shape_path);
+
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         const int mw = std::max(1, (int)std::ceil(w));
@@ -386,13 +395,12 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
         mp.setRenderHint(QPainter::Antialiasing, true);
         mp.setPen(Qt::NoPen);
         mp.setBrush(Qt::white);
-        QPainterPath shape_path = painter_layer_shape_path(layer, w, h);
         if (layer.shape_type == ShapeType::Line) {
             QPen pen(Qt::white, std::max(1.0, eval_outline_width(layer, t)), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
             mp.setPen(pen);
             mp.setBrush(Qt::NoBrush);
         }
-        mp.drawPath(shape_path);
+        mp.drawPath(layer.shape_type == ShapeType::Line ? stroke_shape_path : shape_path);
         mp.end();
         const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14")
             .arg((int)layer.shape_type).arg(mw).arg(mh)
@@ -405,7 +413,9 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
             .arg(layer.shape_inner_radius, 0, 'f', 4)
             .arg(layer.shape_outer_radius, 0, 'f', 4)
             .arg(layer.shape_roundness, 0, 'f', 2)
-            .arg(layer.shape_inner_roundness, 0, 'f', 2) + QStringLiteral("|") + bgs::path_geometry_signature(layer);
+            .arg(layer.shape_inner_roundness, 0, 'f', 2) + QStringLiteral("|") +
+            bgs::path_geometry_signature(layer) + QStringLiteral("|") +
+            image_content_hash(mask);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
         paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
     }
@@ -425,35 +435,38 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
         cairo_set_antialias(cr, outline_cairo_antialias(layer));
         cairo_set_line_join(cr, outline_cairo_join_style(layer));
 
+        if (stroke_shape_path.isEmpty()) {
+            cairo_restore(cr);
+            return;
+        }
         if (alignment == 0) {
             // Outer stroke: render a double-width centered stroke into a group,
-            // then remove the object's interior from the group.
+            // then remove the original object's interior from the group.
             cairo_push_group(cr);
-            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_append_qpainter_path(cr, stroke_shape_path, false);
             cairo_set_line_width(cr, outline_width * 2.0);
             cairo_pattern_t *pattern = set_stroke_source();
             cairo_stroke(cr);
             if (pattern) cairo_pattern_destroy(pattern);
             cairo_set_operator(cr, CAIRO_OPERATOR_DEST_OUT);
-            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_append_qpainter_path(cr, shape_path, true);
             cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
             cairo_fill(cr);
             cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
             cairo_pop_group_to_source(cr);
             cairo_paint(cr);
         } else if (alignment == 2) {
-            // Inner stroke: clip to the object's interior and use a double-width
-            // centered stroke so the visible half has the requested width.
-            cairo_add_layer_shape(cr, layer, w, h);
+            // Inner stroke: clip to the original object's interior.
+            cairo_append_qpainter_path(cr, shape_path, true);
             cairo_clip(cr);
-            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_append_qpainter_path(cr, stroke_shape_path, false);
             cairo_set_line_width(cr, outline_width * 2.0);
             cairo_pattern_t *pattern = set_stroke_source();
             cairo_stroke(cr);
             if (pattern) cairo_pattern_destroy(pattern);
         } else {
             // Mid stroke: Cairo's native centered stroke.
-            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_append_qpainter_path(cr, stroke_shape_path, false);
             cairo_set_line_width(cr, outline_width);
             cairo_pattern_t *pattern = set_stroke_source();
             cairo_stroke(cr);

@@ -7,18 +7,19 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_version_and_cache_revision_are_281():
-    assert 'set(OBS_BGS_DEVELOPMENT_VERSION "281")' in read('CMakeLists.txt')
-    assert '#define BGL_DEVELOPMENT_VERSION "281"' in read('src/core/build-info.h')
-    assert '|gpu-text-pipeline=281' in read('src/obs/title-source/source-lifecycle-playback.inc')
+def test_development_281_release_notes_are_preserved():
+    changelog = read('docs/CHANGELOG.md')
+    assert '# v0.8.12-alpha — Development Version 281' in changelog
+    assert 'continuous static strokes and restored text transitions' in changelog
 
 
 def test_static_exact_strokes_are_not_clipped_to_every_cluster_advance():
     source = read('src/obs/title-source/compatibility-text-rendering.inc')
     assert 'piece.clip_required = run.split_ligature || split_paint_cluster;' in source
     assert 'if (piece.clip_required)' in source
-    assert 'continuous_path.addPath(piece.path);' in source
+    assert 'continuous_path.addPath(stroke_path);' in source
     assert 'stroke_painter.drawPath(continuous_path);' in source
+    assert 'apply_layer_trim_paths_partitioned' in source
     assert 'continuous_mask.addPath(piece.path);' in source
 
 
@@ -44,6 +45,6 @@ def test_exact_compatibility_animator_builds_isolated_glyph_units():
 
 def test_release_notes_describe_both_regressions():
     changelog = read('docs/CHANGELOG.md')
-    assert changelog.startswith('# v0.8.12-alpha — Development Version 281')
+    assert '# v0.8.12-alpha — Development Version 281' in changelog
     assert 'invisible neighbouring character box' in changelog
     assert 'transition-managed and manually animated stroked text' in changelog

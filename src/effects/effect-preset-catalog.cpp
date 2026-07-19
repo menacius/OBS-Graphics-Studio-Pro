@@ -157,6 +157,10 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_stroke_color = json_color(p, "strokeColor", effect.effect_stroke_color);
     effect.effect_stroke_width = static_cast<float>(number("strokeWidth", effect.effect_stroke_width));
     effect.effect_stroke_opacity = static_cast<float>(number("strokeOpacity", effect.effect_stroke_opacity));
+    effect.effect_trim_start = static_cast<float>(number("start", effect.effect_trim_start));
+    effect.effect_trim_end = static_cast<float>(number("end", effect.effect_trim_end));
+    effect.effect_trim_offset = static_cast<float>(number("trimOffset", effect.effect_trim_offset));
+    effect.effect_trim_multiple_shapes = integer("trimMultipleShapes", effect.effect_trim_multiple_shapes);
     effect.effect_padding_left = static_cast<float>(number("paddingLeft", effect.effect_padding_left));
     effect.effect_padding_right = static_cast<float>(number("paddingRight", effect.effect_padding_right));
     effect.effect_padding_top = static_cast<float>(number("paddingTop", effect.effect_padding_top));
@@ -202,6 +206,10 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_corner_type = std::clamp(effect.effect_corner_type, 0, 3);
     effect.effect_stroke_width = finite_clamp(effect.effect_stroke_width, 0.0f, 1000.0f, 0.0f);
     effect.effect_stroke_opacity = finite_clamp(effect.effect_stroke_opacity, 0.0f, 1.0f, 1.0f);
+    effect.effect_trim_start = finite_clamp(effect.effect_trim_start, 0.0f, 100.0f, 0.0f);
+    effect.effect_trim_end = finite_clamp(effect.effect_trim_end, 0.0f, 100.0f, 100.0f);
+    effect.effect_trim_offset = std::isfinite(effect.effect_trim_offset) ? effect.effect_trim_offset : 0.0f;
+    effect.effect_trim_multiple_shapes = std::clamp(effect.effect_trim_multiple_shapes, 0, 1);
     effect.effect_padding_left = finite_clamp(effect.effect_padding_left, -1000.0f, 1000.0f, 0.0f);
     effect.effect_padding_right = finite_clamp(effect.effect_padding_right, -1000.0f, 1000.0f, 0.0f);
     effect.effect_padding_top = finite_clamp(effect.effect_padding_top, -1000.0f, 1000.0f, 0.0f);
@@ -300,6 +308,9 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.spread_prop.static_value = effect.effect_spread;
     effect.falloff_prop.static_value = effect.effect_falloff;
     effect.stroke_width_prop.static_value = effect.effect_stroke_width;
+    effect.trim_start_prop.static_value = effect.effect_trim_start;
+    effect.trim_end_prop.static_value = effect.effect_trim_end;
+    effect.trim_offset_prop.static_value = effect.effect_trim_offset;
     effect.stroke_opacity_prop.static_value = effect.effect_stroke_opacity;
     effect.padding_left_prop.static_value = effect.effect_padding_left;
     effect.padding_right_prop.static_value = effect.effect_padding_right;
@@ -355,6 +366,12 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
     effect.enabled_prop.static_value = 1.0;
 
     switch (type) {
+    case LayerEffectType::TrimPaths:
+        effect.effect_trim_start = 0.0f;
+        effect.effect_trim_end = 100.0f;
+        effect.effect_trim_offset = 0.0f;
+        effect.effect_trim_multiple_shapes = 0;
+        break;
     case LayerEffectType::BackgroundColor:
         effect.effect_color = 0xFF000000;
         effect.effect_opacity = 0.35f;
@@ -763,6 +780,9 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
     effect.center_y_prop.static_value = effect.effect_center_y;
     effect.complexity_prop.static_value = effect.effect_complexity;
     effect.evolution_prop.static_value = effect.effect_evolution;
+    effect.trim_start_prop.static_value = effect.effect_trim_start;
+    effect.trim_end_prop.static_value = effect.effect_trim_end;
+    effect.trim_offset_prop.static_value = effect.effect_trim_offset;
     set_color_channels(effect, effect.effect_color);
     set_stroke_color_channels(effect, effect.effect_stroke_color);
     set_secondary_color_channels(effect, effect.effect_secondary_color);
@@ -821,6 +841,7 @@ QString effect_type_id(LayerEffectType type)
     case LayerEffectType::FilmDistortion: return QStringLiteral("film-distortion");
     case LayerEffectType::AnalogDistortion: return QStringLiteral("analog-distortion");
     case LayerEffectType::DigitalDistortion: return QStringLiteral("digital-distortion");
+    case LayerEffectType::TrimPaths: return QStringLiteral("trim-paths");
     }
     return {};
 }
@@ -833,7 +854,7 @@ bool effect_type_from_id(const QString &id, LayerEffectType *type)
     normalized.replace(QLatin1Char('_'), QLatin1Char('-'));
     normalized.replace(QLatin1Char(' '), QLatin1Char('-'));
     for (int value = static_cast<int>(LayerEffectType::BackgroundColor);
-         value <= static_cast<int>(LayerEffectType::DigitalDistortion); ++value) {
+         value <= static_cast<int>(LayerEffectType::TrimPaths); ++value) {
         const auto candidate = static_cast<LayerEffectType>(value);
         if (effect_type_id(candidate) == normalized) {
             *type = candidate;

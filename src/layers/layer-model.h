@@ -15,6 +15,50 @@
 #include "text-animator.h"
 #include "layer-transition.h"
 
+/* Development Version 300: lights are ordinary non-raster layers.
+ * Their authored transform, parenting, ordering, visibility and timeline
+ * state therefore use the same layer graph as every other scene object. */
+enum class TitleLightType : int { Ambient = 0, Point = 1, Spot = 2, Parallel = 3, Environment = 4 };
+enum class TitleLightFalloff : int { None = 0, Linear = 1, InverseSquare = 2 };
+
+struct TitleLight {
+    OpaqueSerializationPassthrough serialization_passthrough_json;
+    std::string id;
+    std::string name = "Light";
+    bool enabled = true;
+    TitleLightType type = TitleLightType::Parallel;
+    AnimatedVec3Property position { "light_position", {0.0, 0.0, -1000.0} };
+    AnimatedVec3Property target { "light_target", {0.0, 0.0, 0.0} };
+    AnimatedProperty color_a { "light_color_a", 255.0 };
+    AnimatedProperty color_r { "light_color_r", 255.0 };
+    AnimatedProperty color_g { "light_color_g", 255.0 };
+    AnimatedProperty color_b { "light_color_b", 255.0 };
+    AnimatedProperty intensity { "light_intensity", 100.0 };
+    /* Radius/extent of the emitter in scene units. A zero-sized source keeps
+     * the historical punctual-light result; larger emitters soften the
+     * diffuse/specular response and any supported shadow map. */
+    AnimatedProperty source_size { "light_source_size", 15.0 };
+    TitleLightFalloff falloff = TitleLightFalloff::InverseSquare;
+    /* Serialized legacy property retained for loading older titles. Runtime
+     * falloff start is now derived from source_size. */
+    AnimatedProperty falloff_start { "light_falloff_start", 15.0 };
+    AnimatedProperty falloff_distance { "light_falloff_distance", 450.0 };
+    AnimatedProperty cone_angle { "light_cone_angle", 45.0 };
+    AnimatedProperty cone_feather { "light_cone_feather", 25.0 };
+    bool casts_shadows = false;
+    AnimatedProperty shadow_darkness { "light_shadow_darkness", 50.0 };
+    AnimatedProperty shadow_softness { "light_shadow_softness", 2.0 };
+    AnimatedProperty shadow_bias { "light_shadow_bias", 0.002 };
+    std::string environment_path;
+    AnimatedProperty environment_rotation { "light_environment_rotation", 0.0 };
+    bool environment_visible = false;
+    bool timeline_expanded = false;
+};
+inline Vec3Value evaluated_light_position(const TitleLight &l,double t){return l.position.evaluate(t);}
+inline Vec3Value evaluated_light_target(const TitleLight &l,double t){return l.target.evaluate(t);}
+inline uint32_t evaluated_light_color(const TitleLight &l,double t){auto c=[t](const AnimatedProperty&p){return (uint32_t)std::clamp((int)std::lround(p.evaluate(t)),0,255);};return(c(l.color_a)<<24)|(c(l.color_r)<<16)|(c(l.color_g)<<8)|c(l.color_b);}
+inline bool title_light_has_authored_keyframes(const TitleLight &l){return l.position.is_animated()||l.target.is_animated()||l.color_a.is_animated()||l.color_r.is_animated()||l.color_g.is_animated()||l.color_b.is_animated()||l.intensity.is_animated()||l.source_size.is_animated()||l.falloff_distance.is_animated()||l.cone_angle.is_animated()||l.cone_feather.is_animated()||l.shadow_darkness.is_animated()||l.shadow_softness.is_animated()||l.shadow_bias.is_animated()||l.environment_rotation.is_animated();}
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer type
  * ══════════════════════════════════════════════════════════════════ */
@@ -32,6 +76,8 @@ enum class LayerType {
     Audio = 10,       /* timeline audio clip; no visual transform */
     TransitionInput = 11, /* runtime Scene A/B texture supplied by OBS transitions */
     Video = 12,           /* decoded video picture with linked audio-stream child tracks */
+    Light = 13,           /* non-raster 3D light layer */
+    Empty = 14,           /* non-raster transform parent / spatial control */
 };
 
 inline bool layer_type_is_asset(LayerType type)
@@ -50,6 +96,8 @@ inline bool layer_type_can_have_children(LayerType type)
 {
     return layer_type_is_container(type) || type == LayerType::Video;
 }
+
+inline bool layer_type_is_light(LayerType type) { return type == LayerType::Light; }
 
 inline bool layer_type_is_audio(LayerType type)
 {
@@ -72,7 +120,8 @@ inline bool layer_type_can_be_scene_mask(LayerType type)
      * timeline/control rows out of the contract; text, clocks, tickers,
      * images, videos, groups/assets and transition placeholders can all
      * provide an alpha silhouette. */
-    return type != LayerType::Audio && type != LayerType::Adjustment;
+    return type != LayerType::Audio && type != LayerType::Adjustment &&
+           type != LayerType::Light && type != LayerType::Empty;
 }
 
 inline bool layer_type_is_transition_input(LayerType type)
@@ -286,12 +335,18 @@ struct Layer {
     std::string id;          /* UUID */
     std::string name;
     LayerType   type = LayerType::Text;
+    TitleLight  light; /* authoritative when type == LayerType::Light */
     bool        visible  = true;
     bool        locked   = false;
     bool        properties_expanded = false;
     /* Group rows can collapse their descendants in the layer/timeline UI.
      * This is presentation state only; it never affects rendering. */
     bool        group_collapsed = false;
+    /* Optional per-layer editor color. It replaces the type-derived timeline
+     * color in layer rows, timeline strips and canvas authoring overlays only;
+     * it never changes the rendered graphic. */
+    bool        custom_ui_color_enabled = false;
+    uint32_t    custom_ui_color = 0xFF4C6EF5u;
     /* Runtime scene slot for manual Stinger composition: 0=Scene A, 1=Scene B.
      * Transition-input layers otherwise follow the ordinary visual-layer
      * contract. Only the two required document inputs are non-deletable;
@@ -341,6 +396,21 @@ struct Layer {
     double      asset_pause_duration = 1.0;
     int         asset_loop_count = 1;
     bool        asset_loop = false; /* repeat the complete independent pass */
+    /* Development Version 340: a 3D asset is a precomposition boundary.
+     * Descendants are projected with the camera/canvas snapshot authored in
+     * the source asset, then the resulting plane is placed by this Asset
+     * Layer.  The opt-in flag keeps titles saved by older versions on their
+     * exact legacy shared-title-space path. */
+    bool        asset_isolated_3d_space = false;
+    int         asset_space_width = 0;
+    int         asset_space_height = 0;
+    double      asset_space_center_x = 0.0;
+    double      asset_space_center_y = 0.0;
+    /* Internal descendants that mirror the source title's Active Camera track
+     * evaluate that discrete track on the owner timeline, not layer-local
+     * in/out time. Explicit per-layer camera assignments retain legacy local
+     * timing. */
+    bool        asset_camera_uses_owner_time = false;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
     MatteVisibilityMode matte_visibility_mode = MatteVisibilityMode::MatteOnly;
@@ -498,6 +568,45 @@ struct Layer {
     bool double_sided = true;
     bool backface_culling = false;
 
+    /* Development Version 298: physically based planar material controls.
+     * Lighting is deliberately opt-in so every existing title preserves its
+     * exact pre-298 appearance until Accepts Lights is enabled.  The scalar
+     * values are AnimatedProperty instances from the start, avoiding a later
+     * migration when material keyframes are exposed in the timeline. */
+    bool material_accepts_lights = false;
+    bool material_casts_shadows = true;
+    bool material_accepts_shadows = true;
+    bool material_appears_in_reflections = true;
+    AnimatedProperty material_ambient { "material_ambient", 0.15 };
+    AnimatedProperty material_diffuse { "material_diffuse", 1.0 };
+    AnimatedProperty material_specular { "material_specular", 0.25 };
+    AnimatedProperty material_shininess { "material_shininess", 32.0 };
+    AnimatedProperty material_metallic { "material_metallic", 0.0 };
+    AnimatedProperty material_roughness { "material_roughness", 0.5 };
+    AnimatedProperty material_reflection_intensity { "material_reflection_intensity", 0.0 };
+    /* Keep the packed value as a compatibility mirror for pre-304 titles and
+     * external consumers.  The animated ARGB channels are authoritative. */
+    uint32_t material_emissive_color = 0xFFFFFFFF;
+    AnimatedProperty material_emissive_color_a { "material_emissive_color_a", 255.0 };
+    AnimatedProperty material_emissive_color_r { "material_emissive_color_r", 255.0 };
+    AnimatedProperty material_emissive_color_g { "material_emissive_color_g", 255.0 };
+    AnimatedProperty material_emissive_color_b { "material_emissive_color_b", 255.0 };
+    AnimatedProperty material_emissive_intensity { "material_emissive_intensity", 0.0 };
+
+    /* Development Version 330: the Development 300-306 alpha-slice
+     * extrusion/bevel experiment is retired from production rendering. Keep
+     * these fields only so affected documents can be migrated losslessly to the
+     * retained-mesh implementation planned for Development 331+. They are not
+     * visual inputs, are not exposed in the editor and must not select a depth
+     * or compatibility-raster path. */
+    bool geometry_extrusion_enabled = false;
+    AnimatedProperty geometry_extrusion_depth { "geometry_extrusion_depth", 0.0 };
+    AnimatedProperty geometry_bevel_depth { "geometry_bevel_depth", 0.0 };
+    int geometry_bevel_segments = 3;
+    int geometry_extrusion_segments = 12;
+    bool geometry_bevel_front = true;
+    bool geometry_bevel_back = true;
+
     /* Illustrator-style Free Transform quad offsets, normalized to the local
      * layer box. Zero values preserve the ordinary affine transform. The four
      * corners are ordered TL, TR, BR, BL. */
@@ -566,7 +675,10 @@ struct Layer {
     bool        text_box_width_to_text = false;
     bool        text_box_height_to_text = false;
     float       max_text_box_width = 1920.0f;
-    float       max_text_box_height = 1080.0f;
+    float       max_text_box_height = 100.0f;
+    /* While false, Max Text Box follows the authored Size control. */
+    bool        max_text_box_width_overridden = false;
+    bool        max_text_box_height_overridden = false;
 
     /* ----- Ticker-specific -----
      * style: 0=horizontal scrolling, 1=vertical line-by-line, 2=vertical smooth.
@@ -589,6 +701,8 @@ struct Layer {
     int         stroke_fill_type = 1;  /* 0=none, 1=color, 2=gradient */
     uint32_t    stroke_color  = 0xFF000000;
     float       stroke_width  = 0.0f;
+    float       stroke_offset = 0.0f; /* geometry offset of the stroke centreline */
+    AnimatedProperty stroke_offset_prop { "stroke_offset", 0.0 };
     float       outline_opacity = 1.0f;
     int         outline_join_style = 1;  /* 0=miter, 1=round, 2=bevel */
     bool        outline_on_front = false;
@@ -777,6 +891,10 @@ struct Layer {
     AnimatedProperty fill_color_r { "fill_color_r",  34.0 };
     AnimatedProperty fill_color_g { "fill_color_g",  34.0 };
     AnimatedProperty fill_color_b { "fill_color_b",  34.0 };
+    AnimatedProperty stroke_color_a { "stroke_color_a", 255.0 };
+    AnimatedProperty stroke_color_r { "stroke_color_r",   0.0 };
+    AnimatedProperty stroke_color_g { "stroke_color_g",   0.0 };
+    AnimatedProperty stroke_color_b { "stroke_color_b",   0.0 };
 
     /* ----- Image ----- */
     std::string image_path;
@@ -933,6 +1051,10 @@ inline void set_layer_dimension_mode_preserving_position_track(
     if (mode == LayerDimensionMode::ThreeD) {
         promote_layer_position_to_3d_path(layer);
         layer.position_3d_path_enabled = true;
+        if (layer.double_sided && !layer.backface_culling) {
+            layer.double_sided = false;
+            layer.backface_culling = true;
+        }
     } else {
         mirror_position_3d_track_to_legacy(layer);
         /* In 2D mode the legacy XYZ-compatible vector is authoritative.
@@ -1012,6 +1134,24 @@ inline void set_layer_media_range_out_point(Layer &layer, double media_out)
     else if (layer.type == LayerType::Audio)
         layer.audio_out_point = std::max(0.0, media_out);
     normalize_layer_media_range_to_timeline_span(layer, true);
+}
+
+
+inline uint32_t evaluated_material_emissive_color(const Layer &layer, double time)
+{
+    auto channel = [time](const AnimatedProperty &property) {
+        return static_cast<uint32_t>(std::clamp(
+            static_cast<int>(std::lround(property.evaluate(time))), 0, 255));
+    };
+    return (channel(layer.material_emissive_color_a) << 24) |
+           (channel(layer.material_emissive_color_r) << 16) |
+           (channel(layer.material_emissive_color_g) << 8) |
+           channel(layer.material_emissive_color_b);
+}
+
+inline void mirror_material_emissive_color(Layer &layer, double time)
+{
+    layer.material_emissive_color = evaluated_material_emissive_color(layer, time);
 }
 
 inline LayerVector3Value evaluated_layer_scale_3d(const Layer &layer, double time)

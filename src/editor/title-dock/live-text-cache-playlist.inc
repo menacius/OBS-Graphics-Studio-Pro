@@ -354,6 +354,7 @@ void TitleDock::update_playlist_controls()
 void TitleDock::populate_exposed_text()
 {
     if (!text_table_) return;
+    update_live_text_columns_window_title();
     QSignalBlocker block(text_table_);
     QSignalBlocker header_block(text_table_->horizontalHeader());
     text_table_->clear();
@@ -375,6 +376,7 @@ void TitleDock::populate_exposed_text()
         update_persistence_controls();
         update_external_data_controls();
         update_live_text_select_all_state();
+        enforce_live_text_cache_column_visibility();
         return;
     }
 
@@ -394,9 +396,14 @@ void TitleDock::populate_exposed_text()
                 return QColor();
             const bool waiting_for_prerender = cache_waiting_title_id_ == border_title_id &&
                 cache_waiting_cue_row_ == row;
+            const bool preview = isPreviewReady() &&
+                live_cue_preview_title_id_ == border_title_id &&
+                live_cue_preview_row_ == row;
             if (row == current_title->current_cue_row)
-                return live_cue_state_color(true, false, current_title->cue_uncue_requested);
-            if (row == current_title->pending_cue_row || waiting_for_prerender)
+                return live_cue_state_color(
+                    true, preview,
+                    live_cue_row_is_ending(*current_title, row) && !preview);
+            if (row == current_title->pending_cue_row || waiting_for_prerender || preview)
                 return live_cue_state_color(false, true);
             return QColor();
         };
@@ -433,10 +440,15 @@ void TitleDock::populate_exposed_text()
         if (cue) {
             cue->setEnabled(title_has_bound_obs_source(title->id));
             const bool current = title->current_cue_row == 0;
+            const bool preview = isPreviewReady() &&
+                live_cue_preview_title_id_ == QString::fromStdString(title->id) &&
+                live_cue_preview_row_ == 0;
             const bool queued = title->pending_cue_row == 0 ||
-                (cache_waiting_title_id_ == QString::fromStdString(title->id) && cache_waiting_cue_row_ == 0);
+                (cache_waiting_title_id_ == QString::fromStdString(title->id) && cache_waiting_cue_row_ == 0) ||
+                preview;
             cue->setIcon(obs_icon("cue.svg", live_cue_state_color(
-                current, queued, current && title->cue_uncue_requested)));
+                current, queued,
+                live_cue_row_is_ending(*title, 0) && !(preview && current))));
             cue->setToolTip(bgl_tr("OBSTitles.PlayCueTooltip"));
             cue->setStyleSheet(QStringLiteral(
                 "QToolButton{background:transparent;border:none;padding:0;}"
@@ -451,6 +463,7 @@ void TitleDock::populate_exposed_text()
         update_persistence_controls();
         update_external_data_controls();
         update_live_text_select_all_state();
+        enforce_live_text_cache_column_visibility();
         return;
     }
 
@@ -475,6 +488,7 @@ void TitleDock::populate_exposed_text()
     text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     text_table_->horizontalHeader()->setSectionsMovable(true);
     restore_live_text_header_state();
+    enforce_live_text_cache_column_visibility();
     auto *table_header = text_table_->horizontalHeader();
     if (table_header) {
         const int cue_visual = table_header->visualIndex(kLiveCueColumn);
@@ -852,15 +866,18 @@ void TitleDock::populate_exposed_text()
 
         const bool waiting_for_prerender = cache_waiting_title_id_ == QString::fromStdString(title->id) &&
             cache_waiting_cue_row_ == row;
+        const bool preview = isPreviewReady() &&
+            live_cue_preview_title_id_ == QString::fromStdString(title->id) &&
+            live_cue_preview_row_ == row;
         auto *cue = live_cue_button(text_table_, row, kLiveCueColumn);
         if (cue) {
             cue->setEnabled(title_has_bound_obs_source(title->id));
             cue->setToolTip(bgl_tr("OBSTitles.PlayCueTooltip"));
-            const bool ending = row == title->current_cue_row && title->cue_uncue_requested;
+            const bool ending = live_cue_row_is_ending(*title, row);
             cue->setIcon(obs_icon("cue.svg", live_cue_state_color(
                 row == title->current_cue_row,
-                row == title->pending_cue_row || waiting_for_prerender,
-                ending)));
+                row == title->pending_cue_row || waiting_for_prerender || preview,
+                ending && !(preview && row == title->current_cue_row))));
             cue->setStyleSheet(QStringLiteral(
                 "QToolButton{background:transparent;border:none;padding:0;}"
                 "QToolButton:hover{background:transparent;border:none;}"));
@@ -874,6 +891,7 @@ void TitleDock::populate_exposed_text()
     update_persistence_controls();
     update_external_data_controls();
     update_live_text_select_all_state();
+    enforce_live_text_cache_column_visibility();
 }
 
 void TitleDock::on_export_live_text_data()
@@ -1333,4 +1351,3 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
     title->layers.clear();
     title->bg_color = 0x00000000;
     title->duration = 7.0;
-

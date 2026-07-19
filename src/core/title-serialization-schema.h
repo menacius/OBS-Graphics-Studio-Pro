@@ -18,7 +18,7 @@ using json = nlohmann::json;
  * schema/development identity therefore lives on every title object. Template
  * exports additionally expose the same values on their object root. */
 inline constexpr int kCurrentTitleSchemaVersion = 6;
-inline constexpr int kCurrentDevelopmentVersion = 264;
+inline constexpr int kCurrentDevelopmentVersion = 265;
 inline constexpr int kFirstAuditedDevelopmentVersion = 144;
 inline constexpr int kCurrentProxyManifestSchemaVersion = 2;
 inline constexpr int kCurrentDockSettingsSchemaVersion = 2;
@@ -1040,6 +1040,13 @@ inline void apply_development_migration(int target_version, json &title,
         /* Development deliveries 245-264 are UI/runtime/effect-library
          * updates. They do not reshape persisted title JSON; keep the current
          * recovery and media-row validation paths contiguous. */
+        validate_recover_title_shape(title, report);
+        migrate_audio_layers(title, report);
+        break;
+    case 265:
+        /* Development Version 298 adds title lights and opt-in planar PBR
+         * materials. Missing fields intentionally retain compatibility
+         * defaults: no authored lights and Accepts Lights disabled per layer. */
         validate_recover_title_shape(title, report);
         migrate_audio_layers(title, report);
         break;

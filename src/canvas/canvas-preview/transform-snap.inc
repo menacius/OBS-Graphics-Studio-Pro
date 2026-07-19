@@ -532,7 +532,9 @@ QRectF CanvasPreview::selected_canvas_bounds() const
     QRectF bounds;
     bool have_bounds = false;
     for (auto &layer : selected_layers()) {
-        if (!layer || !layer->visible) continue;
+        if (!layer || !layer->visible || layer->type == LayerType::Audio ||
+            layer->type == LayerType::Empty)
+            continue;
         QRectF layer_bounds = layer_canvas_bounds(*layer);
         if (!layer_bounds.isValid()) continue;
         if (!have_bounds) {
@@ -756,12 +758,20 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
         }
         layer_geometry.origin_visible = projected_layer_point_to_view(
             QPointF(0.0, 0.0), layer_geometry.origin);
+        if (layer.type == LayerType::Light) {
+            /* Light layers are spatial objects, not resizable artwork. Keep
+             * their projected object hit area for selection, but expose no
+             * bounding-box handles or artwork origin control. */
+            for (bool &visible : layer_geometry.handle_visible) visible = false;
+            layer_geometry.origin_visible = false;
+        }
         return layer_geometry;
     };
 
     std::set<std::string> selected_ids;
     for (const auto &layer : layers) {
-        if (!layer)
+        if (!layer || layer->type == LayerType::Audio ||
+            layer->type == LayerType::Empty)
             continue;
         selected_ids.insert(layer->id);
         geometry.layers.push_back(make_geometry(
@@ -790,7 +800,9 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
         bool have_view_bounds = false;
         for (const SelectionOverlayLayerGeometry &layer_geometry :
              geometry.layers) {
-            if (layer_geometry.outline.size() < 3)
+            if (!layer_geometry.layer ||
+                layer_geometry.layer->type == LayerType::Light ||
+                layer_geometry.outline.size() < 3)
                 continue;
             const QRectF candidate =
                 layer_geometry.outline.boundingRect().normalized();
@@ -838,7 +850,10 @@ const CanvasPreview::HoverOverlayGeometry &CanvasPreview::hover_overlay_geometry
     });
     if (it != title_->layers.end() && *it) {
         const Layer &layer = **it;
-        if (layer_is_editor_visible(layer) && layer.visible && !layer.locked &&
+        if (layer.type != LayerType::Light &&
+            layer.type != LayerType::Audio &&
+            layer.type != LayerType::Empty &&
+            layer_is_editor_visible(layer) && layer.visible && !layer.locked &&
             playhead_ >= layer.in_time && playhead_ <= layer.out_time) {
             const QRectF box = layer_local_rect(layer);
             if (box.isValid() && !box.isEmpty()) {
@@ -1256,4 +1271,3 @@ void CanvasPreview::begin_gradient_drag(const Layer &layer,
     gradient_drag_.scale = gradient_drag_.fill.gradient_scale;
     gradient_drag_.angle = gradient_drag_.fill.gradient_angle;
 }
-

@@ -69,6 +69,9 @@ static bool effect_has_animation(const LayerEffect &effect)
            effect.falloff_prop.is_animated() ||
            effect.stroke_width_prop.is_animated() ||
            effect.stroke_opacity_prop.is_animated() ||
+           effect.trim_start_prop.is_animated() ||
+           effect.trim_end_prop.is_animated() ||
+           effect.trim_offset_prop.is_animated() ||
            effect.padding_left_prop.is_animated() ||
            effect.padding_right_prop.is_animated() ||
            effect.padding_top_prop.is_animated() ||
@@ -287,8 +290,15 @@ bool layer_has_timeline_animation(const Layer &layer)
         layer.effects.begin(), layer.effects.end(), effect_has_animation);
     const bool nested_asset_animation =
         layer.type == LayerType::Asset && layer.asset_animated;
+    /* Video and audio advance from local timeline time even without authored
+     * keyframes.  Treat them as animated asset content so a media-only Asset
+     * exposes synchronized/independent playback instead of being frozen as a
+     * static library item. */
+    const bool media_playback = layer.type == LayerType::Video ||
+                                layer.type == LayerType::Audio;
 
-    return nested_asset_animation || transition_animation || effect_animation ||
+    return nested_asset_animation || media_playback || transition_animation ||
+           effect_animation ||
            layer.position.is_animated() ||
            layer.position_z.is_animated() ||
            (layer.position_3d_path_enabled && layer.position_3d.is_animated()) ||
@@ -302,6 +312,18 @@ bool layer_has_timeline_animation(const Layer &layer)
            layer.orientation_y.is_animated() ||
            layer.orientation_z.is_animated() ||
            layer.opacity.is_animated() ||
+           layer.material_ambient.is_animated() ||
+           layer.material_diffuse.is_animated() ||
+           layer.material_specular.is_animated() ||
+           layer.material_shininess.is_animated() ||
+           layer.material_metallic.is_animated() ||
+           layer.material_roughness.is_animated() ||
+           layer.material_reflection_intensity.is_animated() ||
+           layer.material_emissive_color_a.is_animated() ||
+           layer.material_emissive_color_r.is_animated() ||
+           layer.material_emissive_color_g.is_animated() ||
+           layer.material_emissive_color_b.is_animated() ||
+           layer.material_emissive_intensity.is_animated() ||
            layer.transform_quad_tl.is_animated() ||
            layer.transform_quad_tr.is_animated() ||
            layer.transform_quad_br.is_animated() ||
@@ -328,6 +350,11 @@ bool layer_has_timeline_animation(const Layer &layer)
            layer.fill_color_r.is_animated() ||
            layer.fill_color_g.is_animated() ||
            layer.fill_color_b.is_animated() ||
+           layer.stroke_color_a.is_animated() ||
+           layer.stroke_color_r.is_animated() ||
+           layer.stroke_color_g.is_animated() ||
+           layer.stroke_color_b.is_animated() ||
+           layer.stroke_offset_prop.is_animated() ||
            legacy_background_has_animation(layer) ||
            legacy_shadow_has_animation(layer);
 }
@@ -357,7 +384,11 @@ bool title_has_timeline_animation(const Title &title)
                camera.projection_mode.is_animated();
     };
     if (title.active_camera.is_animated() ||
-        std::any_of(title.cameras.begin(), title.cameras.end(), camera_is_animated))
+        std::any_of(title.cameras.begin(), title.cameras.end(), camera_is_animated) ||
+        std::any_of(title.lights.begin(), title.lights.end(),
+                    [](const TitleLight &light) {
+                        return title_light_has_authored_keyframes(light);
+                    }))
         return true;
     const double duration = std::max(0.0, title.duration);
     return std::any_of(title.layers.begin(), title.layers.end(),
@@ -406,6 +437,21 @@ bool asset_layer_has_timeline_animation(const Title &title,
             const bool timed_visibility = candidate->in_time > kEpsilon ||
                 candidate->out_time < duration - kEpsilon;
             return timed_visibility || layer_has_timeline_animation(*candidate);
+        });
+}
+
+bool layer_uses_independent_playback(const Layer &layer)
+{
+    return layer.type == LayerType::Asset && layer.asset_animated &&
+           layer.asset_playback_mode == 1;
+}
+
+bool title_has_independent_playback(const Title &title)
+{
+    return std::any_of(
+        title.layers.begin(), title.layers.end(),
+        [](const std::shared_ptr<Layer> &layer) {
+            return layer && layer_uses_independent_playback(*layer);
         });
 }
 

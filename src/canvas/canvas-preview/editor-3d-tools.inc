@@ -8,6 +8,84 @@ static QVector3D normalized_or(const QVector3D &value, const QVector3D &fallback
     return value.normalized();
 }
 
+static QMatrix4x4 gizmo_euler_rotation_matrix(double x, double y, double z)
+{
+    QMatrix4x4 result;
+    result.setToIdentity();
+    result.rotate(static_cast<float>(z), 0.0f, 0.0f, 1.0f);
+    result.rotate(static_cast<float>(y), 0.0f, 1.0f, 0.0f);
+    result.rotate(static_cast<float>(x), 1.0f, 0.0f, 0.0f);
+    return result;
+}
+
+static QMatrix4x4 gizmo_rotation_basis(const QMatrix4x4 &matrix)
+{
+    const QVector3D unit_x(1.0f, 0.0f, 0.0f);
+    const QVector3D unit_y(0.0f, 1.0f, 0.0f);
+    const QVector3D unit_z(0.0f, 0.0f, 1.0f);
+    QVector3D x = normalized_or(matrix.mapVector(unit_x), unit_x);
+    const QVector3D mapped_y = matrix.mapVector(unit_y);
+    const QVector3D mapped_z = matrix.mapVector(unit_z);
+    QVector3D y = mapped_y - x * QVector3D::dotProduct(mapped_y, x);
+    if (y.lengthSquared() < 1.0e-10f) {
+        const QVector3D reference = std::abs(x.z()) < 0.9f ? unit_z : unit_y;
+        y = QVector3D::crossProduct(reference, x);
+    }
+    y = normalized_or(y, unit_y);
+    QVector3D z = mapped_z - x * QVector3D::dotProduct(mapped_z, x) -
+        y * QVector3D::dotProduct(mapped_z, y);
+    if (z.lengthSquared() < 1.0e-10f)
+        z = QVector3D::crossProduct(x, y);
+    z = normalized_or(z, unit_z);
+
+    QMatrix4x4 result;
+    result.setToIdentity();
+    result.setColumn(0, QVector4D(x, 0.0f));
+    result.setColumn(1, QVector4D(y, 0.0f));
+    result.setColumn(2, QVector4D(z, 0.0f));
+    return result;
+}
+
+static QVector3D gizmo_axis_world_direction(
+    TransformAxisSpace space, int axis, const QMatrix4x4 &parent_basis,
+    const QMatrix4x4 &orientation, const QMatrix4x4 &rotation)
+{
+    static const QVector3D canonical_axes[] = {
+        QVector3D(1.0f, 0.0f, 0.0f),
+        QVector3D(0.0f, 1.0f, 0.0f),
+        QVector3D(0.0f, 0.0f, 1.0f),
+    };
+    axis = std::clamp(axis, 0, 2);
+    QVector3D direction = canonical_axes[axis];
+    if (space == TransformAxisSpace::Local)
+        direction = (parent_basis * orientation * rotation).mapVector(direction);
+    else if (space == TransformAxisSpace::Parent)
+        direction = parent_basis.mapVector(direction);
+    return normalized_or(direction, canonical_axes[axis]);
+}
+
+static LayerVector3Value gizmo_decompose_zyx_rotation(
+    const QMatrix4x4 &matrix)
+{
+    const QMatrix4x4 rotation = gizmo_rotation_basis(matrix);
+    const double y = std::asin(std::clamp(
+        -static_cast<double>(rotation(2, 0)), -1.0, 1.0));
+    const double cos_y = std::cos(y);
+    double x = 0.0;
+    double z = 0.0;
+    if (std::abs(cos_y) > 1.0e-7) {
+        x = std::atan2(static_cast<double>(rotation(2, 1)),
+                       static_cast<double>(rotation(2, 2)));
+        z = std::atan2(static_cast<double>(rotation(1, 0)),
+                       static_cast<double>(rotation(0, 0)));
+    } else {
+        x = std::atan2(-static_cast<double>(rotation(1, 2)),
+                       static_cast<double>(rotation(1, 1)));
+    }
+    return {qRadiansToDegrees(x), qRadiansToDegrees(y),
+            qRadiansToDegrees(z)};
+}
+
 static double point_segment_distance(const QPointF &point, const QPointF &a,
                                      const QPointF &b)
 {
@@ -18,13 +96,6 @@ static double point_segment_distance(const QPointF &point, const QPointF &a,
     const double t = std::clamp(QPointF::dotProduct(point - a, ab) / length2,
                                 0.0, 1.0);
     return QLineF(point, a + ab * t).length();
-}
-
-static double normalized_angle_delta(double degrees)
-{
-    while (degrees > 180.0) degrees -= 360.0;
-    while (degrees < -180.0) degrees += 360.0;
-    return degrees;
 }
 
 static int gizmo_axis_index(CanvasPreview::GizmoAxis axis)
@@ -531,21 +602,28 @@ CanvasPreview::GizmoGeometry CanvasPreview::build_3d_gizmo_geometry() const
         *projection, *layer, playhead_);
     const QMatrix4x4 parent = bgs::transform3d::layer_parent_world_matrix(
         *projection, *layer, playhead_);
+    const QMatrix4x4 parent_rotation_basis = gizmo_rotation_basis(parent);
+    const double gizmo_local_time = std::clamp(
+        playhead_ - layer->in_time, 0.0,
+        std::max(0.0, layer->out_time - layer->in_time));
+    const LayerVector3Value current_orientation =
+        evaluated_layer_orientation_3d(*layer, gizmo_local_time);
+    const LayerVector3Value current_rotation =
+        evaluated_layer_rotation_3d(*layer, gizmo_local_time);
+    const QMatrix4x4 orientation = gizmo_euler_rotation_matrix(
+        current_orientation.x, current_orientation.y, current_orientation.z);
+    const QMatrix4x4 rotation = gizmo_euler_rotation_matrix(
+        current_rotation.x, current_rotation.y, current_rotation.z);
     geometry.origin_world = world.map(QVector3D(0.0f, 0.0f, 0.0f));
 
-    const QVector3D world_axes[] = {
-        QVector3D(1.0f, 0.0f, 0.0f),
-        QVector3D(0.0f, 1.0f, 0.0f),
-        QVector3D(0.0f, 0.0f, 1.0f),
-    };
     for (int axis = 0; axis < 3; ++axis) {
-        QVector3D direction = world_axes[axis];
-        if (layer->transform_axis_space == TransformAxisSpace::Local)
-            direction = world.mapVector(direction);
-        else if (layer->transform_axis_space == TransformAxisSpace::Parent)
-            direction = parent.mapVector(direction);
-        geometry.axes_world[axis] = normalized_or(direction, world_axes[axis]);
+        geometry.axes_world[axis] = gizmo_axis_world_direction(
+            layer->transform_axis_space, axis, parent_rotation_basis,
+            orientation, rotation);
     }
+
+    const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+        *projection, *layer, playhead_);
 
     if (editor_3d_view_ == Editor3DView::CustomPerspective)
         geometry.world_length = std::clamp(editor_3d_distance_ * 0.095, 35.0, 5000.0);
@@ -559,7 +637,7 @@ CanvasPreview::GizmoGeometry CanvasPreview::build_3d_gizmo_geometry() const
     QPointF origin_canvas;
     if (!bgs::transform3d::project_world_point(
             *projection, geometry.origin_world, playhead_, origin_canvas,
-            nullptr, layer->camera_id))
+            nullptr, camera_id))
         return cache_result(std::move(geometry));
     geometry.origin_view = canvas_to_view(origin_canvas);
 
@@ -569,7 +647,7 @@ CanvasPreview::GizmoGeometry CanvasPreview::build_3d_gizmo_geometry() const
                 *projection,
                 geometry.origin_world + geometry.axes_world[axis] *
                     static_cast<float>(geometry.world_length),
-                playhead_, endpoint_canvas, nullptr, layer->camera_id))
+                playhead_, endpoint_canvas, nullptr, camera_id))
             continue;
         geometry.axis_end_view[axis] = canvas_to_view(endpoint_canvas);
         geometry.axis_visible[axis] =
@@ -593,7 +671,7 @@ CanvasPreview::GizmoGeometry CanvasPreview::build_3d_gizmo_geometry() const
         for (const QVector3D &point : points) {
             QPointF canvas;
             if (!bgs::transform3d::project_world_point(
-                    *projection, point, playhead_, canvas, nullptr, layer->camera_id)) {
+                    *projection, point, playhead_, canvas, nullptr, camera_id)) {
                 valid = false;
                 break;
             }
@@ -617,7 +695,7 @@ CanvasPreview::GizmoGeometry CanvasPreview::build_3d_gizmo_geometry() const
                     geometry.axes_world[b] * static_cast<float>(std::sin(angle) * geometry.world_length * 0.78);
                 QPointF canvas;
                 if (bgs::transform3d::project_world_point(
-                        *projection, point, playhead_, canvas, nullptr, layer->camera_id))
+                        *projection, point, playhead_, canvas, nullptr, camera_id))
                     ring << canvas_to_view(canvas);
             }
         }
@@ -692,11 +770,7 @@ bool CanvasPreview::begin_3d_gizmo_drag(QMouseEvent *ev)
     gizmo_drag_.axis = axis;
     gizmo_hover_axis_ = axis;
     gizmo_drag_.start_view = ev->position();
-    gizmo_drag_.origin_view = geometry.origin_view;
     gizmo_drag_.world_length = geometry.world_length;
-    gizmo_drag_.start_angle = std::atan2(
-        ev->position().y() - geometry.origin_view.y(),
-        ev->position().x() - geometry.origin_view.x());
     for (int i = 0; i < 3; ++i) {
         gizmo_drag_.axes_world[i] = geometry.axes_world[i];
         gizmo_drag_.axis_screen[i] = geometry.axis_end_view[i] - geometry.origin_view;
@@ -785,13 +859,32 @@ bool CanvasPreview::update_3d_gizmo_drag(QMouseEvent *ev)
 
     double rotation_delta = 0.0;
     if (gizmo_mode_ == GizmoMode::Rotate) {
-        const double angle = std::atan2(
-            ev->position().y() - gizmo_drag_.origin_view.y(),
-            ev->position().x() - gizmo_drag_.origin_view.x());
-        rotation_delta = normalized_angle_delta(
-            qRadiansToDegrees(angle - gizmo_drag_.start_angle));
+        /* Rotation is a linear screen-space scrub after the ring has been hit.
+         * The first deliberate mouse movement locks horizontal or vertical
+         * control for the rest of the drag. This remains well-defined when a
+         * 3D ring is exactly edge-on and its projected circle has collapsed to
+         * a line, where both ray-plane and polar-angle drags are singular. */
+        constexpr double kScrubActivationPixels = 3.0;
+        constexpr double kDegreesPerPixel = 0.5;
+        if (gizmo_drag_.rotation_scrub_axis < 0 &&
+            (std::abs(screen_delta.x()) >= kScrubActivationPixels ||
+             std::abs(screen_delta.y()) >= kScrubActivationPixels)) {
+            gizmo_drag_.rotation_scrub_axis =
+                std::abs(screen_delta.x()) >= std::abs(screen_delta.y()) ? 0 : 1;
+        }
+        if (gizmo_drag_.rotation_scrub_axis == 0)
+            rotation_delta = screen_delta.x() * kDegreesPerPixel;
+        else if (gizmo_drag_.rotation_scrub_axis == 1)
+            rotation_delta = -screen_delta.y() * kDegreesPerPixel;
         if (snapping && ev->modifiers().testFlag(Qt::ShiftModifier))
             rotation_delta = std::round(rotation_delta / 15.0) * 15.0;
+    }
+    if (gizmo_mode_ == GizmoMode::Rotate &&
+        gizmo_drag_.rotation_scrub_axis < 0) {
+        /* Stay below the activation threshold without modifying the model or
+         * creating an Undo entry for a click/jitter that never became a drag. */
+        ev->accept();
+        return true;
     }
 
     double scale_factors[3] = {1.0, 1.0, 1.0};
@@ -831,21 +924,44 @@ bool CanvasPreview::update_3d_gizmo_drag(QMouseEvent *ev)
                  start.position_z + local_delta.z()});
             mirror_position_3d_to_legacy(*layer, local_time);
         } else if (gizmo_mode_ == GizmoMode::Rotate && axis_index >= 0) {
-            const bool local_rotation =
-                layer->transform_axis_space == TransformAxisSpace::Local;
-            AnimatedProperty *property = nullptr;
-            double start_value = 0.0;
-            if (local_rotation) {
-                if (axis_index == 0) { property = &layer->rotation_x; start_value = start.rotation_x; }
-                else if (axis_index == 1) { property = &layer->rotation_y; start_value = start.rotation_y; }
-                else { property = &layer->rotation; start_value = start.rotation_z; }
-            } else {
-                if (axis_index == 0) { property = &layer->orientation_x; start_value = start.orientation_x; }
-                else if (axis_index == 1) { property = &layer->orientation_y; start_value = start.orientation_y; }
-                else { property = &layer->orientation_z; start_value = start.orientation_z; }
+            const QMatrix4x4 parent_basis = gizmo_rotation_basis(
+                bgs::transform3d::layer_parent_world_matrix(
+                    *title_, *layer, playhead_));
+            const QMatrix4x4 orientation = gizmo_euler_rotation_matrix(
+                start.orientation_x, start.orientation_y,
+                start.orientation_z);
+            const QMatrix4x4 rotation = gizmo_euler_rotation_matrix(
+                start.rotation_x, start.rotation_y, start.rotation_z);
+            const QVector3D axis_world = gizmo_axis_world_direction(
+                layer->transform_axis_space, axis_index, parent_basis,
+                orientation, rotation);
+            QMatrix4x4 delta;
+            delta.setToIdentity();
+            delta.rotate(static_cast<float>(rotation_delta), axis_world);
+            bool parent_invertible = false;
+            bool orientation_invertible = false;
+            const QMatrix4x4 parent_inverse =
+                parent_basis.inverted(&parent_invertible);
+            const QMatrix4x4 orientation_inverse =
+                orientation.inverted(&orientation_invertible);
+            if (parent_invertible && orientation_invertible) {
+                const LayerVector3Value next = gizmo_decompose_zyx_rotation(
+                    orientation_inverse * parent_inverse * delta *
+                    parent_basis * orientation * rotation);
+                const bool animated = layer->rotation_x.is_animated() ||
+                    layer->rotation_y.is_animated() ||
+                    layer->rotation.is_animated();
+                auto write_rotation = [&](AnimatedProperty &property,
+                                          double value) {
+                    if (animated)
+                        add_or_replace_keyframe(property, local_time, value);
+                    else
+                        property.static_value = value;
+                };
+                write_rotation(layer->rotation_x, next.x);
+                write_rotation(layer->rotation_y, next.y);
+                write_rotation(layer->rotation, next.z);
             }
-            if (property)
-                set_animated_value(*property, local_time, start_value + rotation_delta);
         } else if (gizmo_mode_ == GizmoMode::Scale) {
             const double next_scale_z = start.scale_z * scale_factors[2];
             set_animated_value(layer->scale, local_time,
@@ -918,6 +1034,297 @@ void CanvasPreview::draw_editor_3d_view_overlay(QPainter &p)
     p.restore();
 }
 
+bool CanvasPreview::light_layer_overlay_contains(
+    const Layer &layer, const QPointF &view_point) const
+{
+    if (!title_ || layer.type != LayerType::Light || !layer.visible ||
+        !layer.light.enabled)
+        return false;
+    const auto projection = projection_title();
+    if (!projection)
+        return false;
+    const auto projected_layer = projection->find_layer(layer.id);
+    const Layer &evaluated_layer = projected_layer ? *projected_layer : layer;
+    const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(
+        *projection, evaluated_layer, playhead_);
+    const Vec3Value local_position =
+        evaluated_layer.light.position.evaluate(playhead_);
+    const QVector3D world_position = world.map(QVector3D(
+        local_position.x, local_position.y, local_position.z));
+    QPointF canvas_position;
+    const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+        *projection, evaluated_layer, playhead_);
+    if (!bgs::transform3d::project_world_point(
+            *projection, world_position, playhead_, canvas_position, nullptr,
+            camera_id))
+        return false;
+    return QLineF(view_point, canvas_to_view(canvas_position)).length() <= 18.0;
+}
+
+void CanvasPreview::draw_light_layer_overlays(QPainter &p)
+{
+    if (!title_)
+        return;
+    const auto projection = projection_title();
+    if (!projection)
+        return;
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const auto &layer_ptr : projection->layers) {
+        if (!layer_ptr || layer_ptr->type != LayerType::Light || !layer_ptr->visible)
+            continue;
+        const Layer &layer = *layer_ptr;
+        const TitleLight &light = layer.light;
+        if (!light.enabled)
+            continue;
+        const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(*projection, layer, playhead_);
+        const Vec3Value lp = light.position.evaluate(playhead_);
+        const Vec3Value lt = light.target.evaluate(playhead_);
+        const QVector3D world_pos = world.map(QVector3D(lp.x, lp.y, lp.z));
+        const QVector3D world_target = world.map(QVector3D(lt.x, lt.y, lt.z));
+        QPointF canvas_pos, canvas_target;
+        double depth = 0.0;
+        const std::string camera_id = bgs::transform3d::resolved_layer_camera_id(
+            *projection, layer, playhead_);
+        if (!bgs::transform3d::project_world_point(*projection, world_pos, playhead_,
+                canvas_pos, &depth, camera_id))
+            continue;
+        const bool has_target = light.type == TitleLightType::Spot ||
+                                light.type == TitleLightType::Parallel;
+        bool target_ok = has_target && bgs::transform3d::project_world_point(
+            *projection, world_target, playhead_, canvas_target, nullptr, camera_id);
+        const QPointF view_pos = canvas_to_view(canvas_pos);
+        const QPointF view_target = target_ok ? canvas_to_view(canvas_target) : view_pos;
+        const bool selected = std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(),
+                                        layer.id) != selected_layer_ids_.end();
+        const QColor color = selected ? QColor(255, 190, 55) : QColor(255, 225, 120, 210);
+        QPen pen(color, selected ? 2.0 : 1.25);
+        pen.setCosmetic(true);
+        p.setPen(pen);
+        p.setBrush(QColor(color.red(), color.green(), color.blue(), selected ? 90 : 45));
+
+        const bool finite_source = light.type == TitleLightType::Point ||
+                                   light.type == TitleLightType::Spot ||
+                                   light.type == TitleLightType::Parallel;
+        const double authored_source_size = std::max(
+            0.0, light.source_size.evaluate(playhead_));
+        if (selected && finite_source && authored_source_size > 0.0001) {
+            const double projection_width = std::max(
+                1.0, static_cast<double>(projection->width));
+            const double projection_height = std::max(
+                1.0, static_cast<double>(projection->height));
+            const double view_scale = std::max(
+                static_cast<double>(canvas_view_rect().width()) /
+                    projection_width,
+                static_cast<double>(canvas_view_rect().height()) /
+                    projection_height);
+            const double source_radius = std::clamp(
+                authored_source_size * view_scale, 4.0, 240.0);
+            QPen source_pen(color, 1.0, Qt::DotLine);
+            source_pen.setCosmetic(true);
+            p.setPen(source_pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(view_pos, source_radius, source_radius);
+            p.setPen(pen);
+            p.setBrush(QColor(color.red(), color.green(), color.blue(), 90));
+        }
+
+        if (light.type == TitleLightType::Ambient || light.type == TitleLightType::Environment) {
+            p.drawEllipse(view_pos, 9.0, 9.0);
+            p.drawEllipse(view_pos, 4.0, 4.0);
+        } else if (light.type == TitleLightType::Point) {
+            p.drawEllipse(view_pos, 7.0, 7.0);
+            for (int i = 0; i < 8; ++i) {
+                const double a = i * 3.14159265358979323846 / 4.0;
+                p.drawLine(view_pos + QPointF(std::cos(a) * 10.0, std::sin(a) * 10.0),
+                           view_pos + QPointF(std::cos(a) * 16.0, std::sin(a) * 16.0));
+            }
+            if (selected && light.falloff != TitleLightFalloff::None) {
+                const double projection_width = std::max(1.0, static_cast<double>(projection->width));
+                const double projection_height = std::max(1.0, static_cast<double>(projection->height));
+                const double view_scale = std::max(
+                    static_cast<double>(canvas_view_rect().width()) / projection_width,
+                    static_cast<double>(canvas_view_rect().height()) / projection_height);
+                const double radius = std::clamp(
+                    static_cast<double>(light.falloff_distance.evaluate(playhead_)) * view_scale,
+                    20.0, 500.0);
+                QPen range_pen(color, 1.0, Qt::DashLine); range_pen.setCosmetic(true);
+                p.setPen(range_pen); p.setBrush(Qt::NoBrush); p.drawEllipse(view_pos, radius, radius);
+            }
+        } else {
+            if (target_ok) {
+                p.drawLine(view_pos, view_target);
+                p.setBrush(color);
+                p.drawEllipse(view_target, selected ? 5.0 : 3.5, selected ? 5.0 : 3.5);
+            }
+            if (light.type == TitleLightType::Spot && target_ok) {
+                const QLineF axis(view_pos, view_target);
+                const double length = std::max(24.0, axis.length());
+                const double half = std::tan(std::clamp(light.cone_angle.evaluate(playhead_), 1.0, 179.0) *
+                    0.5 * 3.14159265358979323846 / 180.0) * length;
+                const QPointF normal(-axis.dy() / length, axis.dx() / length);
+                p.drawLine(view_pos, view_target + normal * half);
+                p.drawLine(view_pos, view_target - normal * half);
+                p.drawLine(view_target + normal * half, view_target - normal * half);
+            } else {
+                p.drawRect(QRectF(view_pos.x() - 6.0, view_pos.y() - 6.0, 12.0, 12.0));
+            }
+        }
+        if (selected) {
+            p.setPen(color);
+            p.drawText(QRectF(view_pos.x() + 18.0, view_pos.y() - 12.0, 220.0, 24.0),
+                       QString::fromStdString(layer.name));
+        }
+    }
+    p.restore();
+}
+
+bool CanvasPreview::empty_layer_overlay_points(
+    const Layer &source_layer, std::array<QPointF, 4> &view_points,
+    bool &is_3d) const
+{
+    view_points.fill(QPointF());
+    is_3d = false;
+    if (!title_ || source_layer.type != LayerType::Empty ||
+        !source_layer.visible || !layer_is_editor_visible(source_layer) ||
+        playhead_ < source_layer.in_time ||
+        playhead_ > source_layer.out_time)
+        return false;
+
+    const auto projection = projection_title();
+    if (!projection)
+        return false;
+    const auto projected_layer = projection->find_layer(source_layer.id);
+    const Layer &layer = projected_layer ? *projected_layer : source_layer;
+    is_3d = bgs::transform3d::layer_or_ancestor_uses_3d(*projection, layer);
+    const double logical_axis = std::max(
+        48.0, std::min(projection->width, projection->height) * 0.075);
+
+    std::array<QPointF, 4> projected;
+    if (is_3d) {
+        const QMatrix4x4 world = bgs::transform3d::layer_world_matrix(
+            *projection, layer, playhead_);
+        const QVector3D local_points[] = {
+            QVector3D(0.0f, 0.0f, 0.0f),
+            QVector3D(static_cast<float>(logical_axis), 0.0f, 0.0f),
+            QVector3D(0.0f, static_cast<float>(logical_axis), 0.0f),
+            QVector3D(0.0f, 0.0f, static_cast<float>(logical_axis)),
+        };
+        const std::string camera_id =
+            bgs::transform3d::resolved_layer_camera_id(
+                *projection, layer, playhead_);
+        for (int index = 0; index < 4; ++index) {
+            QPointF canvas_point;
+            if (!bgs::transform3d::project_world_point(
+                    *projection, world.map(local_points[index]), playhead_,
+                    canvas_point, nullptr, camera_id)) {
+                if (index == 0)
+                    return false;
+                projected[index] = projected[0];
+                continue;
+            }
+            projected[index] = canvas_to_view(canvas_point);
+        }
+    } else {
+        projected[0] = canvas_to_view(layer_to_canvas(layer, QPointF(0.0, 0.0)));
+        projected[1] = canvas_to_view(layer_to_canvas(layer, QPointF(logical_axis, 0.0)));
+        projected[2] = canvas_to_view(layer_to_canvas(layer, QPointF(0.0, logical_axis)));
+        projected[3] = projected[0];
+    }
+
+    view_points[0] = projected[0];
+    const double axis_pixels = is_3d ? 18.0 : 28.0;
+    for (int index = 1; index < 4; ++index) {
+        const QLineF axis(projected[0], projected[index]);
+        if (axis.length() < 0.5) {
+            view_points[index] = projected[0];
+            continue;
+        }
+        view_points[index] = projected[0] +
+            (projected[index] - projected[0]) * (axis_pixels / axis.length());
+    }
+    return true;
+}
+
+bool CanvasPreview::empty_layer_overlay_contains(
+    const Layer &layer, const QPointF &view_point) const
+{
+    std::array<QPointF, 4> points;
+    bool is_3d = false;
+    if (!empty_layer_overlay_points(layer, points, is_3d))
+        return false;
+    if (QLineF(view_point, points[0]).length() <= 8.0)
+        return true;
+    const int axis_count = is_3d ? 3 : 2;
+    for (int axis = 1; axis <= axis_count; ++axis) {
+        if (QLineF(points[axis], points[0]).length() < 0.5)
+            continue;
+        const QPointF start = is_3d
+            ? points[0]
+            : points[0] - (points[axis] - points[0]);
+        if (point_segment_distance(view_point, start, points[axis]) <= 7.0)
+            return true;
+    }
+    return false;
+}
+
+void CanvasPreview::draw_empty_layer_overlays(QPainter &p)
+{
+    if (!title_)
+        return;
+    const auto projection = projection_title();
+    if (!projection)
+        return;
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const auto &layer_ptr : projection->layers) {
+        if (!layer_ptr || layer_ptr->type != LayerType::Empty)
+            continue;
+        const Layer &layer = *layer_ptr;
+        std::array<QPointF, 4> points;
+        bool is_3d = false;
+        if (!empty_layer_overlay_points(layer, points, is_3d))
+            continue;
+        const bool selected = std::find(
+            selected_layer_ids_.begin(), selected_layer_ids_.end(), layer.id) !=
+            selected_layer_ids_.end();
+        const bool hovered = hovered_layer_id_ == layer.id;
+        const int axis_count = is_3d ? 3 : 2;
+        for (int axis = 1; axis <= axis_count; ++axis) {
+            if (QLineF(points[axis], points[0]).length() < 0.5)
+                continue;
+            QColor color;
+            if (is_3d)
+                color = gizmo_axis_color(axis - 1);
+            else
+                color = selected ? QColor(255, 190, 55)
+                                 : QColor(225, 225, 225, hovered ? 245 : 195);
+            if (!selected && is_3d)
+                color.setAlpha(hovered ? 235 : 185);
+            QPen pen(color, selected ? 2.0 : 1.25,
+                     Qt::SolidLine, Qt::RoundCap);
+            pen.setCosmetic(true);
+            p.setPen(pen);
+            const QPointF start = is_3d
+                ? points[0]
+                : points[0] - (points[axis] - points[0]);
+            p.drawLine(start, points[axis]);
+        }
+        const QColor center_color = selected
+            ? QColor(255, 220, 90)
+            : QColor(235, 235, 235, hovered ? 250 : 205);
+        p.setPen(QPen(QColor(25, 25, 25, 220), 1.0));
+        p.setBrush(center_color);
+        const double center_size = is_3d ? 5.0 : 7.0;
+        p.drawRect(QRectF(points[0].x() - center_size * 0.5,
+                          points[0].y() - center_size * 0.5,
+                          center_size, center_size));
+    }
+    p.restore();
+}
+
 void CanvasPreview::draw_3d_material_debug_overlay(QPainter &p)
 {
     if ((!editor_3d_depth_debug_visible_ && !editor_3d_normals_visible_) ||
@@ -941,6 +1348,7 @@ void CanvasPreview::draw_3d_material_debug_overlay(QPainter &p)
             continue;
         const Layer &layer = *layer_ptr;
         if (!layer.visible || layer_type_is_audio(layer.type) ||
+            layer.type == LayerType::Empty ||
             layer_type_is_container(layer.type) ||
             !bgs::transform3d::layer_supports_3d(layer) ||
             !bgs::transform3d::layer_or_ancestor_uses_3d(

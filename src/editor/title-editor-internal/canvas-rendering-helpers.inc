@@ -124,9 +124,11 @@ static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRect
 static bool title_has_dynamic_text_layer(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
-    return std::any_of(title->layers.begin(), title->layers.end(), [](const std::shared_ptr<Layer> &layer) {
+    const bool dynamic_text = std::any_of(title->layers.begin(), title->layers.end(), [](const std::shared_ptr<Layer> &layer) {
         return layer && (layer->type == LayerType::Clock || layer->type == LayerType::Ticker);
     });
+    return dynamic_text ||
+           bgs::asset_runtime::title_has_independent_playback(*title);
 }
 
 static QColor color_from_argb(uint32_t argb)
@@ -322,6 +324,14 @@ static uint32_t eval_fill_color(const Layer &layer, double t)
            (uint32_t)eval_channel(layer.fill_color_b, layer.fill_color & 0xFF, t);
 }
 
+static uint32_t eval_stroke_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.stroke_color_a, (layer.stroke_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.stroke_color_r, (layer.stroke_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.stroke_color_g, (layer.stroke_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.stroke_color_b, layer.stroke_color & 0xFF, t);
+}
+
 static QColor gradient_color_with_opacity(uint32_t argb, double gradient_opacity, double stop_opacity)
 {
     QColor color = color_from_argb(argb);
@@ -470,6 +480,7 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::FilmDistortion: return QStringLiteral("Film Distortion");
     case LayerEffectType::AnalogDistortion: return QStringLiteral("Analog Distortion");
     case LayerEffectType::DigitalDistortion: return QStringLiteral("Digital Distortion");
+    case LayerEffectType::TrimPaths: return QStringLiteral("Trim Paths");
     case LayerEffectType::RoughenEdges: return bgl_tr("OBSTitles.RoughenEdges");
     case LayerEffectType::FourColorGradient: return QStringLiteral("4-Color Gradient");
     case LayerEffectType::Sharpen: return QStringLiteral("Sharpen");
@@ -565,7 +576,7 @@ static bool eval_outline_enabled(const Layer &layer, double t)
 static uint32_t eval_outline_color(const Layer &layer, double t)
 {
     if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return layer.stroke_color;
+        return eval_stroke_color(layer, t);
     const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
     return effect ? eval_effect_color(*effect, t) : 0x00000000;
 }
@@ -989,4 +1000,3 @@ static void set_animated_x(AnimatedVec2Property &prop, double time, double value
     next.x = value;
     set_animated_value(prop, time, next);
 }
-

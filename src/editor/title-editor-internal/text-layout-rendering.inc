@@ -9,6 +9,7 @@ static QColor layer_type_color(LayerType type)
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::TickerLayer);
     case LayerType::SolidRect:
     case LayerType::Shape:
+    case LayerType::Empty:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
     case LayerType::Image:
     case LayerType::Video:
@@ -29,6 +30,13 @@ static QColor layer_type_color(LayerType type)
 
 static QColor layer_color(const Layer &layer, int /*row*/)
 {
+    if (layer.custom_ui_color_enabled) {
+        QColor custom = QColor::fromRgba(
+            static_cast<QRgb>(layer.custom_ui_color));
+        custom.setAlpha(255);
+        if (custom.isValid())
+            return custom;
+    }
     return layer_type_color(layer.type);
 }
 
@@ -41,6 +49,8 @@ static QString layer_type_short(LayerType type)
     case LayerType::SolidRect: return "■";
     case LayerType::Image: return "▧";
     case LayerType::Video: return "▶";
+    case LayerType::Light: return "LGT";
+    case LayerType::Empty: return "E";
     case LayerType::Shape: return "◆";
     case LayerType::Adjustment: return "FX";
     case LayerType::ColorSolid: return "■";
@@ -957,4 +967,3 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
             ? layer.ticker_completion_prop.evaluate(local_time)
             : layer.ticker_completion,
         0.0, 100.0) / 100.0;
-

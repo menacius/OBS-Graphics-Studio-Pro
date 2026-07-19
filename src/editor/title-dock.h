@@ -35,10 +35,16 @@
 #include <vector>
 
 class TitleEditor;
+class CanvasPreview;
 class QString;
 class QEvent;
 class QResizeEvent;
 class QHBoxLayout;
+class QDialog;
+class QFrame;
+class QPushButton;
+class QAction;
+enum class TitleProgramHotkeyCommand;
 struct calldata;
 typedef struct calldata calldata_t;
 
@@ -52,6 +58,13 @@ public:
     /* Called externally to refresh the list (e.g. after editor saves) */
     void refresh();
     void update_scene_collection_title();
+
+    /* Two-stage live cue API. enterPreview() prepares an isolated immutable
+     * snapshot; leavePreview() discards it without touching undo history or
+     * Program cue state. */
+    bool enterPreview(const std::shared_ptr<Title> &title, int row);
+    void leavePreview();
+    bool isPreviewReady() const;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -149,6 +162,20 @@ private:
     void update_titles_compact_rail();
     void update_titles_collapse_direction();
     void update_stored_dock_area(Qt::DockWidgetArea area);
+    void enforce_live_text_cache_column_visibility();
+    void open_live_text_columns_window();
+    void restore_live_text_table_to_dock();
+    void update_live_text_columns_window_title();
+    void refresh_live_cue_preview();
+    bool obs_duplicate_scene_preview_enabled() const;
+    bool attach_live_cue_preview_to_obs();
+    void detach_live_cue_preview_from_obs();
+    void sync_live_cue_preview_output_route();
+    void release_live_cue_preview_source();
+    void handle_program_hotkey(TitleProgramHotkeyCommand command,
+                               const std::string &title_id);
+    int program_hotkey_target_row(const std::shared_ptr<Title> &title,
+                                  bool prefer_last) const;
 
     int           cache_waiting_cue_row_ = -1;
     QString       cache_waiting_title_id_;
@@ -180,6 +207,13 @@ private:
     QLabel       *text_editor_lbl_ = nullptr;
     QLabel       *live_cue_timer_lbl_ = nullptr;
     QLabel       *playlist_countdown_lbl_ = nullptr;
+    QWidget      *live_text_section_ = nullptr;
+    QVBoxLayout  *live_text_section_layout_ = nullptr;
+    QWidget      *live_text_header_widget_ = nullptr;
+    QToolBar     *live_text_toolbar_ = nullptr;
+    QWidget      *live_text_table_host_ = nullptr;
+    QVBoxLayout  *live_text_table_host_layout_ = nullptr;
+    QWidget      *live_text_table_placeholder_ = nullptr;
     QTableWidget *text_table_ = nullptr;
     QToolButton *btn_add_text_row_ = nullptr;
     QToolButton *btn_delete_text_row_ = nullptr;
@@ -190,6 +224,9 @@ private:
     QToolButton *btn_external_refresh_ = nullptr;
     QToolButton *btn_playlist_ = nullptr;
     QToolButton *btn_persistence_settings_ = nullptr;
+    QAction     *act_live_text_columns_window_ = nullptr;
+    QAction     *act_select_row_before_cue_ = nullptr;
+    QAction     *act_show_cue_preview_ = nullptr;
     QAction     *act_external_data_source_ = nullptr;
     QAction     *act_external_data_settings_ = nullptr;
     QAction     *act_playlist_loop_ = nullptr;
@@ -200,6 +237,11 @@ private:
     QAction     *act_background_persistence_ = nullptr;
     QAction     *act_text_persistence_ = nullptr;
     QSpinBox    *spin_live_text_lines_per_row_ = nullptr;
+    QFrame      *live_cue_preview_panel_ = nullptr;
+    CanvasPreview *live_cue_preview_canvas_ = nullptr;
+    QLabel      *live_cue_preview_status_ = nullptr;
+    QPushButton *btn_live_cue_take_ = nullptr;
+    QPushButton *btn_live_cue_cancel_preview_ = nullptr;
     bool          updating_exposed_text_ = false;
     bool          template_icon_view_ = false;
     bool          visibility_filter_active_ = false;
@@ -216,15 +258,28 @@ private:
     bool          playlist_reverse_ = false;
     bool          background_persistence_ = false;
     bool          text_persistence_ = false;
+    bool          select_row_before_cue_ = false;
+    bool          show_cue_preview_ = true;
     QString       last_selected_title_id_;
     QString       live_text_width_initialized_title_id_;
     QSet<QString> pending_title_cache_icon_updates_;
     bool          title_cache_icon_update_scheduled_ = false;
     QHash<QString, int> focused_live_text_row_render_counts_;
+    QHash<QString, int> last_cued_rows_;
     int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;
     uint64_t      change_callback_id_ = 0;
     uint64_t      external_data_callback_id_ = 0;
+    QDialog      *live_text_columns_dialog_ = nullptr;
+    obs_source_t *live_cue_preview_source_ = nullptr;
+    obs_scene_t  *live_cue_obs_private_preview_scene_ = nullptr;
+    obs_source_t *live_cue_obs_previous_preview_scene_source_ = nullptr;
+    obs_sceneitem_t *live_cue_obs_preview_item_ = nullptr;
+    bool          live_cue_preview_uses_obs_ = false;
+    std::shared_ptr<Title> live_cue_preview_title_;
+    QString       live_cue_preview_title_id_;
+    int           live_cue_preview_row_ = -1;
+    double        live_cue_preview_time_ = 0.0;
 
     TitleEditor  *editor_     = nullptr;
 };

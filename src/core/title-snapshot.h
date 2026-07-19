@@ -44,6 +44,7 @@ inline void restore_title_authoring_snapshot(Title &target,
 
     const int current_cue_row = target.current_cue_row;
     const int pending_cue_row = target.pending_cue_row;
+    const int last_cue_row = target.last_cue_row;
     const bool cue_uncue_requested = target.cue_uncue_requested;
     const uint64_t cue_revision = target.cue_revision;
     const bool playlist_active = target.playlist_active;
@@ -67,6 +68,7 @@ inline void restore_title_authoring_snapshot(Title &target,
     };
     target.current_cue_row = valid_runtime_row(current_cue_row);
     target.pending_cue_row = valid_runtime_row(pending_cue_row);
+    target.last_cue_row = valid_runtime_row(last_cue_row);
     target.cue_uncue_requested = cue_uncue_requested &&
         target.current_cue_row >= 0;
     target.cue_revision = cue_revision + 1;

@@ -958,6 +958,34 @@ QPointF CanvasPreview::constrain_path_direction(const QPointF &anchor, const QPo
 
 bool CanvasPreview::event(QEvent *ev)
 {
+    if (read_only_ && ev) {
+        switch (ev->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::MouseMove:
+        case QEvent::KeyPress:
+        case QEvent::KeyRelease:
+        case QEvent::ShortcutOverride:
+        case QEvent::ContextMenu:
+        case QEvent::Wheel:
+        case QEvent::DragEnter:
+        case QEvent::DragMove:
+        case QEvent::DragLeave:
+        case QEvent::Drop:
+        case QEvent::TouchBegin:
+        case QEvent::TouchUpdate:
+        case QEvent::TouchEnd:
+        case QEvent::TabletPress:
+        case QEvent::TabletMove:
+        case QEvent::TabletRelease:
+            ev->accept();
+            return true;
+        default:
+            break;
+        }
+    }
+
     if (ev && gpu_display_ && gpu_display_->swapchain) {
         if (ev->type() == QEvent::Show) {
             gpu_display_->enabled = true;
@@ -1255,4 +1283,3 @@ CanvasPreview::PathHit CanvasPreview::hit_test_direct_path(const Layer &layer, c
     }
     return result;
 }
-

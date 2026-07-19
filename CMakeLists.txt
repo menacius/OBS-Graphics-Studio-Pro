@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.12)
+project(broadcast-graphics-live VERSION 0.8.13)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "281")
+set(OBS_BGS_DEVELOPMENT_VERSION "394")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -384,6 +384,7 @@ set_target_properties(QtColorWidgets PROPERTIES
 # ── Sources ─────────────────────────────────────────────────────────
 set(OBS_BGS_CORE_SOURCES
     src/core/title-data.cpp
+    src/core/packed-title-format.cpp
     src/core/title-logger.cpp
     src/core/title-preferences.cpp
     src/core/system-memory.cpp
@@ -395,6 +396,7 @@ set(OBS_BGS_CORE_SOURCES
 )
 set(OBS_BGS_CORE_HEADERS
     src/core/build-info.h
+    src/core/packed-title-format.h
     src/core/live-text-cue-utils.h
     src/core/preset-category-path.h
     src/core/title-data.h
@@ -418,12 +420,14 @@ set(OBS_BGS_LAYER_HEADERS
     src/layers/layer-model.h
     src/layers/image-layer-utils.h
     src/layers/path-geometry.h
+    src/layers/stroke-path-geometry.h
     src/layers/layer-stack-widget.h
 )
 
 set(OBS_BGS_LAYER_SOURCES
     src/layers/image-layer-utils.cpp
     src/layers/path-geometry.cpp
+    src/layers/stroke-path-geometry.cpp
     src/layers/layer-stack-widget.cpp
 )
 
@@ -853,6 +857,14 @@ message(STATUS "Broadcast Graphics Live: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VE
 option(OBS_BGS_BUILD_TESTS "Build lightweight Broadcast Graphics Live validation tests" OFF)
 if(OBS_BGS_BUILD_TESTS)
   enable_testing()
+
+  add_executable(packed_title_format_test
+      tests/packed_title_format_test.cpp
+      src/core/packed-title-format.cpp)
+  target_include_directories(packed_title_format_test PRIVATE src/core)
+  target_link_libraries(packed_title_format_test PRIVATE
+      Qt${QT_VERSION_MAJOR}::Core ${OBS_BGS_LZ4_TARGET})
+  add_test(NAME packed_title_format_test COMMAND packed_title_format_test)
 
   add_executable(ram_frame_cache_membership_contract_test
       tests/ram_frame_cache_membership_contract_test.cpp)

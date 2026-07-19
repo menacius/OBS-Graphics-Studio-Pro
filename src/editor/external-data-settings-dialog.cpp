@@ -1,4 +1,5 @@
 #include "external-data-settings-dialog.h"
+#include "bgl-modern-controls.h"
 
 #include "external-data-binding-dialog.h"
 
@@ -358,7 +359,7 @@ void ExternalDataSettingsDialog::build_ui()
         const auto type = static_cast<ExternalDataProviderType>(value);
         provider_combo_->addItem(provider_label(type), value);
     }
-    enabled_check_ = new QCheckBox(QStringLiteral("Connect automatically"), provider_form_widget);
+    enabled_check_ = new BglSwitch(QStringLiteral("Connect automatically"), provider_form_widget);
 
     auto *location_row = new QWidget(provider_form_widget);
     auto *location_layout = new QHBoxLayout(location_row);
@@ -378,7 +379,7 @@ void ExternalDataSettingsDialog::build_ui()
     polling_spin_ = make_millisecond_spin(provider_form_widget);
     polling_spin_->setMaximum(86400000);
     rate_limit_spin_ = make_millisecond_spin(provider_form_widget, 60000);
-    keep_last_check_ = new QCheckBox(QStringLiteral("Keep the last valid values during errors/disconnects"),
+    keep_last_check_ = new BglSwitch(QStringLiteral("Keep the last valid values during errors/disconnects"),
                                      provider_form_widget);
     stale_spin_ = make_millisecond_spin(provider_form_widget, 604800000);
     root_path_edit_ = new QLineEdit(provider_form_widget);
@@ -394,7 +395,7 @@ void ExternalDataSettingsDialog::build_ui()
     retry_backoff_spin_ = make_millisecond_spin(provider_form_widget, 300000);
     reconnect_initial_spin_ = make_millisecond_spin(provider_form_widget, 300000);
     reconnect_max_spin_ = make_millisecond_spin(provider_form_widget, 3600000);
-    csv_headers_check_ = new QCheckBox(QStringLiteral("First row contains column headers"),
+    csv_headers_check_ = new BglSwitch(QStringLiteral("First row contains column headers"),
                                        provider_form_widget);
     csv_row_spin_ = new QSpinBox(provider_form_widget);
     csv_row_spin_->setRange(0, 1000000);

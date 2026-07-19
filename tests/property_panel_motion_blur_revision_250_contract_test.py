@@ -26,7 +26,7 @@ def main() -> None:
     sync = read("src/editor/properties-panel/property-synchronization.inc")
     selection = read("src/editor/properties-panel/selection-refresh.inc")
     motion = read("src/obs/title-source/gpu-resources-primitives.inc")
-    shader = read("data/effect-transitions/shaders/motion-blur/motion-blur.effect")
+    shader = read("src/obs/title-source/gpu-effects-transitions.inc")
     readme = read("README.md")
 
     if not any(v in build for v in [f'BGL_DEVELOPMENT_VERSION "{v}"' for v in range(250, 300)]):
@@ -49,14 +49,25 @@ def main() -> None:
     require(selection, 'QStringLiteral("Replace Video")', "video-specific source button")
     require(popup, 'QGroupBox(QStringLiteral("Video Timing & Loading")', "video timing/loading panel title")
 
-    require(motion, 'motion blur must never reduce the', "temporal motion blur alpha-preservation comment")
-    require(motion, 'const double sharp_mix = 1.0;', "temporal motion blur keeps sharp layer full opacity")
-    require(motion, 'const double blur_mix = mix;', "temporal motion blur trail strength")
-    require(shader, 'result.a = max(center.a, result.a);', "shader motion blur preserves center alpha")
-    require(shader, 'result.rgb = min(result.rgb, result.a.xxx);', "shader motion blur clamps premultiplied output")
+    require(motion, 'accumulate_motion_coverage_max',
+            "temporal motion blur maximum-coverage accumulation")
+    require(motion, 'coverage_canvas',
+            "temporal motion blur independent coverage surface")
+    require(motion, 'resolve_motion_blur_coverage',
+            "temporal color and alpha coverage resolve")
+    forbid(motion, 'const double sharp_mix = 1.0;',
+           "obsolete additive sharp-frame accumulation")
+    require(shader, 'float coverageAlpha = saturate(coverageImage.Sample(textureSampler, v.uv).a);',
+            "shader reads independent temporal coverage")
+    require(shader, 'float3 exposureStraight = exposureAlpha > 0.00001',
+            "shader preserves shutter-averaged temporal color")
+    require(shader, 'float4 result = lerp(currentFrame, wet, mixAmount);',
+            "shader uses premultiplied dry-wet resolve")
+    require(shader, 'technique Coverage',
+            "shader maximum-alpha coverage pass")
 
-    require(readme, 'Development Version 250', "README version note")
-    require(readme, 'all live/runtime controls are consolidated into one Live Properties panel',
+    require(readme, 'Development Version 297', "README current version note")
+    require(readme, 'expanded Live Properties and cue rows',
             "README live properties summary")
 
     print("revision 250 property panel organization and motion blur contract OK")

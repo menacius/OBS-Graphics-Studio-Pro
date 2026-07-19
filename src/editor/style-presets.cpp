@@ -373,6 +373,7 @@ QJsonObject strokePayloadFromLayer(const Layer &layer)
     QJsonObject stroke;
     stroke[QStringLiteral("enabled")] = layer.outline_enabled;
     stroke[QStringLiteral("width")] = layer.stroke_width;
+    stroke[QStringLiteral("offset")] = layer.stroke_offset;
     stroke[QStringLiteral("opacity")] = layer.outline_opacity;
     stroke[QStringLiteral("onFront")] = layer.outline_on_front;
     stroke[QStringLiteral("alignment")] = layer.outline_alignment;
@@ -388,6 +389,8 @@ void applyStrokePayloadToLayer(const QJsonObject &stroke, Layer &layer)
 {
     layer.outline_enabled = stroke.value(QStringLiteral("enabled")).toBool(layer.outline_enabled);
     layer.stroke_width = float(stroke.value(QStringLiteral("width")).toDouble(layer.stroke_width));
+    layer.stroke_offset = float(stroke.value(QStringLiteral("offset")).toDouble(layer.stroke_offset));
+    layer.stroke_offset_prop.static_value = layer.stroke_offset;
     layer.outline_opacity = float(stroke.value(QStringLiteral("opacity")).toDouble(layer.outline_opacity));
     layer.outline_on_front = stroke.value(QStringLiteral("onFront")).toBool(layer.outline_on_front);
     layer.outline_alignment = std::clamp(stroke.value(QStringLiteral("alignment")).toInt(layer.outline_alignment), 0, 2);
@@ -395,6 +398,10 @@ void applyStrokePayloadToLayer(const QJsonObject &stroke, Layer &layer)
     layer.outline_join_style = std::clamp(stroke.value(QStringLiteral("joinStyle")).toInt(layer.outline_join_style), 0, 2);
     layer.stroke_fill_type = std::clamp(stroke.value(QStringLiteral("fillType")).toInt(layer.stroke_fill_type), 0, 2);
     layer.stroke_color = parseArgb(stroke, "color", layer.stroke_color);
+    layer.stroke_color_a.static_value = (layer.stroke_color >> 24) & 0xFF;
+    layer.stroke_color_r.static_value = (layer.stroke_color >> 16) & 0xFF;
+    layer.stroke_color_g.static_value = (layer.stroke_color >> 8) & 0xFF;
+    layer.stroke_color_b.static_value = layer.stroke_color & 0xFF;
 
     if (stroke.value(QStringLiteral("gradient")).isObject()) {
         RichTextFill fill;
@@ -743,7 +750,6 @@ public:
         connect(properties_, &PropertiesPanel::redo_requested, this, [this]() {
             restoreHistory(history_index_ + 1);
         });
-
         history_.push_back(currentPayload());
         history_index_ = 0;
         updateHistoryButtons();
@@ -1079,6 +1085,8 @@ StylePreset StylePresetLibrary::makeTextPreset(const Layer &layer, const QString
     o[QStringLiteral("boxHeightToText")] = source.text_box_height_to_text;
     o[QStringLiteral("maxBoxWidth")] = source.max_text_box_width;
     o[QStringLiteral("maxBoxHeight")] = source.max_text_box_height;
+    o[QStringLiteral("maxBoxWidthOverridden")] = source.max_text_box_width_overridden;
+    o[QStringLiteral("maxBoxHeightOverridden")] = source.max_text_box_height_overridden;
     o[QStringLiteral("fillType")] = source.fill_type;
     o[QStringLiteral("gradient")] = gradientPayloadFromLayer(source);
     o[QStringLiteral("stroke")] = strokePayloadFromLayer(source);
@@ -1158,6 +1166,16 @@ bool StylePresetLibrary::applyTextPreset(const StylePreset &preset, Layer &layer
     layer.max_text_box_height = float(std::max(
         1.0, o.value(QStringLiteral("maxBoxHeight"))
                  .toDouble(layer.max_text_box_height)));
+    layer.max_text_box_width_overridden =
+        o.value(QStringLiteral("maxBoxWidthOverridden"))
+            .toBool(layer.max_text_box_width_overridden);
+    layer.max_text_box_height_overridden =
+        o.value(QStringLiteral("maxBoxHeightOverridden"))
+            .toBool(layer.max_text_box_height_overridden);
+    if (!layer.max_text_box_width_overridden)
+        layer.max_text_box_width = std::max(1.0f, layer.rect_width);
+    if (!layer.max_text_box_height_overridden)
+        layer.max_text_box_height = std::max(1.0f, layer.rect_height);
 
     rich_text_document_sync_layer_mirrors_canonical(layer);
 

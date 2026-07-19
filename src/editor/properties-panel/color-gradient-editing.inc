@@ -150,7 +150,7 @@
                 if (inline_text_stroke)
                     return current_text_char_format().stroke.fill;
                 fill.type = layer_->stroke_fill_type == 2 ? 1 : 0;
-                fill.color = layer_->stroke_color;
+                fill.color = eval_stroke_color(*layer_, local_time());
                 fill.gradient_type = layer_->stroke_gradient_type;
                 fill.gradient_spread = layer_->stroke_gradient_spread;
                 fill.gradient_start_color = layer_->stroke_gradient_start_color;
@@ -666,7 +666,7 @@
     connect(btn_appearance_stroke_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(true); });
     connect(stroke_options_trigger, &QPushButton::clicked,
-            this, [this, can_edit, emit_change, text_edit_active,
+            this, [this, can_edit, emit_change, local_time, text_edit_active,
                    apply_text_char_format, current_text_char_format,
                    control_style, checkbox_style, themed_dialog_style]() {
                 if (!can_edit()) return;
@@ -703,6 +703,47 @@
                 weight_layout->addWidget(weight);
                 weight_layout->addStretch();
                 root->addWidget(weight_row);
+
+                auto *offset_row = new QWidget(&popup);
+                auto *offset_layout = new QHBoxLayout(offset_row);
+                offset_layout->setContentsMargins(0, 0, 0, 0);
+                offset_layout->setSpacing(6);
+                auto *offset_label = new QLabel(bgl_tr("OBSTitles.StrokeOffsetColon"), offset_row);
+                auto *offset = new QDoubleSpinBox(offset_row);
+                offset->setRange(-16384.0, 16384.0);
+                offset->setDecimals(2);
+                offset->setSingleStep(0.1);
+                offset->setSuffix(QStringLiteral(" px"));
+                offset->setFixedWidth(96);
+                offset->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+                offset->setStyleSheet(control_style);
+                offset->setValue(layer_->stroke_offset_prop.is_animated()
+                    ? layer_->stroke_offset_prop.evaluate(local_time())
+                    : (double)layer_->stroke_offset);
+                auto *offset_key = new QToolButton(offset_row);
+                offset_key->setIcon(bgl_keyframe_diamond_icon(
+                    keyframe_at_time(layer_->stroke_offset_prop, local_time()),
+                    layer_->stroke_offset_prop.is_animated()));
+                offset_key->setToolTip(QStringLiteral("Toggle Stroke Offset keyframe"));
+                bgl_style_keyframe_button(offset_key);
+                auto *offset_navigation = bgl_make_keyframe_controls(
+                    offset_key, offset_row,
+                    [this]() {
+                        std::vector<double> times;
+                        if (layer_)
+                            for (const Keyframe &key : layer_->stroke_offset_prop.keyframes)
+                                times.push_back(key.time);
+                        return times;
+                    }, local_time,
+                    [this](double time) {
+                        if (layer_)
+                            emit keyframe_navigation_requested(layer_->in_time + time);
+                    });
+                offset_layout->addWidget(offset_label);
+                offset_layout->addWidget(offset);
+                offset_layout->addStretch();
+                offset_layout->addWidget(offset_navigation);
+                root->addWidget(offset_row);
 
                 auto make_button = [](const QString &text, const QString &tip, QWidget *parent) {
                     auto *button = new QToolButton(parent);
@@ -818,6 +859,38 @@
                 }
                 root->addWidget(dash_values);
 
+                connect(offset, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                        &popup, [this, local_time, emit_change](double v) {
+                            if (!layer_ || loading_values_) return;
+                            layer_->stroke_offset = (float)v;
+                            set_animated_value(layer_->stroke_offset_prop, local_time(), v);
+                            emit_change();
+                        });
+                connect(offset_key, &QToolButton::clicked, &popup,
+                        [this, offset, offset_key, local_time, emit_change]() {
+                            if (!layer_ || loading_values_) return;
+                            const double t = local_time();
+                            toggle_keyframe(layer_->stroke_offset_prop, t, offset->value());
+                            offset_key->setIcon(bgl_keyframe_diamond_icon(
+                                keyframe_at_time(layer_->stroke_offset_prop, t),
+                                layer_->stroke_offset_prop.is_animated()));
+                            bgl_refresh_keyframe_navigation(offset_key);
+                            emit_change();
+                        });
+                offset_key->setContextMenuPolicy(Qt::CustomContextMenu);
+                connect(offset_key, &QWidget::customContextMenuRequested, &popup,
+                        [this, offset_key, emit_change](const QPoint &position) {
+                    QMenu menu(offset_key);
+                    QAction *clear = menu.addAction(
+                        bgl_tr("OBSTitles.DeleteAllKeyframes"));
+                    clear->setEnabled(layer_ &&
+                                      !layer_->stroke_offset_prop.keyframes.empty());
+                    if (menu.exec(offset_key->mapToGlobal(position)) != clear || !layer_)
+                        return;
+                    layer_->stroke_offset_prop.keyframes.clear();
+                    bgl_refresh_keyframe_navigation(offset_key);
+                    emit_change();
+                });
                 connect(weight, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                         &popup, [this, inline_stroke, apply_text_char_format,
                                  current_text_char_format, emit_change](double v) {
@@ -900,4 +973,3 @@
                             }
                             emit_change();
                         });
-

@@ -8,6 +8,7 @@
 #include "effects/effect-preset-catalog.h"
 #include "effects/effect-runtime.h"
 #include "title-logger.h"
+#include "packed-title-format.h"
 #include "ticker-runtime.h"
 #include "asset-runtime.h"
 #include "external-data.h"
@@ -20,6 +21,17 @@
 #include <QSaveFile>
 #include <QString>
 #include <QFileInfo>
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
+#include <QFontDatabase>
+#include <QHash>
+#include <QJsonDocument>
+#include <QRawFont>
+#include <QSet>
+#include <QStandardPaths>
 
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -63,6 +75,8 @@ constexpr int kMaxCanvasDimension = 16384;
 
 std::mutex g_live_cue_runtime_mutex;
 std::unordered_map<std::string, LiveCueRuntimeSnapshot> g_live_cue_runtime_states;
+std::mutex g_packed_font_registry_mutex;
+std::unordered_set<std::string> g_registered_packed_font_paths;
 
 static double finite_or(double value, double fallback)
 {
@@ -805,6 +819,24 @@ static bool file_exists(const std::string &path)
     return f.is_open();
 }
 
+static bool register_packed_font_file(const QString &path)
+{
+    const QFileInfo info(path);
+    QString canonical = info.canonicalFilePath();
+    if (canonical.isEmpty())
+        canonical = info.absoluteFilePath();
+    if (!info.exists() || !info.isFile() || !info.isReadable())
+        return false;
+    const std::string key = canonical.toStdString();
+    std::lock_guard<std::mutex> lock(g_packed_font_registry_mutex);
+    if (g_registered_packed_font_paths.count(key) != 0)
+        return true;
+    if (QFontDatabase::addApplicationFont(canonical) < 0)
+        return false;
+    g_registered_packed_font_paths.insert(key);
+    return true;
+}
+
 static std::string file_name_from_path(const std::string &path)
 {
     const size_t slash = path.find_last_of("/\\");
@@ -1145,6 +1177,12 @@ static void set_color_channels(Layer &l, bool text, uint32_t argb)
     AnimatedProperty &g = text ? l.text_color_g : l.fill_color_g;
     AnimatedProperty &b = text ? l.text_color_b : l.fill_color_b;
     set_argb_channels(a, r, g, b, argb);
+}
+
+static void set_stroke_color_channels(Layer &l, uint32_t argb)
+{
+    set_argb_channels(l.stroke_color_a, l.stroke_color_r,
+                      l.stroke_color_g, l.stroke_color_b, argb);
 }
 
 static void set_background_color_channels(Layer &l, uint32_t argb)
@@ -1545,6 +1583,7 @@ void apply_live_text_cue_style_to_layer(Title &title, Layer &layer, int row)
     }
     if (layer.expose_stroke_color && live_text_cue_color_override(title, layer, row, true, &argb)) {
         layer.stroke_color = argb;
+        set_stroke_color_channels(layer, argb);
     }
 }
 
@@ -1835,6 +1874,7 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     layer->size.static_value.y = layer->rect_height;
     set_color_channels(*layer, true, layer->text_color);
     set_color_channels(*layer, false, layer->fill_color);
+    set_stroke_color_channels(*layer, layer->stroke_color);
     layer->text_content = t->name;
     layer->rich_text = rich_text_document_from_layer_defaults(*layer);
     layer->expose_text = true;
@@ -2957,6 +2997,9 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
     return doc;
 }
 
+static json light_to_json(const TitleLight &light);
+static TitleLight light_from_json(const json &j, size_t index);
+
 static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr,
                           bool *asset_embed_failed = nullptr,
@@ -2976,6 +3019,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["locked"]   = l.locked;
     j["properties_expanded"] = l.properties_expanded;
     j["group_collapsed"] = l.group_collapsed;
+    j["custom_ui_color_enabled"] = l.custom_ui_color_enabled;
+    j["custom_ui_color"] = l.custom_ui_color;
     if (l.type == LayerType::TransitionInput) {
         j["transition_input_slot"] = l.transition_input_slot;
         j["transition_input_required"] = l.transition_input_required;
@@ -3010,6 +3055,12 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["asset_pause_duration"] = l.asset_pause_duration;
     j["asset_loop_count"] = l.asset_loop_count;
     j["asset_loop"] = l.asset_loop;
+    j["asset_isolated_3d_space"] = l.asset_isolated_3d_space;
+    j["asset_space_width"] = l.asset_space_width;
+    j["asset_space_height"] = l.asset_space_height;
+    j["asset_space_center_x"] = l.asset_space_center_x;
+    j["asset_space_center_y"] = l.asset_space_center_y;
+    j["asset_camera_uses_owner_time"] = l.asset_camera_uses_owner_time;
     j["audio_source"] = l.audio_source;
     j["audio_stream_index"] = l.audio_stream_index;
     j["audio_in_point"] = l.audio_in_point;
@@ -3195,6 +3246,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_stroke_color", effect.effect_stroke_color},
                            {"effect_stroke_width", effect.effect_stroke_width},
                            {"effect_stroke_opacity", effect.effect_stroke_opacity},
+                           {"effect_trim_start", effect.effect_trim_start},
+                           {"effect_trim_end", effect.effect_trim_end},
+                           {"effect_trim_offset", effect.effect_trim_offset},
+                           {"effect_trim_multiple_shapes", effect.effect_trim_multiple_shapes},
                            {"effect_padding_left", effect.effect_padding_left},
                            {"effect_padding_right", effect.effect_padding_right},
                            {"effect_padding_top", effect.effect_padding_top},
@@ -3240,6 +3295,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"evolution_prop", aprop_to_json(effect.evolution_prop)},
                            {"stroke_width_prop", aprop_to_json(effect.stroke_width_prop)},
                            {"stroke_opacity_prop", aprop_to_json(effect.stroke_opacity_prop)},
+                           {"trim_start_prop", aprop_to_json(effect.trim_start_prop)},
+                           {"trim_end_prop", aprop_to_json(effect.trim_end_prop)},
+                           {"trim_offset_prop", aprop_to_json(effect.trim_offset_prop)},
                            {"padding_left_prop", aprop_to_json(effect.padding_left_prop)},
                            {"padding_right_prop", aprop_to_json(effect.padding_right_prop)},
                            {"padding_top_prop", aprop_to_json(effect.padding_top_prop)},
@@ -3360,6 +3418,31 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["write_to_depth"] = l.write_to_depth;
     j["double_sided"] = l.double_sided;
     j["backface_culling"] = l.backface_culling;
+    j["material_accepts_lights"] = l.material_accepts_lights;
+    j["material_casts_shadows"] = l.material_casts_shadows;
+    j["material_accepts_shadows"] = l.material_accepts_shadows;
+    j["material_appears_in_reflections"] = l.material_appears_in_reflections;
+    j["material_ambient"] = aprop_to_json(l.material_ambient);
+    j["material_diffuse"] = aprop_to_json(l.material_diffuse);
+    j["material_specular"] = aprop_to_json(l.material_specular);
+    j["material_shininess"] = aprop_to_json(l.material_shininess);
+    j["material_metallic"] = aprop_to_json(l.material_metallic);
+    j["material_roughness"] = aprop_to_json(l.material_roughness);
+    j["material_reflection_intensity"] = aprop_to_json(l.material_reflection_intensity);
+    j["material_emissive_color"] = l.material_emissive_color;
+    j["material_emissive_color_a"] = aprop_to_json(l.material_emissive_color_a);
+    j["material_emissive_color_r"] = aprop_to_json(l.material_emissive_color_r);
+    j["material_emissive_color_g"] = aprop_to_json(l.material_emissive_color_g);
+    j["material_emissive_color_b"] = aprop_to_json(l.material_emissive_color_b);
+    j["material_emissive_intensity"] = aprop_to_json(l.material_emissive_intensity);
+    j["geometry_extrusion_enabled"] = l.geometry_extrusion_enabled;
+    j["geometry_extrusion_depth"] = aprop_to_json(l.geometry_extrusion_depth);
+    j["geometry_bevel_depth"] = aprop_to_json(l.geometry_bevel_depth);
+    j["geometry_bevel_segments"] = l.geometry_bevel_segments;
+    j["geometry_extrusion_segments"] = l.geometry_extrusion_segments;
+    j["geometry_bevel_front"] = l.geometry_bevel_front;
+    j["geometry_bevel_back"] = l.geometry_bevel_back;
+    if (l.type == LayerType::Light) j["light"] = light_to_json(l.light);
 
     j["text_content"]  = l.text_content;
     /* rich_text is the only style source of truth; do not serialize legacy HTML. */
@@ -3406,6 +3489,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["text_box_height_to_text"] = l.text_box_height_to_text;
     j["max_text_box_width"] = l.max_text_box_width;
     j["max_text_box_height"] = l.max_text_box_height;
+    j["max_text_box_width_overridden"] = l.max_text_box_width_overridden;
+    j["max_text_box_height_overridden"] = l.max_text_box_height_overridden;
     j["ticker_style"] = l.ticker_style;
     j["ticker_speed"] = l.ticker_speed;
     j["ticker_line_hold"] = l.ticker_line_hold;
@@ -3418,6 +3503,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["stroke_fill_type"] = l.stroke_fill_type;
     j["stroke_color"]  = l.stroke_color;
     j["stroke_width"]  = l.stroke_width;
+    j["stroke_offset"] = l.stroke_offset;
+    j["stroke_offset_prop"] = aprop_to_json(l.stroke_offset_prop);
     j["outline_opacity"] = l.outline_opacity;
     j["outline_join_style"] = l.outline_join_style;
     j["outline_on_front"] = l.outline_on_front;
@@ -3589,6 +3676,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["fill_color_r"]  = aprop_to_json(l.fill_color_r);
     j["fill_color_g"]  = aprop_to_json(l.fill_color_g);
     j["fill_color_b"]  = aprop_to_json(l.fill_color_b);
+    j["stroke_color_a"] = aprop_to_json(l.stroke_color_a);
+    j["stroke_color_r"] = aprop_to_json(l.stroke_color_r);
+    j["stroke_color_g"] = aprop_to_json(l.stroke_color_g);
+    j["stroke_color_b"] = aprop_to_json(l.stroke_color_b);
     j["image_path"]    = l.image_path;
     j["scale_filter"]  = (int)l.scale_filter;
     j["image_box_lock_aspect_ratio"] = l.image_box_lock_aspect_ratio;
@@ -3620,7 +3711,8 @@ std::string layer_render_fingerprint(const Layer &layer)
     json j = layer_to_json(layer, false, false, nullptr, nullptr, false);
     static constexpr const char *kCompositorOnlyKeys[] = {
         "id", "name", "visible", "locked", "properties_expanded",
-        "group_collapsed", "parent_id", "transform_parent_id", "parent_bind_enabled", "parent_bind_matrix", "mask_source_id", "mask_mode",
+        "group_collapsed", "custom_ui_color_enabled", "custom_ui_color",
+        "parent_id", "transform_parent_id", "parent_bind_enabled", "parent_bind_matrix", "mask_source_id", "mask_mode",
         "matte_visibility_mode", "blend_mode",
         "use_as_scene_mask", "effect_stack_respects_masks",
         "in_time", "out_time", "position", "scale", "scale_lock",
@@ -3749,11 +3841,15 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Video);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Empty);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->group_collapsed = json_bool(j, "group_collapsed", false);
+    l->custom_ui_color_enabled = json_bool(
+        j, "custom_ui_color_enabled", false);
+    l->custom_ui_color = json_color(
+        j, "custom_ui_color", (uint32_t)0xFF4C6EF5u) | 0xFF000000u;
     l->transition_input_slot = std::clamp(json_int(j, "transition_input_slot", -1), -1, 1);
     l->transition_input_required = json_bool(j, "transition_input_required", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
@@ -3799,6 +3895,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->asset_pause_duration = std::clamp(finite_or(json_double(j, "asset_pause_duration", 1.0), 1.0), 0.0, kMaxDuration);
     l->asset_loop_count = std::clamp(json_int(j, "asset_loop_count", 1), 1, 1000000);
     l->asset_loop = json_bool(j, "asset_loop", false);
+    l->asset_isolated_3d_space = json_bool(j, "asset_isolated_3d_space", false);
+    l->asset_space_width = std::clamp(json_int(j, "asset_space_width", 0), 0, 1000000);
+    l->asset_space_height = std::clamp(json_int(j, "asset_space_height", 0), 0, 1000000);
+    l->asset_space_center_x = std::clamp(finite_or(json_double(j, "asset_space_center_x", 0.0), 0.0), -1000000000.0, 1000000000.0);
+    l->asset_space_center_y = std::clamp(finite_or(json_double(j, "asset_space_center_y", 0.0), 0.0), -1000000000.0, 1000000000.0);
+    l->asset_camera_uses_owner_time = json_bool(
+        j, "asset_camera_uses_owner_time", false);
     l->audio_source = bounded_string(j, "audio_source", "", kMaxPathLength);
     l->audio_stream_index = std::clamp(json_int(j, "audio_stream_index", -1), -1, 1024);
     l->audio_in_point = std::clamp(finite_or(json_double(j, "audio_in_point", 0.0), 0.0), 0.0, kMaxDuration);
@@ -3979,7 +4082,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const bool extension_is_builtin = BglEffectExtensionCatalog::builtInTypeForId(
                 QString::fromStdString(loaded_extension_id), &resolved_type);
             const bool valid_legacy_type = raw_effect_type >= 0 &&
-                raw_effect_type <= (int)LayerEffectType::DigitalDistortion;
+                raw_effect_type <= (int)LayerEffectType::TrimPaths;
             if (!valid_legacy_type && loaded_extension_id.empty()) {
                 if (diagnostics) {
                     append_unique_import_diagnostic(
@@ -4154,6 +4257,11 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_stroke_color = json_color(effect_json, "effect_stroke_color", effect.effect_stroke_color);
             effect.effect_stroke_width = (float)std::clamp(finite_or(json_double(effect_json, "effect_stroke_width", effect.effect_stroke_width), effect.effect_stroke_width), 0.0, (double)kMaxCanvasDimension);
             effect.effect_stroke_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_stroke_opacity", effect.effect_stroke_opacity), effect.effect_stroke_opacity), 0.0, 1.0);
+            effect.effect_trim_start = (float)std::clamp(finite_or(json_double(effect_json, "effect_trim_start", 0.0), 0.0), 0.0, 100.0);
+            effect.effect_trim_end = (float)std::clamp(finite_or(json_double(effect_json, "effect_trim_end", 100.0), 100.0), 0.0, 100.0);
+            effect.effect_trim_offset = (float)finite_or(json_double(effect_json, "effect_trim_offset", 0.0), 0.0);
+            effect.effect_stroke_offset = (float)std::clamp(finite_or(json_double(effect_json, "effect_stroke_offset", 0.0), 0.0), -16384.0, 16384.0);
+            effect.effect_trim_multiple_shapes = std::clamp(json_int(effect_json, "effect_trim_multiple_shapes", 0), 0, 1);
             effect.effect_padding_left = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_left", effect.effect_padding_left), effect.effect_padding_left), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
             effect.effect_padding_right = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_right", effect.effect_padding_right), effect.effect_padding_right), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
             effect.effect_padding_top = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_top", effect.effect_padding_top), effect.effect_padding_top), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
@@ -4199,6 +4307,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.evolution_prop.static_value = effect.effect_evolution;
             effect.stroke_width_prop.static_value = effect.effect_stroke_width;
             effect.stroke_opacity_prop.static_value = effect.effect_stroke_opacity;
+            effect.trim_start_prop.static_value = effect.effect_trim_start;
+            effect.trim_end_prop.static_value = effect.effect_trim_end;
+            effect.trim_offset_prop.static_value = effect.effect_trim_offset;
+            effect.stroke_offset_prop.static_value = effect.effect_stroke_offset;
             effect.padding_left_prop.static_value = effect.effect_padding_left;
             effect.padding_right_prop.static_value = effect.effect_padding_right;
             effect.padding_top_prop.static_value = effect.effect_padding_top;
@@ -4251,6 +4363,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             if (effect_json.contains("evolution_prop")) effect.evolution_prop = aprop_from_json(effect_json["evolution_prop"], "effect_evolution");
             if (effect_json.contains("stroke_width_prop")) effect.stroke_width_prop = aprop_from_json(effect_json["stroke_width_prop"], "effect_stroke_width");
             if (effect_json.contains("stroke_opacity_prop")) effect.stroke_opacity_prop = aprop_from_json(effect_json["stroke_opacity_prop"], "effect_stroke_opacity");
+            if (effect_json.contains("trim_start_prop")) effect.trim_start_prop = aprop_from_json(effect_json["trim_start_prop"], "effect_trim_start");
+            if (effect_json.contains("trim_end_prop")) effect.trim_end_prop = aprop_from_json(effect_json["trim_end_prop"], "effect_trim_end");
+            if (effect_json.contains("trim_offset_prop")) effect.trim_offset_prop = aprop_from_json(effect_json["trim_offset_prop"], "effect_trim_offset");
+            if (effect_json.contains("stroke_offset_prop")) effect.stroke_offset_prop = aprop_from_json(effect_json["stroke_offset_prop"], "effect_stroke_offset");
             if (effect_json.contains("padding_left_prop")) effect.padding_left_prop = aprop_from_json(effect_json["padding_left_prop"], "effect_padding_left");
             if (effect_json.contains("padding_right_prop")) effect.padding_right_prop = aprop_from_json(effect_json["padding_right_prop"], "effect_padding_right");
             if (effect_json.contains("padding_top_prop")) effect.padding_top_prop = aprop_from_json(effect_json["padding_top_prop"], "effect_padding_top");
@@ -4449,6 +4565,58 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->write_to_depth = json_bool(j, "write_to_depth", true);
     l->double_sided = json_bool(j, "double_sided", true);
     l->backface_culling = json_bool(j, "backface_culling", false);
+    l->material_accepts_lights = json_bool(j, "material_accepts_lights", false);
+    l->material_casts_shadows = json_bool(j, "material_casts_shadows", true);
+    l->material_accepts_shadows = json_bool(j, "material_accepts_shadows", true);
+    l->material_appears_in_reflections = json_bool(
+        j, "material_appears_in_reflections", true);
+    auto read_material_property = [&](const char *key, AnimatedProperty &property,
+                                      double minimum, double maximum) {
+        if (j.contains(key))
+            property = aprop_from_json(j[key], property.name);
+        property.static_value = std::clamp(
+            finite_or(property.static_value, property.static_value), minimum, maximum);
+        for (Keyframe &keyframe : property.keyframes)
+            keyframe.value = std::clamp(
+                finite_or(keyframe.value, property.static_value), minimum, maximum);
+    };
+    read_material_property("material_ambient", l->material_ambient, 0.0, 4.0);
+    read_material_property("material_diffuse", l->material_diffuse, 0.0, 4.0);
+    read_material_property("material_specular", l->material_specular, 0.0, 4.0);
+    read_material_property("material_shininess", l->material_shininess, 1.0, 512.0);
+    read_material_property("material_metallic", l->material_metallic, 0.0, 1.0);
+    read_material_property("material_roughness", l->material_roughness, 0.02, 1.0);
+    read_material_property("material_reflection_intensity",
+                           l->material_reflection_intensity, 0.0, 4.0);
+    l->material_emissive_color = json_color(
+        j, "material_emissive_color", static_cast<uint32_t>(0xFFFFFFFF));
+    l->material_emissive_color_a.static_value = (l->material_emissive_color >> 24) & 0xFF;
+    l->material_emissive_color_r.static_value = (l->material_emissive_color >> 16) & 0xFF;
+    l->material_emissive_color_g.static_value = (l->material_emissive_color >> 8) & 0xFF;
+    l->material_emissive_color_b.static_value = l->material_emissive_color & 0xFF;
+    read_material_property("material_emissive_color_a", l->material_emissive_color_a, 0.0, 255.0);
+    read_material_property("material_emissive_color_r", l->material_emissive_color_r, 0.0, 255.0);
+    read_material_property("material_emissive_color_g", l->material_emissive_color_g, 0.0, 255.0);
+    read_material_property("material_emissive_color_b", l->material_emissive_color_b, 0.0, 255.0);
+    mirror_material_emissive_color(*l, 0.0);
+    read_material_property("material_emissive_intensity",
+                           l->material_emissive_intensity, 0.0, 16.0);
+    l->geometry_extrusion_enabled = json_bool(j, "geometry_extrusion_enabled", false);
+    if (j.contains("geometry_extrusion_depth")) l->geometry_extrusion_depth = aprop_from_json(j["geometry_extrusion_depth"], "geometry_extrusion_depth");
+    if (j.contains("geometry_bevel_depth")) l->geometry_bevel_depth = aprop_from_json(j["geometry_bevel_depth"], "geometry_bevel_depth");
+    l->geometry_extrusion_depth.static_value = std::clamp(l->geometry_extrusion_depth.static_value, 0.0, 100000.0);
+    l->geometry_bevel_depth.static_value = std::clamp(l->geometry_bevel_depth.static_value, 0.0, 100000.0);
+    l->geometry_bevel_segments = std::clamp(json_int(j, "geometry_bevel_segments", 3), 1, 16);
+    l->geometry_extrusion_segments = std::clamp(json_int(j, "geometry_extrusion_segments", 12), 1, 64);
+    l->geometry_bevel_front = json_bool(j, "geometry_bevel_front", true);
+    l->geometry_bevel_back = json_bool(j, "geometry_bevel_back", true);
+    /* Development Version 330 keeps legacy geometry values for the future
+     * retained-mesh migration, but loading them must not mutate the layer into
+     * 3D or re-enter the retired alpha-slice hardware-depth path. */
+    if (l->type == LayerType::Light && j.contains("light")) {
+        l->light = light_from_json(j["light"], 0);
+        l->light.id = l->id; l->light.name = l->name;
+    }
     l->position_z.static_value = std::clamp(l->position_z.static_value, -1000000.0, 1000000.0);
     l->rotation_x.static_value = finite_or(l->rotation_x.static_value, 0.0);
     l->rotation_y.static_value = finite_or(l->rotation_y.static_value, 0.0);
@@ -4513,7 +4681,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->text_box_width_to_text = json_bool(j, "text_box_width_to_text", false);
     l->text_box_height_to_text = json_bool(j, "text_box_height_to_text", false);
     l->max_text_box_width = (float)std::clamp(finite_or(json_double(j, "max_text_box_width", 1920.0), 1920.0), 1.0, (double)kMaxCanvasDimension);
-    l->max_text_box_height = (float)std::clamp(finite_or(json_double(j, "max_text_box_height", 1080.0), 1080.0), 1.0, (double)kMaxCanvasDimension);
+    l->max_text_box_height = (float)std::clamp(finite_or(json_double(j, "max_text_box_height", 100.0), 100.0), 1.0, (double)kMaxCanvasDimension);
+    l->max_text_box_width_overridden = json_bool(j, "max_text_box_width_overridden", false);
+    l->max_text_box_height_overridden = json_bool(j, "max_text_box_height_overridden", false);
     l->ticker_style = std::clamp(json_int(j, "ticker_style", 0), 0, 2);
     l->ticker_speed = std::clamp(finite_or(json_double(j, "ticker_speed", 120.0), 120.0), 0.0, 10000.0);
     l->ticker_line_hold = std::clamp(finite_or(json_double(j, "ticker_line_hold", 2.0), 2.0), 0.0, kMaxDuration);
@@ -4528,6 +4698,47 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->stroke_fill_type = std::clamp(json_int(j, "stroke_fill_type", 1), 0, 2);
     l->stroke_color  = json_color(j, "stroke_color", (uint32_t)0xFF000000);
     l->stroke_width  = std::clamp(finite_or(json_double(j, "stroke_width", 0.0), 0.0), 0.0, 512.0);
+    const bool has_general_stroke_offset = j.contains("stroke_offset") ||
+                                           j.contains("stroke_offset_prop");
+    l->stroke_offset = (float)std::clamp(
+        finite_or(json_double(j, "stroke_offset", 0.0), 0.0), -16384.0, 16384.0);
+    l->stroke_offset_prop.static_value = l->stroke_offset;
+    if (j.contains("stroke_offset_prop"))
+        l->stroke_offset_prop = aprop_from_json(j["stroke_offset_prop"], "stroke_offset");
+    l->stroke_offset_prop.static_value = std::clamp(
+        l->stroke_offset_prop.static_value, -16384.0, 16384.0);
+    if (!l->stroke_offset_prop.is_animated())
+        l->stroke_offset = static_cast<float>(l->stroke_offset_prop.static_value);
+
+    /* Development Version 283 migration: Development Version 282 stored
+     * Stroke Offset inside each Trim Paths effect. Promote the legacy value to
+     * the layer-level stroke setting and clear the deprecated effect state so
+     * it cannot be applied twice. */
+    if (!has_general_stroke_offset) {
+        for (LayerEffect &effect : l->effects) {
+            if (effect.type != LayerEffectType::TrimPaths)
+                continue;
+            if (effect.stroke_offset_prop.is_animated()) {
+                l->stroke_offset_prop = effect.stroke_offset_prop;
+                l->stroke_offset_prop.name = "stroke_offset";
+                l->stroke_offset = (float)std::clamp(
+                    l->stroke_offset_prop.static_value, -16384.0, 16384.0);
+                break;
+            }
+            if (std::abs(effect.effect_stroke_offset) > 1.0e-7f) {
+                l->stroke_offset = (float)std::clamp(
+                    (double)effect.effect_stroke_offset, -16384.0, 16384.0);
+                l->stroke_offset_prop.static_value = l->stroke_offset;
+                break;
+            }
+        }
+    }
+    for (LayerEffect &effect : l->effects) {
+        if (effect.type != LayerEffectType::TrimPaths)
+            continue;
+        effect.effect_stroke_offset = 0.0f;
+        effect.stroke_offset_prop = AnimatedProperty("effect_stroke_offset", 0.0);
+    }
     l->outline_enabled = json_bool(j, "outline_enabled", l->stroke_width > 0.0f);
     l->outline_opacity = std::clamp(finite_or(json_double(j, "outline_opacity", 1.0), 1.0), 0.0, 1.0);
     l->outline_join_style = std::clamp(json_int(j, "outline_join_style", 1), 0, 2);
@@ -4676,6 +4887,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("background_stroke_color_b")) l->background_stroke_color_b = aprop_from_json(j["background_stroke_color_b"], "background_stroke_color_b");
     l->rect_width    = std::clamp(finite_or(json_double(j, "rect_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);
     l->rect_height   = std::clamp(finite_or(json_double(j, "rect_height", 100.0), 100.0), 0.0, (double)kMaxCanvasDimension);
+    if (!l->max_text_box_width_overridden)
+        l->max_text_box_width = std::max(1.0f, l->rect_width);
+    if (!l->max_text_box_height_overridden)
+        l->max_text_box_height = std::max(1.0f, l->rect_height);
     l->corner_radius = std::clamp(finite_or(json_double(j, "corner_radius", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
     l->corner_radius_tl = (float)std::clamp(finite_or(json_double(j, "corner_radius_tl", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
     l->corner_radius_tr = (float)std::clamp(finite_or(json_double(j, "corner_radius_tr", l->corner_radius), l->corner_radius), 0.0, (double)kMaxCanvasDimension);
@@ -4968,6 +5183,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
+    set_stroke_color_channels(*l, l->stroke_color);
     if (j.contains("text_color_a")) l->text_color_a = aprop_from_json(j["text_color_a"], "text_color_a");
     if (j.contains("text_color_r")) l->text_color_r = aprop_from_json(j["text_color_r"], "text_color_r");
     if (j.contains("text_color_g")) l->text_color_g = aprop_from_json(j["text_color_g"], "text_color_g");
@@ -4976,6 +5192,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("fill_color_r")) l->fill_color_r = aprop_from_json(j["fill_color_r"], "fill_color_r");
     if (j.contains("fill_color_g")) l->fill_color_g = aprop_from_json(j["fill_color_g"], "fill_color_g");
     if (j.contains("fill_color_b")) l->fill_color_b = aprop_from_json(j["fill_color_b"], "fill_color_b");
+    if (j.contains("stroke_color_a")) l->stroke_color_a = aprop_from_json(j["stroke_color_a"], "stroke_color_a");
+    if (j.contains("stroke_color_r")) l->stroke_color_r = aprop_from_json(j["stroke_color_r"], "stroke_color_r");
+    if (j.contains("stroke_color_g")) l->stroke_color_g = aprop_from_json(j["stroke_color_g"], "stroke_color_g");
+    if (j.contains("stroke_color_b")) l->stroke_color_b = aprop_from_json(j["stroke_color_b"], "stroke_color_b");
     rich_text_document_sync_layer_mirrors(*l);
     l->image_path    = bounded_string(j, "image_path", "", kMaxPathLength);
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
@@ -5095,6 +5315,7 @@ static json camera_to_json(const TitleCamera &camera)
     result.update(json{
         {"id", camera.id},
         {"name", camera.name},
+        {"asset_space_owner_id", camera.asset_space_owner_id},
         {"use_canvas_default", camera.use_canvas_default},
         {"position_x", aprop_to_json(camera.position_x)},
         {"position_y", aprop_to_json(camera.position_y)},
@@ -5138,6 +5359,8 @@ static TitleCamera camera_from_json(const json &j, size_t index)
     camera.serialization_passthrough_json = j.dump();
     camera.id = bounded_string(j, "id", index == 0 ? "default" : TitleDataStore::make_uuid(), kMaxNameLength);
     camera.name = bounded_string(j, "name", index == 0 ? "Default Camera" : "Camera", kMaxNameLength);
+    camera.asset_space_owner_id = bounded_string(
+        j, "asset_space_owner_id", "", kMaxNameLength);
     camera.use_canvas_default = json_bool(j, "use_canvas_default", index == 0);
     auto read_prop = [&](const char *key, AnimatedProperty &property) {
         if (j.contains(key))
@@ -5196,6 +5419,163 @@ static TitleCamera camera_from_json(const json &j, size_t index)
     return camera;
 }
 
+std::string serialize_layer_clipboard_json(
+    const std::vector<std::shared_ptr<Layer>> &layers,
+    const std::vector<TitleCamera> &cameras,
+    const std::string &source_title_id)
+{
+    json root = {
+        {"format", "broadcast-graphics-live-layer-clipboard"},
+        {"version", 1},
+        {"source_title_id", source_title_id},
+        {"layers", json::array()},
+        {"cameras", json::array()}
+    };
+    for (const auto &layer : layers) {
+        if (layer)
+            root["layers"].push_back(layer_to_json(*layer, true, false, nullptr, nullptr, false));
+    }
+    for (const TitleCamera &camera : cameras)
+        root["cameras"].push_back(camera_to_json(camera));
+    return root.dump();
+}
+
+bool deserialize_layer_clipboard_json(
+    const std::string &payload,
+    std::vector<std::shared_ptr<Layer>> *layers,
+    std::vector<TitleCamera> *cameras,
+    std::string *source_title_id,
+    std::string *error)
+{
+    if (!layers || !cameras || !source_title_id) {
+        if (error) *error = "No clipboard destination was supplied.";
+        return false;
+    }
+    const json root = json::parse(payload, nullptr, false);
+    if (!root.is_object() ||
+        root.value("format", std::string()) !=
+            "broadcast-graphics-live-layer-clipboard" ||
+        root.value("version", 0) != 1 ||
+        !root.contains("layers") || !root["layers"].is_array() ||
+        !root.contains("cameras") || !root["cameras"].is_array()) {
+        if (error) *error = "The layer clipboard payload is invalid or unsupported.";
+        return false;
+    }
+    std::vector<std::shared_ptr<Layer>> decoded_layers;
+    std::vector<TitleCamera> decoded_cameras;
+    decoded_layers.reserve(root["layers"].size());
+    decoded_cameras.reserve(root["cameras"].size());
+    for (const auto &item : root["layers"]) {
+        auto layer = layer_from_json(item, false, error, nullptr);
+        if (!layer) {
+            if (error && error->empty()) *error = "A copied layer could not be decoded.";
+            return false;
+        }
+        decoded_layers.push_back(std::move(layer));
+    }
+    for (size_t index = 0; index < root["cameras"].size(); ++index)
+        decoded_cameras.push_back(camera_from_json(root["cameras"][index], index));
+    if (decoded_layers.empty()) {
+        if (error) *error = "The layer clipboard is empty.";
+        return false;
+    }
+    *layers = std::move(decoded_layers);
+    *cameras = std::move(decoded_cameras);
+    *source_title_id = bounded_string(root, "source_title_id", "", kMaxNameLength);
+    return true;
+}
+
+static json light_to_json(const TitleLight &light)
+{
+    const json source_passthrough = passthrough_json_object(
+        light.serialization_passthrough_json);
+    json result = source_passthrough;
+    result.update(json{
+        {"id", light.id},
+        {"name", light.name},
+        {"enabled", light.enabled},
+        {"type", static_cast<int>(light.type)},
+        {"position", vec3_aprop_to_json(light.position)},
+        {"target", vec3_aprop_to_json(light.target)},
+        {"color_a", aprop_to_json(light.color_a)},
+        {"color_r", aprop_to_json(light.color_r)},
+        {"color_g", aprop_to_json(light.color_g)},
+        {"color_b", aprop_to_json(light.color_b)},
+        {"intensity", aprop_to_json(light.intensity)},
+        {"source_size", aprop_to_json(light.source_size)},
+        {"falloff", static_cast<int>(light.falloff)},
+        {"falloff_start", aprop_to_json(light.falloff_start)},
+        {"falloff_distance", aprop_to_json(light.falloff_distance)},
+        {"cone_angle", aprop_to_json(light.cone_angle)},
+        {"cone_feather", aprop_to_json(light.cone_feather)},
+        {"casts_shadows", light.casts_shadows},
+        {"shadow_darkness", aprop_to_json(light.shadow_darkness)},
+        {"shadow_softness", aprop_to_json(light.shadow_softness)},
+        {"shadow_bias", aprop_to_json(light.shadow_bias)},
+        {"environment_path", light.environment_path},
+        {"environment_rotation", aprop_to_json(light.environment_rotation)},
+        {"environment_visible", light.environment_visible},
+        {"timeline_expanded", light.timeline_expanded},
+    });
+    return merge_surviving_passthrough(source_passthrough, result);
+}
+
+static TitleLight light_from_json(const json &j, size_t index)
+{
+    TitleLight light;
+    light.id = TitleDataStore::make_uuid();
+    light.name = index == 0 ? "Key Light" : "Light";
+    if (!j.is_object())
+        return light;
+    light.serialization_passthrough_json = j.dump();
+    light.id = bounded_string(j, "id", light.id, kMaxNameLength);
+    light.name = bounded_string(j, "name", light.name, kMaxNameLength);
+    light.enabled = json_bool(j, "enabled", true);
+    light.type = static_cast<TitleLightType>(std::clamp(
+        json_int(j, "type", static_cast<int>(TitleLightType::Parallel)),
+        static_cast<int>(TitleLightType::Ambient),
+        static_cast<int>(TitleLightType::Environment)));
+    if (j.contains("position"))
+        vec3_aprop_from_json(j["position"], light.position);
+    if (j.contains("target"))
+        vec3_aprop_from_json(j["target"], light.target);
+    auto read_prop = [&](const char *key, AnimatedProperty &property,
+                         double minimum, double maximum) {
+        if (j.contains(key))
+            property = aprop_from_json(j[key], property.name);
+        property.static_value = std::clamp(
+            finite_or(property.static_value, property.static_value), minimum, maximum);
+        for (Keyframe &keyframe : property.keyframes)
+            keyframe.value = std::clamp(
+                finite_or(keyframe.value, property.static_value), minimum, maximum);
+    };
+    read_prop("color_a", light.color_a, 0.0, 255.0);
+    read_prop("color_r", light.color_r, 0.0, 255.0);
+    read_prop("color_g", light.color_g, 0.0, 255.0);
+    read_prop("color_b", light.color_b, 0.0, 255.0);
+    read_prop("intensity", light.intensity, 0.0, 100000.0);
+    read_prop("source_size", light.source_size, 0.0, 100000.0);
+    light.falloff = static_cast<TitleLightFalloff>(std::clamp(
+        json_int(j, "falloff", static_cast<int>(TitleLightFalloff::InverseSquare)),
+        static_cast<int>(TitleLightFalloff::None),
+        static_cast<int>(TitleLightFalloff::InverseSquare)));
+    read_prop("falloff_start", light.falloff_start, 0.0, 10000000.0);
+    read_prop("falloff_distance", light.falloff_distance, 0.001, 10000000.0);
+    read_prop("cone_angle", light.cone_angle, 0.1, 179.0);
+    read_prop("cone_feather", light.cone_feather, 0.0, 100.0);
+    light.casts_shadows = json_bool(j, "casts_shadows", false);
+    read_prop("shadow_darkness", light.shadow_darkness, 0.0, 100.0);
+    read_prop("shadow_softness", light.shadow_softness, 0.0, 64.0);
+    read_prop("shadow_bias", light.shadow_bias, 0.000001, 0.1);
+    light.environment_path = bounded_string(
+        j, "environment_path", "", kMaxPathLength);
+    read_prop("environment_rotation", light.environment_rotation,
+              -360000.0, 360000.0);
+    light.environment_visible = json_bool(j, "environment_visible", false);
+    light.timeline_expanded = json_bool(j, "timeline_expanded", false);
+    return light;
+}
+
 static json title_to_json(const Title &t, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr)
 {
@@ -5234,6 +5614,13 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     for (const auto &camera : t.cameras)
         cameras.push_back(camera_to_json(camera));
     jt["cameras"] = std::move(cameras);
+    json lights = json::array();
+    for (const auto &light : t.lights)
+        lights.push_back(light_to_json(light));
+    jt["lights"] = std::move(lights);
+    jt["default_light_enabled"] = t.default_light_enabled;
+    jt["lighting_enabled"] = t.lighting_enabled;
+    jt["environment_exposure"] = t.environment_exposure;
     if (t.graphic_type == TitleGraphicType::Stinger) {
         jt["stinger_transition_point"] = t.stinger_transition_point;
         jt["stinger_audio_enabled"] = t.stinger_audio_enabled;
@@ -5275,6 +5662,10 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["is_asset"] = t.is_asset;
     jt["asset_animated"] = t.asset_animated;
     jt["asset_category"] = t.asset_category;
+    if (!t.packed_font_files.empty())
+        jt["packed_font_files"] = t.packed_font_files;
+    else
+        jt.erase("packed_font_files");
     if (t.editor_default_style_enabled) {
         json defaults = layer_to_json(t.editor_default_layer_style, false, false, nullptr, nullptr);
         defaults.erase("effects");
@@ -5380,6 +5771,7 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     json merged = merge_surviving_passthrough(source_passthrough, jt);
     merged["layers"] = jt["layers"];
     merged["cameras"] = jt["cameras"];
+    merged["lights"] = jt["lights"];
     if (jt.contains("external_data_sources"))
         merged["external_data_sources"] = jt["external_data_sources"];
     return merged;
@@ -5401,6 +5793,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         json title_passthrough = jt;
         title_passthrough.erase("layers");
         title_passthrough.erase("cameras");
+        title_passthrough.erase("lights");
         t->serialization_passthrough_json = title_passthrough.dump();
     }
     if (!migration_report.recoveries.empty() || !migration_report.warnings.empty()) {
@@ -5443,7 +5836,10 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         static_cast<int>(TitleGraphicType::Stinger)));
     t->cameras.clear();
     if (jt.contains("cameras") && jt["cameras"].is_array()) {
-        const size_t camera_count = std::min<size_t>(jt["cameras"].size(), 32);
+        /* Asset-space camera snapshots are title-owned for self-contained
+         * playback. Keep a defensive bound, but do not truncate ordinary
+         * multi-asset documents at the legacy 32-camera UI limit. */
+        const size_t camera_count = std::min<size_t>(jt["cameras"].size(), 4096);
         for (size_t i = 0; i < camera_count; ++i)
             t->cameras.push_back(camera_from_json(jt["cameras"][i], i));
     }
@@ -5467,6 +5863,40 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         ? discrete_property_from_json(jt["active_camera"], "active_camera", t->active_camera_id)
         : AnimatedDiscreteProperty{"active_camera", t->active_camera_id};
     t->camera_switches_expanded = json_bool(jt, "camera_switches_expanded", false);
+    t->lights.clear();
+    if (jt.contains("lights") && jt["lights"].is_array()) {
+        const size_t light_count = std::min<size_t>(jt["lights"].size(), 32);
+        std::unordered_set<std::string> light_ids;
+        for (size_t i = 0; i < light_count; ++i) {
+            TitleLight light = light_from_json(jt["lights"][i], i);
+            if (light.id.empty() || !light_ids.insert(light.id).second) {
+                do { light.id = TitleDataStore::make_uuid(); }
+                while (!light_ids.insert(light.id).second);
+            }
+            if (light.name.empty())
+                light.name = "Light";
+            t->lights.push_back(std::move(light));
+        }
+    }
+    /* Development Version 300 migration: legacy title-level lights become
+     * ordinary non-raster layers exactly once. */
+    bool has_light_layers = std::any_of(t->layers.begin(), t->layers.end(), [](const auto &layer) { return layer && layer->type == LayerType::Light; });
+    if (!has_light_layers && !t->lights.empty()) {
+        for (const TitleLight &legacy : t->lights) {
+            auto layer = std::make_shared<Layer>();
+            layer->id = legacy.id.empty() ? TitleDataStore::make_uuid() : legacy.id;
+            layer->name = legacy.name; layer->type = LayerType::Light;
+            layer->visible = legacy.enabled; layer->dimension_mode = LayerDimensionMode::ThreeD;
+            layer->light = legacy; layer->light.id = layer->id; layer->light.name = layer->name;
+            t->layers.push_back(std::move(layer));
+        }
+        t->lights.clear();
+    }
+    t->default_light_enabled = json_bool(jt, "default_light_enabled", true);
+    t->lighting_enabled = json_bool(jt, "lighting_enabled", true);
+    t->environment_exposure = std::clamp(
+        finite_or(json_double(jt, "environment_exposure", 0.0), 0.0),
+        -16.0, 16.0);
     t->expanded_property_channels.clear();
     if (jt.contains("expanded_property_channels") &&
         jt["expanded_property_channels"].is_array()) {
@@ -5548,6 +5978,19 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
     t->is_asset = json_bool(jt, "is_asset", false);
     t->asset_animated = json_bool(jt, "asset_animated", false);
     t->asset_category = bounded_string(jt, "asset_category", "Default", kMaxNameLength);
+    if (jt.contains("packed_font_files") && jt["packed_font_files"].is_array()) {
+        const size_t count = std::min<size_t>(jt["packed_font_files"].size(), 256);
+        for (size_t index = 0; index < count; ++index) {
+            if (!jt["packed_font_files"][index].is_string())
+                continue;
+            const std::string path = jt["packed_font_files"][index].get<std::string>();
+            if (path.empty() || path.size() > kMaxPathLength ||
+                !QFileInfo::exists(QString::fromStdString(path)))
+                continue;
+            t->packed_font_files.push_back(path);
+            register_packed_font_file(QString::fromStdString(path));
+        }
+    }
     if (jt.contains("editor_default_layer_style") && jt["editor_default_layer_style"].is_object()) {
         auto defaults = layer_from_json(jt["editor_default_layer_style"], false, nullptr);
         if (defaults) {
@@ -5858,6 +6301,7 @@ static std::shared_ptr<Title> title_from_json(const json &input, bool regenerate
         t->render_camera_override_id.clear();
         t->current_cue_row = -1;
         t->pending_cue_row = -1;
+        t->last_cue_row = -1;
         t->cue_uncue_requested = false;
         t->cue_revision = 0;
         t->playlist_active = false;
@@ -6067,6 +6511,260 @@ void TitleDataStore::save_async() const
         .arg(queued_generation));
 }
 
+static void prepare_template_export_copy(Title &copy,
+                                         const TitleTemplateExportMetadata &metadata)
+{
+    copy.name = metadata.title;
+    copy.description = metadata.description;
+    copy.creator = metadata.creator;
+    copy.creation_date = metadata.creation_date;
+    copy.preview_screenshot_png_base64 = metadata.screenshot_png_base64;
+    copy.proxy_metadata = TitleProxyMetadata{};
+    copy.render_camera_override_id.clear();
+    copy.current_cue_row = -1;
+    copy.pending_cue_row = -1;
+    copy.last_cue_row = -1;
+    copy.cue_uncue_requested = false;
+    copy.cue_revision = 0;
+    copy.playlist_active = false;
+    copy.playlist_next_row = 0;
+    copy.playlist_next_due_ms = 0;
+    copy.playlist_stop_after_due = false;
+    copy.cue_persistence_transition = false;
+    copy.cue_persistent_text_columns.clear();
+}
+
+static json template_export_root(const Title &copy,
+                                 const TitleTemplateExportMetadata &metadata,
+                                 bool include_embedded_assets,
+                                 bool require_embedded_assets,
+                                 std::string *error)
+{
+    json root;
+    root["format"] = "broadcast-graphics-live-title-template";
+    root["version"] = 4;
+    root["schema_version"] = bgs::serialization::kCurrentTitleSchemaVersion;
+    root["development_version"] = bgs::serialization::kCurrentDevelopmentVersion;
+    root["template_title"] = metadata.title;
+    root["description"] = metadata.description;
+    root["creator"] = metadata.creator;
+    root["creation_date"] = metadata.creation_date;
+    root["category"] = metadata.category;
+    root["subcategory"] = metadata.subcategory;
+    root["collection"] = metadata.collection;
+    root["screenshot"] = {
+        {"mime_type", "image/png"},
+        {"data_base64", metadata.screenshot_png_base64},
+    };
+    root["metadata"] = {
+        {"title", metadata.title},
+        {"description", metadata.description},
+        {"creator", metadata.creator},
+        {"creation_date", metadata.creation_date},
+        {"category", metadata.category},
+        {"subcategory", metadata.subcategory},
+        {"collection", metadata.collection},
+        {"screenshot", root["screenshot"]},
+    };
+    root["title"] = title_to_json(copy, include_embedded_assets,
+                                  require_embedded_assets, error);
+    return root;
+}
+
+struct PackedFontRequest {
+    QString family;
+    QString style;
+};
+
+static void append_packed_font_request(std::vector<PackedFontRequest> &requests,
+                                       const std::string &family,
+                                       const std::string &style)
+{
+    const QString qfamily = QString::fromStdString(family).trimmed();
+    const QString qstyle = QString::fromStdString(style).trimmed();
+    if (qfamily.isEmpty())
+        return;
+    const bool exists = std::any_of(requests.begin(), requests.end(),
+        [&](const PackedFontRequest &request) {
+            return request.family.compare(qfamily, Qt::CaseInsensitive) == 0 &&
+                   request.style.compare(qstyle, Qt::CaseInsensitive) == 0;
+        });
+    if (!exists)
+        requests.push_back({qfamily, qstyle});
+}
+
+static std::vector<PackedFontRequest> packed_font_requests(const Title &title)
+{
+    std::vector<PackedFontRequest> requests;
+    const auto add_format = [&](const RichTextCharFormat &format) {
+        append_packed_font_request(requests, format.font_family,
+                                   format.font_style);
+    };
+    for (const auto &layer : title.layers) {
+        if (!layer || (layer->type != LayerType::Text &&
+                       layer->type != LayerType::Clock &&
+                       layer->type != LayerType::Ticker))
+            continue;
+        append_packed_font_request(requests, layer->font_family,
+                                   layer->font_style);
+        add_format(layer->rich_text.default_format);
+        if (layer->rich_text.has_typing_format &&
+            (layer->rich_text.typing_format_mask & RichTextCharFontFamily))
+            add_format(layer->rich_text.typing_format);
+        for (const auto &range : layer->rich_text.ranges) {
+            if (range.mask & RichTextCharFontFamily)
+                add_format(range.format);
+        }
+        if (!layer->rich_text.auto_default_style_preset_id.empty())
+            add_format(layer->rich_text.auto_default_style_cached_format);
+        for (const auto &rule : layer->rich_text.auto_style_rules) {
+            if (rule.cached_mask & RichTextCharFontFamily)
+                add_format(rule.cached_format);
+        }
+    }
+    return requests;
+}
+
+struct PackedFontCandidate {
+    QString path;
+    QString family;
+    QString style;
+};
+
+static std::vector<PackedFontCandidate> scan_packable_fonts()
+{
+    QStringList roots = QStandardPaths::standardLocations(QStandardPaths::FontsLocation);
+#ifdef Q_OS_WIN
+    const QString windows = qEnvironmentVariable("WINDIR");
+    if (!windows.isEmpty()) roots.push_back(QDir(windows).filePath(QStringLiteral("Fonts")));
+#elif defined(Q_OS_MACOS)
+    roots << QStringLiteral("/System/Library/Fonts")
+          << QStringLiteral("/Library/Fonts")
+          << QDir::home().filePath(QStringLiteral("Library/Fonts"));
+#else
+    roots << QStringLiteral("/usr/share/fonts")
+          << QStringLiteral("/usr/local/share/fonts")
+          << QDir::home().filePath(QStringLiteral(".local/share/fonts"))
+          << QDir::home().filePath(QStringLiteral(".fonts"));
+#endif
+    roots.removeDuplicates();
+
+    std::vector<PackedFontCandidate> candidates;
+    QSet<QString> visited;
+    const QStringList filters = {
+        QStringLiteral("*.ttf"), QStringLiteral("*.otf"),
+        QStringLiteral("*.ttc"), QStringLiteral("*.otc")};
+    for (const QString &root : roots) {
+        if (!QFileInfo(root).isDir())
+            continue;
+        QDirIterator it(root, filters, QDir::Files | QDir::Readable,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString path = QFileInfo(it.next()).canonicalFilePath();
+            if (path.isEmpty() || visited.contains(path))
+                continue;
+            visited.insert(path);
+            const QRawFont raw(path, 16.0, QFont::PreferNoHinting);
+            if (!raw.isValid() || raw.familyName().trimmed().isEmpty())
+                continue;
+            candidates.push_back({path, raw.familyName().trimmed(),
+                                  raw.styleName().trimmed()});
+        }
+    }
+    return candidates;
+}
+
+static QString resolve_packable_font(const PackedFontRequest &request,
+                                     const std::vector<std::string> &known_paths)
+{
+    QString family_fallback;
+    const auto inspect_path = [&](const QString &path, bool allow_fallback) -> QString {
+        const QRawFont raw(path, 16.0, QFont::PreferNoHinting);
+        if (!raw.isValid() ||
+            raw.familyName().compare(request.family, Qt::CaseInsensitive) != 0)
+            return {};
+        if (request.style.isEmpty() ||
+            raw.styleName().compare(request.style, Qt::CaseInsensitive) == 0)
+            return path;
+        if (allow_fallback && family_fallback.isEmpty())
+            family_fallback = path;
+        return {};
+    };
+
+    for (const std::string &known : known_paths) {
+        const QString resolved = inspect_path(QString::fromStdString(known), true);
+        if (!resolved.isEmpty())
+            return resolved;
+    }
+    static const std::vector<PackedFontCandidate> candidates = scan_packable_fonts();
+    for (const PackedFontCandidate &candidate : candidates) {
+        if (candidate.family.compare(request.family, Qt::CaseInsensitive) != 0)
+            continue;
+        if (request.style.isEmpty() ||
+            candidate.style.compare(request.style, Qt::CaseInsensitive) == 0)
+            return candidate.path;
+        if (family_fallback.isEmpty())
+            family_fallback = candidate.path;
+    }
+    return family_fallback;
+}
+
+static QString packed_resource_uri(const QString &archive_path)
+{
+    return QStringLiteral("packed://") + archive_path;
+}
+
+static bool packed_resource_path_key(const std::string &key)
+{
+    return key == "image_path" || key == "video_source" ||
+           key == "video_source_absolute" || key == "video_source_relative" ||
+           key == "audio_source" || key == "environment_path" ||
+           key == "packed_font_files";
+}
+
+static bool resolve_packed_uri_json(json &value, const QString &root,
+                                    std::string *error,
+                                    const std::string &owner_key = {})
+{
+    if (value.is_object()) {
+        for (auto &item : value.items()) {
+            if (!resolve_packed_uri_json(item.value(), root, error, item.key()))
+                return false;
+        }
+        return true;
+    }
+    if (value.is_array()) {
+        for (auto &item : value) {
+            if (!resolve_packed_uri_json(item, root, error, owner_key))
+                return false;
+        }
+        return true;
+    }
+    if (!value.is_string() || !packed_resource_path_key(owner_key))
+        return true;
+    const QString text = QString::fromStdString(value.get<std::string>());
+    if (!text.startsWith(QStringLiteral("packed://")))
+        return true;
+    const QString relative = text.mid(9);
+    const QString clean_relative = QDir::cleanPath(relative);
+    if (clean_relative.isEmpty() || clean_relative == QStringLiteral(".") ||
+        clean_relative == QStringLiteral("..") || clean_relative.startsWith('/') ||
+        clean_relative.startsWith(QStringLiteral("../")) || clean_relative.contains('\\') ||
+        clean_relative.contains(':') || clean_relative.contains(QChar::Null)) {
+        if (error) *error = "Packed title contains an unsafe resource reference.";
+        return false;
+    }
+    const QString absolute_root = QDir(root).absolutePath();
+    const QString absolute = QFileInfo(QDir(absolute_root).filePath(clean_relative)).absoluteFilePath();
+    if (absolute != absolute_root &&
+        !absolute.startsWith(absolute_root + QDir::separator())) {
+        if (error) *error = "Packed title resource escaped its extraction directory.";
+        return false;
+    }
+    value = absolute.toStdString();
+    return true;
+}
+
 
 bool TitleDataStore::export_title(const std::string &id, const std::string &path, std::string *error) const
 {
@@ -6095,60 +6793,24 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     if (export_metadata.screenshot_png_base64.empty())
         export_metadata.screenshot_png_base64 = t->preview_screenshot_png_base64;
 
-    json root;
-    root["format"] = "broadcast-graphics-live-title-template";
-    root["version"] = 4;
-    root["schema_version"] = bgs::serialization::kCurrentTitleSchemaVersion;
-    root["development_version"] = bgs::serialization::kCurrentDevelopmentVersion;
-    root["template_title"] = export_metadata.title;
-    root["description"] = export_metadata.description;
-    root["creator"] = export_metadata.creator;
-    root["creation_date"] = export_metadata.creation_date;
-    root["category"] = export_metadata.category;
-    root["subcategory"] = export_metadata.subcategory;
-    root["collection"] = export_metadata.collection;
-    root["screenshot"] = {
-        {"mime_type", "image/png"},
-        {"data_base64", export_metadata.screenshot_png_base64},
-    };
-    root["metadata"] = {
-        {"title", export_metadata.title},
-        {"description", export_metadata.description},
-        {"creator", export_metadata.creator},
-        {"creation_date", export_metadata.creation_date},
-        {"category", export_metadata.category},
-        {"subcategory", export_metadata.subcategory},
-        {"collection", export_metadata.collection},
-        {"screenshot", root["screenshot"]},
-    };
     Title exported_copy = *t;
-    exported_copy.name = export_metadata.title;
-    exported_copy.description = export_metadata.description;
-    exported_copy.creator = export_metadata.creator;
-    exported_copy.creation_date = export_metadata.creation_date;
-    exported_copy.preview_screenshot_png_base64 = export_metadata.screenshot_png_base64;
     /* A reusable template contains authored title data, not the source
      * machine's advisory proxy path/cache namespace. Import assigns a new
      * title identity and regenerates cache/proxy data safely. */
+    prepare_template_export_copy(exported_copy, export_metadata);
+    /* Keep this explicit at the legacy export call site: older compatibility
+     * audits verify that .obgt never carries a machine-local proxy. */
     exported_copy.proxy_metadata = TitleProxyMetadata{};
     exported_copy.render_camera_override_id.clear();
-    exported_copy.current_cue_row = -1;
-    exported_copy.pending_cue_row = -1;
-    exported_copy.cue_uncue_requested = false;
-    exported_copy.cue_revision = 0;
-    exported_copy.playlist_active = false;
-    exported_copy.playlist_next_row = 0;
-    exported_copy.playlist_next_due_ms = 0;
-    exported_copy.playlist_stop_after_due = false;
-    exported_copy.cue_persistence_transition = false;
-    exported_copy.cue_persistent_text_columns.clear();
-    json exported_title = title_to_json(exported_copy, true, true, error);
-    if ((error && !error->empty()) || exported_title.empty()) {
+    /* The ordinary JSON format must never gain implicit packed-container
+     * dependencies merely because its source title was imported from .obgp. */
+    exported_copy.packed_font_files.clear();
+    json root = template_export_root(exported_copy, export_metadata, true, true, error);
+    if ((error && !error->empty()) || root["title"].empty()) {
         if (error && error->empty())
             *error = "Could not embed all title assets in the export file.";
         return false;
     }
-    root["title"] = std::move(exported_title);
 
     std::string payload;
     try {
@@ -6178,6 +6840,213 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     return true;
 }
 
+bool TitleDataStore::export_packed_title(
+    const std::string &id, const std::string &path,
+    const TitleTemplateExportMetadata &metadata,
+    const PackedTitleExportOptions &options, std::string *error) const
+{
+    if (error) error->clear();
+    auto title = get_title(id);
+    if (!title) {
+        if (error) *error = "No title template is selected.";
+        return false;
+    }
+
+    TitleTemplateExportMetadata export_metadata = metadata;
+    if (export_metadata.title.empty()) export_metadata.title = title->name;
+    if (export_metadata.description.empty()) export_metadata.description = title->description;
+    if (export_metadata.creator.empty()) export_metadata.creator = title->creator;
+    if (export_metadata.creation_date.empty()) {
+        export_metadata.creation_date = title->creation_date.empty()
+            ? current_iso_utc_string() : title->creation_date;
+    }
+    if (export_metadata.screenshot_png_base64.empty())
+        export_metadata.screenshot_png_base64 = title->preview_screenshot_png_base64;
+
+    Title copy = *title;
+    copy.layers.clear();
+    copy.layers.reserve(title->layers.size());
+    for (const auto &layer : title->layers)
+        copy.layers.push_back(layer ? std::make_shared<Layer>(*layer) : nullptr);
+    prepare_template_export_copy(copy, export_metadata);
+
+    QList<bgs::packed_title::SourceEntry> sources;
+    QHash<QString, QString> source_to_archive;
+    int image_index = 0;
+    int media_index = 0;
+    int font_index = 0;
+    auto pack_path = [&](std::string &authored_path, const QString &kind,
+                         const QString &directory, int &index,
+                         const QJsonObject &entry_metadata = QJsonObject{}) -> bool {
+        if (authored_path.empty())
+            return true;
+        const QFileInfo info(QString::fromStdString(authored_path));
+        if (!info.exists() || !info.isFile() || !info.isReadable()) {
+            if (error) *error = QStringLiteral("Could not pack missing or unreadable %1: %2")
+                .arg(kind, info.filePath()).toStdString();
+            return false;
+        }
+        QString source_path = info.canonicalFilePath();
+        if (source_path.isEmpty())
+            source_path = info.absoluteFilePath();
+        QString archive_path = source_to_archive.value(source_path);
+        if (archive_path.isEmpty()) {
+            const QString file_name = QString::fromStdString(
+                sanitize_asset_file_name(info.fileName().toStdString()));
+            archive_path = QStringLiteral("assets/%1/%2-%3")
+                .arg(directory)
+                .arg(++index, 4, 10, QLatin1Char('0'))
+                .arg(file_name);
+            bgs::packed_title::SourceEntry source;
+            source.archive_path = archive_path;
+            source.kind = kind;
+            source.source_path = source_path;
+            source.metadata = entry_metadata;
+            sources.push_back(std::move(source));
+            source_to_archive.insert(source_path, archive_path);
+        }
+        authored_path = packed_resource_uri(archive_path).toStdString();
+        return true;
+    };
+
+    if (options.pack_images) {
+        for (TitleLight &light : copy.lights) {
+            if (!pack_path(light.environment_path, QStringLiteral("image"),
+                           QStringLiteral("images"), image_index))
+                return false;
+        }
+        if (!pack_path(copy.editor_default_layer_style.image_path,
+                       QStringLiteral("image"), QStringLiteral("images"),
+                       image_index) ||
+            !pack_path(copy.editor_default_layer_style.light.environment_path,
+                       QStringLiteral("image"), QStringLiteral("images"),
+                       image_index))
+            return false;
+    }
+
+    for (auto &layer : copy.layers) {
+        if (!layer)
+            continue;
+        if (options.pack_images) {
+            if (layer->type == LayerType::Image &&
+                !pack_path(layer->image_path, QStringLiteral("image"),
+                           QStringLiteral("images"), image_index))
+                return false;
+            if (!pack_path(layer->light.environment_path, QStringLiteral("image"),
+                           QStringLiteral("images"), image_index))
+                return false;
+            for (LayerTransition &transition : layer->transitions) {
+                if (!pack_path(transition.image_path, QStringLiteral("image"),
+                               QStringLiteral("images"), image_index))
+                    return false;
+            }
+        }
+        if (options.pack_media && layer->type == LayerType::Video) {
+            if (layer->video_source.empty())
+                layer->video_source = !layer->video_source_absolute.empty()
+                    ? layer->video_source_absolute : layer->video_source_relative;
+            if (!pack_path(layer->video_source, QStringLiteral("media"),
+                           QStringLiteral("media"), media_index))
+                return false;
+            layer->video_source_absolute = layer->video_source;
+            layer->video_source_relative.clear();
+            layer->video_media_root.clear();
+            layer->video_proxy_path.clear();
+            layer->video_proxy_fingerprint.clear();
+            layer->video_proxy_complete = false;
+            layer->video_proxy_generating = false;
+        }
+        if (options.pack_media && layer->type == LayerType::Audio &&
+            !pack_path(layer->audio_source, QStringLiteral("media"),
+                       QStringLiteral("media"), media_index))
+            return false;
+    }
+
+    if (options.pack_fonts) {
+        const QStringList installed_families = QFontDatabase().families();
+        copy.packed_font_files.clear();
+        QSet<QString> added_font_paths;
+        for (const PackedFontRequest &request : packed_font_requests(copy)) {
+            const bool installed = std::any_of(installed_families.begin(), installed_families.end(),
+                [&](const QString &family) {
+                    return family.compare(request.family, Qt::CaseInsensitive) == 0;
+                });
+            if (!installed)
+                continue; /* Existing import diagnostics will report it. */
+            const QString font_path = resolve_packable_font(
+                request, title->packed_font_files);
+            if (font_path.isEmpty()) {
+                if (error) *error = QStringLiteral(
+                    "The font '%1' is available but its font file could not be located for packing.")
+                    .arg(request.family).toStdString();
+                return false;
+            }
+            const QString canonical = QFileInfo(font_path).canonicalFilePath();
+            if (added_font_paths.contains(canonical))
+                continue;
+            std::string mutable_path = canonical.toStdString();
+            QJsonObject font_metadata;
+            font_metadata.insert(QStringLiteral("family"), request.family);
+            font_metadata.insert(QStringLiteral("style"), request.style);
+            if (!pack_path(mutable_path, QStringLiteral("font"),
+                           QStringLiteral("fonts"), font_index, font_metadata))
+                return false;
+            copy.packed_font_files.push_back(mutable_path);
+            added_font_paths.insert(canonical);
+        }
+    }
+
+    json root = template_export_root(copy, export_metadata, false, false, error);
+    if ((error && !error->empty()) || root["title"].empty()) {
+        if (error && error->empty())
+            *error = "Could not serialize title.json for the packed title.";
+        return false;
+    }
+    std::string payload;
+    try {
+        payload = root.dump(2, ' ', false, json::error_handler_t::replace);
+    } catch (const std::exception &exception) {
+        if (error) *error = std::string("Failed to serialize packed title data: ") + exception.what();
+        return false;
+    }
+    bgs::packed_title::SourceEntry title_entry;
+    title_entry.archive_path = QStringLiteral("title.json");
+    title_entry.kind = QStringLiteral("title");
+    title_entry.data = QByteArray(payload.data(), static_cast<int>(payload.size()));
+    sources.prepend(std::move(title_entry));
+
+    QJsonObject packing;
+    packing.insert(QStringLiteral("images"), options.pack_images);
+    packing.insert(QStringLiteral("media"), options.pack_media);
+    packing.insert(QStringLiteral("fonts"), options.pack_fonts);
+    QJsonObject manifest;
+    manifest.insert(QStringLiteral("package_id"),
+                    QString::fromStdString(make_uuid()));
+    manifest.insert(QStringLiteral("created_utc"),
+                    QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    manifest.insert(QStringLiteral("schema_version"),
+                    bgs::serialization::kCurrentTitleSchemaVersion);
+    manifest.insert(QStringLiteral("development_version"),
+                    bgs::serialization::kCurrentDevelopmentVersion);
+    manifest.insert(QStringLiteral("packing"), packing);
+
+    QString packed_error;
+    if (!bgs::packed_title::write(QString::fromStdString(path), sources,
+                                  manifest, &packed_error)) {
+        if (error) *error = packed_error.toStdString();
+        BGL_LOG_ERROR("ImportExport", QStringLiteral(
+            "Packed title export failed id=%1 path=%2 error=%3")
+            .arg(QString::fromStdString(id), QString::fromStdString(path), packed_error));
+        return false;
+    }
+    BGL_LOG_INFO("ImportExport", QStringLiteral(
+        "Exported packed title id=%1 path=%2 entries=%3 images=%4 media=%5 fonts=%6")
+        .arg(QString::fromStdString(id), QString::fromStdString(path))
+        .arg(sources.size()).arg(options.pack_images).arg(options.pack_media)
+        .arg(options.pack_fonts));
+    return true;
+}
+
 std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std::string *error,
                                                         TitleImportDiagnostics *diagnostics)
 {
@@ -6186,8 +7055,40 @@ std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std
         *diagnostics = TitleImportDiagnostics{};
     try {
         json root;
-        if (!read_json_file(path, root, error))
+        const QString input_path = QString::fromStdString(path);
+        const bool packed = QFileInfo(input_path).suffix().compare(
+                                QStringLiteral("obgp"), Qt::CaseInsensitive) == 0 ||
+                            bgs::packed_title::has_packed_signature(input_path);
+        if (packed) {
+            char *config_path = obs_module_config_path("packed");
+            if (!config_path) {
+                if (error) *error = "Could not resolve the packed resource directory.";
+                return nullptr;
+            }
+            const QString extraction_base = QString::fromUtf8(config_path);
+            bfree(config_path);
+            bgs::packed_title::ReadResult packed_result;
+            QString packed_error;
+            if (!bgs::packed_title::read(input_path, extraction_base,
+                                         &packed_result, &packed_error)) {
+                if (error) *error = packed_error.toStdString();
+                return nullptr;
+            }
+            root = json::parse(packed_result.title_json.constData(),
+                               packed_result.title_json.constData() +
+                                   packed_result.title_json.size(),
+                               nullptr, false);
+            if (root.is_discarded()) {
+                if (error) *error = "Invalid title.json in packed title.";
+                return nullptr;
+            }
+            if (!resolve_packed_uri_json(root, packed_result.extraction_root, error))
+                return nullptr;
+            for (const QString &font_path : packed_result.extracted_font_paths)
+                register_packed_font_file(font_path);
+        } else if (!read_json_file(path, root, error)) {
             return nullptr;
+        }
         json jt;
         if (root.is_object() && root.contains("title"))
             jt = root["title"];

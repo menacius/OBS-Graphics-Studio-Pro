@@ -102,6 +102,8 @@ public:
     void set_playhead(double t, bool playback_frame = false);
     void set_display_refresh_rate(double hz);
     void set_playback_active(bool active);
+    void set_read_only(bool read_only);
+    bool is_read_only() const { return read_only_; }
     void refresh_runtime_dynamic_content();
     void set_selected_layer(const std::string &lid);
     void set_selected_layers(const std::vector<std::string> &ids);
@@ -278,6 +280,7 @@ protected:
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
+    bool read_only_ = false;
     enum class CanvasPaintPass { All, Underlay, Overlay };
     struct GpuDisplayState;
     void paint_canvas(QPainter &p, CanvasPaintPass pass);
@@ -450,6 +453,14 @@ private:
     bool finish_editor_3d_navigation(QMouseEvent *ev);
     void dolly_editor_3d_view(double delta);
     void draw_editor_3d_view_overlay(QPainter &p);
+    bool light_layer_overlay_contains(const Layer &layer, const QPointF &view_point) const;
+    void draw_light_layer_overlays(QPainter &p);
+    bool empty_layer_overlay_points(const Layer &layer,
+                                    std::array<QPointF, 4> &view_points,
+                                    bool &is_3d) const;
+    bool empty_layer_overlay_contains(const Layer &layer,
+                                      const QPointF &view_point) const;
+    void draw_empty_layer_overlays(QPainter &p);
     void draw_3d_material_debug_overlay(QPainter &p);
     bool collect_editor_3d_bounds(
         const std::vector<std::shared_ptr<Layer>> &layers,
@@ -555,6 +566,7 @@ private:
     QRect toolbar_preview_update_rect() const;
     void draw_toolbar_preview(QPainter &p);
     void draw_empty_image_placeholders(QPainter &p);
+    void draw_shader_compile_overlay(QPainter &p, const QRectF &canvas_rect);
     bool sample_color_at_view(const QPointF &view_pt, QColor &color);
     void update_color_picker_tooltip(const QPointF &view_pt);
     void draw_color_picker_tooltip(QPainter &p);
@@ -643,6 +655,7 @@ private:
     bool full_gpu_model_refresh_pending_ = true;
     std::atomic_bool gpu_recovery_queued_{false};
     QString gpu_underlay_key_;
+    QString gpu_shader_compile_overlay_key_;
     mutable bool gpu_overlay_dirty_ = true;
     QImage gpu_overlay_cache_;
     QPoint frame_image_canvas_offset_;
@@ -682,6 +695,14 @@ private:
     int render_cost_sample_count_ = 0;
     double average_render_cost_ms_ = 0.0;
     QElapsedTimer diagnostics_window_timer_;
+    /* Correlated transport/canvas diagnostics. These fields are observability
+     * only and never affect scheduling or render decisions. */
+    uint64_t diagnostics_playhead_request_serial_ = 0;
+    uint64_t diagnostics_render_request_serial_ = 0;
+    double diagnostics_last_prepared_playhead_ =
+        std::numeric_limits<double>::quiet_NaN();
+    int diagnostics_repeated_prepared_playhead_count_ = 0;
+    QElapsedTimer diagnostics_repeated_playhead_clock_;
     int live_fps_frame_count_ = 0;
     double measured_live_fps_ = 0.0;
     QHash<QString, QImage> editor_quality_cache_;
@@ -876,11 +897,10 @@ private:
         QPointF start_view;
         QPointF last_view;
         bool has_last_view = false;
-        QPointF origin_view;
         QVector3D axes_world[3];
         QPointF axis_screen[3];
+        int rotation_scrub_axis = -1; /* 0 = horizontal, 1 = vertical */
         double world_length = 120.0;
-        double start_angle = 0.0;
         std::vector<GizmoLayerStart> layers;
     };
     GizmoDragState gizmo_drag_;

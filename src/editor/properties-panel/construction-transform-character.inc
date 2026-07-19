@@ -13,7 +13,8 @@
     btn_image_external_binding_->setToolTip(QStringLiteral("Bind image path to external data"));
     btn_image_external_binding_->setStyleSheet(QStringLiteral(
         "QToolButton{border:1px solid palette(mid);border-radius:3px;}"
-        "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
+        "QToolButton:checked{border:2px solid palette(highlight);"
+        "background:palette(highlight);color:palette(highlighted-text);}"));
     auto *image_path_row = new QWidget(image_form_widget);
     auto *image_path_layout = new QHBoxLayout(image_path_row);
     image_path_layout->setContentsMargins(0, 0, 0, 0);
@@ -67,19 +68,20 @@
     image_box_size_grid->setContentsMargins(0, 0, 0, 0);
     image_box_size_grid->setHorizontalSpacing(5);
     image_box_size_grid->setVerticalSpacing(4);
-    image_box_size_grid->setColumnMinimumWidth(0, 24);
-    image_box_size_grid->setColumnMinimumWidth(1, 90);
-    image_box_size_grid->setColumnMinimumWidth(2, 90);
-    image_box_size_grid->setColumnMinimumWidth(3, 20);
-    image_box_size_grid->setColumnStretch(4, 1);
+    image_box_size_grid->setColumnMinimumWidth(0, 0);
+    image_box_size_grid->setColumnMinimumWidth(1, 0);
+    image_box_size_grid->setColumnMinimumWidth(2, 30);
+    image_box_size_grid->setColumnMinimumWidth(3, 0);
+    image_box_size_grid->setColumnStretch(0, 1);
+    image_box_size_grid->setColumnStretch(1, 1);
     auto make_image_box_size_field = [&](const QString &label, QDoubleSpinBox *spin) {
         auto *field = new QWidget(image_box_size_box_);
         field->setObjectName(QStringLiteral("OBSTitlesShapeNumericField"));
-        field->setStyleSheet(QStringLiteral("QWidget#OBSTitlesShapeNumericField{background:%1;border:1px solid %2;"
-                             "border-radius:2px;}").arg(control_bg_name, border_name));
+        field->setStyleSheet(QStringLiteral(
+            "QWidget#OBSTitlesShapeNumericField{background:transparent;border:none;}"));
         auto *field_layout = new QHBoxLayout(field);
-        field_layout->setContentsMargins(5, 0, 0, 0);
-        field_layout->setSpacing(2);
+        field_layout->setContentsMargins(0, 0, 0, 0);
+        field_layout->setSpacing(4);
         auto *field_label = new NumericDragLabel(label, spin, field,
                                                  [this]() {
                                                      if (loading_values_) return;
@@ -93,21 +95,26 @@
                                                  });
         field_label->setFixedWidth(16);
         field_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(control_text_name));
+        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:10px;").arg(subtle_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin, 1);
-        field->setFixedSize(90, 20);
+        field->setMinimumWidth(0);
+        field->setMaximumWidth(QWIDGETSIZE_MAX);
+        field->setFixedHeight(20);
+        field->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         return field;
     };
-    chk_image_box_size_lock_ = new TransformLockCheckBox(image_box_size_box_);
+    chk_image_box_size_lock_ = new BglSwitch(image_box_size_box_);
     chk_image_box_size_lock_->setText(QString());
     chk_image_box_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
-    chk_image_box_size_lock_->setFixedSize(20, 20);
+    chk_image_box_size_lock_->setFixedSize(30, 20);
     chk_image_box_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
-    image_box_size_grid->addWidget(btn_kf_image_box_size_, 0, 0, Qt::AlignCenter);
-    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 1);
-    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 2);
-    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 3, Qt::AlignCenter);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 0);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 1);
+    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 2, Qt::AlignCenter);
+    image_box_size_grid->addWidget(
+        make_keyframe_controls(btn_kf_image_box_size_, image_box_),
+        0, 3, Qt::AlignRight | Qt::AlignVCenter);
     image_box_size_layout->addLayout(image_box_size_grid);
     add_form_row(image_form, QStringLiteral("Box size"), image_box_size_box_);
 
@@ -269,10 +276,19 @@
             spn_max_text_box_height_->setEnabled(true);
     };
     auto install_delete_all_keyframes_menu =
-        [this, can_edit, emit_change, menu_style](QPushButton *button, auto props_for_layer) {
+        [this, can_edit, emit_change, menu_style](QAbstractButton *button, auto props_for_layer) {
             if (!button) return;
+            register_keyframe_times(button, [props_for_layer]() {
+                std::vector<double> times;
+                for (const AnimatedProperty *property : props_for_layer()) {
+                    if (!property) continue;
+                    for (const Keyframe &key : property->keyframes)
+                        times.push_back(key.time);
+                }
+                return times;
+            });
             button->setContextMenuPolicy(Qt::CustomContextMenu);
-            connect(button, &QPushButton::customContextMenuRequested,
+            connect(button, &QWidget::customContextMenuRequested,
                     this, [this, button, props_for_layer, can_edit, emit_change, menu_style](const QPoint &pos) {
                         if (!layer_) return;
                         std::vector<AnimatedProperty *> props = props_for_layer();
@@ -309,6 +325,13 @@
     };
     auto install_vec_delete_all = [&](QPushButton *button, AnimatedVec2Property Layer::*prop) {
         if (!button) return;
+        register_keyframe_times(button, [this, prop]() {
+            std::vector<double> times;
+            if (!layer_) return times;
+            for (const VectorKeyframe &key : (layer_.get()->*prop).keyframes)
+                times.push_back(key.time);
+            return times;
+        });
         button->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(button, &QPushButton::customContextMenuRequested,
                 this, [this, button, prop, can_edit, emit_change, menu_style](const QPoint &pos) {
@@ -327,6 +350,13 @@
     };
     auto install_vec_delete_all_resolved = [&](QPushButton *button, auto prop_for_layer) {
         if (!button) return;
+        register_keyframe_times(button, [prop_for_layer]() {
+            std::vector<double> times;
+            if (const AnimatedVec2Property *property = prop_for_layer())
+                for (const VectorKeyframe &key : property->keyframes)
+                    times.push_back(key.time);
+            return times;
+        });
         button->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(button, &QPushButton::customContextMenuRequested,
                 this, [this, button, prop_for_layer, can_edit, emit_change, menu_style](const QPoint &pos) {
@@ -359,6 +389,15 @@
             QPushButton *button, AnimatedVec2Property Layer::*xy_member,
             AnimatedProperty Layer::*z_member) {
         if (!button) return;
+        register_keyframe_times(button, [this, xy_member, z_member]() {
+            std::vector<double> times;
+            if (!layer_) return times;
+            for (const VectorKeyframe &key : (layer_.get()->*xy_member).keyframes)
+                times.push_back(key.time);
+            for (const Keyframe &key : (layer_.get()->*z_member).keyframes)
+                times.push_back(key.time);
+            return times;
+        });
         button->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(button, &QPushButton::customContextMenuRequested,
                 this, [this, button, xy_member, z_member, can_edit,
@@ -421,6 +460,53 @@
                                                   &Layer::text_color_g, &Layer::text_color_b});
     install_group_delete_all(btn_kf_fill_color_, {&Layer::fill_color_a, &Layer::fill_color_r,
                                                   &Layer::fill_color_g, &Layer::fill_color_b});
+    install_delete_all_keyframes_menu(btn_kf_appearance_fill_, [this]() {
+        std::vector<AnimatedProperty *> result;
+        if (!layer_) return result;
+        if (layer_->type == LayerType::Text || layer_->type == LayerType::Clock ||
+            layer_->type == LayerType::Ticker) {
+            result = {&layer_->text_color_a, &layer_->text_color_r,
+                      &layer_->text_color_g, &layer_->text_color_b};
+        } else {
+            result = {&layer_->fill_color_a, &layer_->fill_color_r,
+                      &layer_->fill_color_g, &layer_->fill_color_b};
+        }
+        return result;
+    });
+    install_group_delete_all(btn_kf_appearance_stroke_,
+                             {&Layer::stroke_color_a,
+                              &Layer::stroke_color_r,
+                              &Layer::stroke_color_g,
+                              &Layer::stroke_color_b});
+    register_keyframe_times(btn_kf_pos_x_, [this]() {
+        std::vector<double> times;
+        if (!layer_) return times;
+        for (const Vector3Keyframe &key : layer_->position_3d.keyframes)
+            times.push_back(key.time);
+        for (const VectorKeyframe &key : layer_->position.keyframes)
+            times.push_back(key.time);
+        for (const Keyframe &key : layer_->position_z.keyframes)
+            times.push_back(key.time);
+        return times;
+    });
+    install_prop_delete_all(btn_kf_material_ambient_, &Layer::material_ambient);
+    install_prop_delete_all(btn_kf_material_diffuse_, &Layer::material_diffuse);
+    install_prop_delete_all(btn_kf_material_specular_, &Layer::material_specular);
+    install_prop_delete_all(btn_kf_material_shininess_, &Layer::material_shininess);
+    install_prop_delete_all(btn_kf_material_metallic_, &Layer::material_metallic);
+    install_prop_delete_all(btn_kf_material_roughness_, &Layer::material_roughness);
+    install_prop_delete_all(btn_kf_material_reflection_, &Layer::material_reflection_intensity);
+    install_group_delete_all(btn_kf_material_emissive_color_,
+                             {&Layer::material_emissive_color_a,
+                              &Layer::material_emissive_color_r,
+                              &Layer::material_emissive_color_g,
+                              &Layer::material_emissive_color_b});
+    install_prop_delete_all(btn_kf_material_emissive_intensity_,
+                            &Layer::material_emissive_intensity);
+    install_prop_delete_all(btn_kf_geometry_extrusion_depth_,
+                            &Layer::geometry_extrusion_depth);
+    install_prop_delete_all(btn_kf_geometry_bevel_depth_,
+                            &Layer::geometry_bevel_depth);
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -531,6 +617,17 @@
                 }
                 emit_change();
             });
+    connect(cmb_depth_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int) {
+                if (!can_edit()) return;
+                layer_->depth_mode = static_cast<LayerDepthMode>(
+                    cmb_depth_mode_->currentData().toInt());
+                const bool uses_scene_depth =
+                    layer_->depth_mode == LayerDepthMode::Automatic;
+                if (chk_depth_test_) chk_depth_test_->setEnabled(uses_scene_depth);
+                if (chk_write_depth_) chk_write_depth_->setEnabled(uses_scene_depth);
+                emit_change();
+            });
     auto connect_3d_property = [this, can_edit, local_time, emit_change](
             QDoubleSpinBox *spin, AnimatedProperty Layer::*member,
             double divisor = 1.0) {
@@ -607,6 +704,147 @@
                     chk_double_sided_->setChecked(false);
                     layer_->double_sided = false;
                 }
+                emit_change();
+            });
+    connect(chk_material_accepts_lights_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->material_accepts_lights = value;
+                emit_change();
+            });
+    connect(chk_material_casts_shadows_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->material_casts_shadows = value;
+                emit_change();
+            });
+    connect(chk_material_accepts_shadows_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->material_accepts_shadows = value;
+                emit_change();
+            });
+    connect(chk_material_reflections_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->material_appears_in_reflections = value;
+                emit_change();
+            });
+    auto connect_material_property = [this, can_edit, local_time, emit_change](
+                                         QDoubleSpinBox *spin,
+                                         AnimatedProperty Layer::*member) {
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, can_edit, local_time, emit_change, member](double value) {
+                    if (!can_edit()) return;
+                    set_animated_value(layer_.get()->*member, local_time(), value);
+                    emit_change();
+                });
+    };
+    connect_material_property(spn_material_ambient_, &Layer::material_ambient);
+    connect_material_property(spn_material_diffuse_, &Layer::material_diffuse);
+    connect_material_property(spn_material_specular_, &Layer::material_specular);
+    connect_material_property(spn_material_shininess_, &Layer::material_shininess);
+    connect_material_property(spn_material_metallic_, &Layer::material_metallic);
+    connect_material_property(spn_material_roughness_, &Layer::material_roughness);
+    connect_material_property(spn_material_reflection_,
+                              &Layer::material_reflection_intensity);
+    connect_material_property(spn_material_emissive_intensity_,
+                              &Layer::material_emissive_intensity);
+    connect(chk_geometry_extrusion_, &QCheckBox::toggled, this,
+            [this, can_edit, local_time, emit_change](bool value) {
+                if (!can_edit()) return;
+                layer_->geometry_extrusion_enabled = value;
+                BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+                    "stage=geometry-edit property=extrusion-enabled layer=%1 type=%2 localTime=%3 value=%4 dimensionBefore=%5 depthTestBefore=%6 writeDepthBefore=%7")
+                    .arg(QString::fromStdString(layer_->id))
+                    .arg(static_cast<int>(layer_->type))
+                    .arg(local_time(), 0, 'f', 9)
+                    .arg(value ? 1 : 0)
+                    .arg(static_cast<int>(layer_->dimension_mode))
+                    .arg(layer_->depth_test ? 1 : 0)
+                    .arg(layer_->write_to_depth ? 1 : 0));
+                if (value) {
+                    /* Extrusion is real depth geometry.  Enter the common 3D
+                     * compositor automatically instead of leaving an authored
+                     * but invisible 2D-only state. */
+                    layer_->dimension_mode = LayerDimensionMode::ThreeD;
+                    layer_->depth_test = true;
+                    layer_->write_to_depth = true;
+                    promote_layer_position_to_3d_path(*layer_);
+                    const double t = local_time();
+                    if (layer_->geometry_extrusion_depth.evaluate(t) <= 0.001)
+                        set_animated_value(layer_->geometry_extrusion_depth, t, 40.0);
+                }
+                BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+                    "stage=geometry-edit-committed property=extrusion-enabled layer=%1 localTime=%2 enabled=%3 depth=%4 bevel=%5 dimension=%6 depthTest=%7 writeDepth=%8 position3dPath=%9")
+                    .arg(QString::fromStdString(layer_->id))
+                    .arg(local_time(), 0, 'f', 9)
+                    .arg(layer_->geometry_extrusion_enabled ? 1 : 0)
+                    .arg(layer_->geometry_extrusion_depth.evaluate(local_time()), 0, 'f', 4)
+                    .arg(layer_->geometry_bevel_depth.evaluate(local_time()), 0, 'f', 4)
+                    .arg(static_cast<int>(layer_->dimension_mode))
+                    .arg(layer_->depth_test ? 1 : 0)
+                    .arg(layer_->write_to_depth ? 1 : 0)
+                    .arg(layer_->position_3d_path_enabled ? 1 : 0));
+                load_values();
+                emit_change();
+            });
+    auto connect_geometry_property =
+        [this, can_edit, local_time, emit_change](
+            QDoubleSpinBox *spin, AnimatedProperty Layer::*member,
+            const char *property_name) {
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, can_edit, local_time, emit_change, member,
+                           property_name](double value) {
+                        if (!can_edit()) return;
+                        const double t = local_time();
+                        set_animated_value(layer_.get()->*member, t, value);
+                        BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+                            "stage=geometry-edit property=%1 layer=%2 type=%3 localTime=%4 value=%5 extrusionEnabled=%6 dimension=%7 depthTest=%8 writeDepth=%9")
+                            .arg(QString::fromUtf8(property_name))
+                            .arg(QString::fromStdString(layer_->id))
+                            .arg(static_cast<int>(layer_->type))
+                            .arg(t, 0, 'f', 9)
+                            .arg(value, 0, 'f', 4)
+                            .arg(layer_->geometry_extrusion_enabled ? 1 : 0)
+                            .arg(static_cast<int>(layer_->dimension_mode))
+                            .arg(layer_->depth_test ? 1 : 0)
+                            .arg(layer_->write_to_depth ? 1 : 0));
+                        emit_change();
+                    });
+        };
+    connect_geometry_property(spn_geometry_extrusion_depth_,
+                              &Layer::geometry_extrusion_depth,
+                              "extrusion-depth");
+    connect_geometry_property(spn_geometry_bevel_depth_,
+                              &Layer::geometry_bevel_depth,
+                              "bevel-depth");
+    connect(spn_geometry_bevel_segments_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, can_edit, emit_change](int value) { if (!can_edit()) return; layer_->geometry_bevel_segments = value; BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral("stage=geometry-edit property=bevel-segments layer=%1 value=%2").arg(QString::fromStdString(layer_->id)).arg(value)); emit_change(); });
+    connect(spn_geometry_extrusion_segments_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, can_edit, emit_change](int value) { if (!can_edit()) return; layer_->geometry_extrusion_segments = value; BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral("stage=geometry-edit property=extrusion-segments layer=%1 value=%2").arg(QString::fromStdString(layer_->id)).arg(value)); emit_change(); });
+    connect(chk_geometry_bevel_front_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return; layer_->geometry_bevel_front = value; BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral("stage=geometry-edit property=front-bevel layer=%1 value=%2").arg(QString::fromStdString(layer_->id)).arg(value ? 1 : 0)); emit_change();
+            });
+    connect(chk_geometry_bevel_back_, &QCheckBox::toggled, this,
+            [this, can_edit, emit_change](bool value) {
+                if (!can_edit()) return; layer_->geometry_bevel_back = value; BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral("stage=geometry-edit property=back-bevel layer=%1 value=%2").arg(QString::fromStdString(layer_->id)).arg(value ? 1 : 0)); emit_change();
+            });
+    connect(btn_material_emissive_color_, &QPushButton::clicked, this,
+            [this, can_edit, local_time, emit_change]() {
+                if (!can_edit()) return;
+                const double t = local_time();
+                const QColor initial = QColor::fromRgba(static_cast<QRgb>(
+                    evaluated_material_emissive_color(*layer_, t)));
+                const QColor picked = bgl_pick_color(
+                    initial, this, QStringLiteral("Emissive Color"));
+                if (!picked.isValid()) return;
+                const uint32_t rgba = static_cast<uint32_t>(picked.rgba());
+                set_animated_value(layer_->material_emissive_color_a, t, (rgba >> 24) & 0xFF);
+                set_animated_value(layer_->material_emissive_color_r, t, (rgba >> 16) & 0xFF);
+                set_animated_value(layer_->material_emissive_color_g, t, (rgba >> 8) & 0xFF);
+                set_animated_value(layer_->material_emissive_color_b, t, rgba & 0xFF);
+                mirror_material_emissive_color(*layer_, t);
+                style_color_button(btn_material_emissive_color_, rgba);
                 emit_change();
             });
     connect(spn_opacity_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -692,6 +930,23 @@
                 set_animated_value(layer_->orientation_y, t, 0.0);
                 set_animated_value(layer_->orientation_z, t, 0.0);
                 set_animated_value(layer_->opacity, t, 1.0);
+                layer_->material_accepts_lights = false;
+                layer_->material_casts_shadows = true;
+                layer_->material_accepts_shadows = true;
+                layer_->material_appears_in_reflections = true;
+                set_animated_value(layer_->material_ambient, t, 0.15);
+                set_animated_value(layer_->material_diffuse, t, 1.0);
+                set_animated_value(layer_->material_specular, t, 0.25);
+                set_animated_value(layer_->material_shininess, t, 32.0);
+                set_animated_value(layer_->material_metallic, t, 0.0);
+                set_animated_value(layer_->material_roughness, t, 0.5);
+                set_animated_value(layer_->material_reflection_intensity, t, 0.0);
+                set_animated_value(layer_->material_emissive_color_a, t, 255.0);
+                set_animated_value(layer_->material_emissive_color_r, t, 255.0);
+                set_animated_value(layer_->material_emissive_color_g, t, 255.0);
+                set_animated_value(layer_->material_emissive_color_b, t, 255.0);
+                mirror_material_emissive_color(*layer_, t);
+                set_animated_value(layer_->material_emissive_intensity, t, 0.0);
                 layer_->origin_x = 0.5f;
                 layer_->origin_y = 0.5f;
                 set_animated_value(layer_->origin_prop, t, {0.5, 0.5, 0.0});
@@ -741,22 +996,46 @@
                 emit_change();
             });
     connect(chk_text_box_width_to_text_, &QCheckBox::toggled,
-            this, [this, can_edit, update_text_box_auto_controls, emit_change](bool v) {
+            this, [this, can_edit, local_time, update_text_box_auto_controls, emit_change](bool v) {
                 update_text_box_auto_controls();
-                if (can_edit()) { layer_->text_box_width_to_text = v; emit_change(); }
+                if (!can_edit()) return;
+                if (v && !layer_->max_text_box_width_overridden) {
+                    layer_->max_text_box_width = (float)std::max(
+                        1.0, eval_box_width(*layer_, local_time()));
+                    QSignalBlocker blocker(spn_max_text_box_width_);
+                    spn_max_text_box_width_->setValue(layer_->max_text_box_width);
+                }
+                layer_->text_box_width_to_text = v;
+                emit_change();
             });
     connect(chk_text_box_height_to_text_, &QCheckBox::toggled,
-            this, [this, can_edit, update_text_box_auto_controls, emit_change](bool v) {
+            this, [this, can_edit, local_time, update_text_box_auto_controls, emit_change](bool v) {
                 update_text_box_auto_controls();
-                if (can_edit()) { layer_->text_box_height_to_text = v; emit_change(); }
+                if (!can_edit()) return;
+                if (v && !layer_->max_text_box_height_overridden) {
+                    layer_->max_text_box_height = (float)std::max(
+                        1.0, eval_box_height(*layer_, local_time()));
+                    QSignalBlocker blocker(spn_max_text_box_height_);
+                    spn_max_text_box_height_->setValue(layer_->max_text_box_height);
+                }
+                layer_->text_box_height_to_text = v;
+                emit_change();
             });
     connect(spn_max_text_box_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) {
-                if (can_edit()) { layer_->max_text_box_width = (float)v; emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->max_text_box_width = (float)v;
+                layer_->max_text_box_width_overridden =
+                    std::abs(v - eval_box_width(*layer_, local_time())) > 0.01;
+                emit_change();
             });
     connect(spn_max_text_box_height_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) {
-                if (can_edit()) { layer_->max_text_box_height = (float)v; emit_change(); }
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit()) return;
+                layer_->max_text_box_height = (float)v;
+                layer_->max_text_box_height_overridden =
+                    std::abs(v - eval_box_height(*layer_, local_time())) > 0.01;
+                emit_change();
             });
     connect(cmb_font_, &QComboBox::currentTextChanged,
             this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](const QString &s){
@@ -1152,4 +1431,3 @@
                 : RichTextCharFormat();
         const RichTextFill initial_inline_fill = initial_inline_format.fill;
         const RichTextStroke initial_inline_stroke = initial_inline_format.stroke;
-

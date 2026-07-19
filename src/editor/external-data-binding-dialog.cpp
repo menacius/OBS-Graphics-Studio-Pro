@@ -1,4 +1,5 @@
 #include "external-data-binding-dialog.h"
+#include "bgl-modern-controls.h"
 
 #include "external-data.h"
 #include "external-data-log.h"
@@ -191,11 +192,11 @@ void ExternalDataBindingDialog::build_ui()
     auto *formatter_form = new QFormLayout();
     prefix_edit_ = new QLineEdit(formatter_group);
     suffix_edit_ = new QLineEdit(formatter_group);
-    number_format_check_ = new QCheckBox(QStringLiteral("Enable number formatting"), formatter_group);
+    number_format_check_ = new BglSwitch(QStringLiteral("Enable number formatting"), formatter_group);
     decimal_places_spin_ = new QSpinBox(formatter_group);
     decimal_places_spin_->setRange(-1, 12);
     decimal_places_spin_->setSpecialValueText(QStringLiteral("Automatic"));
-    thousands_check_ = new QCheckBox(QStringLiteral("Thousands separator"), formatter_group);
+    thousands_check_ = new BglSwitch(QStringLiteral("Thousands separator"), formatter_group);
     case_combo_ = new QComboBox(formatter_group);
     case_combo_->addItem(QStringLiteral("Unchanged"), static_cast<int>(ExternalDataTextCase::None));
     case_combo_->addItem(QStringLiteral("UPPERCASE"), static_cast<int>(ExternalDataTextCase::Uppercase));

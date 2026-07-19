@@ -373,6 +373,8 @@ struct TitleSourceData {
     enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro, OutroOnly };
 
     /* Playback state */
+    std::atomic<TitlePlaybackState> playback_state {TitlePlaybackState::Idle};
+    std::atomic<bool> preview_ready {false};
     double      playhead     = 0.0;    /* seconds */
     bool        playing      = true;
     bool        playback_reverse = false;
@@ -389,6 +391,16 @@ struct TitleSourceData {
     bool        force_cue_state_sync = false; /* title switch/startup may race an already-issued cue */
     bool        first_frame_pending = true;   /* source is not clean until video_render draws once */
     uint32_t    consecutive_draw_failures = 0;
+    uint64_t    diagnostic_tick_serial = 0;
+    uint64_t    diagnostic_render_serial = 0;
+    uint64_t    diagnostic_successful_render_serial = 0;
+    uint64_t    diagnostic_skipped_render_count = 0;
+    double      diagnostic_previous_tick_playhead = 0.0;
+    bool        diagnostic_previous_tick_playing = false;
+    bool        diagnostic_last_render_succeeded = false;
+    bool        diagnostic_last_render_was_skipped = false;
+    std::chrono::steady_clock::time_point diagnostic_last_render_time;
+    std::chrono::steady_clock::time_point diagnostic_last_flicker_warning;
     std::chrono::steady_clock::time_point last_cue_cache_check;
     std::string cue_cache_check_title_id;
     uint64_t    cue_cache_check_revision = std::numeric_limits<uint64_t>::max();
@@ -510,6 +522,86 @@ void title_source_set_editor_title_snapshot(obs_source_t *source,
     data->dirty = true;
 }
 
+bool enterPreview(obs_source_t *source, const std::shared_ptr<Title> &title,
+                  double preview_time)
+{
+    if (!source || !title)
+        return false;
+
+    TitleSourceData *data = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+        const auto it = g_title_source_instances.find(source);
+        if (it == g_title_source_instances.end() || !it->second ||
+            !it->second->editor_transport_controlled)
+            return false;
+        data = it->second;
+    }
+
+    const double frozen_time = std::clamp(preview_time, 0.0,
+                                          std::max(0.0, title->duration));
+    {
+        std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
+        data->editor_title_snapshot = title;
+    }
+    data->editor_transport_time.store(frozen_time, std::memory_order_release);
+    data->editor_transport_reverse.store(false, std::memory_order_release);
+    data->editor_audio_speed.store(1.0, std::memory_order_release);
+    data->playhead = frozen_time;
+    data->playing = false;
+    data->waiting_for_cue = false;
+    data->preview_ready.store(true, std::memory_order_release);
+    data->playback_state.store(TitlePlaybackState::PreviewReady,
+                               std::memory_order_release);
+    data->source_audio_active_known = false;
+    data->seen_audio_membership_revision =
+        std::numeric_limits<uint64_t>::max();
+    data->dirty = true;
+    data->first_frame_pending = true;
+    return true;
+}
+
+void leavePreview(obs_source_t *source)
+{
+    if (!source)
+        return;
+
+    TitleSourceData *data = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+        const auto it = g_title_source_instances.find(source);
+        if (it == g_title_source_instances.end() || !it->second ||
+            !it->second->editor_transport_controlled)
+            return;
+        data = it->second;
+    }
+
+    {
+        std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
+        data->editor_title_snapshot.reset();
+    }
+    data->preview_ready.store(false, std::memory_order_release);
+    data->playing = false;
+    data->waiting_for_cue = true;
+    data->playback_state.store(TitlePlaybackState::Idle,
+                               std::memory_order_release);
+    data->dirty = true;
+    if (data->audio_runtime)
+        data->audio_runtime->stop(false);
+}
+
+bool isPreviewReady(obs_source_t *source)
+{
+    if (!source)
+        return false;
+    std::lock_guard<std::mutex> lock(g_title_source_instances_mutex);
+    const auto it = g_title_source_instances.find(source);
+    return it != g_title_source_instances.end() && it->second &&
+        it->second->preview_ready.load(std::memory_order_acquire) &&
+        it->second->playback_state.load(std::memory_order_acquire) ==
+            TitlePlaybackState::PreviewReady;
+}
+
 bool title_source_get_audio_levels(obs_source_t *source, float *left,
                                    float *right, uint64_t *last_update_ns)
 {
@@ -537,6 +629,16 @@ static std::shared_ptr<Title> editor_title_snapshot_for_source(TitleSourceData *
         return nullptr;
     std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
     return data->editor_title_snapshot;
+}
+
+static std::shared_ptr<Title> source_dimension_title_for_source(
+    TitleSourceData *data)
+{
+    if (!data)
+        return nullptr;
+    return data->editor_transport_controlled
+        ? editor_title_snapshot_for_source(data)
+        : TitleDataStore::instance().get_title(data->title_id);
 }
 
 static bool title_has_audio_track(const std::shared_ptr<Title> &title)
@@ -721,52 +823,190 @@ static void set_source_output_visible(TitleSourceData *data, bool visible,
 
 static bool effect_has_animation(const LayerEffect &effect)
 {
-    return effect.enabled_prop.is_animated() ||
-           effect.opacity_prop.is_animated() ||
-           effect.size_prop.is_animated() ||
-           effect.distance_prop.is_animated() ||
-           effect.angle_prop.is_animated() ||
-           effect.spread_prop.is_animated() ||
-           effect.falloff_prop.is_animated() ||
-           effect.stroke_width_prop.is_animated() ||
-           effect.stroke_opacity_prop.is_animated() ||
-           effect.padding_left_prop.is_animated() ||
-           effect.padding_right_prop.is_animated() ||
-           effect.padding_top_prop.is_animated() ||
-           effect.padding_bottom_prop.is_animated() ||
-           effect.corner_radius_tl_prop.is_animated() ||
-           effect.corner_radius_tr_prop.is_animated() ||
-           effect.corner_radius_br_prop.is_animated() ||
-           effect.corner_radius_bl_prop.is_animated() ||
-           effect.color_a.is_animated() ||
-           effect.color_r.is_animated() ||
-           effect.color_g.is_animated() ||
-           effect.color_b.is_animated() ||
-           effect.stroke_color_a.is_animated() ||
-           effect.stroke_color_r.is_animated() ||
-           effect.stroke_color_g.is_animated() ||
-           effect.stroke_color_b.is_animated() ||
-           effect.amount_prop.is_animated() ||
-           effect.scale_prop.is_animated() ||
-           effect.softness_prop.is_animated() ||
-           effect.roundness_prop.is_animated() ||
-           effect.speed_prop.is_animated() ||
-           effect.center_x_prop.is_animated() ||
-           effect.center_y_prop.is_animated() ||
-           effect.complexity_prop.is_animated() ||
-           effect.evolution_prop.is_animated() ||
-           effect.secondary_color_a.is_animated() ||
-           effect.secondary_color_r.is_animated() ||
-           effect.secondary_color_g.is_animated() ||
-           effect.secondary_color_b.is_animated() ||
-           (!effect.extension_keyframes_json.empty() &&
-            effect.extension_keyframes_json != "{}") ||
-           ((effect.type == LayerEffectType::Noise || effect.type == LayerEffectType::Grain || effect.type == LayerEffectType::FilmDistortion || effect.type == LayerEffectType::AnalogDistortion || effect.type == LayerEffectType::DigitalDistortion) && effect.effect_animated);
+    /* Keep source scheduling/cache invalidation aligned with the canonical
+     * effect-runtime contract. This automatically includes new procedural
+     * effects and newly added animated parameters instead of maintaining a
+     * second hard-coded list that can silently omit them. */
+    return effect_is_time_variant(effect);
 }
 
 static bool layer_has_effect_animation(const Layer &layer)
 {
     return std::any_of(layer.effects.begin(), layer.effects.end(), effect_has_animation);
+}
+
+static bool animated_property_changes_during_interval(
+    const AnimatedProperty &property, double start_time, double end_time,
+    double epsilon = 1e-6)
+{
+    if (!property.is_animated())
+        return false;
+    const double lo = std::min(start_time, end_time);
+    const double hi = std::max(start_time, end_time);
+    if (hi - lo <= 1e-9)
+        return false;
+
+    const std::array<double, 5> probes = {
+        lo, lo + (hi - lo) * 0.25, (lo + hi) * 0.5,
+        lo + (hi - lo) * 0.75, hi};
+    const double first = property.evaluate(probes.front());
+    for (std::size_t i = 1; i < probes.size(); ++i) {
+        if (std::abs(property.evaluate(probes[i]) - first) > epsilon)
+            return true;
+    }
+    return false;
+}
+
+static bool animated_vec2_property_changes_during_interval(
+    const AnimatedVec2Property &property, double start_time, double end_time,
+    double epsilon = 1e-6)
+{
+    if (!property.is_animated())
+        return false;
+    const double lo = std::min(start_time, end_time);
+    const double hi = std::max(start_time, end_time);
+    if (hi - lo <= 1e-9)
+        return false;
+
+    const std::array<double, 5> probes = {
+        lo, lo + (hi - lo) * 0.25, (lo + hi) * 0.5,
+        lo + (hi - lo) * 0.75, hi};
+    const Vec2Value first = property.evaluate(probes.front());
+    for (std::size_t i = 1; i < probes.size(); ++i) {
+        const Vec2Value value = property.evaluate(probes[i]);
+        if (std::abs(value.x - first.x) > epsilon ||
+            std::abs(value.y - first.y) > epsilon ||
+            std::abs(value.z - first.z) > epsilon)
+            return true;
+    }
+    return false;
+}
+
+static bool effect_animation_changes_during_interval(
+    const LayerEffect &effect, double start_time, double end_time)
+{
+    /* Procedural/extension effects can advance from their own clock without a
+     * native keyframe. Treat the generic animated flag as a temporal dependency
+     * for every effect type, not only the original noise/damage subset. This is
+     * deliberately conservative so future procedural effects are automatically
+     * sampled below Motion Blur instead of being frozen at the displayed frame. */
+    if (effect.effect_animated)
+        return true;
+
+    const AnimatedProperty *properties[] = {
+        &effect.enabled_prop, &effect.brightness_prop, &effect.contrast_prop,
+        &effect.saturation_prop, &effect.opacity_prop, &effect.size_prop,
+        &effect.distance_prop, &effect.angle_prop, &effect.spread_prop,
+        &effect.falloff_prop, &effect.amount_prop, &effect.scale_prop,
+        &effect.softness_prop, &effect.roundness_prop, &effect.speed_prop,
+        &effect.center_x_prop, &effect.center_y_prop, &effect.complexity_prop,
+        &effect.evolution_prop, &effect.stroke_width_prop,
+        &effect.stroke_opacity_prop, &effect.trim_start_prop,
+        &effect.trim_end_prop, &effect.trim_offset_prop,
+        &effect.stroke_offset_prop, &effect.padding_left_prop,
+        &effect.padding_right_prop, &effect.padding_top_prop,
+        &effect.padding_bottom_prop, &effect.corner_radius_tl_prop,
+        &effect.corner_radius_tr_prop, &effect.corner_radius_br_prop,
+        &effect.corner_radius_bl_prop, &effect.gradient_start_pos_prop,
+        &effect.gradient_end_pos_prop, &effect.gradient_start_opacity_prop,
+        &effect.gradient_end_opacity_prop, &effect.gradient_angle_prop,
+        &effect.gradient_center_x_prop, &effect.gradient_center_y_prop,
+        &effect.gradient_scale_prop, &effect.gradient_focal_x_prop,
+        &effect.gradient_focal_y_prop, &effect.gradient_opacity_prop,
+        &effect.gradient_start_color_a, &effect.gradient_start_color_r,
+        &effect.gradient_start_color_g, &effect.gradient_start_color_b,
+        &effect.gradient_end_color_a, &effect.gradient_end_color_r,
+        &effect.gradient_end_color_g, &effect.gradient_end_color_b,
+        &effect.color_a, &effect.color_r, &effect.color_g, &effect.color_b,
+        &effect.stroke_color_a, &effect.stroke_color_r,
+        &effect.stroke_color_g, &effect.stroke_color_b,
+        &effect.secondary_color_a, &effect.secondary_color_r,
+        &effect.secondary_color_g, &effect.secondary_color_b};
+    for (const AnimatedProperty *property : properties) {
+        if (property && animated_property_changes_during_interval(
+                *property, start_time, end_time))
+            return true;
+    }
+
+    /* Extension graphs may own time/keyframe state outside the native scalar
+     * fields. Keep them conservative until an extension declares a stronger
+     * static-time contract. */
+    return !effect.extension_keyframes_json.empty() &&
+           effect.extension_keyframes_json != "{}";
+}
+
+static bool layer_non_transform_animation_changes_during_interval(
+    const Layer &layer, double start_local_time, double end_local_time)
+{
+    /* Procedural selectors and ordinary authored text animators can change
+     * continuously without a compact scalar signature. Transition-managed
+     * animators are removed by the Motion Blur probe outside their active
+     * window, so retaining this conservative check does not revive the dormant
+     * transition regression fixed in Development Version 288. */
+    if (text_animator_stack_is_time_dependent(layer.text_animators))
+        return true;
+
+    for (const LayerEffect &effect : layer.effects) {
+        if (effect_animation_changes_during_interval(
+                effect, start_local_time, end_local_time))
+            return true;
+    }
+
+    if (animated_vec2_property_changes_during_interval(
+            layer.size, start_local_time, end_local_time) ||
+        animated_vec2_property_changes_during_interval(
+            layer.image_size, start_local_time, end_local_time) ||
+        animated_vec2_property_changes_during_interval(
+            layer.origin_prop, start_local_time, end_local_time))
+        return true;
+
+    const AnimatedProperty *properties[] = {
+        &layer.paragraph_indent_left_prop,
+        &layer.paragraph_indent_right_prop,
+        &layer.paragraph_indent_first_line_prop,
+        &layer.font_size_prop, &layer.char_scale_x_prop,
+        &layer.char_scale_y_prop, &layer.char_tracking_prop,
+        &layer.baseline_shift_prop, &layer.paragraph_space_before_prop,
+        &layer.paragraph_space_after_prop,
+        &layer.text_color_a, &layer.text_color_r,
+        &layer.text_color_g, &layer.text_color_b,
+        &layer.fill_color_a, &layer.fill_color_r,
+        &layer.fill_color_g, &layer.fill_color_b,
+        &layer.stroke_color_a, &layer.stroke_color_r,
+        &layer.stroke_color_g, &layer.stroke_color_b,
+        &layer.stroke_offset_prop,
+        &layer.background_enabled_prop,
+        &layer.background_opacity_prop,
+        &layer.background_padding_x_prop,
+        &layer.background_padding_y_prop,
+        &layer.background_padding_left_prop,
+        &layer.background_padding_right_prop,
+        &layer.background_padding_top_prop,
+        &layer.background_padding_bottom_prop,
+        &layer.background_corner_radius_prop,
+        &layer.background_corner_radius_tl_prop,
+        &layer.background_corner_radius_tr_prop,
+        &layer.background_corner_radius_br_prop,
+        &layer.background_corner_radius_bl_prop,
+        &layer.background_stroke_width_prop,
+        &layer.background_stroke_opacity_prop,
+        &layer.background_color_a, &layer.background_color_r,
+        &layer.background_color_g, &layer.background_color_b,
+        &layer.background_stroke_color_a,
+        &layer.background_stroke_color_r,
+        &layer.background_stroke_color_g,
+        &layer.background_stroke_color_b,
+        &layer.shadow_enabled_prop, &layer.shadow_opacity_prop,
+        &layer.shadow_distance_prop, &layer.shadow_angle_prop,
+        &layer.shadow_blur_prop, &layer.shadow_spread_prop,
+        &layer.shadow_color_a, &layer.shadow_color_r,
+        &layer.shadow_color_g, &layer.shadow_color_b};
+    for (const AnimatedProperty *property : properties) {
+        if (property && animated_property_changes_during_interval(
+                *property, start_local_time, end_local_time))
+            return true;
+    }
+    return false;
 }
 
 static bool layer_has_animation(const Layer &layer)
@@ -791,6 +1031,18 @@ static bool layer_has_animation(const Layer &layer)
            layer.orientation_z.is_animated() ||
            layer.camera_assignment.is_animated() ||
            layer.opacity.is_animated() ||
+           layer.material_ambient.is_animated() ||
+           layer.material_diffuse.is_animated() ||
+           layer.material_specular.is_animated() ||
+           layer.material_shininess.is_animated() ||
+           layer.material_metallic.is_animated() ||
+           layer.material_roughness.is_animated() ||
+           layer.material_reflection_intensity.is_animated() ||
+           layer.material_emissive_color_a.is_animated() ||
+           layer.material_emissive_color_r.is_animated() ||
+           layer.material_emissive_color_g.is_animated() ||
+           layer.material_emissive_color_b.is_animated() ||
+           layer.material_emissive_intensity.is_animated() ||
            layer.size.is_animated() ||
            layer.origin_prop.is_animated() ||
            layer.paragraph_indent_left_prop.is_animated() ||
@@ -810,7 +1062,12 @@ static bool layer_has_animation(const Layer &layer)
            layer.fill_color_a.is_animated() ||
            layer.fill_color_r.is_animated() ||
            layer.fill_color_g.is_animated() ||
-           layer.fill_color_b.is_animated();
+           layer.fill_color_b.is_animated() ||
+           layer.stroke_color_a.is_animated() ||
+           layer.stroke_color_r.is_animated() ||
+           layer.stroke_color_g.is_animated() ||
+           layer.stroke_color_b.is_animated() ||
+           layer.stroke_offset_prop.is_animated();
 }
 
 static bool include_property_bounds(const Layer &layer, const AnimatedProperty &prop,
@@ -844,6 +1101,9 @@ static bool include_effect_property_bounds(const Layer &layer, const LayerEffect
     has_bounds |= include_property_bounds(layer, effect.falloff_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, effect.stroke_width_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, effect.stroke_opacity_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.trim_start_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.trim_end_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.trim_offset_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, effect.padding_left_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, effect.padding_right_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, effect.padding_top_prop, first_time, last_time);
@@ -870,6 +1130,19 @@ static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_ti
     has_bounds |= include_property_bounds(layer, layer.scale, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.rotation, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.opacity, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_ambient, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_diffuse, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_specular, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_shininess, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_metallic, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_roughness, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_reflection_intensity, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_emissive_color_a, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_emissive_color_r, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_emissive_color_g, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_emissive_color_b, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.material_emissive_intensity, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.stroke_offset_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.size, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.origin_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_left_prop, first_time, last_time);
@@ -892,6 +1165,10 @@ static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_ti
     has_bounds |= include_property_bounds(layer, layer.fill_color_r, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.fill_color_g, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.fill_color_b, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.stroke_color_a, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.stroke_color_r, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.stroke_color_g, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.stroke_color_b, first_time, last_time);
     return has_bounds;
 }
 
@@ -915,19 +1192,17 @@ static bool title_has_ticker_layer(const std::shared_ptr<Title> &title)
 
 static bool title_has_independent_asset_layer(const std::shared_ptr<Title> &title)
 {
-    if (!title) return false;
-    return std::any_of(title->layers.begin(), title->layers.end(),
-                       [](const std::shared_ptr<Layer> &layer) {
-                           return layer && layer->type == LayerType::Asset &&
-                                  layer->asset_animated &&
-                                  layer->asset_playback_mode == 1;
-                       });
+    return title && bgs::asset_runtime::title_has_independent_playback(*title);
 }
 
 static bool title_has_animation(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
-    if (bgs::transform3d::title_camera_has_animation(*title))
+    if (bgs::transform3d::title_camera_has_animation(*title) ||
+        std::any_of(title->lights.begin(), title->lights.end(),
+                    [](const TitleLight &light) {
+                        return title_light_has_authored_keyframes(light);
+                    }))
         return true;
     const double duration = std::max(0.0, title->duration);
     return std::any_of(title->layers.begin(), title->layers.end(),
@@ -1443,7 +1718,7 @@ static bool gpu_layer_uses_cue_persistence(const Title &title,
     const bool persistence = title.cue_background_persistence &&
         title.cue_persistence_transition && title.current_cue_row >= 0 &&
         !title.live_text_rows.empty() && !layer.ignore_persistence;
-    if (!persistence || !layer.asset_owner_id.empty())
+    if (!persistence)
         return false;
 
     const auto exposed = exposed_text_layers(title);
@@ -1464,11 +1739,12 @@ static bool gpu_layer_uses_cue_persistence(const Title &title,
 static double gpu_layer_render_time(const Title &title, const Layer &layer,
                                     double title_time)
 {
-    if (!layer.asset_owner_id.empty())
-        return layer_asset_resolved_time(title, layer, title_time);
-    return gpu_layer_uses_cue_persistence(title, layer)
+    const double root_time = gpu_layer_uses_cue_persistence(title, layer)
         ? cue_persistence_hold_time(title)
         : title_time;
+    return !layer.asset_owner_id.empty()
+        ? layer_asset_resolved_time(title, layer, root_time)
+        : root_time;
 }
 
 /* Keyframes and transitions are one visual state. A persistent layer must use
@@ -1477,9 +1753,15 @@ static double gpu_layer_render_time(const Title &title, const Layer &layer,
 static double gpu_layer_transition_time(const Title &title, const Layer &layer,
                                         double title_time)
 {
-    return gpu_layer_uses_cue_persistence(title, layer)
+    /* Keep transition sampling explicit at this compositor boundary: the
+     * frozen root clock must be resolved through an Asset owner exactly like
+     * its raster and transform clock. */
+    const double root_time = gpu_layer_uses_cue_persistence(title, layer)
         ? cue_persistence_hold_time(title)
         : title_time;
+    return !layer.asset_owner_id.empty()
+        ? layer_asset_resolved_time(title, layer, root_time)
+        : root_time;
 }
 
 static bool gpu_layer_chain_visible(const Title &title, const Layer &layer,
@@ -1609,6 +1891,14 @@ static bool layer_chain_active_as_matte(const Title &title, const Layer &layer,
 
 static bool layer_should_render_as_visible_content(const Title &title, const Layer &layer)
 {
+    /* Light and Empty layers are scene controls, not artwork. Letting one reach a GPU
+     * layer target reports a successful no-op and exposes whatever texture the
+     * reusable target held previously—typically an untransformed 3D raster in
+     * the canvas centre immediately after a light is added. */
+    if (layer.type == LayerType::Light)
+        return false;
+    if (layer.type == LayerType::Empty)
+        return false;
     /*
      * After Effects-style track mattes: a layer selected as another layer's
      * mask is not composited as normal visible artwork, but it is still
@@ -1664,4 +1954,3 @@ static void apply_layer_world_transform(cairo_t *cr, const Title &title, const L
                       transform.dx(), transform.dy());
     cairo_transform(cr, &matrix);
 }
-

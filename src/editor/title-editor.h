@@ -149,6 +149,14 @@ private:
     void save_title_as_new();
     void save_title_as_asset();
     void export_title_template(bool save_in_library);
+    void import_document();
+    void import_vector_document();
+    void import_vector_document(const QString &path);
+    void import_gimp_document();
+    void import_gimp_document(const QString &path);
+    void import_photoshop_document();
+    void import_photoshop_document(const QString &path);
+    void import_layered_document(const QString &path, bool photoshop);
     void copy_title_to_store(const std::shared_ptr<Title> &source, const std::shared_ptr<Title> &dest) const;
     void align_selected_to_canvas(int x_mode, int y_mode);
     void align_selected_layers_horizontal();
@@ -177,6 +185,9 @@ private:
     void ungroup_selected_layers();
     void add_selected_layers_to_group(const std::string &group_id);
     void remove_selected_layers_from_group();
+    void drop_layer_list_rows(const std::vector<std::string> &layer_ids,
+                              const std::string &target_layer_id,
+                              int placement);
     void copy_selected_layer();
     void cut_selected_layer();
     void paste_layer_from_clipboard();
@@ -247,11 +258,13 @@ private:
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
+    void set_editor_dock_visible(QDockWidget *dock, bool visible);
     void set_panels_locked(bool locked);
     void update_panel_lock_state();
     void schedule_cache_invalidation();
     void force_next_title_visual_update();
     void apply_playhead_change(double t, bool playback_frame);
+    void refresh_playback_ui(double t, bool force_full_refresh);
     void reset_playback_timer_cadence();
     void schedule_next_playback_timer_interval();
     void update_display_refresh_pacing();
@@ -293,6 +306,10 @@ private:
     QTimer                *inline_text_live_publish_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
     QElapsedTimer          cache_reprioritize_clock_;
+    QElapsedTimer          playback_transport_ui_clock_;
+    QElapsedTimer          playback_inspector_ui_clock_;
+    QElapsedTimer          playback_diagnostics_clock_;
+    QElapsedTimer          playback_pointer_ui_clock_;
     double                 playback_timer_fractional_error_ms_ = 0.0;
     double                 playback_timer_frame_duration_ms_ = 0.0;
     double                 display_refresh_hz_ = 60.0;
@@ -308,6 +325,7 @@ private:
     TitlePropertiesPanel *title_props_ = nullptr;
     QDockWidget     *layer_props_dock_ = nullptr;
     QDockWidget     *graphic_props_dock_ = nullptr;
+    QDockWidget     *three_d_scene_dock_ = nullptr;
     QDockWidget     *effects_dock_ = nullptr;
     QDockWidget     *effects_presets_dock_ = nullptr;
     QDockWidget     *styles_dock_ = nullptr;
@@ -401,6 +419,7 @@ private:
     QAction         *act_lock_panels_ = nullptr;
     QAction         *act_layer_props_visible_ = nullptr;
     QAction         *act_graphic_props_visible_ = nullptr;
+    QAction         *act_three_d_scene_visible_ = nullptr;
     QAction         *act_effects_visible_ = nullptr;
     QAction         *act_effects_presets_visible_ = nullptr;
     QAction         *act_styles_visible_ = nullptr;
@@ -436,6 +455,9 @@ private:
     QTimer           *editor_audio_meter_timer_ = nullptr;
     bool              editor_audio_preview_seeking_ = false;
     bool              editor_audio_monitor_enabled_ = true;
+    bool              editor_audio_snapshot_dirty_ = true;
+    bool              editor_audio_play_state_known_ = false;
+    bool              editor_audio_last_playing_ = false;
     QElapsedTimer     editor_audio_speed_clock_;
     double            editor_audio_speed_last_playhead_ = 0.0;
     double            editor_audio_speed_factor_ = 1.0;

@@ -176,6 +176,7 @@ struct CanvasPreview::GpuDisplayState {
     uint32_t swapchain_w = 0;
     uint32_t swapchain_h = 0;
     QRect artwork_rect_px;
+    bool shader_compile_screen_active = false;
     bool enabled = true;
     bool update_color_space = false;
     bool destroying = false;
@@ -400,6 +401,22 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     };
     connect(inline_text_editor_, &QTextEdit::cursorPositionChanged, this, emit_cursor_changed);
     connect(inline_text_editor_, &QTextEdit::selectionChanged, this, emit_cursor_changed);
+}
+
+void CanvasPreview::set_read_only(bool read_only)
+{
+    read_only_ = read_only;
+    setAcceptDrops(!read_only);
+    setFocusPolicy(read_only ? Qt::NoFocus : Qt::StrongFocus);
+    setMouseTracking(!read_only);
+    setAttribute(Qt::WA_TransparentForMouseEvents, read_only);
+    if (inline_text_editor_) {
+        inline_text_editor_->setReadOnly(read_only);
+        if (read_only)
+            inline_text_editor_->hide();
+    }
+    if (read_only)
+        unsetCursor();
 }
 
 CanvasPreview::~CanvasPreview()
@@ -646,10 +663,15 @@ bool CanvasPreview::present_gpu_display_if_due()
         gs_begin_scene();
         struct vec4 clear_color;
         vec4_set(&clear_color, 0.0f, 0.0f, 0.0f, 1.0f);
+        /* The swapchain shares state with retained 3D passes. Re-arm writes,
+         * depth, culling and blending before clearing the next presentation. */
+        gs_enable_color(true, true, true, true);
+        gs_enable_depth_test(false);
+        gs_depth_function(GS_LEQUAL);
+        gs_set_cull_mode(GS_NEITHER);
+        gs_enable_blending(false);
         gs_clear(GS_CLEAR_COLOR | GS_CLEAR_DEPTH | GS_CLEAR_STENCIL,
                  &clear_color, 1.0f, 0);
-        gs_enable_depth_test(false);
-        gs_set_cull_mode(GS_NEITHER);
         gs_ortho(0.0f, static_cast<float>(cx), 0.0f,
                  static_cast<float>(cy), -100.0f, 100.0f);
         gs_set_viewport(0, 0, cx, cy);
@@ -708,6 +730,12 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
     draw_texture(state.underlay, QRect(0, 0, static_cast<int>(cx), static_cast<int>(cy)));
+    if (state.shader_compile_screen_active) {
+        gs_blend_state_pop();
+        gs_projection_pop();
+        gs_viewport_pop();
+        return;
+    }
     if (canvas->gpu_render_session_ && !state.artwork_rect_px.isEmpty()) {
         gs_matrix_push();
         gs_matrix_identity();
@@ -730,10 +758,62 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
                   canvas->gpu_render_session_,
                   static_cast<uint32_t>(state.artwork_rect_px.width()),
                   static_cast<uint32_t>(state.artwork_rect_px.height()));
-        const std::string gpu_error = artwork_drawn
-            ? std::string()
-            : title_gpu_render_session_last_error(canvas->gpu_render_session_);
-        if (!artwork_drawn) {
+        const bool draw_deferred =
+            title_gpu_render_session_last_draw_deferred(
+                canvas->gpu_render_session_);
+        const std::string gpu_error = (!artwork_drawn || draw_deferred)
+            ? title_gpu_render_session_last_error(canvas->gpu_render_session_)
+            : std::string();
+        TitleGpuRenderDiagnostics draw_diagnostics;
+        const bool have_draw_diagnostics =
+            title_gpu_render_session_get_diagnostics(
+                canvas->gpu_render_session_, draw_diagnostics);
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=canvas-present canvas=%1 session=%2 title=%3 playhead=%4 result=%5 deferred=%6 output=%7x%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 publishedTime=%14 modelRevision=%15 publishedRevision=%16 dirty=%17 pendingRasters=%18 extrusionLayers=%19 lights=%20 depthRuns=%21 depthLayers=%22 extrusionPasses=%23 error=%24")
+            .arg(reinterpret_cast<quintptr>(canvas), 0, 16)
+            .arg(reinterpret_cast<quintptr>(canvas->gpu_render_session_), 0, 16)
+            .arg(canvas->title_
+                     ? QString::fromStdString(canvas->title_->id)
+                     : QStringLiteral("<none>"))
+            .arg(canvas->playhead_, 0, 'f', 9)
+            .arg(artwork_drawn ? QStringLiteral("drawn")
+                               : QStringLiteral("failed"))
+            .arg(draw_deferred ? 1 : 0)
+            .arg(state.artwork_rect_px.width())
+            .arg(state.artwork_rect_px.height())
+            .arg(have_draw_diagnostics ? 1 : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.session_time : -1.0,
+                 0, 'f', 9)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.update_serial : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.render_serial : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.publish_serial : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.last_published_time : -1.0,
+                 0, 'f', 9)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.model_revision : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.published_model_revision : 0)
+            .arg(have_draw_diagnostics && draw_diagnostics.frame_dirty ? 1 : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.pending_raster_count : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.extrusion_layer_count : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.visible_light_layer_count : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.hardware_depth_run_count : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.hardware_depth_layer_count : 0)
+            .arg(have_draw_diagnostics
+                     ? draw_diagnostics.extrusion_pass_count : 0)
+            .arg(gpu_error.empty() ? QStringLiteral("none")
+                                   : QString::fromStdString(gpu_error)));
+        if (!artwork_drawn || draw_deferred) {
             BGL_LOG_DEBUG("Canvas", QStringLiteral(
                 "GPU canvas draw deferred title=%1 output=%2x%3 error=%4")
                 .arg(canvas->title_
@@ -748,24 +828,45 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
              * itself must not mutate the Qt/editor model, so queue exactly one
              * recovery snapshot on the widget thread. This also retries transient
              * first-frame atlas failures without requiring a user edit. */
+            const bool shader_compile_pending =
+                gpu_error.rfind("Shader compile pending:", 0) == 0;
             bool expected = false;
-            if (canvas->gpu_recovery_queued_.compare_exchange_strong(
+            if (!shader_compile_pending &&
+                canvas->gpu_recovery_queued_.compare_exchange_strong(
                     expected, true, std::memory_order_acq_rel)) {
+                BGL_LOG_DEBUG("RenderDiagnostics", QStringLiteral(
+                    "stage=canvas-recovery-queue canvas=%1 session=%2 playhead=%3 drawn=%4 deferred=%5 error=%6")
+                    .arg(reinterpret_cast<quintptr>(canvas), 0, 16)
+                    .arg(reinterpret_cast<quintptr>(canvas->gpu_render_session_), 0, 16)
+                    .arg(canvas->playhead_, 0, 'f', 9)
+                    .arg(artwork_drawn ? 1 : 0)
+                    .arg(draw_deferred ? 1 : 0)
+                    .arg(gpu_error.empty()
+                             ? QStringLiteral("none")
+                             : QString::fromStdString(gpu_error)));
                 QMetaObject::invokeMethod(canvas, [canvas]() {
                     canvas->gpu_recovery_queued_.store(
                         false, std::memory_order_release);
                     if (!canvas->title_ || !canvas->gpu_render_session_)
                         return;
                     canvas->gpu_model_dirty_ = true;
+                    canvas->full_gpu_model_refresh_pending_ = true;
+                    canvas->force_live_full_quality_render_ = true;
                     canvas->dirty_ = true;
-                    canvas->update();
+                    /* Re-enter the model preparation path immediately. A plain
+                     * QWidget repaint only redraws the previously published
+                     * texture and can therefore preserve a stale frame until a
+                     * later scene edit changes the model revision. */
+                    canvas->refresh_preview();
                 }, Qt::QueuedConnection);
             }
         }
         if (TitlePreferences::cache_playback_logging_enabled()) {
             BGL_LOG_INFO("CachePlayback", QStringLiteral(
                 "consumer=editor-canvas stage=draw result=%1 output=%2x%3 rect=%4,%5,%6x%7 error=%8")
-                .arg(artwork_drawn ? QStringLiteral("ok") : QStringLiteral("failed"))
+                .arg(draw_deferred ? QStringLiteral("deferred")
+                                   : artwork_drawn ? QStringLiteral("ok")
+                                                   : QStringLiteral("failed"))
                 .arg(state.artwork_rect_px.width()).arg(state.artwork_rect_px.height())
                 .arg(state.artwork_rect_px.x()).arg(state.artwork_rect_px.y())
                 .arg(state.artwork_rect_px.width()).arg(state.artwork_rect_px.height())
@@ -896,6 +997,12 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view,
     if (title_)
         bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     title_ = t;
+    diagnostics_playhead_request_serial_ = 0;
+    diagnostics_render_request_serial_ = 0;
+    diagnostics_last_prepared_playhead_ =
+        std::numeric_limits<double>::quiet_NaN();
+    diagnostics_repeated_prepared_playhead_count_ = 0;
+    diagnostics_repeated_playhead_clock_.invalidate();
     invalidate_motion_path_sample_cache();
     selected_position_keyframe_index_ = -1;
     motion_path_hover_type_ = MotionPathHoverType::None;
@@ -1022,7 +1129,29 @@ void CanvasPreview::set_playhead(double t, bool playback_frame)
 {
     if (shutting_down_)
         return;
-    if (std::abs(playhead_ - t) < 1e-9) {
+    const uint64_t diagnostic_request_serial =
+        ++diagnostics_playhead_request_serial_;
+    const double previous_playhead = playhead_;
+    const bool same_playhead = std::abs(previous_playhead - t) < 1e-9;
+    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+        "stage=canvas-playhead-request canvas=%1 request=%2 title=%3 requestedTime=%4 previousTime=%5 same=%6 playbackFrame=%7 transportActive=%8 dirty=%9 renderInProgress=%10 playbackPending=%11 presentPending=%12 editingPending=%13 modelDirty=%14 fullRefresh=%15")
+        .arg(reinterpret_cast<quintptr>(this), 0, 16)
+        .arg(diagnostic_request_serial)
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(t, 0, 'f', 9)
+        .arg(previous_playhead, 0, 'f', 9)
+        .arg(same_playhead ? 1 : 0)
+        .arg(playback_frame ? 1 : 0)
+        .arg(transport_playback_active_ ? 1 : 0)
+        .arg(dirty_ ? 1 : 0)
+        .arg(render_in_progress_ ? 1 : 0)
+        .arg(playback_frame_pending_ ? 1 : 0)
+        .arg(playback_present_pending_ ? 1 : 0)
+        .arg(editing_present_pending_ ? 1 : 0)
+        .arg(gpu_model_dirty_ ? 1 : 0)
+        .arg(full_gpu_model_refresh_pending_ ? 1 : 0));
+    if (same_playhead) {
         /* A scrub may land on the currently displayed frame while a queued
          * transport repaint is still pending. Reclassify it as editing even
          * though the numeric playhead value did not change. */
@@ -1040,6 +1169,13 @@ void CanvasPreview::set_playhead(double t, bool playback_frame)
     }
     const double old_playhead = playhead_;
     playhead_ = t;
+    diagnostics_repeated_prepared_playhead_count_ = 0;
+    diagnostics_last_prepared_playhead_ =
+        std::numeric_limits<double>::quiet_NaN();
+    if (diagnostics_repeated_playhead_clock_.isValid())
+        diagnostics_repeated_playhead_clock_.restart();
+    else
+        diagnostics_repeated_playhead_clock_.start();
     if (canvas_overlay_changes_with_playhead(old_playhead, playhead_))
         invalidate_canvas_overlay_caches();
     /* Only real transport ticks bypass editor refresh pacing. Timeline
@@ -1145,15 +1281,13 @@ void CanvasPreview::refresh_runtime_dynamic_content()
 
     bool has_ticker = false;
     bool has_clock = false;
-    bool has_independent_asset = false;
+    const bool has_independent_asset =
+        bgs::asset_runtime::title_has_independent_playback(*title_);
     for (const auto &layer : title_->layers) {
         if (!layer)
             continue;
         has_ticker = has_ticker || layer->type == LayerType::Ticker;
         has_clock = has_clock || layer->type == LayerType::Clock;
-        has_independent_asset = has_independent_asset ||
-            (layer->type == LayerType::Asset && layer->asset_animated &&
-             layer->asset_playback_mode == 1);
     }
     if (!has_ticker && !has_clock && !has_independent_asset)
         return;
@@ -1487,4 +1621,3 @@ QString CanvasPreview::adaptive_quality_label() const
     default: return QStringLiteral("Auto");
     }
 }
-

@@ -18,7 +18,7 @@ static uint32_t source_get_width(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return 1920;
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = source_dimension_title_for_source(data);
     return title ? clamped_source_dimension(title->width) : 1920;
 }
 
@@ -26,7 +26,7 @@ static uint32_t source_get_height(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return 1080;
-    auto title = TitleDataStore::instance().get_title(data->title_id);
+    auto title = source_dimension_title_for_source(data);
     return title ? clamped_source_dimension(title->height) : 1080;
 }
 
@@ -35,6 +35,32 @@ static void source_video_tick(void *priv, float seconds)
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data)
         return;
+
+    const uint64_t diagnostic_tick_serial = ++data->diagnostic_tick_serial;
+    const double diagnostic_tick_start_playhead = data->playhead;
+    if (seconds < 0.0f || seconds > 0.250f) {
+        BGL_LOG_WARNING("SourceTiming", QStringLiteral(
+            "event=tick-cadence-anomaly source=%1 title=%2 tick=%3 delta=%4 playhead=%5 playing=%6 visible=%7 shown=%8")
+            .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+            .arg(QString::fromStdString(data->title_id))
+            .arg(diagnostic_tick_serial)
+            .arg(seconds, 0, 'f', 6)
+            .arg(data->playhead, 0, 'f', 6)
+            .arg(data->playing)
+            .arg(data->output_visible.load(std::memory_order_acquire))
+            .arg(data->shown_on_display.load(std::memory_order_acquire)));
+    }
+    BGL_LOG_TRACE("SourceTiming", QStringLiteral(
+        "event=tick-begin source=%1 title=%2 tick=%3 delta=%4 playhead=%5 playing=%6 dirty=%7 firstPending=%8 cuePhase=%9")
+        .arg(data->source ? QString::fromUtf8(obs_source_get_name(data->source)) : QStringLiteral("<null>"))
+        .arg(QString::fromStdString(data->title_id))
+        .arg(diagnostic_tick_serial)
+        .arg(seconds, 0, 'f', 6)
+        .arg(diagnostic_tick_start_playhead, 0, 'f', 6)
+        .arg(data->playing)
+        .arg(data->dirty)
+        .arg(data->first_frame_pending)
+        .arg(static_cast<int>(data->cue_phase)));
 
     if (!source_presentation_generation_is_current(data))
         apply_source_presentation_reset(data, "generation-boundary");
@@ -119,6 +145,8 @@ static void source_video_tick(void *priv, float seconds)
     }
 
     if (data->force_cue_state_sync || title->cue_revision != data->seen_cue_revision) {
+        data->playback_state.store(TitlePlaybackState::Queued,
+                                   std::memory_order_release);
         const int requested_cue_row = title->pending_cue_row >= 0
             ? title->pending_cue_row
             : title->current_cue_row;
@@ -173,6 +201,8 @@ static void source_video_tick(void *priv, float seconds)
                 data->force_cue_state_sync = false;
                 data->seen_cue_revision = title->cue_revision;
                 data->playing = false;
+                data->playback_state.store(TitlePlaybackState::Stopped,
+                                           std::memory_order_release);
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
                 data->active_cue_row = -1;
                 data->waiting_for_cue = true;
@@ -284,6 +314,8 @@ static void source_video_tick(void *priv, float seconds)
             data->playback_reverse = false;
             data->waiting_for_cue = false;
             data->playing = true;
+            data->playback_state.store(TitlePlaybackState::Playing,
+                                       std::memory_order_release);
             if (!data->manual_uncue)
                 set_source_output_visible(data, true, "cue-started");
             data->dirty = true;
@@ -340,6 +372,8 @@ static void source_video_tick(void *priv, float seconds)
             if (data->cue_phase == TitleSourceData::CuePhase::OutroOnly) {
                 data->playhead = title->duration;
                 data->playing = false;
+                data->playback_state.store(TitlePlaybackState::Stopped,
+                                           std::memory_order_release);
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
                 /* The row remains cued until this exact point.  Once the
                  * outro has completed, clear the runtime cue status and apply
@@ -420,11 +454,15 @@ static void source_video_tick(void *priv, float seconds)
                 if (data->playhead >= pause_time) {
                     data->playhead = pause_time;
                     data->playing = false;
+                    data->playback_state.store(TitlePlaybackState::Paused,
+                                               std::memory_order_release);
                     clear_cue_persistence_transition(title);
                 }
             } else if (data->playhead >= title->duration) {
                 data->playhead = title->duration;
                 data->playing  = false;
+                data->playback_state.store(TitlePlaybackState::Stopped,
+                                           std::memory_order_release);
                 if (title->current_cue_row >= 0 || title->pending_cue_row >= 0 || data->active_cue_row >= 0) {
                     /* Automatic completion is an uncue just like a manual
                      * toggle-off.  Always clear the runtime cue identity, then
@@ -816,6 +854,117 @@ technique Draw
 }
 )";
 
+/* The temporal resolve uses the normalized premultiplied shutter exposure
+ * directly. coverageImage is only an authored-alpha ceiling. Treating temporal
+ * samples as optical-density layers over-reinforced sparse occupancy and made
+ * the trail look like a staircase of opaque duplicates. */
+static constexpr const char *kGpuTemporalCompositeEffect = R"(
+uniform float4x4 ViewProj;
+uniform texture2d accumulatedImage;
+uniform texture2d coverageImage;
+uniform texture2d sampleImage;
+uniform float sampleWeight;
+uniform int hasAccumulated;
+
+sampler_state textureSampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+
+VertDataOut VSDefault(VertDataIn v)
+{
+    VertDataOut o;
+    o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+    o.uv = v.uv;
+    return o;
+}
+
+float4 PSTemporalComposite(VertDataOut v) : TARGET
+{
+    float4 result = hasAccumulated != 0
+        ? accumulatedImage.Sample(textureSampler, v.uv)
+        : float4(0.0, 0.0, 0.0, 0.0);
+    result += sampleImage.Sample(textureSampler, v.uv) * sampleWeight;
+    result = saturate(result);
+    result.rgb = min(result.rgb, float3(result.a, result.a, result.a));
+    return result;
+}
+
+float4 PSTemporalResolve(VertDataOut v) : TARGET
+{
+    float4 exposure = accumulatedImage.Sample(textureSampler, v.uv);
+    float coverageAlpha = saturate(coverageImage.Sample(textureSampler, v.uv).a);
+    float4 currentFrame = sampleImage.Sample(textureSampler, v.uv);
+
+    /* A shutter exposure is a time average, not alpha-composited history. */
+    float exposureAlpha = saturate(exposure.a);
+    float wetAlpha = min(exposureAlpha, coverageAlpha);
+    float3 exposureStraight = exposureAlpha > 0.00001
+        ? saturate(exposure.rgb / exposureAlpha)
+        : float3(0.0, 0.0, 0.0);
+    float4 wet = float4(exposureStraight * wetAlpha, wetAlpha);
+    float mixAmount = saturate(sampleWeight);
+    float4 result = lerp(currentFrame, wet, mixAmount);
+    result = saturate(result);
+    result.rgb = min(result.rgb, float3(result.a, result.a, result.a));
+    return result;
+}
+
+float4 PSTemporalAccumulate(VertDataOut v) : TARGET
+{
+    float4 result = sampleImage.Sample(textureSampler, v.uv) * sampleWeight;
+    result = saturate(result);
+    result.rgb = min(result.rgb, float3(result.a, result.a, result.a));
+    return result;
+}
+
+float4 PSTemporalCoverage(VertDataOut v) : TARGET
+{
+    float alpha = saturate(sampleImage.Sample(textureSampler, v.uv).a);
+    return float4(0.0, 0.0, 0.0, alpha);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v);
+        pixel_shader = PSTemporalComposite(v);
+    }
+}
+
+technique Resolve
+{
+    pass
+    {
+        vertex_shader = VSDefault(v);
+        pixel_shader = PSTemporalResolve(v);
+    }
+}
+
+technique Coverage
+{
+    pass
+    {
+        vertex_shader = VSDefault(v);
+        pixel_shader = PSTemporalCoverage(v);
+    }
+}
+
+technique Accumulate
+{
+    pass
+    {
+        vertex_shader = VSDefault(v);
+        pixel_shader = PSTemporalAccumulate(v);
+    }
+}
+)";
+
 static constexpr const char *kGpuLayerCopyEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
@@ -845,6 +994,93 @@ uniform int imageScaleFilter;
 uniform texture2d postProjectionMask;
 uniform int postProjectionMaskEnabled;
 uniform int postProjectionMaskMode;
+
+/* Development Version 298: opt-in planar PBR lighting.  The four explicit
+ * light slots keep the effect portable across OBS' D3D11, OpenGL and Metal
+ * shader translators, which have historically differed in dynamic uniform
+ * array handling. */
+uniform int lightingEnabled;
+uniform float3 planeOrigin;
+uniform float3 planeAxisU;
+uniform float3 planeAxisV;
+uniform float3 worldNormal;
+uniform float3 cameraWorldPosition;
+uniform float4 materialPrimary;       /* ambient, diffuse, specular, shininess */
+uniform float4 materialPbr;           /* metallic, roughness, reflection, emissive intensity */
+uniform float4 materialEmissive;      /* straight RGBA; alpha scales emission */
+uniform float environmentExposure;
+uniform texture2d shadowMap0;
+uniform int shadowEnabled0;
+uniform int shadowKind0;
+uniform float4x4 shadowViewProj0;
+uniform float3 shadowLightPosition0;
+uniform float shadowNear0;
+uniform float shadowFar0;
+uniform float2 shadowProjectionSpan0;
+uniform float shadowDarkness0;
+uniform float shadowBias0;
+uniform float shadowSoftness0;
+uniform float2 shadowTexelSize0;
+uniform texture2d shadowMap1;
+uniform int shadowEnabled1;
+uniform int shadowKind1;
+uniform float4x4 shadowViewProj1;
+uniform float3 shadowLightPosition1;
+uniform float shadowNear1;
+uniform float shadowFar1;
+uniform float2 shadowProjectionSpan1;
+uniform float shadowDarkness1;
+uniform float shadowBias1;
+uniform float shadowSoftness1;
+uniform float2 shadowTexelSize1;
+uniform texture2d shadowMap2;
+uniform int shadowEnabled2;
+uniform int shadowKind2;
+uniform float4x4 shadowViewProj2;
+uniform float3 shadowLightPosition2;
+uniform float shadowNear2;
+uniform float shadowFar2;
+uniform float2 shadowProjectionSpan2;
+uniform float shadowDarkness2;
+uniform float shadowBias2;
+uniform float shadowSoftness2;
+uniform float2 shadowTexelSize2;
+uniform texture2d shadowMap3;
+uniform int shadowEnabled3;
+uniform int shadowKind3;
+uniform float4x4 shadowViewProj3;
+uniform float3 shadowLightPosition3;
+uniform float shadowNear3;
+uniform float shadowFar3;
+uniform float2 shadowProjectionSpan3;
+uniform float shadowDarkness3;
+uniform float shadowBias3;
+uniform float shadowSoftness3;
+uniform float2 shadowTexelSize3;
+uniform float4 lightPositionType0;
+uniform float4 lightDirectionIntensity0;
+uniform float4 lightColorEnabled0;
+uniform float4 lightParams0;
+uniform float lightSourceSize0;
+uniform int lightFalloff0;
+uniform float4 lightPositionType1;
+uniform float4 lightDirectionIntensity1;
+uniform float4 lightColorEnabled1;
+uniform float4 lightParams1;
+uniform float lightSourceSize1;
+uniform int lightFalloff1;
+uniform float4 lightPositionType2;
+uniform float4 lightDirectionIntensity2;
+uniform float4 lightColorEnabled2;
+uniform float4 lightParams2;
+uniform float lightSourceSize2;
+uniform int lightFalloff2;
+uniform float4 lightPositionType3;
+uniform float4 lightDirectionIntensity3;
+uniform float4 lightColorEnabled3;
+uniform float4 lightParams3;
+uniform float lightSourceSize3;
+uniform int lightFalloff3;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 sampler_state pointSampler { Filter = Point; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
@@ -1052,6 +1288,607 @@ float4 sample_scaled_image(float2 uv)
         return sample_lanczos(uv);
     return image.Sample(textureSampler, uv);
 }
+)"
+R"(float light_distance_attenuation(float distanceValue, float startDistance,
+                                 float falloffDistance, int falloffMode)
+{
+    if (falloffMode == 0)
+        return 1.0;
+    float normalizedDistance = max(distanceValue - max(startDistance, 0.0), 0.0) /
+        max(falloffDistance, 0.0001);
+    if (falloffMode == 1)
+        return clamp(1.0 - normalizedDistance, 0.0, 1.0);
+    /* A normalized inverse-square curve is physically shaped while remaining
+     * useful in title-sized coordinate systems where true candela units would
+     * make legacy pixel distances impractical. */
+    return 1.0 / (1.0 + 4.0 * normalizedDistance * normalizedDistance);
+}
+void accumulate_light(float4 positionType, float4 directionIntensity,
+                      float4 colorEnabled, float4 lightParams,
+                      float sourceSize, int falloffMode, float lightVisibility,
+                      float3 worldPosition, float3 normal, float3 viewDirection,
+                      float3 baseColor, float metallic, float roughness,
+                      float diffuseAmount, float specularAmount, float shininess,
+                      inout float3 diffuseLight, inout float3 specularLight,
+                      inout float3 ambientLight, inout float3 environmentLight)
+{
+    if (colorEnabled.a < 0.5 || directionIntensity.a <= 0.000001)
+        return;
+    int lightType = (int)(positionType.w + 0.5);
+    float3 lightColor = max(colorEnabled.rgb, float3(0.0, 0.0, 0.0));
+    float intensity = max(directionIntensity.a, 0.0);
+    if (lightType == 0) {
+        ambientLight += lightColor * intensity;
+        return;
+    }
+    if (lightType == 4) {
+        environmentLight += lightColor * intensity * environmentExposure;
+        return;
+    }
+
+    float3 toLight = positionType.xyz - worldPosition;
+    float distanceValue = max(length(toLight), 0.0001);
+    float3 lightDirection = toLight / distanceValue;
+    float attenuation = 1.0;
+    if (lightType == 3) {
+        /* Parallel light direction stores the direction in which rays travel. */
+        lightDirection = normalize(-directionIntensity.xyz);
+    } else {
+        attenuation = light_distance_attenuation(
+            distanceValue, lightParams.x, lightParams.y, falloffMode);
+    }
+    if (lightType == 2) {
+        float3 fromLight = normalize(worldPosition - positionType.xyz);
+        float coneCosine = dot(normalize(directionIntensity.xyz), fromLight);
+        attenuation *= smoothstep(lightParams.z, lightParams.w, coneCosine);
+    }
+    /* A finite emitter broadens the lighting terminator and specular lobe.
+     * Point/spot size is expressed in scene units; parallel lights use the
+     * same control as a small angular extent. Zero exactly preserves the
+     * historical punctual-light response. */
+    float sourceAngular = lightType == 3
+        ? clamp(max(sourceSize, 0.0) / 1000.0, 0.0, 1.0)
+        : clamp(max(sourceSize, 0.0) / distanceValue, 0.0, 1.0);
+    float rawNDotL = dot(normal, lightDirection);
+    float nDotL = sourceAngular > 0.000001
+        ? smoothstep(-sourceAngular, sourceAngular, rawNDotL)
+        : max(rawNDotL, 0.0);
+    if (nDotL <= 0.000001 || attenuation <= 0.000001)
+        return;
+
+    float3 radiance = lightColor * intensity * attenuation *
+        clamp(lightVisibility, 0.0, 1.0);
+    diffuseLight += radiance * nDotL * diffuseAmount;
+    float3 halfVector = normalize(lightDirection + viewDirection);
+    float authoredPower = max(shininess, 1.0);
+    float effectiveRoughness = clamp(roughness + sourceAngular, 0.02, 1.0);
+    float roughPower = lerp(256.0, 2.0,
+                            effectiveRoughness * effectiveRoughness);
+    float specularPower = max(1.0, min(authoredPower, roughPower));
+    float specularLobe = pow(max(dot(normal, halfVector), 0.0), specularPower);
+    float3 f0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metallic);
+    float fresnel = pow(1.0 - max(dot(viewDirection, halfVector), 0.0), 5.0);
+    float3 fresnelColor = f0 + (1.0 - f0) * fresnel;
+    specularLight += radiance * specularLobe * specularAmount * fresnelColor;
+}
+)"
+R"(float sample_shadow_depth(int shadowIndex, float2 uv)
+{
+    if (shadowIndex == 0)
+        return shadowMap0.Sample(pointSampler, uv).r;
+    if (shadowIndex == 1)
+        return shadowMap1.Sample(pointSampler, uv).r;
+    if (shadowIndex == 2)
+        return shadowMap2.Sample(pointSampler, uv).r;
+    return shadowMap3.Sample(pointSampler, uv).r;
+}
+float sample_planar_shadow_depth(int shadowIndex, float2 uv)
+{
+    /* Samples outside a Spot/Parallel map see the cleared far plane. Clamping
+     * them to an occupied edge texel stretches isolated dark bands across the
+     * receiver when a soft kernel crosses the fitted projection bounds. */
+    if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0)
+        return 1.0;
+    return sample_shadow_depth(shadowIndex, uv);
+}
+/* A fixed low-discrepancy disk avoids the square bands of the old 5x5 grid.
+ * Entry zero intentionally samples the centre so sub-texel blockers cannot
+ * fall between every blocker-search tap. */
+float2 shadow_poisson_offset(int sampleIndex)
+{
+    if (sampleIndex == 0) return float2( 0.0000,  0.0000);
+    if (sampleIndex == 1) return float2(-0.6134,  0.6175);
+    if (sampleIndex == 2) return float2( 0.1700, -0.0403);
+    if (sampleIndex == 3) return float2(-0.2994, -0.7919);
+    if (sampleIndex == 4) return float2( 0.6457,  0.4932);
+    if (sampleIndex == 5) return float2(-0.6518, -0.2132);
+    if (sampleIndex == 6) return float2( 0.4210, -0.7407);
+    if (sampleIndex == 7) return float2( 0.8841, -0.1757);
+    if (sampleIndex == 8) return float2(-0.1012,  0.2969);
+    if (sampleIndex == 9) return float2( 0.3102,  0.7910);
+    if (sampleIndex == 10) return float2(-0.8762,  0.0577);
+    if (sampleIndex == 11) return float2(-0.2798,  0.8992);
+    if (sampleIndex == 12) return float2( 0.1428, -0.9442);
+    if (sampleIndex == 13) return float2( 0.6754, -0.4491);
+    if (sampleIndex == 14) return float2(-0.9410, -0.3261);
+    return float2(0.9480, 0.3172);
+}
+float2 rotate_shadow_offset(float2 offset, float2 rotation)
+{
+    return float2(offset.x * rotation.x - offset.y * rotation.y,
+                  offset.x * rotation.y + offset.y * rotation.x);
+}
+float2 shadow_sample_rotation(float3 worldPosition, int shadowIndex)
+{
+    /* Keep one deterministic rotation per light. Hashing every world-space
+     * pixel independently turned the low-sample kernel into visible grain and
+     * crawling artifacts as geometry moved through the scene. The Poisson
+     * distribution is already non-grid-shaped, so spatial randomization is
+     * unnecessary. */
+    float phase = frac(((float)shadowIndex + 1.0) * 0.61803398875) *
+        6.28318530718 + worldPosition.x * 0.0;
+    return float2(cos(phase), sin(phase));
+}
+float shadow_linear_depth(float depth, int shadowKind,
+                          float nearPlane, float farPlane)
+{
+    float safeNear = max(nearPlane, 0.0001);
+    float safeFar = max(farPlane, safeNear + 0.0001);
+    if (shadowKind == 1)
+        return safeNear * safeFar /
+            max(safeFar - depth * (safeFar - safeNear), 0.0001);
+    return safeNear + depth * (safeFar - safeNear);
+}
+float planar_shadow_visibility(int shadowIndex, float3 worldPosition,
+                               float4x4 shadowMatrix, int shadowKind,
+                               float nearPlane, float farPlane,
+                               float2 projectionSpan, float darkness,
+                               float bias, float softness, float sourceSize,
+                               float2 texelSize)
+{
+    float4 shadowClip = mul(float4(worldPosition, 1.0), shadowMatrix);
+    if (shadowClip.w <= 0.000001)
+        return 1.0;
+    float3 ndc = shadowClip.xyz / shadowClip.w;
+    float2 uv = float2(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    float receiverDepth = ndc.z * 0.5 + 0.5;
+    if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0 ||
+        receiverDepth <= 0.0 || receiverDepth >= 1.0)
+        return 1.0;
+    float receiverLinear = shadow_linear_depth(
+        receiverDepth, shadowKind, nearPlane, farPlane);
+    float sourceRadius = max(sourceSize, 0.0) * 0.5;
+    float2 safeSpan = max(projectionSpan, float2(0.0001, 0.0001));
+    float faceTexel = max(texelSize.x, texelSize.y);
+    /* Preserve the perceptual range of the pre-PCSS control: its old 5x5
+     * kernel reached one complete authored radius from the centre. */
+    float manualRadius = max(softness, 0.0) * faceTexel * 2.0;
+    float2 rotation = shadow_sample_rotation(worldPosition, shadowIndex);
+    if (sourceRadius <= 0.0001) {
+        /* A punctual emitter has no blocker-dependent penumbra to estimate.
+         * Running it through the sparse blocker search was the Development
+         * 381 regression: valid hard/manual-soft shadows could early-out as
+         * fully lit. A direct low-discrepancy PCF resolve is deterministic,
+         * non-blocky and cheaper than the former 25-tap square grid. */
+        float2 filterRadius = max(
+            float2(faceTexel * 0.75, faceTexel * 0.75),
+            float2(manualRadius, manualRadius));
+        float occluded = 0.0;
+        for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+            float2 disk = rotate_shadow_offset(
+                shadow_poisson_offset(sampleIndex), rotation);
+            float casterDepth = sample_planar_shadow_depth(
+                shadowIndex, uv + disk * filterRadius);
+            occluded += step(casterDepth + bias, receiverDepth);
+        }
+        float shadow = occluded / 16.0;
+        return 1.0 - clamp(darkness, 0.0, 1.0) * shadow;
+    }
+    float2 physicalSearch = float2(0.0, 0.0);
+    if (shadowKind == 1) {
+        physicalSearch = sourceRadius /
+            max(safeSpan * receiverLinear, float2(0.0001, 0.0001));
+    } else {
+        physicalSearch = sourceRadius / safeSpan;
+    }
+    /* Blocker search follows emitter extent only. Manual softness belongs to
+     * the final filter; mixing it into the search can jump over a real caster
+     * and produce holes or isolated artifacts. */
+    float2 minimumSearch = float2(faceTexel, faceTexel);
+    float2 searchRadius = clamp(max(minimumSearch, physicalSearch),
+        float2(faceTexel, faceTexel), float2(0.10, 0.10));
+    float blockerDepthSum = 0.0;
+    float blockerCount = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), rotation);
+        float2 sampleUv = uv + disk * searchRadius;
+        float casterDepth = sample_planar_shadow_depth(
+            shadowIndex, sampleUv);
+        if (casterDepth + bias < receiverDepth) {
+            blockerDepthSum += shadow_linear_depth(
+                casterDepth, shadowKind, nearPlane, farPlane);
+            blockerCount += 1.0;
+        }
+    }
+    if (blockerCount < 0.5)
+        return 1.0;
+    float blockerLinear = blockerDepthSum / blockerCount;
+    float separation = max(receiverLinear - blockerLinear, 0.0);
+    float2 physicalPenumbra = shadowKind == 1
+        ? sourceRadius / safeSpan * separation /
+            max(receiverLinear * blockerLinear, 0.0001)
+        : sourceRadius / safeSpan * separation /
+            max(blockerLinear, 1.0);
+    float2 minimumFilter = float2(faceTexel * 0.75, faceTexel * 0.75);
+    float2 filterRadius = clamp(max(minimumFilter,
+        float2(manualRadius, manualRadius) + physicalPenumbra),
+        minimumFilter, float2(0.16, 0.16));
+    /* A compact contact kernel guarantees a stable umbra. Blend toward the
+     * wider physical kernel only as blocker/receiver separation creates a
+     * real penumbra; this prevents a few far-away samples from diluting a
+     * valid shadow into near invisibility. */
+    float2 coreRadius = min(filterRadius,
+        max(minimumFilter * 2.0,
+            float2(manualRadius, manualRadius) * 0.5));
+    float coreOccluded = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), rotation);
+        float casterDepth = sample_planar_shadow_depth(
+            shadowIndex, uv + disk * coreRadius);
+        coreOccluded += step(casterDepth + bias, receiverDepth);
+    }
+    float wideOccluded = 0.0;
+    float2 filterRotation = float2(
+        rotation.x * -0.30901699 - rotation.y * 0.95105652,
+        rotation.x *  0.95105652 + rotation.y * -0.30901699);
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), filterRotation);
+        float casterDepth = sample_planar_shadow_depth(
+            shadowIndex, uv + disk * filterRadius);
+        wideOccluded += step(casterDepth + bias, receiverDepth);
+    }
+    float centerDepth = sample_planar_shadow_depth(shadowIndex, uv);
+    float centerShadow = step(centerDepth + bias, receiverDepth);
+    float coreShadow = max(centerShadow, coreOccluded / 8.0);
+    float wideShadow = wideOccluded / 16.0;
+    float penumbraAmount = max(physicalPenumbra.x, physicalPenumbra.y);
+    float contactScale = max(faceTexel * 6.0, manualRadius * 0.5);
+    float penumbraMix = clamp(penumbraAmount /
+        max(contactScale, 0.0001), 0.0, 1.0);
+    float shadow = max(lerp(coreShadow, wideShadow, penumbraMix),
+                       coreShadow * 0.25);
+    return 1.0 - clamp(darkness, 0.0, 1.0) * shadow;
+}
+)"
+R"(int point_shadow_face_index(float3 direction)
+{
+    float3 axis = abs(direction);
+    if (axis.x >= axis.y && axis.x >= axis.z)
+        return direction.x >= 0.0 ? 0 : 1;
+    if (axis.y >= axis.z)
+        return direction.y >= 0.0 ? 2 : 3;
+    return direction.z >= 0.0 ? 4 : 5;
+}
+/* xy are face-local clip coordinates; z is signed distance along the face.
+ * The writer uses the identical projection so the atlas never depends on a
+ * second matrix convention in the receiver shader. */
+float3 point_shadow_face_projection(int faceIndex, float3 direction)
+{
+    if (faceIndex == 0) return float3(-direction.z, -direction.y,  direction.x);
+    if (faceIndex == 1) return float3( direction.z, -direction.y, -direction.x);
+    if (faceIndex == 2) return float3( direction.x,  direction.z,  direction.y);
+    if (faceIndex == 3) return float3( direction.x, -direction.z, -direction.y);
+    if (faceIndex == 4) return float3( direction.x, -direction.y,  direction.z);
+    return float3(-direction.x, -direction.y, -direction.z);
+}
+float2 point_shadow_face_local_uv(int faceIndex, float3 direction,
+                                  float2 faceTexelSize)
+{
+    float3 faceProjection = point_shadow_face_projection(
+        faceIndex, direction);
+    float2 facePosition = faceProjection.xy /
+        max(faceProjection.z, 0.000001);
+    float2 localUv = float2(facePosition.x * 0.5 + 0.5,
+                            1.0 - (facePosition.y * 0.5 + 0.5));
+    return clamp(localUv, faceTexelSize * 0.5,
+                  1.0 - faceTexelSize * 0.5);
+}
+float3 point_shadow_face_direction(int faceIndex, float2 localUv)
+{
+    float2 facePosition = float2(localUv.x * 2.0 - 1.0,
+                                 1.0 - localUv.y * 2.0);
+    if (faceIndex == 0)
+        return normalize(float3(1.0, -facePosition.y, -facePosition.x));
+    if (faceIndex == 1)
+        return normalize(float3(-1.0, -facePosition.y, facePosition.x));
+    if (faceIndex == 2)
+        return normalize(float3(facePosition.x, 1.0, facePosition.y));
+    if (faceIndex == 3)
+        return normalize(float3(facePosition.x, -1.0, -facePosition.y));
+    if (faceIndex == 4)
+        return normalize(float3(facePosition.x, -facePosition.y, 1.0));
+    return normalize(float3(-facePosition.x, -facePosition.y, -1.0));
+}
+float2 point_shadow_atlas_uv(float3 direction, float2 atlasTexelSize)
+{
+    int faceIndex = point_shadow_face_index(direction);
+    float2 tile = faceIndex <= 2
+        ? float2((float)faceIndex, 0.0)
+        : float2((float)(faceIndex - 3), 1.0);
+    float2 faceTexelSize = atlasTexelSize * float2(3.0, 2.0);
+    float2 localUv = point_shadow_face_local_uv(
+        faceIndex, direction, faceTexelSize);
+    return (tile + localUv) / float2(3.0, 2.0);
+}
+float point_shadow_receiver_depth_for_ray(
+    float3 sampleDirection, float receiverDistance, float3 receiverNormal,
+    float receiverPlaneNumerator, float farPlane)
+{
+    float sampleReceiverDistance = receiverDistance;
+    float receiverPlaneDenominator = dot(sampleDirection, receiverNormal);
+    if (abs(receiverPlaneDenominator) > 0.000001) {
+        float planeDistance = receiverPlaneNumerator /
+            receiverPlaneDenominator;
+        if (planeDistance > 0.0)
+            sampleReceiverDistance = planeDistance;
+    }
+    float sampleReceiverDepth = sampleReceiverDistance / farPlane;
+    return sampleReceiverDepth;
+}
+float2 point_shadow_point_sample_depths(
+    int shadowIndex, float3 sampleDirection, float receiverDistance,
+    float3 receiverNormal, float receiverPlaneNumerator, float farPlane,
+    float2 atlasTexelSize)
+{
+    int faceIndex = point_shadow_face_index(sampleDirection);
+    float2 tile = faceIndex <= 2
+        ? float2((float)faceIndex, 0.0)
+        : float2((float)(faceIndex - 3), 1.0);
+    float2 faceTexelSize = atlasTexelSize * float2(3.0, 2.0);
+    float2 localUv = point_shadow_face_local_uv(
+        faceIndex, sampleDirection, faceTexelSize);
+    float2 halfTexel = faceTexelSize * 0.5;
+    float2 texelCenter = clamp(
+        (floor(localUv / faceTexelSize) + 0.5) * faceTexelSize,
+        halfTexel, 1.0 - halfTexel);
+    float casterDepth = sample_shadow_depth(
+        shadowIndex, (tile + texelCenter) / float2(3.0, 2.0));
+    float3 texelDirection = point_shadow_face_direction(
+        faceIndex, texelCenter);
+    float receiverDepth = point_shadow_receiver_depth_for_ray(
+        texelDirection, receiverDistance, receiverNormal,
+        receiverPlaneNumerator, farPlane);
+    return float2(casterDepth, receiverDepth);
+}
+float point_shadow_visibility(int shadowIndex, float3 worldPosition,
+                              float3 lightPosition, float nearPlane,
+                              float farPlane, float darkness, float bias,
+                              float softness, float sourceSize,
+                              float2 atlasTexelSize)
+{
+    float3 fromLight = worldPosition - lightPosition;
+    float receiverDistance = length(fromLight);
+    if (receiverDistance <= 0.000001 || farPlane <= 0.000001)
+        return 1.0;
+    float receiverDepth = receiverDistance / farPlane;
+    if (receiverDepth <= 0.0 || receiverDepth >= 1.0)
+        return 1.0;
+    float3 direction = fromLight / receiverDistance;
+    float3 receiverNormal = normalize(worldNormal);
+    float receiverPlaneNumerator = dot(fromLight, receiverNormal);
+    float3 tangentSeed = abs(direction.y) < 0.999
+        ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(tangentSeed, direction));
+    float3 bitangent = normalize(cross(direction, tangent));
+    float faceTexel = max(atlasTexelSize.x * 3.0,
+                          atlasTexelSize.y * 2.0);
+    float sourceRadius = max(sourceSize, 0.0) * 0.5;
+    float manualAngular = max(softness, 0.0) * faceTexel * 2.0;
+    float2 rotation = shadow_sample_rotation(worldPosition, shadowIndex);
+    if (sourceRadius <= 0.0001) {
+        /* Punctual/manual-soft Point shadows use the same direct Poisson PCF
+         * contract as the last runtime-proven path. Every tap still intersects
+         * the receiver plane, so self-shadow wedges stay fixed without the
+         * fragile blocker-search early-out introduced in Development 381. */
+        float filterAngular = max(faceTexel * 0.75, manualAngular);
+        float occluded = 0.0;
+        for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+            float2 disk = rotate_shadow_offset(
+                shadow_poisson_offset(sampleIndex), rotation);
+            float3 sampleDirection = normalize(direction +
+                (tangent * disk.x + bitangent * disk.y) * filterAngular);
+            float2 sampleDepths = point_shadow_point_sample_depths(
+                shadowIndex, sampleDirection, receiverDistance,
+                receiverNormal, receiverPlaneNumerator, farPlane,
+                atlasTexelSize);
+            occluded += step(sampleDepths.x + bias, sampleDepths.y);
+        }
+        float shadow = occluded / 16.0;
+        return 1.0 - clamp(darkness, 0.0, 1.0) * shadow;
+    }
+    /* Search only the emitter's apparent angular radius at the receiver.
+     * The previous near-plane divisor exploded when a light approached any
+     * object, scattering blocker taps across unrelated cube faces. */
+    float physicalSearchAngular = sourceRadius /
+        max(receiverDistance, 0.0001);
+    float searchAngular = clamp(max(faceTexel, physicalSearchAngular),
+                                faceTexel, 0.12);
+    float blockerDistanceSum = 0.0;
+    float blockerCount = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), rotation);
+        float3 sampleDirection = normalize(direction +
+            (tangent * disk.x + bitangent * disk.y) * searchAngular);
+        float2 sampleDepths = point_shadow_point_sample_depths(
+            shadowIndex, sampleDirection, receiverDistance, receiverNormal,
+            receiverPlaneNumerator, farPlane, atlasTexelSize);
+        if (sampleDepths.x + bias < sampleDepths.y) {
+            blockerDistanceSum += sampleDepths.x * farPlane;
+            blockerCount += 1.0;
+        }
+    }
+    /* Most visible pixels have no blocker and stop after 8 taps. The costly
+     * filter runs only inside an actual shadow. */
+    if (blockerCount < 0.5)
+        return 1.0;
+    float blockerDistance = blockerDistanceSum / blockerCount;
+    float physicalPenumbraAngular = sourceRadius *
+        max(receiverDistance - blockerDistance, 0.0) /
+        max(blockerDistance * receiverDistance, 0.0001);
+    float filterAngular = clamp(max(faceTexel * 0.75,
+        manualAngular + physicalPenumbraAngular),
+        faceTexel * 0.75, 0.18);
+    float2 filterRotation = float2(
+        rotation.x * -0.30901699 - rotation.y * 0.95105652,
+        rotation.x *  0.95105652 + rotation.y * -0.30901699);
+    float coreAngular = min(filterAngular,
+        max(faceTexel * 1.5, manualAngular * 0.5));
+    float coreOccluded = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), rotation);
+        float3 sampleDirection = normalize(direction +
+            (tangent * disk.x + bitangent * disk.y) * coreAngular);
+        float2 sampleDepths = point_shadow_point_sample_depths(
+            shadowIndex, sampleDirection, receiverDistance,
+            receiverNormal, receiverPlaneNumerator, farPlane,
+            atlasTexelSize);
+        coreOccluded += step(sampleDepths.x + bias, sampleDepths.y);
+    }
+    float wideOccluded = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        float2 disk = rotate_shadow_offset(
+            shadow_poisson_offset(sampleIndex), filterRotation);
+        float3 sampleDirection = normalize(direction +
+            (tangent * disk.x + bitangent * disk.y) * filterAngular);
+        /* Each tap compares the stored texel-centre ray against its matching
+         * receiver-plane intersection without expanding shader work 4x. */
+        float2 sampleDepths = point_shadow_point_sample_depths(
+            shadowIndex, sampleDirection, receiverDistance,
+            receiverNormal, receiverPlaneNumerator, farPlane,
+            atlasTexelSize);
+        wideOccluded += step(sampleDepths.x + bias, sampleDepths.y);
+    }
+    float2 centerDepths = point_shadow_point_sample_depths(
+        shadowIndex, direction, receiverDistance, receiverNormal,
+        receiverPlaneNumerator, farPlane, atlasTexelSize);
+    float centerShadow = step(centerDepths.x + bias, centerDepths.y);
+    float coreShadow = max(centerShadow, coreOccluded / 8.0);
+    float wideShadow = wideOccluded / 16.0;
+    float contactScale = max(faceTexel * 6.0, manualAngular * 0.5);
+    float penumbraMix = clamp(physicalPenumbraAngular /
+        max(contactScale, 0.0001), 0.0, 1.0);
+    float shadow = max(lerp(coreShadow, wideShadow, penumbraMix),
+                       coreShadow * 0.25);
+    return 1.0 - clamp(darkness, 0.0, 1.0) * shadow;
+}
+float shadow_visibility(int shadowIndex, float3 worldPosition,
+                        float4x4 shadowMatrix, int enabled, int shadowKind,
+                        float3 shadowLightPosition, float shadowNear,
+                        float shadowFar, float2 shadowProjectionSpan,
+                        float darkness, float bias, float softness,
+                        float sourceSize, float2 texelSize)
+{
+    if (enabled == 0)
+        return 1.0;
+    if (shadowKind == 2)
+        return point_shadow_visibility(
+            shadowIndex, worldPosition, shadowLightPosition, shadowNear,
+            shadowFar, darkness, bias, softness, sourceSize, texelSize);
+    if (shadowKind == 1 || shadowKind == 3)
+        return planar_shadow_visibility(
+            shadowIndex, worldPosition, shadowMatrix, shadowKind,
+            shadowNear, shadowFar, shadowProjectionSpan, darkness, bias,
+            softness, sourceSize, texelSize);
+    return 1.0;
+}
+)"
+R"(
+float4 apply_material_lighting(float4 premultipliedColor, float2 uv)
+{
+    if (lightingEnabled == 0 || premultipliedColor.a <= 0.000001)
+        return premultipliedColor;
+    float alpha = clamp(premultipliedColor.a, 0.0, 1.0);
+    float3 baseColor = max(premultipliedColor.rgb / max(alpha, 0.000001),
+                           float3(0.0, 0.0, 0.0));
+    float3 worldPosition = planeOrigin + planeAxisU * uv.x + planeAxisV * uv.y;
+    float3 normal = normalize(worldNormal);
+    float3 viewDirection = normalize(cameraWorldPosition - worldPosition);
+    /* Double-sided planar artwork should remain illuminable from the visible
+     * side after negative scale or a camera crossing. */
+    if (dot(normal, viewDirection) < 0.0)
+        normal = -normal;
+
+    float ambientAmount = max(materialPrimary.x, 0.0);
+    float diffuseAmount = max(materialPrimary.y, 0.0);
+    float specularAmount = max(materialPrimary.z, 0.0);
+    float shininess = max(materialPrimary.w, 1.0);
+    float metallic = clamp(materialPbr.x, 0.0, 1.0);
+    float roughness = clamp(materialPbr.y, 0.02, 1.0);
+    float reflectionAmount = max(materialPbr.z, 0.0);
+    float emissiveAmount = max(materialPbr.w, 0.0);
+    float3 diffuseLight = float3(0.0, 0.0, 0.0);
+    float3 specularLight = float3(0.0, 0.0, 0.0);
+    float3 ambientLight = float3(0.0, 0.0, 0.0);
+    float3 environmentLight = float3(0.0, 0.0, 0.0);
+
+    float shadowVisibility0 = shadow_visibility(0, worldPosition,
+        shadowViewProj0, shadowEnabled0, shadowKind0, shadowLightPosition0,
+        shadowNear0, shadowFar0, shadowProjectionSpan0, shadowDarkness0,
+        shadowBias0, shadowSoftness0, lightSourceSize0, shadowTexelSize0);
+    float shadowVisibility1 = shadow_visibility(1, worldPosition,
+        shadowViewProj1, shadowEnabled1, shadowKind1, shadowLightPosition1,
+        shadowNear1, shadowFar1, shadowProjectionSpan1, shadowDarkness1,
+        shadowBias1, shadowSoftness1, lightSourceSize1, shadowTexelSize1);
+    float shadowVisibility2 = shadow_visibility(2, worldPosition,
+        shadowViewProj2, shadowEnabled2, shadowKind2, shadowLightPosition2,
+        shadowNear2, shadowFar2, shadowProjectionSpan2, shadowDarkness2,
+        shadowBias2, shadowSoftness2, lightSourceSize2, shadowTexelSize2);
+    float shadowVisibility3 = shadow_visibility(3, worldPosition,
+        shadowViewProj3, shadowEnabled3, shadowKind3, shadowLightPosition3,
+        shadowNear3, shadowFar3, shadowProjectionSpan3, shadowDarkness3,
+        shadowBias3, shadowSoftness3, lightSourceSize3, shadowTexelSize3);
+
+    accumulate_light(lightPositionType0, lightDirectionIntensity0,
+        lightColorEnabled0, lightParams0, lightSourceSize0, lightFalloff0,
+        shadowVisibility0, worldPosition, normal,
+        viewDirection, baseColor, metallic, roughness, diffuseAmount,
+        specularAmount, shininess, diffuseLight, specularLight, ambientLight,
+        environmentLight);
+    accumulate_light(lightPositionType1, lightDirectionIntensity1,
+        lightColorEnabled1, lightParams1, lightSourceSize1, lightFalloff1,
+        shadowVisibility1, worldPosition, normal,
+        viewDirection, baseColor, metallic, roughness, diffuseAmount,
+        specularAmount, shininess, diffuseLight, specularLight, ambientLight,
+        environmentLight);
+    accumulate_light(lightPositionType2, lightDirectionIntensity2,
+        lightColorEnabled2, lightParams2, lightSourceSize2, lightFalloff2,
+        shadowVisibility2, worldPosition, normal,
+        viewDirection, baseColor, metallic, roughness, diffuseAmount,
+        specularAmount, shininess, diffuseLight, specularLight, ambientLight,
+        environmentLight);
+    accumulate_light(lightPositionType3, lightDirectionIntensity3,
+        lightColorEnabled3, lightParams3, lightSourceSize3, lightFalloff3,
+        shadowVisibility3, worldPosition, normal,
+        viewDirection, baseColor, metallic, roughness, diffuseAmount,
+        specularAmount, shininess, diffuseLight, specularLight, ambientLight,
+        environmentLight);
+
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    float fresnelView = pow(1.0 - nDotV, 5.0);
+    float3 environmentContribution = environmentLight *
+        (baseColor * ambientAmount + reflectionAmount *
+         lerp(float3(0.04, 0.04, 0.04), baseColor, metallic) *
+         (0.2 + 0.8 * fresnelView));
+    float3 litColor = baseColor * (ambientLight * ambientAmount +
+        diffuseLight * (1.0 - metallic)) + specularLight +
+        environmentContribution + materialEmissive.rgb * emissiveAmount * materialEmissive.a;
+    return float4(max(litColor, float3(0.0, 0.0, 0.0)) * alpha, alpha);
+}
 float4 layer_color(VertDataOut v)
 {
     float clipAlpha = 1.0;
@@ -1059,8 +1896,9 @@ float4 layer_color(VertDataOut v)
         float2 logicalPoint = v.uv * imageLogicalSize;
         clipAlpha = rounded_box_alpha(logicalPoint, imageClipRect, imageCornerRadii);
     }
-    return sample_scaled_image(v.uv) *
+    float4 color = sample_scaled_image(v.uv) *
         (weight * transition_alpha(v.uv) * clipAlpha * projected_mask_alpha(v));
+    return apply_material_lighting(color, v.uv);
 }
 float4 PSLayer(VertDataOut v) : TARGET
 {
@@ -1074,6 +1912,82 @@ float4 PSDepthLayer(VertDataOut v) : TARGET
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSLayer(v); } }
 technique DepthDraw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDepthLayer(v); } }
+)";
+
+/* Alpha-aware shadow depth writer shared by planar maps and the six viewports
+ * of a Point-light 3x2 atlas. The real Z attachment chooses the nearest
+ * caster; Point maps store normalized radial distance for direction-based
+ * atlas lookup in the lighting pass. */
+static constexpr const char *kGpuShadowMapEffect = R"(
+uniform texture2d image;
+uniform float4x4 shadowViewProj;
+uniform float3 planeOrigin;
+uniform float3 planeAxisU;
+uniform float3 planeAxisV;
+uniform float opacity;
+uniform float alphaCutoff;
+uniform int pointShadow;
+uniform int pointShadowFace;
+uniform float3 pointLightPosition;
+uniform float pointShadowFar;
+sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 lightClip : TEXCOORD1; float3 worldPosition : TEXCOORD2; };
+float3 point_shadow_face_projection(int faceIndex, float3 direction)
+{
+    if (faceIndex == 0) return float3(-direction.z, -direction.y,  direction.x);
+    if (faceIndex == 1) return float3( direction.z, -direction.y, -direction.x);
+    if (faceIndex == 2) return float3( direction.x,  direction.z,  direction.y);
+    if (faceIndex == 3) return float3( direction.x, -direction.z, -direction.y);
+    if (faceIndex == 4) return float3( direction.x, -direction.y,  direction.z);
+    return float3(-direction.x, -direction.y, -direction.z);
+}
+VertDataOut VSShadow(VertDataIn v)
+{
+    VertDataOut o;
+    float3 worldPosition = planeOrigin + planeAxisU * v.uv.x + planeAxisV * v.uv.y;
+    o.lightClip = mul(float4(worldPosition, 1.0), shadowViewProj);
+    if (pointShadow != 0) {
+        float3 faceProjection = point_shadow_face_projection(
+            pointShadowFace, worldPosition - pointLightPosition);
+        /* Point-atlas XY/W is authored directly from the signed cube face.
+         * Its clip Z must come from that same convention. Combining the Qt
+         * perspective-matrix Z with the manual face W can place every vertex
+         * outside D3D's 0..W clip range while the CPU draw loop still reports
+         * success. Face depth is monotonic with radial distance for one ray,
+         * so it also gives the Z24 attachment the correct nearest-caster
+         * ordering without a second matrix convention. */
+        float faceDepth = clamp(faceProjection.z /
+            max(pointShadowFar, 0.0001), 0.0, 1.0);
+        o.pos = float4(faceProjection.xy,
+                       faceDepth * faceProjection.z,
+                       faceProjection.z);
+    } else {
+        /* QMatrix4x4 perspective/orthographic projections produce OpenGL-style
+         * clip Z in -W..W. OBS' Windows renderer is D3D11, where clip Z must be
+         * 0..W. Passing the raw Qt clip position therefore discards Spot and
+         * Parallel casters before the pixel shader even though the draw call
+         * itself succeeds. Preserve the raw lightClip for normalized depth
+         * storage, but remap only the rasterizer position to D3D's range. */
+        o.pos = float4(o.lightClip.xy,
+                       o.lightClip.z * 0.5 + o.lightClip.w * 0.5,
+                       o.lightClip.w);
+    }
+    o.uv = v.uv;
+    o.worldPosition = worldPosition;
+    return o;
+}
+float4 PSShadow(VertDataOut v) : TARGET
+{
+    float alpha = image.Sample(textureSampler, v.uv).a * opacity;
+    clip(alpha - alphaCutoff);
+    float depth = pointShadow != 0
+        ? length(v.worldPosition - pointLightPosition) /
+            max(pointShadowFar, 0.0001)
+        : v.lightClip.z / max(v.lightClip.w, 0.000001) * 0.5 + 0.5;
+    return float4(clamp(depth, 0.0, 1.0), 0.0, 0.0, 1.0);
+}
+technique Draw { pass { vertex_shader = VSShadow(v); pixel_shader = PSShadow(v); } }
 )";
 
 
@@ -1460,6 +2374,16 @@ struct TitleGpuRenderSession {
         std::string key;
         std::string effect_cache_key;
         QImage pending_image;
+        /* First-publication safety net for GPU text. The compatibility raster
+         * is prepared on the model thread only while no prior texture exists,
+         * so a transient glyph-buffer failure can publish the exact current
+         * frame immediately instead of retaining an older compositor frame. */
+        QImage gpu_text_fallback_image;
+        QPointF gpu_text_fallback_origin;
+        double gpu_text_fallback_logical_width = 0.0;
+        double gpu_text_fallback_logical_height = 0.0;
+        QRectF gpu_text_fallback_layer_box_rect;
+        QRectF gpu_text_fallback_image_clip_rect;
         QPointF origin;
         double logical_width = 0.0;
         double logical_height = 0.0;
@@ -1553,3 +2477,8 @@ struct TitleGpuRenderSession {
         bool pending = false;
     };
 
+    struct ShaderCompileJob {
+        std::string id;
+        std::string label;
+        std::function<bool()> run;
+    };

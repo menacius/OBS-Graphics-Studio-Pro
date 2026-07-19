@@ -23,6 +23,8 @@ public:
 
     gs_effect_t *compile(LayerEffectType type);
     gs_effect_t *compile(const std::string &stable_id);
+    gs_effect_t *find(LayerEffectType type) const;
+    gs_effect_t *find(const std::string &stable_id) const;
     void reset();
     const char *last_error() const { return last_error_; }
 
@@ -31,7 +33,7 @@ public:
 
 private:
     static constexpr std::size_t kBuiltInEffectCount =
-        static_cast<std::size_t>(LayerEffectType::DigitalDistortion) + 1;
+        static_cast<std::size_t>(LayerEffectType::TrimPaths) + 1;
     std::array<gs_effect_t *, kBuiltInEffectCount> builtins_{};
     std::unordered_map<std::string, gs_effect_t *> extensions_;
     mutable std::recursive_mutex mutex_;

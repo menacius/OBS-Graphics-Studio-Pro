@@ -110,7 +110,32 @@ void TitleEditor::update_corner_toolbar()
     if (transform_toolbar_widget_) transform_toolbar_widget_->setVisible(transform_available);
     if (transform_available) {
         if (transform_toolbar_mode_) transform_toolbar_mode_->setCurrentIndex(canvas_->free_transform_mode());
-        if (transform_toolbar_keyframe_) transform_toolbar_keyframe_->setChecked(canvas_->free_transform_keyframed());
+        if (transform_toolbar_keyframe_) {
+            const auto selected = selected_layer_ids_for_operation();
+            const auto layer = title_ && selected.size() == 1
+                ? title_->find_layer(selected.front()) : nullptr;
+            const double local_time = layer
+                ? std::clamp(playhead_ - layer->in_time, 0.0,
+                             std::max(0.0, layer->out_time - layer->in_time))
+                : 0.0;
+            bool active = false;
+            bool animated = false;
+            if (layer) {
+                for (const AnimatedVec2Property *property : {&layer->transform_quad_tl,
+                                                             &layer->transform_quad_tr,
+                                                             &layer->transform_quad_br,
+                                                             &layer->transform_quad_bl}) {
+                    animated = animated || property->is_animated();
+                    active = active || keyframe_at_time(*property, local_time);
+                }
+            }
+            transform_toolbar_keyframe_->setChecked(active);
+            transform_toolbar_keyframe_->setProperty("active", active);
+            transform_toolbar_keyframe_->setProperty("outlined", animated && !active);
+            transform_toolbar_keyframe_->setIcon(
+                bgl_keyframe_diamond_icon(active, animated && !active));
+            bgl_refresh_keyframe_navigation(transform_toolbar_keyframe_);
+        }
     }
     if (anchor_toolbar_widget_)
         anchor_toolbar_widget_->setVisible(anchor_available);
@@ -401,6 +426,41 @@ static bool prompt_editor_template_metadata(QWidget *parent, const Title &title,
     return true;
 }
 
+static bool prompt_editor_packed_title_options(
+    QWidget *parent, PackedTitleExportOptions &options)
+{
+    QDialog dialog(parent);
+    bgl_apply_brand_icon(&dialog);
+    dialog.setWindowTitle(bgl_tr("OBSTitles.PackedOptionsTitle"));
+    dialog.setModal(true);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(editor_dialog_layout_spacing(&dialog));
+    auto *description = new QLabel(bgl_tr("OBSTitles.PackedOptionsDescription"), &dialog);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+    auto *images = new BglSwitch(bgl_tr("OBSTitles.PackImages"), &dialog);
+    auto *media = new BglSwitch(bgl_tr("OBSTitles.PackMedia"), &dialog);
+    auto *fonts = new BglSwitch(bgl_tr("OBSTitles.PackFonts"), &dialog);
+    images->setChecked(options.pack_images);
+    media->setChecked(options.pack_media);
+    fonts->setChecked(options.pack_fonts);
+    fonts->setToolTip(bgl_tr("OBSTitles.PackFontsTooltip"));
+    layout->addWidget(images);
+    layout->addWidget(media);
+    layout->addWidget(fonts);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    options.pack_images = images->isChecked();
+    options.pack_media = media->isChecked();
+    options.pack_fonts = fonts->isChecked();
+    return true;
+}
+
 void TitleEditor::copy_title_to_store(const std::shared_ptr<Title> &source,
                                       const std::shared_ptr<Title> &dest) const
 {
@@ -663,6 +723,7 @@ void TitleEditor::export_title_template(bool save_in_library)
     safe_name.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
 
     QString path;
+    QString selected_filter;
     if (save_in_library) {
         QStringList hierarchy;
         const QString category = editor_sanitized_template_category_path(QString::fromStdString(metadata.category));
@@ -678,10 +739,19 @@ void TitleEditor::export_title_template(bool save_in_library)
     } else {
         path = QFileDialog::getSaveFileName(this, bgl_tr("OBSTitles.ExportTitleTemplate"),
                                             QDir(editor_template_library_root_path()).filePath(safe_name + QStringLiteral(".obgt")),
-                                            bgl_tr("OBSTitles.TemplateFileFilter"));
+                                            bgl_tr("OBSTitles.TemplateFileFilter"), &selected_filter);
         if (path.isEmpty()) return;
-        if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".obgt");
+        if (QFileInfo(path).suffix().isEmpty()) {
+            path += selected_filter.contains(QStringLiteral("*.obgp"))
+                ? QStringLiteral(".obgp") : QStringLiteral(".obgt");
+        }
     }
+
+    const bool packed = QFileInfo(path).suffix().compare(
+        QStringLiteral("obgp"), Qt::CaseInsensitive) == 0;
+    PackedTitleExportOptions packed_options;
+    if (packed && !prompt_editor_packed_title_options(this, packed_options))
+        return;
 
     auto stored = TitleDataStore::instance().create_title(metadata.title);
     copy_title_to_store(title_, stored);
@@ -692,7 +762,12 @@ void TitleEditor::export_title_template(bool save_in_library)
     stored->preview_screenshot_png_base64 = metadata.screenshot_png_base64;
 
     std::string error;
-    if (!TitleDataStore::instance().export_title(stored->id, path.toStdString(), metadata, &error)) {
+    const bool exported = packed
+        ? TitleDataStore::instance().export_packed_title(
+              stored->id, path.toStdString(), metadata, packed_options, &error)
+        : TitleDataStore::instance().export_title(
+              stored->id, path.toStdString(), metadata, &error);
+    if (!exported) {
         QMessageBox::warning(this, bgl_tr("OBSTitles.ExportTitleTemplate"), QString::fromStdString(error));
     } else {
         QMessageBox::information(this, bgl_tr("OBSTitles.ExportTitleTemplate"),
@@ -1057,4 +1132,3 @@ void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
             result_layer->corner_radius_bl = 0.0f;
             result_layer->shape_roundness = 0.0f;
             result_layer->shape_inner_roundness = 0.0f;
-

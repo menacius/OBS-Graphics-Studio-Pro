@@ -699,6 +699,7 @@ void TitleDock::on_export()
     safe_name.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|])")), QStringLiteral("_"));
 
     QString path;
+    QString selected_filter;
     if (save_in_template_library) {
         QStringList hierarchy;
         const QString category = sanitized_template_category_path(QString::fromStdString(metadata.category));
@@ -715,15 +716,27 @@ void TitleDock::on_export()
         path = QFileDialog::getSaveFileName(
             this, bgl_tr("OBSTitles.ExportTitleTemplate"),
             QDir(template_library_root_path()).filePath(safe_name + QStringLiteral(".obgt")),
-            bgl_tr("OBSTitles.TemplateFileFilter"));
+            bgl_tr("OBSTitles.TemplateFileFilter"), &selected_filter);
         if (path.isEmpty()) return;
 
-        if (QFileInfo(path).suffix().isEmpty())
-            path += QStringLiteral(".obgt");
+        if (QFileInfo(path).suffix().isEmpty()) {
+            path += selected_filter.contains(QStringLiteral("*.obgp"))
+                ? QStringLiteral(".obgp") : QStringLiteral(".obgt");
+        }
     }
 
+    const bool packed = QFileInfo(path).suffix().compare(
+        QStringLiteral("obgp"), Qt::CaseInsensitive) == 0;
+    PackedTitleExportOptions packed_options;
+    if (packed && !prompt_packed_title_options(this, packed_options))
+        return;
     std::string error;
-    if (!TitleDataStore::instance().export_title(title->id, path.toStdString(), metadata, &error)) {
+    const bool exported = packed
+        ? TitleDataStore::instance().export_packed_title(
+              title->id, path.toStdString(), metadata, packed_options, &error)
+        : TitleDataStore::instance().export_title(
+              title->id, path.toStdString(), metadata, &error);
+    if (!exported) {
         QMessageBox::warning(this, bgl_tr("OBSTitles.ExportTitleTemplate"),
                              QString::fromStdString(error));
         return;
@@ -747,7 +760,8 @@ void TitleDock::import_title_paths(const QStringList &paths)
         if (!info.exists() || !info.isFile() || !info.isReadable())
             continue;
         const QString suffix = info.suffix().toLower();
-        if (suffix != QStringLiteral("obgt") && suffix != QStringLiteral("otpt") && suffix != QStringLiteral("json"))
+        if (suffix != QStringLiteral("obgp") && suffix != QStringLiteral("obgt") &&
+            suffix != QStringLiteral("otpt") && suffix != QStringLiteral("json"))
             continue;
 
         std::string error;

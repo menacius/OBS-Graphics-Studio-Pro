@@ -2062,11 +2062,62 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 }
             };
 
-            /* Keyframes belong exclusively to the expanded property rows.
-             * Do not draw a second aggregate state on a collapsed layer strip:
-             * the layer list and timeline now open and close as one section. */
-            if (entry.is_property)
+            if (entry.is_property) {
                 draw_kf(entry.prop);
+            } else if (title_ && !entry.is_effect_group &&
+                       !timeline_owner_keyframe_sections_expanded(
+                           *title_, entry.owner_id)) {
+                /* A closed disclosure still exposes its authored timing on
+                 * the owner strip. Co-located keys from multiple properties
+                 * collapse to one marker while retaining selected feedback. */
+                struct AggregateKeyframe {
+                    EasingType easing = EasingType::Linear;
+                    bool selected = false;
+                    bool initialized = false;
+                };
+                std::map<int, AggregateKeyframe> aggregate;
+                for (const TimelinePropertyRef &property :
+                     timeline_properties_for_owner(*title_, entry.owner_id)) {
+                    if (!property || !property.is_animated())
+                        continue;
+                    for (int index = 0;
+                         index < static_cast<int>(property.keyframe_count());
+                         ++index) {
+                        const int kx = time_to_x(
+                            layer->in_time +
+                            property.keyframe_time(static_cast<size_t>(index)));
+                        auto &marker = aggregate[kx];
+                        if (!marker.initialized) {
+                            marker.easing = property.keyframe_easing(
+                                static_cast<size_t>(index));
+                            marker.initialized = true;
+                        }
+                        marker.selected = marker.selected ||
+                            is_keyframe_selected(entry.owner_id,
+                                property.name(), index);
+                    }
+                }
+                const int ky = y + rowh / 2;
+                for (const auto &[kx, marker] : aggregate) {
+                    if (kx < body_dirty.left() - 10 ||
+                        kx > body_dirty.right() + 10)
+                        continue;
+                    QColor fill = keyframe_color(marker.easing);
+                    if (!layer->visible)
+                        fill = fill.darker(160);
+                    if (marker.selected) {
+                        draw_keyframe_marker(
+                            p, QPointF(kx, ky), marker.easing, 8.0,
+                            with_alpha(highlighted_text, 45),
+                            highlighted_text, 2.0);
+                    }
+                    draw_keyframe_marker(
+                        p, QPointF(kx, ky), marker.easing, 5.0,
+                        marker.selected ? fill.lighter(125) : fill,
+                        marker.selected ? highlighted_text : border,
+                        marker.selected ? 2.0 : 1.0);
+                }
+            }
         }
         p.restore();
     }

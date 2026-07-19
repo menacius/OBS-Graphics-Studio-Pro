@@ -141,6 +141,14 @@
                         spn_transform_size_h_->setValue(layer_->rect_height);
                     }
                 }
+                if ((layer_->type == LayerType::Text || layer_->type == LayerType::Clock) &&
+                    !layer_->max_text_box_width_overridden) {
+                    layer_->max_text_box_width = (float)v;
+                    if (spn_max_text_box_width_) {
+                        QSignalBlocker max_block(spn_max_text_box_width_);
+                        spn_max_text_box_width_->setValue(v);
+                    }
+                }
                 apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
                 emit_change();
             });
@@ -190,6 +198,14 @@
                     if (spn_transform_size_w_) {
                         QSignalBlocker transform_block(spn_transform_size_w_);
                         spn_transform_size_w_->setValue(layer_->rect_width);
+                    }
+                }
+                if ((layer_->type == LayerType::Text || layer_->type == LayerType::Clock) &&
+                    !layer_->max_text_box_height_overridden) {
+                    layer_->max_text_box_height = (float)v;
+                    if (spn_max_text_box_height_) {
+                        QSignalBlocker max_block(spn_max_text_box_height_);
+                        spn_max_text_box_height_->setValue(v);
                     }
                 }
                 apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
@@ -1152,4 +1168,3 @@
         load_values();
         emit_change();
     });
-
