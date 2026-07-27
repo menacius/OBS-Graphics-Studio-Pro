@@ -1290,7 +1290,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
         });
     data->last_tick = std::chrono::steady_clock::now();
     data->last_clock_refresh = data->last_tick;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+    if (auto title = TitleDataStore::instance().get_title_snapshot(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
         data->force_cue_state_sync = title->current_cue_row >= 0 ||
             title->pending_cue_row >= 0 || title->cue_uncue_requested;
@@ -1303,10 +1303,10 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->seen_store_revision = std::numeric_limits<uint64_t>::max();
     data->seen_external_data_revision = std::numeric_limits<uint64_t>::max();
     apply_source_cue_end_state(
-        data, TitleDataStore::instance().get_title(data->title_id),
+        data, TitleDataStore::instance().get_title_snapshot(data->title_id),
         "source-created-cue-end-state");
     sync_source_audio_active(
-        data, TitleDataStore::instance().get_title(data->title_id),
+        data, TitleDataStore::instance().get_title_snapshot(data->title_id),
         "source-created");
     data->consecutive_draw_failures = 0;
     BGL_LOG_INFO("Source", QStringLiteral(
@@ -1384,14 +1384,14 @@ static void source_update(void *priv, obs_data_t *settings)
     bind_source_cache_wake_title(data->cache_wake_state, data->title_id);
     refresh_scene_mask_configs(data, settings);
     apply_source_cue_end_state(
-        data, TitleDataStore::instance().get_title(data->title_id),
+        data, TitleDataStore::instance().get_title_snapshot(data->title_id),
         "source-updated-cue-end-state");
     data->seen_audio_membership_revision =
         std::numeric_limits<uint64_t>::max();
     sync_source_audio_active(
-        data, TitleDataStore::instance().get_title(data->title_id),
+        data, TitleDataStore::instance().get_title_snapshot(data->title_id),
         "source-updated");
-    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+    if (auto title = TitleDataStore::instance().get_title_snapshot(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
         /* The dock selection and OBS source-settings update are asynchronous.
          * A cue can therefore be issued for the newly selected title before
@@ -1423,7 +1423,8 @@ static void source_update(void *priv, obs_data_t *settings)
     data->first_frame_pending = true;
     data->consecutive_draw_failures = 0;
     if (keep_scene_masks_foreground)
-        sync_scene_mask_scenes_for_cue(data, TitleDataStore::instance().get_title(data->title_id));
+        sync_scene_mask_scenes_for_cue(
+            data, TitleDataStore::instance().get_title_snapshot(data->title_id));
     BGL_LOG_INFO("Source", QStringLiteral(
         "Updated source binding old=%1 new=%2 changed=%3")
         .arg(QString::fromStdString(previous_title_id),
@@ -1559,5 +1560,5 @@ static void source_show(void *priv)
     data->dirty = true;
     data->first_frame_pending = true;
     sync_scene_mask_scenes_for_cue(
-        data, TitleDataStore::instance().get_title(data->title_id));
+        data, TitleDataStore::instance().get_title_snapshot(data->title_id));
 }

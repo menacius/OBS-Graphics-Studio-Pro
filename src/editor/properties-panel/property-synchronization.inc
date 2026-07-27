@@ -1584,7 +1584,7 @@ void PropertiesPanel::load_values()
         if (lbl_asset_name_) {
             const QString source_name = title_ && !layer_->asset_title_id.empty()
                 ? [&]() {
-                    for (const auto &candidate : TitleDataStore::instance().titles())
+                    for (const auto &candidate : TitleDataStore::instance().title_snapshots())
                         if (candidate && candidate->id == layer_->asset_title_id)
                             return QString::fromStdString(candidate->name);
                     return QString::fromStdString(layer_->name);

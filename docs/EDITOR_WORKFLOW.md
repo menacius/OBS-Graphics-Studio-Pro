@@ -12,6 +12,8 @@ The canvas supports selection, direct selection, shape drawing, pen/path editing
 
 External drag-and-drop and clipboard input can create text and image layers. Canvas context menus expose the same layer actions available in the layer list, including grouping, parenting, matte assignment, asset editing, duplication, and deletion.
 
+The horizontal and vertical rulers track the current canvas pointer in real time. Pointer movement invalidates only the cached GPU overlay, so ruler indicators update immediately without forcing the title artwork or its visual cache to rerender.
+
 ## Layer hierarchy
 
 Grouping and parenting are separate systems.
@@ -87,6 +89,8 @@ The playback hot path is split by cost. Canvas presentation remains project-fram
 Passive no-button pointer movement over ordinary inspector controls is coalesced to 30 Hz during playback so high-polling-rate mice cannot starve the GUI render queue. Canvas and Timeline input, button presses, drags, wheel events, Enter/Leave state and controls marked with `bglContinuousPointerDuringPlayback` retain continuous delivery. New editor controls should not request continuous pointer traffic unless their interaction semantics require it.
 
 Editor-side auxiliary work must remain state-driven: the private monitored-audio source exists only for titles with actual Audio layers (including nested Assets), title snapshots are republished only after a model/audio change or transport discontinuity, hidden meters suspend their timers, and setters/log statements on frame-adjacent paths must avoid work when their value or log level is unchanged. These are performance contracts, not optional micro-optimizations; adding a new per-frame panel update or precise timer requires profiling against playback plus high-rate pointer movement.
+
+Editor tabs intentionally use text-only labels. Dock drop guides include upper, center, lower-left, and lower-right targets; the two lower targets allow common inspector/timeline arrangements without requiring manual split reconstruction.
 
 ## Assets and libraries
 

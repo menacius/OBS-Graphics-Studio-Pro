@@ -47,7 +47,7 @@ for token in (
     assert token in model
 for token in (
     '{"source_size", aprop_to_json(light.source_size)},',
-    'read_prop("source_size", light.source_size, 0.0, 100000.0);',
+    'read_prop("source_size", light.source_size, 0.1, 100000.0);',
 ):
     assert token in data
 assert "add_anim(light.source_size, 0.05);" in cache_policy

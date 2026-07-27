@@ -1,35 +1,20 @@
-Broadcast Graphics Live v0.8.13-alpha - Development Version 394
-================================================================
+Broadcast Graphics Live v0.8.14-alpha - Development Version 404
 
-Delivery type
--------------
-Complete source delivery. No prebuilt plugin binary is included.
+Scope
+- OBS Studio 32.2.1 and matching Qt ABI compatibility.
+- Editor startup, cue/uncue, real-time presentation and shutdown deadlock corrections.
+- Text-only tabs, lower-left/lower-right dock targets and real-time canvas ruler indicators.
+- Consolidated README, changelog and thematic documentation.
 
-Development Version 394 scope
------------------------------
-- Starts the v0.8.13-alpha series and advances the development identifier to 394.
-- Synchronizes current CMake, runtime header, OBS plugin header, vcpkg,
-  documentation, installer example, package metadata and automated branding
-  audits.
-- Rebuilds README.md as a consolidated overview of the functionality added
-  since Development Version 281.
-- Preserves historical changelog labels and retains all Development Version 393
-  rendering behavior and fixes.
+Validation
+- Public/development version synchronization and documentation inventory audit: PASS.
+- Development Version 395 performance-regression contract: PASS.
+- Development Version 403 background-aware UI regression contract: PASS.
+- Native Windows RelWithDebInfo build against the OBS 32.2.1 dependency tree: PASS.
+- Default `build-windows.ps1` Release workflow with OBS 32.2.1 and Qt 6.11.1: PASS.
+- Incremental rerun with the corrected Qt cache and runtime-DLL validation: PASS.
+- Installed ProgramData DLL matches the staged Release binary: PASS (`35262609DE6B94C8E838BD1EE2106B69D3FA9CF5790F7C3CDAB40A1A301AFD71`).
+- Staged Release binary: build/broadcast-graphics-live/bin/64bit/broadcast-graphics-live.dll.
 
-Retained rendering scope
-------------------------
-- Motion Blur and active text transitions render without the session-mutex
-  deadlock fixed in Development Version 393.
-- Compositor and temporal-sample exception containment from Development Version
-  392 remains enabled.
-- Point, Spot and Parallel shadow paths remain active.
-- Shadowmap Size remains 256–4096 px with 2048 px as the default.
-
-Validation target
------------------
-- Version and documentation contract for Development Version 394.
-- Test-suite manifest and package identity synchronization.
-- Existing Development Versions 393, 392, 391 and 390 rendering contracts.
-- Source presentation lifecycle and packaging/update audits.
-
-A full native Windows OBS/Qt/MSVC build remains required before production use.
+Known audit baseline
+- The broad modularity audit accepts v0.8.14-alpha / Development Version 404 and reports the existing oversized implementation modules and GpuMemory logger-category mismatch.

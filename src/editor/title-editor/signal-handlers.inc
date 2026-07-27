@@ -662,6 +662,13 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.TickerLayers"), TitlePreferences::TimelineColorRole::TickerLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.ObjectLayers"), TitlePreferences::TimelineColorRole::ObjectLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.ImageLayers"), TitlePreferences::TimelineColorRole::ImageLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.VideoLayers"), TitlePreferences::TimelineColorRole::VideoLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.AudioLayers"), TitlePreferences::TimelineColorRole::AudioLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.EmptyLayers"), TitlePreferences::TimelineColorRole::EmptyLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.AdjustmentLayers"), TitlePreferences::TimelineColorRole::AdjustmentLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.ColorSolidLayers"), TitlePreferences::TimelineColorRole::ColorSolidLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.CameraLayers"), TitlePreferences::TimelineColorRole::CameraLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.LightLayers"), TitlePreferences::TimelineColorRole::LightLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.GroupLayers"), TitlePreferences::TimelineColorRole::GroupLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.CurrentTime"), TitlePreferences::TimelineColorRole::Current);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.PauseMarker"), TitlePreferences::TimelineColorRole::Pause);
@@ -1217,9 +1224,12 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    /* QEvent::LayoutRequest is emitted by ordinary per-frame label/transport
+     * updates during playback. Treating it as a dock-layout transition stopped
+     * GUI refresh pacing on nearly every frame. Real window/dock structure
+     * changes are already covered by Move/Resize and the dock events below. */
     const bool main_window_layout_transition = watched == this &&
-        (type == QEvent::LayoutRequest || type == QEvent::Move ||
-         type == QEvent::Resize);
+        (type == QEvent::Move || type == QEvent::Resize);
     const bool dock_structure_transition = watched_dock &&
         (type == QEvent::ParentAboutToChange || type == QEvent::ParentChange ||
          type == QEvent::Move || type == QEvent::Resize ||

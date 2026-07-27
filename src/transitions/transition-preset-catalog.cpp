@@ -322,6 +322,10 @@ bool load_transition_preset_file(const QString &file_path,
     transition.offset = finite_clamp("offset", 80.0, 0.0, 10000.0);
     transition.stagger = finite_clamp("stagger", 0.35, 0.0, 0.95);
     transition.softness = finite_clamp("softness", 0.0, 0.0, 1.0);
+    transition.text_slide_fade =
+        object.value(QStringLiteral("fade")).toBool(true);
+    transition.text_slide_crop_to_unit_bounds =
+        object.value(QStringLiteral("cropToUnitBounds")).toBool(false);
     transition.blocks_columns = std::clamp(object.value(QStringLiteral("columns")).toInt(12), 1, 256);
     transition.blocks_rows = std::clamp(object.value(QStringLiteral("rows")).toInt(7), 1, 256);
     transition.random_seed = std::clamp(object.value(QStringLiteral("seed")).toInt(1), 0, 1000000);

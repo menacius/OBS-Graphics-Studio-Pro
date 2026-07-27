@@ -1,9 +1,6 @@
 # Broadcast Graphics Live documentation
 
-These are the canonical documents for `v0.8.13-alpha` Development Version 394. Historical one-feature delivery notes have been merged into the thematic guides and the consolidated changelog.
-
-- `PACKED-TITLE-FORMAT.md` specifies the separate `.obgp` container, manifest,
-  compression blocks and import-safety contract.
+These are the canonical documents for `v0.8.14-alpha` Development Version 404. Current behavior belongs in the thematic guides; release history belongs in the consolidated changelog.
 
 | Document | Purpose |
 | --- | --- |
@@ -13,9 +10,12 @@ These are the canonical documents for `v0.8.13-alpha` Development Version 394. H
 | [EFFECTS_AND_EXTENSIONS.md](EFFECTS_AND_EXTENSIONS.md) | Effect stacks, execution spaces, presets, transitions, manifests and native extensions. |
 | [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md) | GPU/compatibility rendering, text performance, adaptive preview, motion blur, audio runtime and RAM/disk cache. |
 | [ARCHITECTURE_AND_BUILD.md](ARCHITECTURE_AND_BUILD.md) | Source ownership, serialization/migration, build, packaging, automated profiles and manual OBS regression matrix. |
+| [PACKED-TITLE-FORMAT.md](PACKED-TITLE-FORMAT.md) | Separate `.obgp` container, manifest, compression blocks and import-safety contract. |
 | [CHANGELOG.md](CHANGELOG.md) | Consolidated development history and release notes. |
 | [visual-effects-sdk.md](visual-effects-sdk.md) | Public modular visual-effects SDK and sample integration. |
 
+Historical performance evidence remains available in [PERFORMANCE-AUDIT-DEV395.md](PERFORMANCE-AUDIT-DEV395.md) and [EFFECT-PERFORMANCE-AUDIT-DEV396.md](EFFECT-PERFORMANCE-AUDIT-DEV396.md), but the current runtime contract is maintained in [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md).
+
 ## Maintenance rule
 
-Update the relevant canonical guide and `CHANGELOG.md`; do not add a new markdown file for each development delivery. Machine-readable inventories and audits belong under `tools/`, while executable contracts belong under `tests/`.
+Update `README.md`, the relevant canonical guide, and `CHANGELOG.md` for each delivery. Do not add a new one-feature document for routine development versions. Keep historical validation evidence separate from the current behavioral contract; machine-readable inventories belong under `tools/`, and executable contracts belong under `tests/`.

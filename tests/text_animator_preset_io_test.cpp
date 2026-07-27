@@ -11,6 +11,7 @@ int main()
     animator.name = "Editable Reveal";
     animator.granularity = TextAnimatorUnit::Word;
     animator.transform_as_unit = true;
+    animator.clip_to_unit_bounds = true;
     animator.change_behaviour = TextChangeBehaviour::AnimateChangedOnly;
 
     TextAnimatorProperty opacity;
@@ -62,6 +63,7 @@ int main()
     assert(loaded.name == animator.name);
     assert(loaded.granularity == TextAnimatorUnit::Word);
     assert(loaded.transform_as_unit);
+    assert(loaded.clip_to_unit_bounds);
     assert(loaded.change_behaviour == TextChangeBehaviour::AnimateChangedOnly);
     assert(loaded.properties.size() == 1);
     assert(loaded.properties.front().value.keyframes.size() == 2);

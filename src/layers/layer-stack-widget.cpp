@@ -8,6 +8,7 @@
 #include <QPainter>
 #include <QColorDialog>
 #include <QDropEvent>
+#include <QFont>
 #include <QStringList>
 #include <QWidgetAction>
 
@@ -137,27 +138,164 @@ private:
     std::vector<std::string> dragged_layer_ids_;
 };
 
+static constexpr const char *kLayerRowContrastIconProperty =
+    "bglLayerRowContrastIcon";
+static constexpr const char *kLayerRowDimensionToggleProperty =
+    "bglLayerRowDimensionToggle";
+static constexpr const char *kLayerRowForegroundLabelProperty =
+    "bglLayerRowForegroundLabel";
+
+static QColor layer_row_widget_foreground(const QWidget *widget,
+                                          QPalette::ColorRole role)
+{
+    if (!widget)
+        return bgl_icon_color();
+    return widget->palette().color(
+        widget->isEnabled() ? QPalette::Active : QPalette::Disabled, role);
+}
+
+static void set_layer_row_button_icon(QToolButton *button,
+                                      const char *file_name)
+{
+    if (!button)
+        return;
+    const QString name = file_name ? QString::fromUtf8(file_name) : QString();
+    button->setProperty(kLayerRowContrastIconProperty, name);
+    button->setIcon(name.isEmpty()
+        ? QIcon()
+        : bgl_icon(name.toUtf8().constData(),
+                   layer_row_widget_foreground(button, QPalette::ButtonText)));
+}
+
+static void refresh_layer_dimension_toggle(
+    QToolButton *button, const QColor &background,
+    const QPalette &theme_palette)
+{
+    if (!button)
+        return;
+    const QColor foreground =
+        bgl_background_aware_foreground(background, theme_palette);
+    const QColor muted =
+        bgl_background_aware_muted_foreground(background, theme_palette);
+    const QColor outline = bgl_mix_colors(foreground, background, 0.38);
+    const QColor highlight = theme_palette.color(QPalette::Highlight);
+    const QColor highlight_foreground =
+        bgl_background_aware_foreground(highlight, theme_palette);
+
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton{color:%1;background:transparent;border:1px solid %2;border-radius:3px;"
+        "font-size:10px;font-weight:700;padding:0;}"
+        "QToolButton:hover:enabled{background:transparent;border-color:%3;}"
+        "QToolButton[threeD=\"true\"]{color:%4;background:%3;border-color:%3;}"
+        "QToolButton:disabled{color:%5;background:transparent;border-color:%2;}")
+        .arg(foreground.name(QColor::HexRgb),
+             outline.name(QColor::HexRgb),
+             highlight.name(QColor::HexRgb),
+             highlight_foreground.name(QColor::HexRgb),
+             muted.name(QColor::HexRgb)));
+}
+
+static void refresh_layer_row_contrast_widgets(
+    QWidget *row_widget, const QColor &background, const QPalette &theme_palette)
+{
+    if (!row_widget)
+        return;
+
+    const QColor foreground =
+        bgl_background_aware_foreground(background, theme_palette);
+    const QColor muted =
+        bgl_background_aware_muted_foreground(background, theme_palette);
+    const QColor highlighted_text = bgl_background_aware_foreground(
+        theme_palette.color(QPalette::Highlight), theme_palette);
+
+    auto apply_palette = [&](QWidget *widget) {
+        if (!widget || widget->isWindow() ||
+            qobject_cast<QAbstractItemView *>(widget))
+            return;
+        QPalette widget_palette = widget->palette();
+        for (QPalette::ColorGroup group :
+             {QPalette::Active, QPalette::Inactive}) {
+            widget_palette.setColor(group, QPalette::WindowText, foreground);
+            widget_palette.setColor(group, QPalette::Text, foreground);
+            widget_palette.setColor(group, QPalette::ButtonText, foreground);
+            widget_palette.setColor(group, QPalette::BrightText, foreground);
+            widget_palette.setColor(group, QPalette::HighlightedText,
+                                    highlighted_text);
+        }
+        widget_palette.setColor(QPalette::Disabled, QPalette::WindowText, muted);
+        widget_palette.setColor(QPalette::Disabled, QPalette::Text, muted);
+        widget_palette.setColor(QPalette::Disabled, QPalette::ButtonText, muted);
+        widget_palette.setColor(QPalette::Disabled, QPalette::BrightText, muted);
+        widget->setPalette(widget_palette);
+        if (widget->property(kLayerRowForegroundLabelProperty).toBool()) {
+            const QColor label_foreground =
+                widget->isEnabled() ? foreground : muted;
+            widget->setStyleSheet(QStringLiteral(
+                "QLabel{color:%1;background:transparent;}")
+                .arg(label_foreground.name(QColor::HexRgb)));
+        }
+    };
+
+    apply_palette(row_widget);
+    for (QWidget *child : row_widget->findChildren<QWidget *>())
+        apply_palette(child);
+
+    for (QToolButton *button : row_widget->findChildren<QToolButton *>()) {
+        const QString name =
+            button->property(kLayerRowContrastIconProperty).toString();
+        if (!name.isEmpty())
+            button->setIcon(bgl_icon(
+                name.toUtf8().constData(),
+                layer_row_widget_foreground(button, QPalette::ButtonText)));
+    }
+    for (QToolButton *button : row_widget->findChildren<QToolButton *>()) {
+        if (button->property(kLayerRowDimensionToggleProperty).toBool())
+            refresh_layer_dimension_toggle(button, background, theme_palette);
+    }
+}
+
 class LayerRowWidget final : public QWidget {
 public:
     LayerRowWidget(QListWidgetItem *item, const QColor &layer_color,
                    QWidget *parent)
-        : QWidget(parent), item_(item), layer_color_(layer_color)
+        : QWidget(parent), item_(item), layer_color_(layer_color),
+          theme_palette_(parent ? parent->palette()
+                                : (qApp ? qApp->palette() : QPalette())),
+          base_background_(theme_palette_.color(QPalette::Window))
     {
         setObjectName(QStringLiteral("layerListColorRow"));
         setAutoFillBackground(false);
     }
 
+    QColor effective_background() const
+    {
+        QColor tint = layer_color_;
+        tint.setAlpha(item_ && item_->isSelected() ? 255 : 72);
+        return bgl_composite_over(tint, base_background_);
+    }
+
+    void refresh_contrast()
+    {
+        const QColor background = effective_background();
+        if (background == last_contrast_background_)
+            return;
+        last_contrast_background_ = background;
+        refresh_layer_row_contrast_widgets(this, background, theme_palette_);
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
+        refresh_contrast();
         QPainter painter(this);
-        painter.fillRect(rect(), palette().color(QPalette::Window));
+        painter.fillRect(rect(), base_background_);
         QColor background = layer_color_;
         background.setAlpha(item_ && item_->isSelected() ? 255 : 72);
         painter.fillRect(rect(), background);
         if (item_ && item_->isSelected()) {
-            QColor outline = layer_color_.lighter(145);
-            outline.setAlpha(230);
+            QColor outline = bgl_background_aware_foreground(
+                layer_color_, theme_palette_);
+            outline.setAlpha(210);
             painter.setPen(QPen(outline, 1.0));
             painter.drawRect(rect().adjusted(0, 0, -1, -1));
         }
@@ -166,6 +304,9 @@ protected:
 private:
     QListWidgetItem *item_ = nullptr;
     QColor layer_color_;
+    QPalette theme_palette_;
+    QColor base_background_;
+    QColor last_contrast_background_;
 };
 
 class LayerColorIcon final : public QLabel {
@@ -262,6 +403,31 @@ static QIcon layer_ui_color_action_icon(const QColor &color)
     painter.setPen(qApp->palette().color(QPalette::Mid));
     painter.drawRect(QRect(0, 0, 15, 15));
     return QIcon(pixmap);
+}
+
+static constexpr const char *kThemedIconProperty = "bglThemedIconName";
+
+static void assign_themed_action_icon(QAction *action, const char *file_name)
+{
+    if (!action || !file_name)
+        return;
+    action->setProperty(kThemedIconProperty, QString::fromUtf8(file_name));
+    action->setIcon(obs_icon(file_name));
+}
+
+static void refresh_themed_menu_icons(QMenu *menu)
+{
+    if (!menu)
+        return;
+    for (QAction *action : menu->actions()) {
+        if (!action)
+            continue;
+        const QString file_name = action->property(kThemedIconProperty).toString();
+        if (!file_name.isEmpty())
+            action->setIcon(obs_icon(file_name.toUtf8().constData()));
+        if (QMenu *sub_menu = action->menu())
+            refresh_themed_menu_icons(sub_menu);
+    }
 }
 
 static void make_layer_row_children_transparent(QWidget *row_widget)
@@ -742,37 +908,58 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                                obs_icon("add.svg"),
                                bgl_tr("OBSTitles.AddLayerTooltip"));
     auto *add_menu = new QMenu(btn_add_);
-    add_menu->addAction(obs_icon("text.svg"),
-                        bgl_tr("OBSTitles.Text"), this, &LayerStack::on_add_text);
-    add_menu->addAction(obs_icon("clock.svg"),
-                        bgl_tr("OBSTitles.Clock"), this, &LayerStack::on_add_clock);
-    add_menu->addAction(obs_icon("text.svg"),
-                        bgl_tr("OBSTitles.Ticker"), this, &LayerStack::on_add_ticker);
-    add_menu->addAction(obs_icon("shape.svg"),
-                        bgl_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
-    add_menu->addAction(obs_icon("image.svg"),
-                        bgl_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
-    add_menu->addAction(obs_icon("video.svg"),
-                        bgl_tr("OBSTitles.Video"), this, &LayerStack::on_add_video);
-    add_menu->addAction(obs_icon("audio.svg"),
-                        bgl_tr("OBSTitles.Audio"), this, &LayerStack::on_add_audio);
-    add_menu->addAction(obs_icon("shape.svg"),
-                        bgl_tr("OBSTitles.Empty"), this, &LayerStack::on_add_empty);
+    auto add_themed_action = [this](QMenu *menu, const char *icon_name,
+                                    const QString &label, auto slot) {
+        QAction *action = menu->addAction(obs_icon(icon_name), label, this, slot);
+        assign_themed_action_icon(action, icon_name);
+        return action;
+    };
+    add_themed_action(add_menu, "layer-type-text.svg",
+                      bgl_tr("OBSTitles.Text"), &LayerStack::on_add_text);
+    add_themed_action(add_menu, "layer-type-clock.svg",
+                      bgl_tr("OBSTitles.Clock"), &LayerStack::on_add_clock);
+    add_themed_action(add_menu, "layer-type-ticker.svg",
+                      bgl_tr("OBSTitles.Ticker"), &LayerStack::on_add_ticker);
+    add_themed_action(add_menu, "layer-type-shape.svg",
+                      bgl_tr("OBSTitles.Shape"), &LayerStack::on_add_rect);
+    add_themed_action(add_menu, "layer-type-image.svg",
+                      bgl_tr("OBSTitles.Image"), &LayerStack::on_add_image);
+    add_themed_action(add_menu, "layer-type-video.svg",
+                      bgl_tr("OBSTitles.Video"), &LayerStack::on_add_video);
+    add_themed_action(add_menu, "layer-type-audio.svg",
+                      bgl_tr("OBSTitles.Audio"), &LayerStack::on_add_audio);
+    add_themed_action(add_menu, "layer-type-empty.svg",
+                      bgl_tr("OBSTitles.Empty"), &LayerStack::on_add_empty);
     add_menu->addSeparator();
-    add_menu->addAction(obs_icon("lightning.svg"),
-                        bgl_tr("OBSTitles.AdjustmentLayer"), this, &LayerStack::on_add_adjustment);
-    add_menu->addAction(obs_icon("shape.svg"),
-                        bgl_tr("OBSTitles.ColorSolid"), this, &LayerStack::on_add_color_solid);
+    add_themed_action(add_menu, "layer-type-adjustment.svg",
+                      bgl_tr("OBSTitles.AdjustmentLayer"),
+                      &LayerStack::on_add_adjustment);
+    add_themed_action(add_menu, "layer-type-color-solid.svg",
+                      bgl_tr("OBSTitles.ColorSolid"),
+                      &LayerStack::on_add_color_solid);
     add_menu->addSeparator();
-    add_menu->addAction(obs_icon("graphic.svg"),
-                        QStringLiteral("Camera"), this, &LayerStack::on_add_camera);
-    auto *light_menu = add_menu->addMenu(obs_icon("lightning.svg"),
+    add_themed_action(add_menu, "layer-type-camera.svg",
+                      QStringLiteral("Camera"), &LayerStack::on_add_camera);
+    auto *light_menu = add_menu->addMenu(obs_icon("layer-type-light.svg"),
                                           QStringLiteral("Light"));
-    light_menu->addAction(QStringLiteral("Ambient Light"), this, &LayerStack::on_add_ambient_light);
-    light_menu->addAction(QStringLiteral("Point Light"), this, &LayerStack::on_add_point_light);
-    light_menu->addAction(QStringLiteral("Spot Light"), this, &LayerStack::on_add_spot_light);
-    light_menu->addAction(QStringLiteral("Parallel Light"), this, &LayerStack::on_add_parallel_light);
-    light_menu->addAction(QStringLiteral("Environment Light"), this, &LayerStack::on_add_environment_light);
+    assign_themed_action_icon(light_menu->menuAction(), "layer-type-light.svg");
+    add_themed_action(light_menu, "layer-type-light.svg",
+                      QStringLiteral("Ambient Light"),
+                      &LayerStack::on_add_ambient_light);
+    add_themed_action(light_menu, "layer-type-light.svg",
+                      QStringLiteral("Point Light"),
+                      &LayerStack::on_add_point_light);
+    add_themed_action(light_menu, "layer-type-light.svg",
+                      QStringLiteral("Spot Light"),
+                      &LayerStack::on_add_spot_light);
+    add_themed_action(light_menu, "layer-type-light.svg",
+                      QStringLiteral("Parallel Light"),
+                      &LayerStack::on_add_parallel_light);
+    add_themed_action(light_menu, "layer-type-light.svg",
+                      QStringLiteral("Environment Light"),
+                      &LayerStack::on_add_environment_light);
+    connect(add_menu, &QMenu::aboutToShow, add_menu,
+            [add_menu]() { refresh_themed_menu_icons(add_menu); });
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -808,6 +995,32 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     connect(list_, &QListWidget::customContextMenuRequested,
             this, &LayerStack::show_layer_context_menu);
     list_->viewport()->installEventFilter(this);
+}
+
+void LayerStack::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    if (!event)
+        return;
+
+    const QEvent::Type type = event->type();
+    if (type != QEvent::PaletteChange &&
+        type != QEvent::ApplicationPaletteChange &&
+        type != QEvent::StyleChange)
+        return;
+
+    if (btn_add_) {
+        btn_add_->setIcon(obs_icon("add.svg"));
+        refresh_themed_menu_icons(btn_add_->menu());
+    }
+    if (btn_move_up_)
+        btn_move_up_->setIcon(obs_icon("move-up.svg"));
+    if (btn_move_down_)
+        btn_move_down_->setIcon(obs_icon("move-down.svg"));
+    if (btn_del_)
+        btn_del_->setIcon(obs_icon("delete.svg"));
+    if (list_)
+        populate();
 }
 
 bool LayerStack::eventFilter(QObject *watched, QEvent *event)
@@ -946,8 +1159,11 @@ void LayerStack::refresh_layer_row_backgrounds()
             item->data(Qt::UserRole + 1).toString() !=
                 QStringLiteral("layer"))
             continue;
-        if (QWidget *row_widget = list_->itemWidget(item))
+        if (QWidget *row_widget = list_->itemWidget(item)) {
+            if (auto *color_row = dynamic_cast<LayerRowWidget *>(row_widget))
+                color_row->refresh_contrast();
             row_widget->update();
+        }
     }
 }
 
@@ -991,7 +1207,6 @@ void LayerStack::populate()
     const QColor disabled_text = pal.color(QPalette::Disabled, QPalette::WindowText);
     const QColor base = pal.color(QPalette::Base);
     const QColor border = pal.color(QPalette::Mid);
-    const QColor dark = pal.color(QPalette::Dark);
     const QColor highlight = pal.color(QPalette::Highlight);
     const QString button_style = QStringLiteral(
         "QToolButton{color:%1;background-color:rgba(0,0,0,0);border:none;}"
@@ -1007,6 +1222,19 @@ void LayerStack::populate()
         .arg(field_text.name(QColor::HexRgb),
              base.name(QColor::HexRgb),
              highlight.name(QColor::HexRgb),
+             pal.color(QPalette::HighlightedText).name(QColor::HexRgb));
+    const QString row_button_style = QStringLiteral(
+        "QToolButton{color:palette(button-text);background-color:rgba(0,0,0,0);border:none;}"
+        "QToolButton:hover{background-color:rgba(127,127,127,36);color:palette(button-text);}"
+        "QToolButton:checked{background-color:rgba(127,127,127,48);color:palette(button-text);}");
+    const QString row_combo_style = QStringLiteral(
+        "QComboBox{color:palette(text);background-color:rgba(0,0,0,0);border:1px solid transparent;border-radius:3px;padding-left:4px;}"
+        "QComboBox:hover{background-color:rgba(127,127,127,28);border-color:%2;}"
+        "QComboBox::drop-down{background-color:rgba(0,0,0,0);border:none;}"
+        "QComboBox QAbstractItemView{background:%1;color:%3;selection-background-color:%2;selection-color:%4;}")
+        .arg(base.name(QColor::HexRgb),
+             highlight.name(QColor::HexRgb),
+             field_text.name(QColor::HexRgb),
              pal.color(QPalette::HighlightedText).name(QColor::HexRgb));
 
     auto show_layer_color_menu =
@@ -1194,14 +1422,32 @@ void LayerStack::populate()
                 emit camera_expand_changed(owner, next);
             });
             layout->addWidget(caret);
-            auto *camera_icon = new QLabel(timeline_row.is_camera_switch
-                ? QStringLiteral("⇄")
-                : is_light ? QStringLiteral("LGT")
-                           : QStringLiteral("CAM"), row_widget);
-            camera_icon->setFixedWidth(34);
+            auto *camera_icon = new QLabel(row_widget);
+            camera_icon->setFixedSize(34, 20);
             camera_icon->setAlignment(Qt::AlignCenter);
-            camera_icon->setStyleSheet(QStringLiteral("color:%1;font-weight:700;")
-                                           .arg(highlight.name(QColor::HexRgb)));
+            if (timeline_row.is_camera_switch) {
+                camera_icon->setText(QStringLiteral("⇄"));
+                camera_icon->setStyleSheet(
+                    QStringLiteral("color:%1;font-weight:700;")
+                        .arg(highlight.name(QColor::HexRgb)));
+            } else {
+                const auto role = is_light
+                    ? TitlePreferences::TimelineColorRole::LightLayer
+                    : TitlePreferences::TimelineColorRole::CameraLayer;
+                const QColor owner_color = TitlePreferences::timeline_color(role);
+                const char *icon_name = is_light
+                    ? "layer-type-light.svg" : "layer-type-camera.svg";
+                const QColor owner_foreground =
+                    bgl_background_aware_foreground(owner_color, pal);
+                camera_icon->setPixmap(
+                    bgl_icon(icon_name, owner_foreground).pixmap(QSize(14, 14)));
+                camera_icon->setStyleSheet(QStringLiteral(
+                    "background:%1;border:1px solid %2;border-radius:2px;color:%3;")
+                    .arg(owner_color.name(QColor::HexRgb),
+                         bgl_mix_colors(owner_foreground, owner_color, 0.42)
+                             .name(QColor::HexRgb),
+                         owner_foreground.name(QColor::HexRgb)));
+            }
             layout->addWidget(camera_icon);
             auto *name = new QLabel(timeline_row.owner_label, row_widget);
             name->setStyleSheet(QStringLiteral("font-weight:600;"));
@@ -1361,18 +1607,14 @@ void LayerStack::populate()
         item->setSizeHint(QSize(0, 28));
         list_->addItem(item);
 
-        QWidget *row_widget = new LayerRowWidget(
+        auto *row_widget = new LayerRowWidget(
             item, layer_color(*l, row), list_);
-        QPalette row_palette = row_widget->palette();
-        row_palette.setColor(QPalette::WindowText, text);
-        row_palette.setColor(QPalette::Text, text);
-        row_widget->setPalette(row_palette);
         auto *hl = new QHBoxLayout(row_widget);
         hl->setContentsMargins(kLayerListMargin, 0, kLayerListMargin, 0);
         hl->setSpacing(kLayerListSpacing);
         auto *drag_handle = new LayerRowDragHandle(
             static_cast<LayerListWidget *>(list_), item, row_widget);
-        drag_handle->setStyleSheet(button_style);
+        drag_handle->setStyleSheet(row_button_style);
         hl->addWidget(drag_handle);
 
         /* Every optional control lives inside a permanent fixed-width cell.
@@ -1400,14 +1642,14 @@ void LayerStack::populate()
             auto *btn = new QToolButton(row_widget);
             btn->setCheckable(true);
             btn->setChecked(checked);
-            btn->setIcon(obs_icon(checked ? on_icon : off_icon));
+            set_layer_row_button_icon(btn, checked ? on_icon : off_icon);
             btn->setToolTip(tip);
             btn->setFixedSize(fixed_width, 20);
             btn->setIconSize(QSize(14, 14));
             btn->setAutoRaise(true);
-            btn->setStyleSheet(button_style);
+            btn->setStyleSheet(row_button_style);
             connect(btn, &QToolButton::toggled, btn, [btn, on_icon, off_icon](bool state) {
-                btn->setIcon(obs_icon(state ? on_icon : off_icon));
+                set_layer_row_button_icon(btn, state ? on_icon : off_icon);
             });
             hl->addWidget(btn);
             return btn;
@@ -1418,7 +1660,7 @@ void LayerStack::populate()
             btn->setIconSize(QSize(14, 14));
             btn->setAutoRaise(true);
             btn->setEnabled(false);
-            btn->setStyleSheet(button_style);
+            btn->setStyleSheet(row_button_style);
             hl->addWidget(btn);
             return btn;
         };
@@ -1439,20 +1681,20 @@ void LayerStack::populate()
             vis->setFixedSize(kLayerVisibilityWidth, 20);
             vis->setIconSize(QSize(14, 14));
             vis->setAutoRaise(true);
-            vis->setStyleSheet(button_style);
+            vis->setStyleSheet(row_button_style);
             auto update_matte_visibility_button = [vis](MatteVisibilityMode mode) {
                 switch (mode) {
                 case MatteVisibilityMode::HiddenInactive:
-                    vis->setIcon(obs_icon("no-visibility.svg"));
+                    set_layer_row_button_icon(vis, "no-visibility.svg");
                     vis->setToolTip(bgl_tr("OBSTitles.MatteHiddenInactiveTooltip"));
                     break;
                 case MatteVisibilityMode::VisibleAndMatte:
-                    vis->setIcon(obs_icon("visibility-normal.svg"));
+                    set_layer_row_button_icon(vis, "visibility-normal.svg");
                     vis->setToolTip(bgl_tr("OBSTitles.MatteVisibleActiveTooltip"));
                     break;
                 case MatteVisibilityMode::MatteOnly:
                 default:
-                    vis->setIcon(obs_icon("visibility-matte.svg"));
+                    set_layer_row_button_icon(vis, "visibility-matte.svg");
                     vis->setToolTip(bgl_tr("OBSTitles.MatteOnlyTooltip"));
                     break;
                 }
@@ -1506,13 +1748,13 @@ void LayerStack::populate()
         QToolButton *expand = nullptr;
         if (is_asset) {
             expand = new QToolButton(row_widget);
-            expand->setIcon(obs_icon("duplicate.svg"));
+            set_layer_row_button_icon(expand, "duplicate.svg");
             expand->setIconSize(QSize(12, 12));
             expand->setToolTip(bgl_tr("OBSTitles.AssetLayerTooltip"));
             expand->setEnabled(false);
             expand->setFixedSize(kLayerExpandWidth, 20);
             expand->setAutoRaise(true);
-            expand->setStyleSheet(button_style);
+            expand->setStyleSheet(row_button_style);
         } else {
             auto *caret = new BglCaretButton(row_widget);
             caret->setCaretState(is_expandable_container ? group_state : (expanded ? 2 : 0));
@@ -1542,25 +1784,38 @@ void LayerStack::populate()
         hl->addWidget(expand);
 
         QLabel *idx = new QLabel(QString::number(row + 1), row_widget);
+        idx->setObjectName(QStringLiteral("layerRowIndex"));
+        idx->setProperty(kLayerRowForegroundLabelProperty, true);
         idx->setFixedWidth(kLayerIndexWidth);
         idx->setAlignment(Qt::AlignCenter);
-        idx->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;")
-                               .arg(disabled_text.name(QColor::HexRgb)));
+        QFont index_font = idx->font();
+        index_font.setBold(true);
+        idx->setFont(index_font);
         hl->addWidget(idx);
 
         auto *type = new LayerColorIcon(row_widget);
-        type->setText(layer_type_short(l->type));
         type->setFixedWidth(kLayerTypeWidth);
         type->setAlignment(Qt::AlignCenter);
         type->setAccessibleName(bgl_tr("OBSTitles.LayerColorTooltip"));
         type->setToolTip(bgl_tr("OBSTitles.LayerColorTooltip"));
         const QColor effective_layer_color = layer_color(*l, row);
+        const QColor type_foreground = bgl_background_aware_foreground(
+            effective_layer_color, pal);
+        QIcon authored_type_icon = layer_type_icon(l->type, type_foreground);
+        if (authored_type_icon.isNull())
+            authored_type_icon = layer_type_icon(l->type);
+        if (!authored_type_icon.isNull()) {
+            type->setText(QString());
+            type->setPixmap(authored_type_icon.pixmap(QSize(14, 14)));
+        } else {
+            type->setText(layer_type_short(l->type));
+        }
         type->setStyleSheet(QStringLiteral(
             "background:%1;border:1px solid %2;color:%3;font-weight:bold;")
                 .arg(effective_layer_color.name(QColor::HexRgb),
-                     dark.name(QColor::HexRgb),
-                     pal.color(QPalette::HighlightedText)
-                         .name(QColor::HexRgb)));
+                     bgl_mix_colors(type_foreground, effective_layer_color, 0.42)
+                         .name(QColor::HexRgb),
+                     type_foreground.name(QColor::HexRgb)));
         type->set_click_handler(
             [show_layer_color_menu, type, item, id = l->id,
              has_custom_color = l->custom_ui_color_enabled,
@@ -1603,9 +1858,9 @@ void LayerStack::populate()
                   "QToolButton:checked{background:%3;color:%4;}"
                   "QToolButton:hover{border-color:%3;}")
                   .arg((has_external_binding ? QColor(QStringLiteral("#f0a000")) : border).name(QColor::HexRgb),
-                       disabled_text.name(QColor::HexRgb),
+                       QStringLiteral("palette(button-text)"),
                        highlight.name(QColor::HexRgb),
-                       pal.color(QPalette::HighlightedText).name(QColor::HexRgb))
+                       bgl_background_aware_foreground(highlight, pal).name(QColor::HexRgb))
             : QStringLiteral("QToolButton{background:transparent;border:none;}"));
         if (has_effect_stack) {
             connect(fx_indicator, &QToolButton::toggled, this,
@@ -1626,9 +1881,9 @@ void LayerStack::populate()
             indicator->setIconSize(QSize(14, 14));
             indicator->setAutoRaise(true);
             indicator->setEnabled(false);
-            indicator->setStyleSheet(button_style);
+            indicator->setStyleSheet(row_button_style);
             if (active) {
-                indicator->setIcon(obs_icon(icon));
+                set_layer_row_button_icon(indicator, icon);
                 indicator->setToolTip(tip);
             }
             hl->addWidget(indicator);
@@ -1663,12 +1918,10 @@ void LayerStack::populate()
         name->setReadOnly(l->locked);
         name->setToolTip(bgl_tr("OBSTitles.RenameLayerTooltip"));
         name->setStyleSheet(l->locked
-            ? QStringLiteral("QLineEdit{color:%1;background:transparent;border:none;}")
-                  .arg(disabled_text.name(QColor::HexRgb))
-            : QStringLiteral("QLineEdit{color:%1;background-color:rgba(0,0,0,0);border:none;padding:1px;} "
-                             "QLineEdit:focus{background-color:rgba(0,0,0,0);border:1px solid %2;border-radius:2px;}")
-                  .arg(text.name(QColor::HexRgb),
-                       highlight.name(QColor::HexRgb)));
+            ? QStringLiteral("QLineEdit{color:palette(text);background:transparent;border:none;}")
+            : QStringLiteral("QLineEdit{color:palette(text);background-color:rgba(0,0,0,0);border:none;padding:1px;} "
+                             "QLineEdit:focus{background-color:rgba(0,0,0,0);border:1px solid %1;border-radius:2px;}")
+                  .arg(highlight.name(QColor::HexRgb)));
         connect(name, &QLineEdit::editingFinished, this,
                 [this, id = l->id, name]() {
                     emit layer_name_changed(id, name->text().trimmed().toStdString());
@@ -1678,14 +1931,14 @@ void LayerStack::populate()
 
         QComboBox *mode = new QComboBox(row_widget);
         mode->setFixedWidth(kLayerModeWidth);
-        mode->setStyleSheet(combo_style);
+        mode->setStyleSheet(row_combo_style);
         mode->setToolTip(bgl_tr("OBSTitles.LayerModesTooltip"));
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
-        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
+        mode->addItem(bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
         int mode_idx = mode->findData((int)l->blend_mode);
         mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
         mode->setEnabled(!is_non_raster_layer);
@@ -1698,7 +1951,7 @@ void LayerStack::populate()
 
         QComboBox *matte = new QComboBox(row_widget);
         matte->setFixedWidth(kLayerMaskWidth);
-        matte->setStyleSheet(combo_style);
+        matte->setStyleSheet(row_combo_style);
         matte->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
         matte->addItem(bgl_tr("OBSTitles.NoMask"), QString());
         for (int candidate_row = 0; candidate_row < static_cast<int>(title_->layers.size()); ++candidate_row) {
@@ -1737,19 +1990,19 @@ void LayerStack::populate()
         matte_type->setProperty("matteType", uses_clipping ? 2 : (uses_luma ? 1 : 0));
         auto update_matte_type_button = [matte_type](bool enabled) {
             if (!enabled) {
-                matte_type->setIcon(QIcon());
+                set_layer_row_button_icon(matte_type, nullptr);
                 matte_type->setToolTip(QString());
                 return;
             }
             const int type = matte_type->property("matteType").toInt();
             if (type == 2) {
-                matte_type->setIcon(obs_icon("matte-clipping.svg"));
+                set_layer_row_button_icon(matte_type, "matte-clipping.svg");
                 matte_type->setToolTip(bgl_tr("OBSTitles.MatteClipping"));
             } else if (type == 1) {
-                matte_type->setIcon(obs_icon("matte-luma.svg"));
+                set_layer_row_button_icon(matte_type, "matte-luma.svg");
                 matte_type->setToolTip(bgl_tr("OBSTitles.MatteLuma"));
             } else {
-                matte_type->setIcon(obs_icon("matte-alpha.svg"));
+                set_layer_row_button_icon(matte_type, "matte-alpha.svg");
                 matte_type->setToolTip(bgl_tr("OBSTitles.MatteAlpha"));
             }
         };
@@ -1757,7 +2010,7 @@ void LayerStack::populate()
         matte_type->setFixedSize(kLayerMatteControlWidth, 20);
         matte_type->setIconSize(QSize(14, 14));
         matte_type->setAutoRaise(true);
-        matte_type->setStyleSheet(button_style);
+        matte_type->setStyleSheet(row_button_style);
         matte_type->setEnabled(has_matte);
         add_fixed_control_column(matte_type, kLayerMatteControlWidth,
                                  !is_non_raster_layer);
@@ -1766,16 +2019,16 @@ void LayerStack::populate()
         matte_invert->setCheckable(true);
         matte_invert->setChecked(is_inverted);
         if (has_matte) {
-            matte_invert->setIcon(obs_icon(is_inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+            set_layer_row_button_icon(matte_invert, is_inverted ? "matte-inverted.svg" : "matte-normal.svg");
             matte_invert->setToolTip(is_inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
         } else {
-            matte_invert->setIcon(QIcon());
+            set_layer_row_button_icon(matte_invert, nullptr);
             matte_invert->setToolTip(QString());
         }
         matte_invert->setFixedSize(kLayerMatteControlWidth, 20);
         matte_invert->setIconSize(QSize(14, 14));
         matte_invert->setAutoRaise(true);
-        matte_invert->setStyleSheet(button_style);
+        matte_invert->setStyleSheet(row_button_style);
         matte_invert->setEnabled(has_matte);
         add_fixed_control_column(matte_invert, kLayerMatteControlWidth,
                                  !is_non_raster_layer);
@@ -1803,10 +2056,10 @@ void LayerStack::populate()
                     update_matte_type_button(enabled);
                     if (enabled) {
                         const bool inverted = matte_invert->isChecked();
-                        matte_invert->setIcon(obs_icon(inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+                        set_layer_row_button_icon(matte_invert, inverted ? "matte-inverted.svg" : "matte-normal.svg");
                         matte_invert->setToolTip(inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
                     } else {
-                        matte_invert->setIcon(QIcon());
+                        set_layer_row_button_icon(matte_invert, nullptr);
                         matte_invert->setToolTip(QString());
                     }
                     emit layer_mask_changed(id, source_id,
@@ -1824,7 +2077,7 @@ void LayerStack::populate()
                 });
         connect(matte_invert, &QToolButton::toggled, this,
                 [this, id = l->id, matte, matte_invert, selected_matte_mode](bool inverted) {
-                    matte_invert->setIcon(obs_icon(inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+                    set_layer_row_button_icon(matte_invert, inverted ? "matte-inverted.svg" : "matte-normal.svg");
                     matte_invert->setToolTip(inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
                     const std::string source_id = matte->currentData().toString().toStdString();
                     if (!source_id.empty()) emit layer_mask_changed(id, source_id, selected_matte_mode());
@@ -1832,7 +2085,7 @@ void LayerStack::populate()
 
         QComboBox *parent = new QComboBox(row_widget);
         parent->setFixedWidth(kLayerParentWidth);
-        parent->setStyleSheet(combo_style);
+        parent->setStyleSheet(row_combo_style);
         parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
         parent->addItem(bgl_tr("OBSTitles.None"), "");
         for (int candidate_row = 0;
@@ -1882,17 +2135,9 @@ void LayerStack::populate()
             dimension_toggle->style()->unpolish(dimension_toggle);
             dimension_toggle->style()->polish(dimension_toggle);
         };
-        dimension_toggle->setStyleSheet(QStringLiteral(
-            "QToolButton{color:%1;background:transparent;border:1px solid %2;border-radius:3px;"
-            "font-size:10px;font-weight:700;padding:0;}"
-            "QToolButton:hover:enabled{background:transparent;border-color:%3;}"
-            "QToolButton[threeD=\"true\"]{color:%4;background:%3;border-color:%3;}"
-            "QToolButton:disabled{color:%5;background:transparent;border-color:%2;}")
-            .arg(field_text.name(QColor::HexRgb),
-                 border.name(QColor::HexRgb),
-                 highlight.name(QColor::HexRgb),
-                 pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
-                 disabled_text.name(QColor::HexRgb)));
+        dimension_toggle->setProperty(kLayerRowDimensionToggleProperty, true);
+        refresh_layer_dimension_toggle(
+            dimension_toggle, row_widget->effective_background(), pal);
         update_dimension_toggle(dimension_toggle->isChecked());
         connect(dimension_toggle, &QToolButton::toggled, this,
                 [this, id = l->id, item, update_dimension_toggle](bool is_3d) {
@@ -1908,6 +2153,7 @@ void LayerStack::populate()
          * Clear them once the complete row exists so its color remains a
          * single uninterrupted surface behind every embedded control. */
         make_layer_row_children_transparent(row_widget);
+        row_widget->refresh_contrast();
 
         list_->setItemWidget(item, row_widget);
         if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||

@@ -467,9 +467,13 @@ void CanvasPreview::prepare_for_shutdown()
 
 QPaintEngine *CanvasPreview::paintEngine() const
 {
-    if (gpu_display_ && gpu_display_->swapchain)
-        return nullptr;
-    return QWidget::paintEngine();
+    /* CanvasPreview is always a native, WA_PaintOnScreen widget. Returning
+     * QWidget's backing-store engine while the OBS swapchain is still being
+     * created mixes two incompatible paint paths. Qt 6.11 diagnoses that as
+     * "QWidget::paintEngine: Should no longer be called" and can repeatedly
+     * re-enter backing-store updates during the editor's first expose. OBS
+     * owns every canvas presentation, including the pre-swapchain interval. */
+    return nullptr;
 }
 
 bool CanvasPreview::ensure_gpu_display()
@@ -764,55 +768,58 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
         const std::string gpu_error = (!artwork_drawn || draw_deferred)
             ? title_gpu_render_session_last_error(canvas->gpu_render_session_)
             : std::string();
-        TitleGpuRenderDiagnostics draw_diagnostics;
-        const bool have_draw_diagnostics =
-            title_gpu_render_session_get_diagnostics(
-                canvas->gpu_render_session_, draw_diagnostics);
-        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
-            "stage=canvas-present canvas=%1 session=%2 title=%3 playhead=%4 result=%5 deferred=%6 output=%7x%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 publishedTime=%14 modelRevision=%15 publishedRevision=%16 dirty=%17 pendingRasters=%18 extrusionLayers=%19 lights=%20 depthRuns=%21 depthLayers=%22 extrusionPasses=%23 error=%24")
-            .arg(reinterpret_cast<quintptr>(canvas), 0, 16)
-            .arg(reinterpret_cast<quintptr>(canvas->gpu_render_session_), 0, 16)
-            .arg(canvas->title_
-                     ? QString::fromStdString(canvas->title_->id)
-                     : QStringLiteral("<none>"))
-            .arg(canvas->playhead_, 0, 'f', 9)
-            .arg(artwork_drawn ? QStringLiteral("drawn")
-                               : QStringLiteral("failed"))
-            .arg(draw_deferred ? 1 : 0)
-            .arg(state.artwork_rect_px.width())
-            .arg(state.artwork_rect_px.height())
-            .arg(have_draw_diagnostics ? 1 : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.session_time : -1.0,
-                 0, 'f', 9)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.update_serial : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.render_serial : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.publish_serial : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.last_published_time : -1.0,
-                 0, 'f', 9)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.model_revision : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.published_model_revision : 0)
-            .arg(have_draw_diagnostics && draw_diagnostics.frame_dirty ? 1 : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.pending_raster_count : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.extrusion_layer_count : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.visible_light_layer_count : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.hardware_depth_run_count : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.hardware_depth_layer_count : 0)
-            .arg(have_draw_diagnostics
-                     ? draw_diagnostics.extrusion_pass_count : 0)
-            .arg(gpu_error.empty() ? QStringLiteral("none")
-                                   : QString::fromStdString(gpu_error)));
+        if (TitleLogger::wouldLog(TitleLogLevel::Trace,
+                                  "RenderDiagnostics")) {
+            TitleGpuRenderDiagnostics draw_diagnostics;
+            const bool have_draw_diagnostics =
+                title_gpu_render_session_get_diagnostics(
+                    canvas->gpu_render_session_, draw_diagnostics);
+            BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+                "stage=canvas-present canvas=%1 session=%2 title=%3 playhead=%4 result=%5 deferred=%6 output=%7x%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 publishedTime=%14 modelRevision=%15 publishedRevision=%16 dirty=%17 pendingRasters=%18 extrusionLayers=%19 lights=%20 depthRuns=%21 depthLayers=%22 extrusionPasses=%23 error=%24")
+                .arg(reinterpret_cast<quintptr>(canvas), 0, 16)
+                .arg(reinterpret_cast<quintptr>(canvas->gpu_render_session_), 0, 16)
+                .arg(canvas->title_
+                         ? QString::fromStdString(canvas->title_->id)
+                         : QStringLiteral("<none>"))
+                .arg(canvas->playhead_, 0, 'f', 9)
+                .arg(artwork_drawn ? QStringLiteral("drawn")
+                                   : QStringLiteral("failed"))
+                .arg(draw_deferred ? 1 : 0)
+                .arg(state.artwork_rect_px.width())
+                .arg(state.artwork_rect_px.height())
+                .arg(have_draw_diagnostics ? 1 : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.session_time : -1.0,
+                     0, 'f', 9)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.update_serial : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.render_serial : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.publish_serial : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.last_published_time : -1.0,
+                     0, 'f', 9)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.model_revision : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.published_model_revision : 0)
+                .arg(have_draw_diagnostics && draw_diagnostics.frame_dirty ? 1 : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.pending_raster_count : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.extrusion_layer_count : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.visible_light_layer_count : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.hardware_depth_run_count : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.hardware_depth_layer_count : 0)
+                .arg(have_draw_diagnostics
+                         ? draw_diagnostics.extrusion_pass_count : 0)
+                .arg(gpu_error.empty() ? QStringLiteral("none")
+                                       : QString::fromStdString(gpu_error)));
+        }
         if (!artwork_drawn || draw_deferred) {
             BGL_LOG_DEBUG("Canvas", QStringLiteral(
                 "GPU canvas draw deferred title=%1 output=%2x%3 error=%4")

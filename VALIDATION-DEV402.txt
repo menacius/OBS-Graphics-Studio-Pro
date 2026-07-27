@@ -1,0 +1,12 @@
+Broadcast Graphics Live v0.8.13-alpha — Development Version 402
+
+Fix applied:
+- src/editor/title-assets.h: std::clamp<double>(static_cast<double>(foreground.alphaF()), 0.0, 1.0)
+
+Reason:
+- QColor::alphaF() is qreal and MSVC saw mixed float/double clamp arguments, making template deduction ambiguous.
+- Explicit double template/type conversion makes all three std::clamp arguments identical.
+
+Static checks:
+- Development version metadata synchronized to 402.
+- No remaining ambiguous clamp call for foreground.alphaF().

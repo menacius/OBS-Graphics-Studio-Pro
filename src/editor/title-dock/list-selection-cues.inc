@@ -1531,7 +1531,13 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     if (row < 0 || row >= (int)title->live_text_rows.size())
         return false;
 
-    const bool require_cached_cue = CacheManager::instance().cacheEnabled() &&
+    /* An uncue releases the row that is already on Program; it never needs a
+     * new prerender. Sending it through the cue cache gate can leave the outro
+     * armed indefinitely (or turn the click into a delayed cue restart). */
+    const bool program_uncue_requested =
+        allow_uncue && row_is_program_active;
+    const bool require_cached_cue = !program_uncue_requested &&
+        CacheManager::instance().cacheEnabled() &&
         CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable;
     if (require_cached_cue && cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row) {
         if (selected_title)

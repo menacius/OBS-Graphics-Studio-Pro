@@ -46,6 +46,10 @@ powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
 
 The script discovers configured SDK paths, builds the plugin, stages runtime dependencies, copies locale/icon/effect data, and creates a versioned ZIP.
 
+Native plugins must be built against the ABI used by the target OBS release. The `v0.8.14-alpha` Windows validation target is OBS Studio 32.2.1 with its matching Qt runtime; reusing a binary built against an older OBS/Qt SDK is unsupported even when the plugin loader can discover it.
+
+`build-windows.ps1` resolves `Qt6Config.cmake` from the selected OBS SDK and passes that directory explicitly to CMake. When an existing build cache points to a different OBS SDK or Qt directory, the helper removes only that generated build directory and performs one full rebuild. This prevents old Qt headers, generated MOC files, WebSockets builds, and libraries from being combined with the current Qt 6.11.1 ABI.
+
 ### Linux/WSL
 
 ```powershell

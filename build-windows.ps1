@@ -329,6 +329,96 @@ if (-not (Test-ObsSdkDir $ObsSdkDir)) {
 Write-Host "Found OBS SDK: $ObsSdkDir"
 Write-Host "vcpkg manifest install root: $VcpkgInstalledDir"
 
+# Resolve Qt from the same OBS dependency bundle. Reusing a CMake cache after
+# the OBS SDK changes can otherwise mix headers, moc output and libraries from
+# two Qt ABIs (for example Qt 6.8.3 and Qt 6.11.1).
+$Qt6ConfigCandidates = @(
+    (Join-Path $ObsSdkDir "lib\cmake\Qt6\Qt6Config.cmake"),
+    (Join-Path $ObsSdkDir "cmake\Qt6\Qt6Config.cmake"),
+    (Join-Path $ObsSdkDir "share\cmake\Qt6\Qt6Config.cmake"),
+    (Join-Path $ObsSdkDir "lib64\cmake\Qt6\Qt6Config.cmake")
+)
+$Qt6ConfigPath = $Qt6ConfigCandidates |
+    Where-Object { Test-Path -LiteralPath $_ } |
+    Select-Object -First 1
+if (-not $Qt6ConfigPath) {
+    Write-Error "Qt6Config.cmake was not found inside the selected OBS SDK: $ObsSdkDir"
+    exit 1
+}
+$Qt6Dir = Split-Path -Parent $Qt6ConfigPath
+$QtVersion = "unknown"
+$QtVersionImpl = Join-Path $Qt6Dir "Qt6ConfigVersionImpl.cmake"
+if (Test-Path -LiteralPath $QtVersionImpl) {
+    $QtVersionText = Get-Content -Raw -LiteralPath $QtVersionImpl
+    $QtVersionMatch = [regex]::Match(
+        $QtVersionText,
+        '(?im)^\s*set\s*\(\s*PACKAGE_VERSION\s+"([^"]+)"\s*\)'
+    )
+    if ($QtVersionMatch.Success) {
+        $QtVersion = $QtVersionMatch.Groups[1].Value
+    }
+}
+Write-Host "Found Qt: $QtVersion at $Qt6Dir"
+
+function Get-CMakeCachePathValue {
+    param(
+        [string]$CachePath,
+        [string]$VariableName
+    )
+
+    if (-not (Test-Path -LiteralPath $CachePath)) {
+        return ""
+    }
+    $CacheText = Get-Content -Raw -LiteralPath $CachePath
+    $Match = [regex]::Match(
+        $CacheText,
+        '(?im)^' + [regex]::Escape($VariableName) + ':[^=]*=(.*)$'
+    )
+    if (-not $Match.Success) {
+        return ""
+    }
+    return $Match.Groups[1].Value.Trim()
+}
+
+function Test-SameFullPath {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or
+        [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+    return [IO.Path]::GetFullPath($Left).Equals(
+        [IO.Path]::GetFullPath($Right),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+$CMakeCachePath = Join-Path $BuildDir "CMakeCache.txt"
+if (Test-Path -LiteralPath $CMakeCachePath) {
+    $CachedObsSdkDir = Get-CMakeCachePathValue -CachePath $CMakeCachePath -VariableName "OBS_SDK_DIR"
+    $CachedQt6Dir = Get-CMakeCachePathValue -CachePath $CMakeCachePath -VariableName "Qt6_DIR"
+    $SdkChanged = -not (Test-SameFullPath -Left $CachedObsSdkDir -Right $ObsSdkDir)
+    $QtChanged = -not (Test-SameFullPath -Left $CachedQt6Dir -Right $Qt6Dir)
+
+    if ($SdkChanged -or $QtChanged) {
+        $ResolvedBuildDir = [IO.Path]::GetFullPath($BuildDir)
+        $ResolvedScriptDir = [IO.Path]::GetFullPath($ScriptDir)
+        if ($ResolvedBuildDir -eq $ResolvedScriptDir -or
+            $ResolvedBuildDir -eq [IO.Path]::GetPathRoot($ResolvedBuildDir)) {
+            Write-Error "Refusing to reset unsafe build path: $ResolvedBuildDir"
+            exit 1
+        }
+        Write-Host "OBS/Qt ABI changed; resetting generated build directory:"
+        Write-Host "  cached OBS SDK: $CachedObsSdkDir"
+        Write-Host "  selected OBS SDK: $ObsSdkDir"
+        Write-Host "  cached Qt: $CachedQt6Dir"
+        Write-Host "  selected Qt: $Qt6Dir"
+        Remove-Item -Recurse -Force -LiteralPath $ResolvedBuildDir
+    }
+}
+
 # 4. Configure CMake
 Write-Host "`n=== Configuring CMake ==="
 $CmakeArgs = @(
@@ -339,6 +429,7 @@ $CmakeArgs = @(
     "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet",
     "-DVCPKG_INSTALLED_DIR=$($VcpkgInstalledDir.Replace('\', '/'))",
     "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))",
+    "-DQt6_DIR=$($Qt6Dir.Replace('\', '/'))",
     "-DOBS_BGS_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 )
 & cmake @CmakeArgs
@@ -466,9 +557,9 @@ if ($CopiedCount -eq 0) {
 
 $ExpectedDlls = @(
     $PluginDllName,
-    "cairo.dll",
-    "pango-1.0.dll",
-    "pangocairo-1.0.dll"
+    "cairo-2.dll",
+    "pango-1.0-0.dll",
+    "pangocairo-1.0-0.dll"
 )
 $MissingExpectedDlls = @()
 foreach ($Dll in $ExpectedDlls) {
@@ -527,5 +618,4 @@ if (-not $SkipInstall) {
 if (-not $SkipPackage) {
     Write-Host "Distribution ZIP: $PackageZipPath"
 }
-Write-Host "`n=== Broadcast Graphics Live built, packaged, and installed successfully! ==="
-
+Write-Host "`n=== Broadcast Graphics Live build workflow completed successfully! ==="

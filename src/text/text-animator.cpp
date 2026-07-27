@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <deque>
+#include <numeric>
 #include <unordered_map>
 #include <regex>
 #include <sstream>
@@ -182,11 +183,37 @@ size_t unit_index_for_cluster(const std::vector<TextAnimatorUnitRange> &units,
 {
     for (size_t i = 0; i < units.size(); ++i) {
         const auto &unit = units[i];
-        if (cluster_index >= unit.cluster_begin &&
-            cluster_index < unit.cluster_begin + unit.cluster_count)
+        const bool explicit_member = !unit.cluster_indices.empty() &&
+            std::find(unit.cluster_indices.begin(), unit.cluster_indices.end(),
+                      cluster_index) != unit.cluster_indices.end();
+        const bool contiguous_member = unit.cluster_indices.empty() &&
+            cluster_index >= unit.cluster_begin &&
+            cluster_index < unit.cluster_begin + unit.cluster_count;
+        if (explicit_member || contiguous_member)
             return i;
     }
     return units.size();
+}
+
+std::vector<size_t> unit_cluster_indices(const TextAnimatorUnitRange &unit,
+                                         size_t cluster_limit)
+{
+    if (!unit.cluster_indices.empty()) {
+        std::vector<size_t> result;
+        result.reserve(unit.cluster_indices.size());
+        for (size_t index : unit.cluster_indices) {
+            if (index < cluster_limit)
+                result.push_back(index);
+        }
+        return result;
+    }
+    const size_t begin = std::min(unit.cluster_begin, cluster_limit);
+    const size_t end = std::min(begin + unit.cluster_count, cluster_limit);
+    std::vector<size_t> result;
+    result.reserve(end - begin);
+    for (size_t index = begin; index < end; ++index)
+        result.push_back(index);
+    return result;
 }
 
 double smoothstep(double edge0, double edge1, double x)
@@ -729,34 +756,68 @@ TextAnimatorUnitMap build_text_animator_unit_map(const TextLayoutData &layout)
         }
     }
 
-    /* Words are built from shaped clusters, never raw code units. Spaces are
-     * separators; punctuation remains attached to the adjacent visible word. */
+    std::vector<size_t> logical_clusters(layout.clusters.size());
+    std::iota(logical_clusters.begin(), logical_clusters.end(), size_t{0});
+    std::stable_sort(
+        logical_clusters.begin(), logical_clusters.end(),
+        [&](size_t left, size_t right) {
+            const TextLayoutCluster &a = layout.clusters[left];
+            const TextLayoutCluster &b = layout.clusters[right];
+            if (a.line_index != b.line_index)
+                return a.line_index < b.line_index;
+            if (a.byte_start != b.byte_start)
+                return a.byte_start < b.byte_start;
+            if (a.x != b.x)
+                return a.x < b.x;
+            return left < right;
+        });
+
+    /* Words are built in logical reading order from shaped clusters, never
+     * raw code units. A visual-line boundary is also a separator: layout
+     * engines are allowed to omit the wrapping space/newline cluster. */
     bool in_word = false;
     TextAnimatorUnitRange current;
-    for (size_t i = 0; i < map.graphemes.size(); ++i) {
-        const auto &cluster = map.graphemes[i];
+    uint32_t current_line = 0;
+    const auto finish_word = [&]() {
+        if (!in_word)
+            return;
+        current.source_index = map.words.size();
+        current.cluster_count = current.cluster_indices.size();
+        map.words.push_back(current);
+        in_word = false;
+    };
+    for (size_t cluster_index : logical_clusters) {
+        const auto &cluster = map.graphemes[cluster_index];
+        const uint32_t line = layout.clusters[cluster_index].line_index;
+        if (in_word && line != current_line)
+            finish_word();
         if (cluster.whitespace) {
             if (in_word) {
-                current.source_index = map.words.size();
-                map.words.push_back(current);
-                in_word = false;
+                finish_word();
             }
             continue;
         }
         if (!in_word) {
             current = cluster;
-            current.cluster_begin = i;
+            current.cluster_begin = cluster_index;
             current.cluster_count = 1;
+            current.cluster_indices = {cluster_index};
+            current_line = line;
             in_word = true;
         } else {
-            current.byte_length = cluster.byte_start + cluster.byte_length - current.byte_start;
-            current.cluster_count = i - current.cluster_begin + 1;
+            const size_t byte_end = std::max(
+                current.byte_start + current.byte_length,
+                cluster.byte_start + cluster.byte_length);
+            current.byte_start = std::min(current.byte_start,
+                                          cluster.byte_start);
+            current.byte_length = byte_end - current.byte_start;
+            current.cluster_begin = std::min(current.cluster_begin,
+                                             cluster_index);
+            current.cluster_indices.push_back(cluster_index);
+            current.cluster_count = current.cluster_indices.size();
         }
     }
-    if (in_word) {
-        current.source_index = map.words.size();
-        map.words.push_back(current);
-    }
+    finish_word();
 
     /* Legacy BGL sentence transitions grouped shaped clusters until sentence
      * punctuation or a hard line break. Keep the grouping Unicode-safe while
@@ -777,17 +838,25 @@ TextAnimatorUnitMap build_text_animator_unit_map(const TextLayoutData &layout)
         }
         return false;
     };
-    for (size_t i = 0; i < map.graphemes.size(); ++i) {
-        const auto &cluster = map.graphemes[i];
+    for (size_t cluster_index : logical_clusters) {
+        const auto &cluster = map.graphemes[cluster_index];
         if (!in_sentence) {
             sentence = cluster;
-            sentence.cluster_begin = i;
+            sentence.cluster_begin = cluster_index;
             sentence.cluster_count = 1;
+            sentence.cluster_indices = {cluster_index};
             in_sentence = true;
         } else {
-            sentence.byte_length = cluster.byte_start + cluster.byte_length -
-                                   sentence.byte_start;
-            sentence.cluster_count = i - sentence.cluster_begin + 1;
+            const size_t byte_end = std::max(
+                sentence.byte_start + sentence.byte_length,
+                cluster.byte_start + cluster.byte_length);
+            sentence.byte_start = std::min(sentence.byte_start,
+                                           cluster.byte_start);
+            sentence.byte_length = byte_end - sentence.byte_start;
+            sentence.cluster_begin = std::min(sentence.cluster_begin,
+                                              cluster_index);
+            sentence.cluster_indices.push_back(cluster_index);
+            sentence.cluster_count = sentence.cluster_indices.size();
             /* A sentence may begin with the whitespace/newline that followed
              * the preceding terminator. Treat the aggregate unit as whitespace
              * only when every shaped cluster in it is whitespace; otherwise
@@ -928,6 +997,17 @@ double evaluate_text_selector_for_cluster(const TextSelector &selector,
                     return mix64(static_cast<uint64_t>(selector.random_seed) ^ lhs) <
                            mix64(static_cast<uint64_t>(selector.random_seed) ^ rhs);
                 });
+        } else {
+            /* Animator order is text order, not backend run-allocation order.
+             * Mixed font sizes can produce QGlyphRuns in a different internal
+             * sequence even on one visual line. */
+            std::stable_sort(
+                ordered_units.begin(), ordered_units.end(),
+                [&](size_t lhs, size_t rhs) {
+                    if (units[lhs].byte_start != units[rhs].byte_start)
+                        return units[lhs].byte_start < units[rhs].byte_start;
+                    return units[lhs].source_index < units[rhs].source_index;
+                });
         }
         auto found = std::find(ordered_units.begin(), ordered_units.end(),
                                unit_index);
@@ -1023,29 +1103,125 @@ bool text_animator_unit_bounds(const TextLayoutData &layout,
                                const TextAnimatorUnitMap &map,
                                TextAnimatorUnit unit,
                                size_t cluster_index,
+                               bool restrict_to_cluster_line,
                                double &x0, double &y0,
                                double &x1, double &y1)
 {
+    if (cluster_index >= layout.clusters.size())
+        return false;
     const auto &units = map.units(unit);
     const size_t index = unit_index_for_cluster(units, cluster_index);
     if (index >= units.size())
         return false;
     const TextAnimatorUnitRange &range = units[index];
-    const size_t begin = std::min(range.cluster_begin, layout.clusters.size());
-    const size_t end = std::min(begin + range.cluster_count,
-                                layout.clusters.size());
-    if (begin >= end)
+    const std::vector<size_t> cluster_indices =
+        unit_cluster_indices(range, layout.clusters.size());
+    if (cluster_indices.empty())
         return false;
+    const uint32_t target_line = layout.clusters[cluster_index].line_index;
     x0 = y0 = std::numeric_limits<double>::max();
     x1 = y1 = std::numeric_limits<double>::lowest();
-    for (size_t i = begin; i < end; ++i) {
+    for (size_t i : cluster_indices) {
         const TextLayoutCluster &cluster = layout.clusters[i];
+        if (restrict_to_cluster_line && cluster.line_index != target_line)
+            continue;
         x0 = std::min(x0, static_cast<double>(cluster.x));
         y0 = std::min(y0, static_cast<double>(cluster.y));
         x1 = std::max(x1, static_cast<double>(cluster.x + cluster.width));
         y1 = std::max(y1, static_cast<double>(cluster.y + cluster.height));
     }
     return x1 > x0 && y1 > y0;
+}
+
+bool text_animator_unit_ink_bounds(const TextLayoutData &layout,
+                                   const TextAnimatorUnitMap &map,
+                                   TextAnimatorUnit unit,
+                                   size_t cluster_index,
+                                   bool restrict_to_cluster_line,
+                                   double &x0, double &y0,
+                                   double &x1, double &y1)
+{
+    if (cluster_index >= layout.clusters.size())
+        return false;
+    const auto &units = map.units(unit);
+    const size_t index = unit_index_for_cluster(units, cluster_index);
+    if (index >= units.size())
+        return false;
+    const TextAnimatorUnitRange &range = units[index];
+    const std::vector<size_t> cluster_indices =
+        unit_cluster_indices(range, layout.clusters.size());
+    const uint32_t target_line = layout.clusters[cluster_index].line_index;
+    x0 = y0 = std::numeric_limits<double>::max();
+    x1 = y1 = std::numeric_limits<double>::lowest();
+    bool found = false;
+    for (size_t i : cluster_indices) {
+        const TextLayoutCluster &cluster = layout.clusters[i];
+        if (restrict_to_cluster_line && cluster.line_index != target_line)
+            continue;
+        const size_t glyph_begin =
+            std::min<size_t>(cluster.glyph_begin, layout.glyphs.size());
+        const size_t glyph_end = std::min(
+            glyph_begin + cluster.glyph_count, layout.glyphs.size());
+        for (size_t glyph_index = glyph_begin;
+             glyph_index < glyph_end; ++glyph_index) {
+            const TextLayoutGlyph &glyph = layout.glyphs[glyph_index];
+            if (glyph.cluster_index != i ||
+                glyph.ink_width <= 0.0f || glyph.ink_height <= 0.0f) {
+                continue;
+            }
+            x0 = std::min(x0, static_cast<double>(glyph.ink_x));
+            y0 = std::min(y0, static_cast<double>(glyph.ink_y));
+            x1 = std::max(
+                x1, static_cast<double>(glyph.ink_x + glyph.ink_width));
+            y1 = std::max(
+                y1, static_cast<double>(glyph.ink_y + glyph.ink_height));
+            found = true;
+        }
+    }
+    return found && x1 > x0 && y1 > y0;
+}
+
+void extend_clipped_position_to_hide_ink(
+    TextAnimatorClusterState &state, const TextAnimator &animator,
+    double animator_time, double influence,
+    double clip_x0, double clip_y0, double clip_x1, double clip_y1,
+    double ink_x0, double ink_y0, double ink_x1, double ink_y1)
+{
+    if (animator.blend_mode != TextAnimatorBlendMode::Add ||
+        influence <= 0.0) {
+        return;
+    }
+
+    /* Crop-enabled slides must finish completely outside their stationary
+     * unit bound. A single authored pixel offset is insufficient when a rich
+     * textbox contains runs with different font sizes. Preserve that offset
+     * as the minimum travel, and add only the per-unit distance needed to move
+     * the actual shaped ink beyond the relevant crop edge. */
+    constexpr double edge_guard = 1.0;
+    for (const TextAnimatorProperty &property : animator.properties) {
+        if (!property.enabled ||
+            property.type != TextAnimatorPropertyType::Position) {
+            continue;
+        }
+        const double authored_x = property.value.evaluate(animator_time);
+        const double authored_y = property.secondary.evaluate(animator_time);
+        if (std::abs(authored_x) > 1.0e-9) {
+            const double required = authored_x > 0.0
+                ? clip_x1 - ink_x0 + edge_guard
+                : ink_x1 - clip_x0 + edge_guard;
+            const double extra =
+                std::max(0.0, required - std::abs(authored_x));
+            state.position_x += std::copysign(extra, authored_x) * influence;
+        }
+        if (std::abs(authored_y) > 1.0e-9) {
+            const double required = authored_y > 0.0
+                ? clip_y1 - ink_y0 + edge_guard
+                : ink_y1 - clip_y0 + edge_guard;
+            const double extra =
+                std::max(0.0, required - std::abs(authored_y));
+            state.position_y += std::copysign(extra, authored_y) * influence;
+        }
+    }
 }
 } // namespace
 
@@ -1101,7 +1277,8 @@ TextAnimatorEvaluation evaluate_text_animators(const TextAnimatorStack &stack,
                 TextAnimatorClusterState &state = result.clusters[cluster_index];
                 double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
                 if (text_animator_unit_bounds(layout, map, animator.granularity,
-                                              cluster_index, x0, y0, x1, y1)) {
+                                              cluster_index, false,
+                                              x0, y0, x1, y1)) {
                     /* Stack order remains deterministic: when multiple grouped
                      * transforms target one cluster, the later animator owns
                      * the common origin used by the flattened compositor. */
@@ -1110,11 +1287,42 @@ TextAnimatorEvaluation evaluate_text_animators(const TextAnimatorStack &stack,
                     state.transform_origin_y = (y0 + y1) * 0.5;
                 }
             }
+            if (animator.clip_to_unit_bounds) {
+                TextAnimatorClusterState &state = result.clusters[cluster_index];
+                double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+                if (text_animator_unit_bounds(layout, map, animator.granularity,
+                                              cluster_index, true,
+                                              x0, y0, x1, y1)) {
+                    state.has_unit_clip_bounds = true;
+                    state.unit_clip_x0 = x0;
+                    state.unit_clip_y0 = y0;
+                    state.unit_clip_x1 = x1;
+                    state.unit_clip_y1 = y1;
+                    double ink_x0 = x0, ink_y0 = y0;
+                    double ink_x1 = x1, ink_y1 = y1;
+                    double shaped_x0 = 0.0, shaped_y0 = 0.0;
+                    double shaped_x1 = 0.0, shaped_y1 = 0.0;
+                    if (text_animator_unit_ink_bounds(
+                            layout, map, animator.granularity, cluster_index,
+                            true, shaped_x0, shaped_y0,
+                            shaped_x1, shaped_y1)) {
+                        ink_x0 = shaped_x0;
+                        ink_y0 = shaped_y0;
+                        ink_x1 = shaped_x1;
+                        ink_y1 = shaped_y1;
+                    }
+                    extend_clipped_position_to_hide_ink(
+                        state, animator, animator_time, influence,
+                        x0, y0, x1, y1,
+                        ink_x0, ink_y0, ink_x1, ink_y1);
+                }
+            }
             if (directional_reveal) {
                 TextAnimatorClusterState &state = result.clusters[cluster_index];
                 double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
                 if (text_animator_unit_bounds(layout, map, animator.granularity,
-                                              cluster_index, x0, y0, x1, y1)) {
+                                              cluster_index, false,
+                                              x0, y0, x1, y1)) {
                     state.has_reveal_bounds = true;
                     state.reveal_x0 = x0; state.reveal_y0 = y0;
                     state.reveal_x1 = x1; state.reveal_y1 = y1;
@@ -1306,6 +1514,7 @@ uint64_t text_animator_stack_signature(const TextAnimatorStack &stack)
         hash = hash_value(hash, animator.enabled); hash = hash_value(hash, animator.blend_mode);
         hash = hash_value(hash, animator.granularity);
         hash = hash_value(hash, animator.transform_as_unit);
+        hash = hash_value(hash, animator.clip_to_unit_bounds);
         hash = hash_value(hash, animator.change_behaviour);
         hash = hash_value(hash, animator.playback_role); hash = hash_value(hash, animator.local_time_offset);
         hash = hash_string(hash, animator.preset_id); hash = hash_value(hash, animator.preset_schema_version);

@@ -278,6 +278,7 @@ json animator_to_json(const TextAnimator &animator)
             {"expanded", animator.expanded}, {"blend_mode", (int)animator.blend_mode},
             {"granularity", (int)animator.granularity},
             {"transform_as_unit", animator.transform_as_unit},
+            {"clip_to_unit_bounds", animator.clip_to_unit_bounds},
             {"change_behaviour", (int)animator.change_behaviour},
             {"playback_role", (int)animator.playback_role},
             {"local_time_offset", animator.local_time_offset},
@@ -298,6 +299,7 @@ TextAnimator animator_from_json(const json &object)
     animator.blend_mode = (TextAnimatorBlendMode)integer(object, "blend_mode", 0, 0, (int)TextAnimatorBlendMode::Multiply);
     animator.granularity = (TextAnimatorUnit)integer(object, "granularity", 0, 0, (int)TextAnimatorUnit::Sentence);
     animator.transform_as_unit = boolean(object, "transform_as_unit", false);
+    animator.clip_to_unit_bounds = boolean(object, "clip_to_unit_bounds", false);
     animator.change_behaviour = (TextChangeBehaviour)integer(object, "change_behaviour", (int)TextChangeBehaviour::ReevaluateFullText, 0, (int)TextChangeBehaviour::ReevaluateFullText);
     animator.playback_role = (TextAnimatorPlaybackRole)integer(object, "playback_role", 0, 0, (int)TextAnimatorPlaybackRole::Continuous);
     animator.local_time_offset = finite_number(object, "local_time_offset", 0.0, -kMaxTime, kMaxTime);

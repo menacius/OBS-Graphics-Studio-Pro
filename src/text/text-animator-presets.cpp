@@ -46,6 +46,9 @@ uint64_t text_transition_binding_signature(const LayerTransition &transition,
     hash = transition_hash_value(hash, transition.stagger);
     hash = transition_hash_value(hash, transition.softness);
     hash = transition_hash_value(hash, transition.reverse_order);
+    hash = transition_hash_value(hash, transition.text_slide_fade);
+    hash = transition_hash_value(
+        hash, transition.text_slide_crop_to_unit_bounds);
     const double layer_duration = std::max(1.0 / 240.0,
                                            layer_out_time - layer_in_time);
     const double effective_duration = std::clamp(
@@ -78,15 +81,6 @@ Keyframe key(double time, double value, EasingType easing)
             ? TemporalInterpolationMode::Linear
             : TemporalInterpolationMode::AutoBezier;
     return result;
-}
-
-EasingType reverse_easing(EasingType easing)
-{
-    switch (easing) {
-    case EasingType::EaseIn: return EasingType::EaseOut;
-    case EasingType::EaseOut: return EasingType::EaseIn;
-    default: return easing;
-    }
 }
 
 TextAnimatorProperty property(TextAnimatorPropertyType type,
@@ -137,26 +131,12 @@ TextSelector progressive_selector(const std::string &seed,
         ? TextStaggerMode::Exit : TextStaggerMode::Entrance;
 
     const double safe_duration = std::max(1.0 / 240.0, duration);
-    const EasingType legacy_easing =
-        easing == EasingType::Bezier ? EasingType::EaseInOut : easing;
-    const EasingType completion_easing = exit_animation
-        ? reverse_easing(legacy_easing) : legacy_easing;
     selector.completion.static_value = 0.0;
-    if (exit_animation && legacy_easing == EasingType::Hold) {
-        /* Historical Hold exits are visible at the exact out-transition start
-         * and jump to hidden immediately afterwards. Represent that
-         * frame-accurately in the shared keyframe model without a runtime
-         * special-case renderer. */
-        const double jump = std::min(safe_duration * 0.5, 1.0e-9);
-        selector.completion.keyframes = {
-            key(timeline_start, 0.0, EasingType::Linear),
-            key(timeline_start + jump, 100.0, EasingType::Hold),
-            key(timeline_start + safe_duration, 100.0, EasingType::Hold)};
-    } else {
-        selector.completion.keyframes = {
-            key(timeline_start, 0.0, completion_easing),
-            key(timeline_start + safe_duration, 100.0, completion_easing)};
-    }
+    /* Completion is only the shared timeline clock. Easing belongs to the
+     * local phase calculated after each Animate By unit's stagger delay. */
+    selector.completion.keyframes = {
+        key(timeline_start, 0.0, EasingType::Linear),
+        key(timeline_start + safe_duration, 100.0, EasingType::Linear)};
     return selector;
 }
 
@@ -180,8 +160,10 @@ void add_transition_properties(TextAnimator &animator,
         }
         animator.properties.push_back(property(TextAnimatorPropertyType::Position,
                                                "Position", x, y));
-        animator.properties.push_back(property(TextAnimatorPropertyType::Opacity,
-                                               "Opacity", 0.0));
+        if (transition.text_slide_fade) {
+            animator.properties.push_back(property(
+                TextAnimatorPropertyType::Opacity, "Opacity", 0.0));
+        }
         break;
     }
     case LayerTransitionType::TextScale:
@@ -223,8 +205,10 @@ void add_transition_properties(TextAnimator &animator,
                                                "Position", x, y));
         animator.properties.push_back(property(TextAnimatorPropertyType::Blur,
                                                "Blur", transition.blur_amount));
-        animator.properties.push_back(property(TextAnimatorPropertyType::Opacity,
-                                               "Opacity", 0.0));
+        if (transition.text_slide_fade) {
+            animator.properties.push_back(property(
+                TextAnimatorPropertyType::Opacity, "Opacity", 0.0));
+        }
         break;
     }
     default:
@@ -302,16 +286,24 @@ LayerTransition recovered_transition_from_v1_animator(
     if (selector) {
         transition.reverse_order =
             selector->direction == TextSelectorDirection::Reverse;
-        transition.stagger = std::clamp(
-            1.0 - selector->smoothness.static_value / 100.0, 0.0, 0.95);
-        const AnimatedProperty &track =
-            transition.edge == LayerTransitionEdge::Out
-                ? selector->end : selector->start;
+        const bool staggered =
+            selector->type == TextSelectorType::Staggered;
+        transition.stagger = staggered
+            ? std::clamp(
+                  selector->stagger_percent.static_value / 100.0, 0.0, 0.95)
+            : std::clamp(
+                  1.0 - selector->smoothness.static_value / 100.0, 0.0, 0.95);
+        const AnimatedProperty &track = staggered
+            ? selector->completion
+            : (transition.edge == LayerTransitionEdge::Out
+                   ? selector->end : selector->start);
         if (track.keyframes.size() >= 2) {
             transition.duration = std::max(
                 1.0 / 240.0,
                 track.keyframes.back().time - track.keyframes.front().time);
-            transition.easing = track.keyframes.front().easing;
+            transition.easing = staggered
+                ? selector->unit_easing
+                : track.keyframes.front().easing;
         }
     }
     const double layer_duration =
@@ -339,6 +331,13 @@ LayerTransition recovered_transition_from_v1_animator(
     if (const TextAnimatorProperty *blur =
             find_property(animator, TextAnimatorPropertyType::Blur))
         transition.blur_amount = std::max(0.0, blur->value.static_value);
+    if (transition.type == LayerTransitionType::TextSlide ||
+        transition.type == LayerTransitionType::TextBlurSlide) {
+        transition.text_slide_fade =
+            find_property(animator, TextAnimatorPropertyType::Opacity) != nullptr;
+        transition.text_slide_crop_to_unit_bounds =
+            animator.clip_to_unit_bounds;
+    }
     if (transition.type == LayerTransitionType::TextWipe) {
         transition.direction = LayerTransitionDirection::Left;
         if (warning) {
@@ -365,6 +364,10 @@ TextAnimator make_text_animator_from_legacy_transition(
     animator.blend_mode = TextAnimatorBlendMode::Add;
     animator.granularity = unit_from_legacy(transition.unit);
     animator.transform_as_unit = true;
+    animator.clip_to_unit_bounds =
+        transition.text_slide_crop_to_unit_bounds &&
+        (transition.type == LayerTransitionType::TextSlide ||
+         transition.type == LayerTransitionType::TextBlurSlide);
     animator.change_behaviour = TextChangeBehaviour::ReevaluateFullText;
     animator.playback_role = transition.edge == LayerTransitionEdge::Out
         ? TextAnimatorPlaybackRole::Exit : TextAnimatorPlaybackRole::Entrance;

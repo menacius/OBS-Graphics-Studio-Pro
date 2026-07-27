@@ -195,6 +195,86 @@ static gs_texture_t *render_gpu_mask_graph_texture(
     const std::string &compositor_group_id,
     GpuMaskGraphPurpose purpose = GpuMaskGraphPurpose::MatteArtwork);
 
+static bool gpu_effect_is_provable_noop(const ResolvedLayerEffect &effect)
+{
+    /* Called only for built-in semantics. Custom extension shaders own their
+     * parameter interpretation and are excluded by append_resolved_effect(). */
+    constexpr float kEpsilon = 0.0001f;
+    const auto color_alpha = [](std::uint32_t argb) {
+        return static_cast<float>((argb >> 24) & 0xFFu) / 255.0f;
+    };
+    if (!effect.enabled)
+        return true;
+
+    switch (effect.type) {
+    case LayerEffectType::BackgroundColor:
+        return effect.effect_opacity <= kEpsilon &&
+               (effect.effect_stroke_width <= kEpsilon ||
+                effect.effect_stroke_opacity <= kEpsilon ||
+                color_alpha(effect.effect_stroke_color) <= kEpsilon);
+    case LayerEffectType::Outline:
+        /* The current Outline shader intentionally clamps zero width to a
+         * one-pixel sample radius, so width==0 is not an identity state. */
+        return effect.effect_opacity <= kEpsilon ||
+               color_alpha(effect.effect_color) <= kEpsilon;
+    case LayerEffectType::DropShadow:
+    case LayerEffectType::LongShadow:
+    case LayerEffectType::Glow:
+    case LayerEffectType::InnerGlow:
+    case LayerEffectType::InnerShadow:
+    case LayerEffectType::Bloom:
+    case LayerEffectType::Halation:
+    case LayerEffectType::ColorOverlay:
+        return effect.effect_opacity <= kEpsilon ||
+               color_alpha(effect.effect_color) <= kEpsilon;
+    case LayerEffectType::Glare:
+        /* Glare uses the RGB tint but not effectColor.a. Its true identity
+         * controls are opacity, amount and intensity/falloff. */
+        return effect.effect_opacity <= kEpsilon ||
+               std::abs(effect.effect_amount) <= kEpsilon ||
+               effect.effect_falloff <= kEpsilon;
+    case LayerEffectType::Blur:
+        return effect.effect_opacity <= kEpsilon ||
+               effect.effect_size <= 0.01f;
+    case LayerEffectType::BrightnessContrast:
+        return std::abs(effect.brightness) <= kEpsilon &&
+               std::abs(effect.contrast - 1.0f) <= kEpsilon;
+    case LayerEffectType::Saturation:
+        return std::abs(effect.saturation - 1.0f) <= kEpsilon;
+    case LayerEffectType::Sharpen:
+    case LayerEffectType::UnsharpMask:
+    case LayerEffectType::Clarity:
+    case LayerEffectType::BilateralSharpen:
+    case LayerEffectType::Noise:
+    case LayerEffectType::Grain:
+    case LayerEffectType::RoughenEdges:
+    case LayerEffectType::LensFlare:
+    case LayerEffectType::Vignette:
+    case LayerEffectType::ChromaticAberration:
+    case LayerEffectType::Ripple:
+    case LayerEffectType::WaveWarp:
+    case LayerEffectType::Scanlines:
+        return std::abs(effect.effect_amount) <= kEpsilon ||
+               effect.effect_opacity <= kEpsilon;
+    case LayerEffectType::DirectionalBlur:
+    case LayerEffectType::RadialBlur:
+        return effect.effect_size <= kEpsilon ||
+               effect.effect_opacity <= kEpsilon;
+    case LayerEffectType::ZoomBlur:
+        /* The existing nine-tap kernel sums to 0.92 at zero radius. Preserve
+         * that authored result instead of treating zero radius as identity. */
+        return effect.effect_opacity <= kEpsilon;
+    case LayerEffectType::DisplacementMap:
+        return std::abs(effect.effect_amount) <= kEpsilon &&
+               std::abs(effect.effect_distance) <= kEpsilon;
+    case LayerEffectType::LightWrap:
+        return effect.effect_amount <= kEpsilon ||
+               effect.effect_opacity <= kEpsilon;
+    default:
+        return false;
+    }
+}
+
 static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session,
                                                    const Layer &layer,
                                                    double title_time,
@@ -212,6 +292,57 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     const double local_time = std::max(0.0, title_time - layer.in_time);
     struct vec4 clear;
     vec4_zero(&clear);
+
+    /* Development Version 396 effect-cache preflight: the old order resolved
+     * every animated property and entered the shader registry before checking an
+     * already valid static effect output. That CPU work
+     * occurred on every OBS draw even though no GPU pass was required. Determine
+     * cache eligibility from the authored stack first and return the resident
+     * output before any shader/extension work. */
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    const bool transition_blur_selected =
+        (execution_space_filter < 0 ||
+         execution_space_filter == static_cast<int>(LayerEffectSpace::LayerSpace)) &&
+        transition.active && transition.blur > 0.01;
+    bool has_selected_effect = transition_blur_selected;
+    bool has_source_dependency = false;
+    for (const LayerEffect &effect_config : layer.effects) {
+        if (!eval_effect_enabled(effect_config, local_time) ||
+            effect_config.type == LayerEffectType::MotionBlur ||
+            effect_config.type == LayerEffectType::TrimPaths ||
+            (execution_space_filter >= 0 &&
+             static_cast<int>(effect_execution_space(effect_config)) !=
+                 execution_space_filter) ||
+            (adjustment_only && !effect_config.affect_layers_behind) ||
+            (!adjustment_only && effect_config.affect_layers_behind))
+            continue;
+        has_selected_effect = true;
+        has_source_dependency = has_source_dependency ||
+            effect_config.type == LayerEffectType::LightWrap ||
+            effect_config.type == LayerEffectType::DisplacementMap;
+    }
+    const bool can_cache = has_selected_effect && cache_entry &&
+                           input == cache_entry->texture &&
+                           !cache_entry->key.empty() &&
+                           !has_source_dependency;
+    const std::string desired_cache_key = can_cache
+        ? cache_entry->key +
+              "|gpu-effects-v26-3d-lighting-materials-shadows-v27-per-light-source-size-shadows-v28-point-shadow-atlas-complete-3d-interactions-v29-matrix-exact-rgb24-point-shadows-v30-float32-receiver-plane-point-shadows-v31-shared-point-cube-projection-v32-distance-stable-point-shadows-v33-pcss-contact-hardening-v34-shadow-runtime-recovery-v35-stable-multiscale-poisson-shadows-v36-restored-3d-shadow-visibility-v37-signed-point-shadow-clip-depth-v38-realtime-receiver-matched-point-pcf-v39-compile-safe-receiver-matched-point-pcf-v40-async-shader-compile-progress-v41-d3d-planar-shadow-clip-v42-effect-cache-preflight-noop-elision-v43-conservative-text-shadow-alpha-min-source-size-v44-explicit-planar-basis-text-footprint-v45-close-point-text-shadow-projection-grid|" +
+              effect_layer_cache_key(nullptr, session->title, layer, title_time,
+                                     static_cast<int>(width), static_cast<int>(height),
+                                     false, false)
+        : std::string();
+    if (can_cache && cache_entry->effect_cache &&
+        cache_entry->effect_cache_key == desired_cache_key) {
+        if (gs_texture_t *cached = gs_texrender_get_texture(cache_entry->effect_cache)) {
+            cache_entry->effect_cache_last_used = ++session->effect_cache_tick;
+            bgl::perf::add(bgl::perf::Counter::EffectOutputCacheHits);
+            return cached;
+        }
+    }
+    if (can_cache)
+        bgl::perf::add(bgl::perf::Counter::EffectOutputCacheMisses);
 
     /* Keep pass state local to this invocation. Effect-stack rendering can be
      * nested (groups, mattes, scene masks and adjustment layers) and can also
@@ -244,6 +375,24 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     };
 
     auto append_resolved_effect = [&](const ResolvedLayerEffect &resolved) {
+        const std::string *extension_id = resolved.source
+            ? &resolved.source->extension_id : nullptr;
+        LayerEffectType registered_builtin_type{};
+        const bool has_extension_id = extension_id && !extension_id->empty();
+        const bool is_registered_builtin = has_extension_id &&
+            BglEffectExtensionCatalog::builtInTypeForId(
+                QString::fromStdString(*extension_id), &registered_builtin_type);
+        const bool uses_builtin_semantics = !has_extension_id || is_registered_builtin;
+
+        /* Do not allocate targets, enter the registry or bind dozens of uniforms
+         * for built-in states that are mathematically identical to the input.
+         * Custom extension semantics and ambiguous identities continue through
+         * the normal stack. Reuse the extension classification already required
+         * for shader selection, avoiding an additional catalog lookup. */
+        if (uses_builtin_semantics && gpu_effect_is_provable_noop(resolved)) {
+            bgl::perf::add(bgl::perf::Counter::EffectNoOpPassesSkipped);
+            return;
+        }
         /* Every effect whose visual construction depends on blurring uses the
          * same general separable-Gaussian shader.  Only the final composite
          * technique differs (shadow/glow/inner/bloom/blur). */
@@ -260,14 +409,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         default:
             break;
         }
-        const std::string *extension_id = resolved.source
-            ? &resolved.source->extension_id : nullptr;
-        LayerEffectType registered_builtin_type{};
-        const bool has_extension_id = extension_id && !extension_id->empty();
-        const bool is_registered_builtin = has_extension_id &&
-            BglEffectExtensionCatalog::builtInTypeForId(
-                QString::fromStdString(*extension_id), &registered_builtin_type);
-        gs_effect_t *effect = (!has_extension_id || is_registered_builtin)
+        gs_effect_t *effect = uses_builtin_semantics
             ? session_registry_effect_or_queue(
                   session, shader_type, session_effect_compile_label(shader_type))
             : session_registry_effect_or_queue(
@@ -368,11 +510,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         append_resolved_effect(resolved);
     }
 
-    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, title_time);
-    if ((execution_space_filter < 0 ||
-         execution_space_filter == static_cast<int>(LayerEffectSpace::LayerSpace)) &&
-        transition.active && transition.blur > 0.01) {
+    if (transition_blur_selected) {
         ResolvedLayerEffect transition_blur =
             make_resolved_layer_effect(LayerEffectType::Blur);
         transition_blur.enabled = true;
@@ -388,31 +526,9 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
             gs_texrender_destroy(cache_entry->effect_cache);
             cache_entry->effect_cache = nullptr;
             cache_entry->effect_cache_key.clear();
+            cache_entry->effect_cache_last_used = 0;
         }
         return input;
-    }
-
-    bool has_source_dependency = false;
-    for (std::size_t index = 0; index < pass_count; ++index) {
-        const LayerEffectType type = pass_at(index).resolved.type;
-        has_source_dependency = has_source_dependency ||
-            type == LayerEffectType::LightWrap ||
-            type == LayerEffectType::DisplacementMap;
-    }
-    const bool can_cache = cache_entry && input == cache_entry->texture &&
-                           !cache_entry->key.empty() &&
-                           !has_source_dependency;
-    const std::string desired_cache_key = can_cache
-        ? cache_entry->key +
-              "|gpu-effects-v26-3d-lighting-materials-shadows-v27-per-light-source-size-shadows-v28-point-shadow-atlas-complete-3d-interactions-v29-matrix-exact-rgb24-point-shadows-v30-float32-receiver-plane-point-shadows-v31-shared-point-cube-projection-v32-distance-stable-point-shadows-v33-pcss-contact-hardening-v34-shadow-runtime-recovery-v35-stable-multiscale-poisson-shadows-v36-restored-3d-shadow-visibility-v37-signed-point-shadow-clip-depth-v38-realtime-receiver-matched-point-pcf-v39-compile-safe-receiver-matched-point-pcf-v40-async-shader-compile-progress-v41-d3d-planar-shadow-clip|" +
-              effect_layer_cache_key(nullptr, session->title, layer, title_time,
-                                     static_cast<int>(width), static_cast<int>(height),
-                                     false, false)
-        : std::string();
-    if (can_cache && cache_entry->effect_cache &&
-        cache_entry->effect_cache_key == desired_cache_key) {
-        if (gs_texture_t *cached = gs_texrender_get_texture(cache_entry->effect_cache))
-            return cached;
     }
 
     if (can_cache && !cache_entry->effect_cache)
@@ -693,9 +809,63 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     }
 
     if (can_cache && cache_entry->effect_cache &&
-        current == gs_texrender_get_texture(cache_entry->effect_cache))
+        current == gs_texrender_get_texture(cache_entry->effect_cache)) {
         cache_entry->effect_cache_key = desired_cache_key;
+        cache_entry->effect_cache_last_used = ++session->effect_cache_tick;
+    }
     return current;
+}
+
+static quint64 gpu_transition_matte_budget(
+    const TitleGpuRenderSession *session)
+{
+    constexpr quint64 kRealtimeBudget = 64ull * 1024ull * 1024ull;
+    constexpr quint64 kOfflineBudget = 128ull * 1024ull * 1024ull;
+    return session && session->realtime_output.load(std::memory_order_relaxed)
+        ? kRealtimeBudget : kOfflineBudget;
+}
+
+static void prune_gpu_transition_matte_cache(
+    TitleGpuRenderSession *session, const std::string &protected_key)
+{
+    constexpr std::size_t kMaximumEntries = 8;
+    if (!session)
+        return;
+    quint64 bytes = 0;
+    for (const auto &cached : session->transition_matte_textures)
+        bytes += cached.second.bytes;
+    const quint64 budget = gpu_transition_matte_budget(session);
+    std::size_t evicted = 0;
+    while ((bytes > budget ||
+            session->transition_matte_textures.size() > kMaximumEntries) &&
+           !session->transition_matte_textures.empty()) {
+        auto victim = session->transition_matte_textures.end();
+        for (auto it = session->transition_matte_textures.begin();
+             it != session->transition_matte_textures.end(); ++it) {
+            if (it->first == protected_key)
+                continue;
+            if (victim == session->transition_matte_textures.end() ||
+                it->second.last_used < victim->second.last_used)
+                victim = it;
+        }
+        if (victim == session->transition_matte_textures.end())
+            break;
+        if (victim->second.texture)
+            gs_texture_destroy(victim->second.texture);
+        bytes -= std::min(bytes, victim->second.bytes);
+        session->transition_matte_textures.erase(victim);
+        ++evicted;
+    }
+    session->transition_matte_cache_bytes = bytes;
+    if (evicted > 0) {
+        BGL_LOG_DEBUG("GpuMemory", QStringLiteral(
+            "cache=transition-matte action=evict entries=%1 remaining=%2 bytes=%3 budget=%4")
+            .arg(static_cast<qulonglong>(evicted))
+            .arg(static_cast<qulonglong>(
+                session->transition_matte_textures.size()))
+            .arg(static_cast<qulonglong>(bytes))
+            .arg(static_cast<qulonglong>(budget)));
+    }
 }
 
 static gs_texture_t *gpu_transition_matte_texture(
@@ -711,16 +881,23 @@ static gs_texture_t *gpu_transition_matte_texture(
     auto &entry = session->transition_matte_textures[key];
     const qint64 modified = info.lastModified().toMSecsSinceEpoch();
     const qint64 size = info.size();
-    if (entry.texture && entry.modified_msecs == modified && entry.file_size == size)
+    if (entry.texture && entry.modified_msecs == modified &&
+        entry.file_size == size) {
+        entry.last_used = ++session->transition_matte_cache_tick;
+        prune_gpu_transition_matte_cache(session, key);
         return entry.texture;
+    }
 
     if (entry.texture) {
         gs_texture_destroy(entry.texture);
         entry.texture = nullptr;
+        entry.bytes = 0;
     }
     QImage upload = load_cached_layer_image(info.absoluteFilePath());
-    if (upload.isNull())
+    if (upload.isNull()) {
+        session->transition_matte_textures.erase(key);
         return nullptr;
+    }
     if (upload.format() != QImage::Format_ARGB32_Premultiplied)
         upload = upload.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     upload.detach();
@@ -730,12 +907,18 @@ static gs_texture_t *gpu_transition_matte_texture(
     entry.texture = gs_texture_create(
         static_cast<uint32_t>(upload.width()),
         static_cast<uint32_t>(upload.height()), GS_BGRA, 1, data, 0);
-    if (!entry.texture)
+    if (!entry.texture) {
+        session->transition_matte_textures.erase(key);
         return nullptr;
+    }
     entry.modified_msecs = modified;
     entry.file_size = size;
     entry.width = static_cast<uint32_t>(upload.width());
     entry.height = static_cast<uint32_t>(upload.height());
+    entry.bytes = static_cast<quint64>(entry.width) *
+                  static_cast<quint64>(entry.height) * 4ull;
+    entry.last_used = ++session->transition_matte_cache_tick;
+    prune_gpu_transition_matte_cache(session, key);
     return entry.texture;
 }
 
@@ -1218,7 +1401,7 @@ static bool set_gpu_layer_lighting_params(
         slot.intensity = static_cast<float>(std::max(
             0.0, light.intensity.evaluate(title_time) / 100.0)) * alpha;
         slot.source_size = static_cast<float>(std::clamp(
-            light.source_size.evaluate(title_time), 0.0, 100000.0));
+            light.source_size.evaluate(title_time), 0.1, 100000.0));
         /* Falloff start is no longer authored independently. It tracks the
          * emitter Source Size so the lit core and soft source representation
          * stay coherent. */
@@ -1291,6 +1474,12 @@ static bool set_gpu_layer_lighting_params(
             (std::string("shadowViewProj") + suffix).c_str());
         gs_eparam_t *shadow_light_position = param(
             (std::string("shadowLightPosition") + suffix).c_str());
+        gs_eparam_t *shadow_basis_right_center_x = param(
+            (std::string("shadowBasisRightCenterX") + suffix).c_str());
+        gs_eparam_t *shadow_basis_up_center_y = param(
+            (std::string("shadowBasisUpCenterY") + suffix).c_str());
+        gs_eparam_t *shadow_basis_forward = param(
+            (std::string("shadowBasisForward") + suffix).c_str());
         gs_eparam_t *shadow_near = param(
             (std::string("shadowNear") + suffix).c_str());
         gs_eparam_t *shadow_far = param(
@@ -1308,8 +1497,10 @@ static bool set_gpu_layer_lighting_params(
         if (!position_type || !direction_intensity || !color_enabled ||
             !light_params || !source_size || !falloff || !shadow_map ||
             !shadow_enabled || !shadow_kind || !shadow_view_projection ||
-            !shadow_light_position || !shadow_near || !shadow_far ||
-            !shadow_projection_span || !shadow_darkness || !shadow_bias ||
+            !shadow_light_position || !shadow_basis_right_center_x ||
+            !shadow_basis_up_center_y || !shadow_basis_forward ||
+            !shadow_near || !shadow_far || !shadow_projection_span ||
+            !shadow_darkness || !shadow_bias ||
             !shadow_softness || !shadow_texel_size)
             return false;
         const EvaluatedLightSlot &slot = light_slots[index];
@@ -1368,6 +1559,18 @@ static bool set_gpu_layer_lighting_params(
         gs_effect_set_matrix4(shadow_view_projection, &shadow_matrix);
         set_vec3(shadow_light_position,
                  session->shadow_light_positions[index]);
+        set_vec4(shadow_basis_right_center_x,
+                 session->shadow_light_rights[index].x(),
+                 session->shadow_light_rights[index].y(),
+                 session->shadow_light_rights[index].z(),
+                 session->shadow_projection_center_x[index]);
+        set_vec4(shadow_basis_up_center_y,
+                 session->shadow_light_ups[index].x(),
+                 session->shadow_light_ups[index].y(),
+                 session->shadow_light_ups[index].z(),
+                 session->shadow_projection_center_y[index]);
+        set_vec3(shadow_basis_forward,
+                 session->shadow_light_forwards[index]);
         gs_effect_set_float(shadow_near,
             session->shadow_near_plane[index]);
         gs_effect_set_float(shadow_far,

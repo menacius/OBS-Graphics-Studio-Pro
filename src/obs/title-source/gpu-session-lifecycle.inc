@@ -40,38 +40,158 @@ static void destroy_gpu_mask_cache_entry(
     }
     entry.active_target = -1;
 }
-static void prune_gpu_mask_texture_cache(TitleGpuRenderSession *session)
+static quint64 gpu_bgra_texture_bytes(gs_texture_t *texture)
 {
-    constexpr std::size_t kMaximumMaskTextures = 64;
-    if (!session || session->mask_texture_cache.size() <= kMaximumMaskTextures)
-        return;
-    const uint64_t keep_after = session->mask_texture_cache_tick > 120
-        ? session->mask_texture_cache_tick - 120 : 0;
-    for (auto it = session->mask_texture_cache.begin();
-         it != session->mask_texture_cache.end() &&
-         session->mask_texture_cache.size() > kMaximumMaskTextures;) {
-        if (it->second.last_used >= keep_after) {
-            ++it;
-            continue;
-        }
-        destroy_gpu_mask_cache_entry(it->second);
-        it = session->mask_texture_cache.erase(it);
+    if (!texture)
+        return 0;
+    return static_cast<quint64>(gs_texture_get_width(texture)) *
+           static_cast<quint64>(gs_texture_get_height(texture)) * 4ull;
+}
+
+static quint64 gpu_texrender_bgra_bytes(gs_texrender_t *target)
+{
+    return target
+        ? gpu_bgra_texture_bytes(gs_texrender_get_texture(target)) : 0;
+}
+
+static quint64 gpu_mask_cache_entry_bytes(
+    const TitleGpuRenderSession::MaskTextureCacheEntry &entry)
+{
+    quint64 bytes = 0;
+    for (gs_texrender_t *target : entry.targets)
+        bytes += gpu_texrender_bgra_bytes(target);
+    return bytes;
+}
+
+static bool gpu_mask_cache_entry_contains(
+    const TitleGpuRenderSession::MaskTextureCacheEntry &entry,
+    const gs_texture_t *texture)
+{
+    if (!texture)
+        return false;
+    for (gs_texrender_t *target : entry.targets) {
+        if (target && gs_texrender_get_texture(target) == texture)
+            return true;
     }
-    /* A project can legitimately use more than 64 masks in the same frame, so
-     * age-based pruning alone is not a hard bound.  Evict the least-recently
-     * used entries until the per-session GPU mask cache is bounded. */
-    while (session->mask_texture_cache.size() > kMaximumMaskTextures) {
+    return false;
+}
+
+static quint64 gpu_mask_cache_budget(const TitleGpuRenderSession *session)
+{
+    constexpr quint64 kRealtimeBudget = 128ull * 1024ull * 1024ull;
+    constexpr quint64 kOfflineBudget = 256ull * 1024ull * 1024ull;
+    return session && session->realtime_output.load(std::memory_order_relaxed)
+        ? kRealtimeBudget : kOfflineBudget;
+}
+
+static void prune_gpu_mask_texture_cache(
+    TitleGpuRenderSession *session, gs_texture_t *protected_texture = nullptr)
+{
+    constexpr std::size_t kMaximumMaskEntries = 64;
+    if (!session)
+        return;
+
+    quint64 bytes = 0;
+    for (const auto &cached : session->mask_texture_cache)
+        bytes += gpu_mask_cache_entry_bytes(cached.second);
+    const quint64 budget = gpu_mask_cache_budget(session);
+    std::size_t evicted = 0;
+
+    while ((bytes > budget ||
+            session->mask_texture_cache.size() > kMaximumMaskEntries) &&
+           !session->mask_texture_cache.empty()) {
         auto victim = session->mask_texture_cache.end();
         for (auto it = session->mask_texture_cache.begin();
              it != session->mask_texture_cache.end(); ++it) {
+            if (gpu_mask_cache_entry_contains(it->second, protected_texture))
+                continue;
             if (victim == session->mask_texture_cache.end() ||
                 it->second.last_used < victim->second.last_used)
                 victim = it;
         }
         if (victim == session->mask_texture_cache.end())
             break;
+        const quint64 victim_bytes =
+            gpu_mask_cache_entry_bytes(victim->second);
         destroy_gpu_mask_cache_entry(victim->second);
         session->mask_texture_cache.erase(victim);
+        bytes -= std::min(bytes, victim_bytes);
+        ++evicted;
+    }
+    session->mask_texture_cache_bytes = bytes;
+    if (evicted > 0) {
+        BGL_LOG_DEBUG("GpuMemory", QStringLiteral(
+            "cache=mask action=evict entries=%1 remaining=%2 bytes=%3 budget=%4 realtime=%5")
+            .arg(static_cast<qulonglong>(evicted))
+            .arg(static_cast<qulonglong>(session->mask_texture_cache.size()))
+            .arg(static_cast<qulonglong>(bytes))
+            .arg(static_cast<qulonglong>(budget))
+            .arg(session->realtime_output.load(std::memory_order_relaxed) ? 1 : 0));
+    }
+}
+
+static quint64 gpu_effect_cache_budget(const TitleGpuRenderSession *session)
+{
+    constexpr quint64 kRealtimeBudget = 96ull * 1024ull * 1024ull;
+    constexpr quint64 kOfflineBudget = 192ull * 1024ull * 1024ull;
+    return session && session->realtime_output.load(std::memory_order_relaxed)
+        ? kRealtimeBudget : kOfflineBudget;
+}
+
+static void prune_gpu_effect_output_cache(
+    TitleGpuRenderSession *session, gs_texture_t *protected_texture = nullptr)
+{
+    constexpr std::size_t kMaximumEffectEntries = 32;
+    if (!session)
+        return;
+
+    quint64 bytes = 0;
+    std::size_t entries = 0;
+    for (const auto &layer : session->layers) {
+        if (!layer.second.effect_cache)
+            continue;
+        bytes += gpu_texrender_bgra_bytes(layer.second.effect_cache);
+        ++entries;
+    }
+    const quint64 budget = gpu_effect_cache_budget(session);
+    std::size_t evicted = 0;
+    while ((bytes > budget || entries > kMaximumEffectEntries) &&
+           entries > 0) {
+        auto victim = session->layers.end();
+        for (auto it = session->layers.begin(); it != session->layers.end();
+             ++it) {
+            if (!it->second.effect_cache)
+                continue;
+            if (protected_texture &&
+                gs_texrender_get_texture(it->second.effect_cache) ==
+                    protected_texture)
+                continue;
+            if (victim == session->layers.end() ||
+                it->second.effect_cache_last_used <
+                    victim->second.effect_cache_last_used)
+                victim = it;
+        }
+        if (victim == session->layers.end())
+            break;
+        const quint64 victim_bytes =
+            gpu_texrender_bgra_bytes(victim->second.effect_cache);
+        gs_texrender_destroy(victim->second.effect_cache);
+        victim->second.effect_cache = nullptr;
+        victim->second.effect_cache_key.clear();
+        victim->second.effect_cache_last_used = 0;
+        bytes -= std::min(bytes, victim_bytes);
+        --entries;
+        ++evicted;
+    }
+    session->effect_cache_bytes = bytes;
+    if (evicted > 0) {
+        BGL_LOG_DEBUG("GpuMemory", QStringLiteral(
+            "cache=effect-output action=evict entries=%1 remaining=%2 bytes=%3 budget=%4 realtime=%5")
+            .arg(static_cast<qulonglong>(evicted))
+            .arg(static_cast<qulonglong>(entries))
+            .arg(static_cast<qulonglong>(bytes))
+            .arg(static_cast<qulonglong>(budget))
+            .arg(session->realtime_output.load(std::memory_order_relaxed) ? 1 : 0));
     }
 }
 static gs_texture_t *render_gpu_group_graph_texture(
@@ -2008,6 +2128,54 @@ static float point_triangle_distance_squared(const QVector3D &point,
     return (point - (a + ab * v + ac * w)).lengthSquared();
 }
 
+static gs_vertbuffer_t *create_close_point_text_shadow_grid()
+{
+    /* The shadow VS derives world position entirely from UV, so one immutable
+     * unit grid can be shared by every text-like caster. Thirty-two cells per
+     * axis keep each homogeneous triangle comfortably inside one cube-face
+     * neighbourhood even when the light is very close to a wide text box. */
+    constexpr int kDivisions = 32;
+    constexpr int kVerticesPerCell = 6;
+    const std::size_t vertex_count = static_cast<std::size_t>(
+        kDivisions * kDivisions * kVerticesPerCell);
+    gs_vb_data *data = gs_vbdata_create();
+    if (!data)
+        return nullptr;
+    data->num = vertex_count;
+    data->points = static_cast<vec3 *>(bzalloc(sizeof(vec3) * vertex_count));
+    data->num_tex = 1;
+    data->tvarray = static_cast<gs_tvertarray *>(
+        bzalloc(sizeof(gs_tvertarray)));
+    if (!data->points || !data->tvarray) {
+        gs_vbdata_destroy(data);
+        return nullptr;
+    }
+    data->tvarray[0].width = 2;
+    data->tvarray[0].array = bzalloc(sizeof(vec2) * vertex_count);
+    if (!data->tvarray[0].array) {
+        gs_vbdata_destroy(data);
+        return nullptr;
+    }
+    auto *uvs = static_cast<vec2 *>(data->tvarray[0].array);
+    std::size_t out = 0;
+    auto append_vertex = [&](float u, float v) {
+        vec3_set(&data->points[out], u, v, 0.0f);
+        vec2_set(&uvs[out], u, v);
+        ++out;
+    };
+    for (int y = 0; y < kDivisions; ++y) {
+        for (int x = 0; x < kDivisions; ++x) {
+            const float u0 = static_cast<float>(x) / kDivisions;
+            const float v0 = static_cast<float>(y) / kDivisions;
+            const float u1 = static_cast<float>(x + 1) / kDivisions;
+            const float v1 = static_cast<float>(y + 1) / kDivisions;
+            append_vertex(u0, v0); append_vertex(u1, v0); append_vertex(u1, v1);
+            append_vertex(u0, v0); append_vertex(u1, v1); append_vertex(u0, v1);
+        }
+    }
+    return gs_vertexbuffer_create(data, 0);
+}
+
 static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
                                   const Title &title, double title_time,
                                   const TitleLight &shadow_light,
@@ -2022,6 +2190,11 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
     session->shadow_bias[shadow_slot] = 0.002f;
     session->shadow_map_kind[shadow_slot] = 0;
     session->shadow_light_positions[shadow_slot] = QVector3D();
+    session->shadow_light_rights[shadow_slot] = QVector3D(1.0f, 0.0f, 0.0f);
+    session->shadow_light_ups[shadow_slot] = QVector3D(0.0f, -1.0f, 0.0f);
+    session->shadow_light_forwards[shadow_slot] = QVector3D(0.0f, 0.0f, 1.0f);
+    session->shadow_projection_center_x[shadow_slot] = 0.0f;
+    session->shadow_projection_center_y[shadow_slot] = 0.0f;
     session->shadow_near_plane[shadow_slot] = 0.01f;
     session->shadow_far_plane[shadow_slot] = 1.0f;
     session->shadow_projection_span_x[shadow_slot] = 1.0f;
@@ -2073,9 +2246,19 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
     QVector3D up(0.0f, -1.0f, 0.0f);
     if (std::abs(QVector3D::dotProduct(forward, up)) > 0.999f)
         up = QVector3D(0.0f, 0.0f, -1.0f);
+    QVector3D light_right = QVector3D::crossProduct(forward, up);
+    if (light_right.lengthSquared() <= 0.000001f)
+        light_right = QVector3D(1.0f, 0.0f, 0.0f);
+    else
+        light_right.normalize();
+    QVector3D light_up = QVector3D::crossProduct(light_right, forward);
+    if (light_up.lengthSquared() <= 0.000001f)
+        light_up = QVector3D(0.0f, -1.0f, 0.0f);
+    else
+        light_up.normalize();
     QMatrix4x4 light_view;
     light_view.setToIdentity();
-    light_view.lookAt(light_position, light_position + forward, up);
+    light_view.lookAt(light_position, light_position + forward, light_up);
 
     struct ShadowCaster {
         const Layer *layer = nullptr;
@@ -2084,6 +2267,8 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         QVector3D axis_u;
         QVector3D axis_v;
         double opacity = 1.0;
+        bool conservative_alpha = false;
+        bool subdivide_close_point_projection = false;
     };
     const bool point_shadow = shadow_light.type == TitleLightType::Point;
     std::vector<ShadowCaster> casters;
@@ -2139,13 +2324,47 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         const QVector3D p11 = world.map(QVector3D(x1, y1, 0.0f));
         scene_world_quads.push_back({p00, p10, p11, p01});
         if (casts_shadow) {
-            casters.push_back({layer, &entry, p00, p10 - p00, p01 - p00,
-                               opacity});
+            const bool text_like_caster =
+                layer->type == LayerType::Text ||
+                layer->type == LayerType::Clock ||
+                layer->type == LayerType::Ticker;
+            const QVector3D caster_axis_u = p10 - p00;
+            const QVector3D caster_axis_v = p01 - p00;
+            QVector3D caster_normal = QVector3D::crossProduct(
+                caster_axis_u, caster_axis_v);
+            float perpendicular_light_distance =
+                (light_position - p00).length();
+            if (caster_normal.lengthSquared() > 0.000001f) {
+                caster_normal.normalize();
+                perpendicular_light_distance = std::abs(
+                    QVector3D::dotProduct(light_position - p00,
+                                           caster_normal));
+            }
+            const float caster_extent = std::max(
+                caster_axis_u.length(), caster_axis_v.length());
+            const float projected_extent_ratio = caster_extent /
+                std::max(perpendicular_light_distance, 1.0f);
+            /* Below roughly 300 px, a wide text plane can cross multiple Point
+             * cube-face eye planes. A single two-triangle sprite then clips at
+             * W=0 as large diagonal wedges. Subdivide only text-like casters and
+             * only when distance/angle makes that failure possible. */
+            const bool subdivide_close_point_projection = point_shadow &&
+                text_like_caster &&
+                (perpendicular_light_distance < 384.0f ||
+                 projected_extent_ratio > 1.5f);
+            casters.push_back({layer, &entry, p00, caster_axis_u, caster_axis_v,
+                               opacity, text_like_caster,
+                               subdivide_close_point_projection});
         }
         for (const QVector3D &point : {p00, p10, p01, p11}) {
             scene_world_points.push_back(point);
-            if (!point_shadow)
-                light_space_points.push_back(light_view.map(point));
+            if (!point_shadow) {
+                const QVector3D relative = point - light_position;
+                light_space_points.push_back(QVector3D(
+                    QVector3D::dotProduct(relative, light_right),
+                    QVector3D::dotProduct(relative, light_up),
+                    -QVector3D::dotProduct(relative, forward)));
+            }
         }
     }
     if (casters.empty()) {
@@ -2219,6 +2438,8 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
     light_projection.setToIdentity();
     float projection_span_x = 1.0f;
     float projection_span_y = 1.0f;
+    float projection_center_x = 0.0f;
+    float projection_center_y = 0.0f;
     if (point_shadow) {
         light_projection.perspective(90.0f, 1.0f, near_plane, far_plane);
         projection_span_x = 2.0f;
@@ -2238,6 +2459,8 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         const float margin = std::max(4.0f, std::max(span_x, span_y) * 0.08f);
         projection_span_x = std::max(1.0f, span_x + margin * 2.0f);
         projection_span_y = std::max(1.0f, span_y + margin * 2.0f);
+        projection_center_x = (min_x + max_x) * 0.5f;
+        projection_center_y = (min_y + max_y) * 0.5f;
         light_projection.ortho(min_x - margin, max_x + margin,
                                min_y - margin, max_y + margin,
                                near_plane, far_plane);
@@ -2249,9 +2472,18 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         0.0, 1.0));
     const uint32_t authored_shadow_map_size = static_cast<uint32_t>(
         std::clamp(TitlePreferences::shadow_map_size_px(), 256, 4096));
+    /* A point light uses a 3x2 six-face atlas. Interpreting the preference as
+     * a per-face size produced 12288x8192 textures at the 4096 setting and
+     * consumed hundreds of MiB per light. Keep the authored quality scale for
+     * planar maps, while using half-resolution faces so the complete point
+     * atlas remains bounded without reducing Spot/Parallel detail. Editor draft
+     * mode applies its existing additional half-resolution reduction. */
     const uint32_t map_size = session->editor_draft
-        ? std::max<uint32_t>(256u, authored_shadow_map_size / 2u)
-        : authored_shadow_map_size;
+        ? std::max<uint32_t>(256u, authored_shadow_map_size /
+              (point_shadow ? 4u : 2u))
+        : (point_shadow
+              ? std::max<uint32_t>(256u, authored_shadow_map_size / 2u)
+              : authored_shadow_map_size);
     /* PCSS derives physical penumbra from Source Size and blocker/receiver
      * depths in the shader. Keep authored softness as a small artistic
      * texel-space addition instead of baking it at one representative depth. */
@@ -2279,6 +2511,11 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
     session->shadow_map_kind[shadow_slot] = point_shadow ? 2 :
         (shadow_light.type == TitleLightType::Parallel ? 3 : 1);
     session->shadow_light_positions[shadow_slot] = light_position;
+    session->shadow_light_rights[shadow_slot] = light_right;
+    session->shadow_light_ups[shadow_slot] = light_up;
+    session->shadow_light_forwards[shadow_slot] = forward;
+    session->shadow_projection_center_x[shadow_slot] = projection_center_x;
+    session->shadow_projection_center_y[shadow_slot] = projection_center_y;
     session->shadow_near_plane[shadow_slot] = near_plane;
     session->shadow_far_plane[shadow_slot] = far_plane;
     session->shadow_projection_span_x[shadow_slot] = projection_span_x;
@@ -2305,6 +2542,10 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         session->shadow_effect, "opacity");
     gs_eparam_t *alpha_cutoff = bgl_effect_param(
         session->shadow_effect, "alphaCutoff");
+    gs_eparam_t *conservative_alpha = bgl_effect_param(
+        session->shadow_effect, "conservativeAlpha");
+    gs_eparam_t *source_texel_size = bgl_effect_param(
+        session->shadow_effect, "sourceTexelSize");
     gs_eparam_t *point_shadow_param = bgl_effect_param(
         session->shadow_effect, "pointShadow");
     gs_eparam_t *point_face_param = bgl_effect_param(
@@ -2313,10 +2554,30 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         session->shadow_effect, "pointLightPosition");
     gs_eparam_t *point_far_param = bgl_effect_param(
         session->shadow_effect, "pointShadowFar");
+    gs_eparam_t *shadow_kind_param = bgl_effect_param(
+        session->shadow_effect, "shadowKind");
+    gs_eparam_t *shadow_right_param = bgl_effect_param(
+        session->shadow_effect, "shadowRight");
+    gs_eparam_t *shadow_up_param = bgl_effect_param(
+        session->shadow_effect, "shadowUp");
+    gs_eparam_t *shadow_forward_param = bgl_effect_param(
+        session->shadow_effect, "shadowForward");
+    gs_eparam_t *shadow_projection_center_param = bgl_effect_param(
+        session->shadow_effect, "shadowProjectionCenter");
+    gs_eparam_t *shadow_projection_span_param = bgl_effect_param(
+        session->shadow_effect, "shadowProjectionSpan");
+    gs_eparam_t *shadow_near_param = bgl_effect_param(
+        session->shadow_effect, "shadowNear");
+    gs_eparam_t *shadow_far_param = bgl_effect_param(
+        session->shadow_effect, "shadowFar");
     if (!image || !matrix || !plane_origin || !plane_axis_u ||
         !plane_axis_v || !opacity_param || !alpha_cutoff ||
+        !conservative_alpha || !source_texel_size ||
         !point_shadow_param || !point_face_param || !point_position_param ||
-        !point_far_param) {
+        !point_far_param || !shadow_kind_param || !shadow_right_param ||
+        !shadow_up_param || !shadow_forward_param ||
+        !shadow_projection_center_param || !shadow_projection_span_param ||
+        !shadow_near_param || !shadow_far_param) {
         log_shadow_failure(QStringLiteral("shadow-effect-parameters"));
         return false;
     }
@@ -2380,10 +2641,34 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
         gs_effect_set_vec3(destination, &v);
     };
     set_vec3(point_position_param, light_position);
+    set_vec3(shadow_right_param, light_right);
+    set_vec3(shadow_up_param, light_up);
+    set_vec3(shadow_forward_param, forward);
+    struct vec2 writer_projection_center;
+    vec2_set(&writer_projection_center, projection_center_x, projection_center_y);
+    gs_effect_set_vec2(shadow_projection_center_param,
+                       &writer_projection_center);
+    struct vec2 writer_projection_span;
+    vec2_set(&writer_projection_span, projection_span_x, projection_span_y);
+    gs_effect_set_vec2(shadow_projection_span_param, &writer_projection_span);
+    gs_effect_set_int(shadow_kind_param,
+        point_shadow ? 2 : (shadow_light.type == TitleLightType::Parallel ? 3 : 1));
+    gs_effect_set_float(shadow_near_param, near_plane);
+    gs_effect_set_float(shadow_far_param, far_plane);
     gs_effect_set_float(point_far_param, far_plane);
     gs_matrix_push();
     gs_matrix_identity();
     bool drew = false;
+    std::size_t subdivided_text_caster_count = 0;
+    for (const ShadowCaster &caster : casters) {
+        if (caster.subdivide_close_point_projection)
+            ++subdivided_text_caster_count;
+    }
+    if (subdivided_text_caster_count > 0 &&
+        !session->close_point_text_shadow_grid) {
+        session->close_point_text_shadow_grid =
+            create_close_point_text_shadow_grid();
+    }
     auto draw_casters = [&]() {
         for (const ShadowCaster &caster : casters) {
             if (!caster.entry || !caster.entry->texture)
@@ -2394,9 +2679,25 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
             set_vec3(plane_axis_v, caster.axis_v);
             gs_effect_set_float(opacity_param,
                                 static_cast<float>(caster.opacity));
+            gs_effect_set_int(conservative_alpha,
+                              caster.conservative_alpha ? 1 : 0);
+            struct vec2 texel_size;
+            vec2_set(&texel_size,
+                1.0f / static_cast<float>(std::max(1u, caster.entry->width)),
+                1.0f / static_cast<float>(std::max(1u, caster.entry->height)));
+            gs_effect_set_vec2(source_texel_size, &texel_size);
             while (gs_effect_loop(session->shadow_effect, "Draw")) {
-                gs_draw_sprite(caster.entry->texture, 0,
-                               caster.entry->width, caster.entry->height);
+                if (caster.subdivide_close_point_projection &&
+                    session->close_point_text_shadow_grid) {
+                    gs_load_vertexbuffer(
+                        session->close_point_text_shadow_grid);
+                    gs_draw(GS_TRIS, 0, 0);
+                    gs_load_vertexbuffer(nullptr);
+                } else {
+                    gs_draw_sprite(caster.entry->texture, 0,
+                                   caster.entry->width,
+                                   caster.entry->height);
+                }
                 drew = true;
             }
         }
@@ -2457,7 +2758,7 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
     } else if (!session->shadow_success_logged[shadow_slot]) {
         session->shadow_success_logged[shadow_slot] = true;
         BGL_LOG_INFO("Shadows", QStringLiteral(
-            "stage=map-build slot=%1 result=submitted light=%2 type=%3 casters=%4 receivers=%5 map=%6x%7 near=%8 far=%9 format=%10 writer=%11")
+            "stage=map-build slot=%1 result=submitted light=%2 type=%3 casters=%4 receivers=%5 map=%6x%7 near=%8 far=%9 format=%10 writer=%11 subdividedTextCasters=%12")
             .arg(static_cast<qulonglong>(shadow_slot))
             .arg(QString::fromStdString(shadow_light.name))
             .arg(static_cast<int>(shadow_light.type))
@@ -2472,7 +2773,8 @@ static bool render_gpu_shadow_map(TitleGpuRenderSession *session,
                      : QStringLiteral("R32F"))
             .arg(point_shadow
                      ? QStringLiteral("signed-face-depth")
-                     : QStringLiteral("view-projection-depth")));
+                     : QStringLiteral("view-projection-depth"))
+            .arg(static_cast<qulonglong>(subdivided_text_caster_count)));
     }
     return drew;
 }
@@ -2503,6 +2805,11 @@ static bool render_gpu_shadow_maps(TitleGpuRenderSession *session,
         session->shadow_map_height[index] = 1u;
         session->shadow_map_kind[index] = 0;
         session->shadow_light_positions[index] = QVector3D();
+        session->shadow_light_rights[index] = QVector3D(1.0f, 0.0f, 0.0f);
+        session->shadow_light_ups[index] = QVector3D(0.0f, -1.0f, 0.0f);
+        session->shadow_light_forwards[index] = QVector3D(0.0f, 0.0f, 1.0f);
+        session->shadow_projection_center_x[index] = 0.0f;
+        session->shadow_projection_center_y[index] = 0.0f;
         session->shadow_near_plane[index] = 0.01f;
         session->shadow_far_plane[index] = 1.0f;
         session->shadow_projection_span_x[index] = 1.0f;

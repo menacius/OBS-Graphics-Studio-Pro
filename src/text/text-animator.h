@@ -270,6 +270,9 @@ struct TextAnimator {
      * instead of each glyph's own centre. This is generic animator behaviour
      * and preserves historical word/sentence transition transforms. */
     bool transform_as_unit = false;
+    /* Clip before applying the animator transform, so a sliding glyph/word/
+     * sentence enters through its stationary authored unit bounds. */
+    bool clip_to_unit_bounds = false;
     TextChangeBehaviour change_behaviour = TextChangeBehaviour::ReevaluateFullText;
     TextAnimatorPlaybackRole playback_role = TextAnimatorPlaybackRole::General;
     double local_time_offset = 0.0;
@@ -301,6 +304,10 @@ struct TextAnimatorUnitRange {
     size_t cluster_count = 0;
     size_t source_index = 0;
     bool whitespace = false;
+    /* Shaping backends may emit rich-text/font runs in an order that is not
+     * logical text order. Explicit membership keeps one animator unit correct
+     * even when its clusters are not contiguous in the layout vector. */
+    std::vector<size_t> cluster_indices;
 };
 
 struct TextAnimatorUnitMap {
@@ -344,6 +351,11 @@ struct TextAnimatorClusterState {
     double reveal_y0 = 0.0;
     double reveal_x1 = 0.0;
     double reveal_y1 = 0.0;
+    bool has_unit_clip_bounds = false;
+    double unit_clip_x0 = 0.0;
+    double unit_clip_y0 = 0.0;
+    double unit_clip_x1 = 0.0;
+    double unit_clip_y1 = 0.0;
     double replacement = 0.0;
     double scramble = 0.0;
     double tracking = 0.0;

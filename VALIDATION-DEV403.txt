@@ -1,0 +1,27 @@
+Broadcast Graphics Live v0.8.13-alpha — Development Version 403
+
+Implemented changes
+- Layer-list row numbers now inherit the recalculated background-aware WindowText palette role instead of freezing a stylesheet color.
+- The 2D/3D control is recalculated from the actual composited row background. In the 2D state it uses the row foreground; the active 3D state keeps the OBS Highlight surface and a matching highlighted foreground.
+- Background-aware foreground selection now switches to the dark semantic OBS palette candidate only at relative luminance >= 0.42. Medium colors therefore retain light UI content.
+- Blend-mode dropdown entries are text-only; the repeated timeline-modes.svg item icons were removed.
+- Audio-layer waveforms and linked video audio-stream waveforms use the opposite dark/light semantic palette candidate from strip labels and layer-type icons.
+
+Static and contract checks passed
+- Development Version 403 background-aware threshold/waveform contract.
+- Development Version 401 background-aware layer UI regression contract.
+- Development Version 400 layer-type icon/color contract.
+- Development Version 372 custom layer colors contract.
+- Development Version 370 layer drop/color rows contract.
+- Development Version 368 layer-list alignment contract.
+- Title dock/list icon scope contract.
+- test-suite-manifest.json validation.
+- Modified-file trailing-whitespace check.
+
+Build validation
+- CMake compiler and feature detection completed.
+- Configure then stopped at find_package(libobs), because the available Linux environment does not contain the OBS/libobs SDK.
+- A native Windows/MSVC build was therefore not performed in this environment.
+
+Legacy test note
+- Two unrelated legacy waveform contracts were not used as acceptance criteria: they still require obsolete Development Version 249/251 metadata or an old exact source comment from Development Version 227.

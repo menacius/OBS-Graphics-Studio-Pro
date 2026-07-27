@@ -195,59 +195,6 @@ float signedDistanceAt(float2 uv)
     return (glyphAtlas.Sample(atlasSampler, uv).r - 0.5) *
            (2.0 * sdfSpread);
 }
-float fillCoverageAt(float2 uv, float aa)
-{
-    return coverageInside(signedDistanceAt(uv), aa);
-}
-float strokeCoverageAt(float2 uv, float aa, float outsideDelta,
-                       float insideDelta)
-{
-    float distanceValue = signedDistanceAt(uv);
-    return clamp(
-        coverageInside(distanceValue + strokeOutside + outsideDelta, aa) -
-        coverageInside(distanceValue - strokeInside - insideDelta, aa),
-        0.0, 1.0);
-}
-float blurredFillCoverage(float2 uv, float aa, float radius)
-{
-    float2 fullStep = atlasTexelSize * radius;
-    float2 halfStep = fullStep * 0.5;
-    float result = fillCoverageAt(uv, aa) * 0.12;
-    result += fillCoverageAt(uv + float2( halfStep.x, 0.0), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(-halfStep.x, 0.0), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(0.0,  halfStep.y), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(0.0, -halfStep.y), aa) * 0.08;
-    result += fillCoverageAt(uv + float2( halfStep.x,  halfStep.y), aa) * 0.06;
-    result += fillCoverageAt(uv + float2(-halfStep.x,  halfStep.y), aa) * 0.06;
-    result += fillCoverageAt(uv + float2( halfStep.x, -halfStep.y), aa) * 0.06;
-    result += fillCoverageAt(uv + float2(-halfStep.x, -halfStep.y), aa) * 0.06;
-    result += fillCoverageAt(uv + float2( fullStep.x, 0.0), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(-fullStep.x, 0.0), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(0.0,  fullStep.y), aa) * 0.08;
-    result += fillCoverageAt(uv + float2(0.0, -fullStep.y), aa) * 0.08;
-    return clamp(result, 0.0, 1.0);
-}
-float blurredStrokeCoverage(float2 uv, float aa, float radius,
-                            float outsideDelta, float insideDelta)
-{
-    float2 fullStep = atlasTexelSize * radius;
-    float2 halfStep = fullStep * 0.5;
-    float result = strokeCoverageAt(uv, aa, outsideDelta, insideDelta) * 0.12;
-    result += strokeCoverageAt(uv + float2( halfStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(-halfStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(0.0,  halfStep.y), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(0.0, -halfStep.y), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2( halfStep.x,  halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
-    result += strokeCoverageAt(uv + float2(-halfStep.x,  halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
-    result += strokeCoverageAt(uv + float2( halfStep.x, -halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
-    result += strokeCoverageAt(uv + float2(-halfStep.x, -halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
-    result += strokeCoverageAt(uv + float2( fullStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(-fullStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(0.0,  fullStep.y), aa, outsideDelta, insideDelta) * 0.08;
-    result += strokeCoverageAt(uv + float2(0.0, -fullStep.y), aa, outsideDelta, insideDelta) * 0.08;
-    return clamp(result, 0.0, 1.0);
-}
-
 float4 PSText(VertDataOut v) : TARGET
 {
     float signedDistance = coverageMode != 0
@@ -257,24 +204,26 @@ float4 PSText(VertDataOut v) : TARGET
     float coverageScale = max(v.atlasPixelsPerLogical, 0.125);
     float blurRadius = min(max(0.0, v.animatorData.y) * coverageScale,
                            max(0.0, sdfSpread * coverageScale - 2.0));
+    /* The previous 13-tap fill plus 13-tap stroke implementation caused the
+     * D3D shader optimiser shipped with OBS 32.2.1 to consume gigabytes and
+     * hold the global graphics context for minutes. SDF blur is represented by
+     * widening the analytic transition instead: one atlas sample, stable
+     * compile time, and continuous animator blur without a shutdown-blocking
+     * compiler job. */
+    float coverageAa = aa + blurRadius * 0.5;
     float fillCoverage = coverageMode != 0
         ? 1.0
-        : (blurRadius > 0.01
-            ? blurredFillCoverage(v.uv, aa, blurRadius)
-            : coverageInside(signedDistance, aa));
+        : coverageInside(signedDistance, coverageAa);
 
     float strokeCoverage = 0.0;
     if (coverageMode == 0 && strokeEnabled != 0 && strokeWidth > 0.0001) {
-        float strokeAa = strokeAntialias != 0 ? aa : 0.0001;
+        float strokeAa = strokeAntialias != 0 ? coverageAa : 0.0001;
         /* Text-only placement contract: outer coverage expands the SDF edge,
          * inner coverage consumes the glyph interior, and mid splits exactly. */
-        strokeCoverage = blurRadius > 0.01
-            ? blurredStrokeCoverage(v.uv, strokeAa, blurRadius,
-                                    v.animatorData.z, v.animatorData.w)
-            : clamp(
-                coverageInside(signedDistance + strokeOutside + v.animatorData.z, strokeAa) -
-                coverageInside(signedDistance - strokeInside - v.animatorData.w, strokeAa),
-                0.0, 1.0);
+        strokeCoverage = clamp(
+            coverageInside(signedDistance + strokeOutside + v.animatorData.z, strokeAa) -
+            coverageInside(signedDistance - strokeInside - v.animatorData.w, strokeAa),
+            0.0, 1.0);
     }
 
     float4 fillMaterial = gradientColor(

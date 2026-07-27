@@ -55,7 +55,7 @@ void TitleDock::stop_playlist_for_title(const std::shared_ptr<Title> &title)
     seen_store_revision_ = TitleDataStore::instance().revision();
 
     bool any_active = false;
-    for (const auto &candidate : TitleDataStore::instance().titles()) {
+    for (const auto &candidate : TitleDataStore::instance().title_snapshots()) {
         if (candidate && candidate->playlist_active) {
             any_active = true;
             break;
@@ -77,7 +77,7 @@ void TitleDock::stop_playlist_for_title(const std::shared_ptr<Title> &title)
 void TitleDock::sync_playlist_runtime_state()
 {
     bool any_active = false;
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : TitleDataStore::instance().title_snapshots()) {
         if (title && title->playlist_active) {
             any_active = true;
             break;

@@ -452,7 +452,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_light_intensity_ = make_light_spin(0.0, 100000.0, 1.0, 2);
     spn_light_intensity_->setSuffix(QStringLiteral(" %"));
     add_light_row(QStringLiteral("Intensity"), spn_light_intensity_);
-    spn_light_source_size_ = make_light_spin(0.0, 100000.0, 1.0, 2);
+    spn_light_source_size_ = make_light_spin(0.1, 100000.0, 0.1, 2);
     spn_light_source_size_->setSuffix(QStringLiteral(" px"));
     spn_light_source_size_->setToolTip(QStringLiteral(
         "Finite emitter size in scene units; softens lighting and supported shadows."));

@@ -23,12 +23,15 @@
 QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const QString &title, QWidget *panel)
 {
     auto *dock = new QDockWidget(title, this);
-    bgl_apply_brand_icon(dock);
+    /* QMainWindow uses each dock's window icon for tabified dock tabs. Keep the
+     * brand icon on the editor window itself, but make panel tabs text-only. */
+    dock->setWindowIcon(QIcon());
     dock->setObjectName(object_name);
     const bool timeline_dock = object_name == QString::fromUtf8(kTimelineDockObjectName);
     dock->setAllowedAreas(timeline_dock
                               ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
-                              : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
+                              : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea |
+                                 Qt::BottomDockWidgetArea));
     dock->setWidget(panel);
     dock->setFeatures(QDockWidget::DockWidgetClosable |
                       QDockWidget::DockWidgetMovable |
@@ -284,7 +287,8 @@ void TitleEditor::reset_default_layout()
         dock->setFeatures(reset_features);
         dock->setAllowedAreas(dock == timeline_dock_
                                   ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
-                                  : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
+                                  : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea |
+                                     Qt::BottomDockWidgetArea));
         dock->setMaximumWidth(QWIDGETSIZE_MAX);
         dock->setMaximumHeight(QWIDGETSIZE_MAX);
         if (dock == tools_dock_)
@@ -455,7 +459,8 @@ void TitleEditor::update_panel_lock_state()
 
         dock->setAllowedAreas(dock == timeline_dock_
                                   ? (Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea)
-                                  : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea));
+                                  : (Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea |
+                                     Qt::BottomDockWidgetArea));
 
         /* Clear dimension clamps left by Development Version 309 before
          * restoring the normal per-dock sizing policy. */

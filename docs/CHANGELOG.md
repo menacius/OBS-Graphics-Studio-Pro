@@ -1,4 +1,107 @@
-# v0.8.13-alpha — Development Version 394
+# v0.8.14-alpha — Development Version 404
+
+## Development Version 404 — OBS 32.2.1 compatibility and runtime stability
+
+- Rebuilds against the OBS Studio 32.2.1 and matching Qt ABI so the native plugin loads safely after the host update.
+- Makes the Windows build helper resolve Qt 6.11.1 from the selected OBS SDK, pass its package directory explicitly, and reset a generated build tree when cached OBS/Qt ABI paths differ.
+- Removes icons from editor tabs and makes lower-left and lower-right areas available as explicit dock targets.
+- Moves the current public/development version to an always-visible header in the main plugin dock while retaining it in editor captions and the About dialog.
+- Corrects cue/uncue cache-state gating so requested live state is published consistently.
+- Removes the title-store lifetime mutex cycle that could block source activation, editor opening, and OBS shutdown.
+- Makes real-time title presentation use non-blocking model acquisition during transient editor ownership.
+- Creates the editor swap chain before render work and keeps large text blur on the bounded analytic SDF path, avoiding startup shader-compile stalls.
+- Marks only the cached GPU overlay dirty when the canvas pointer changes, so both rulers track the cursor in real time without rerendering artwork.
+- Consolidates current documentation into the thematic guides and advances runtime, build, dependency, package, and audit metadata to `v0.8.14-alpha`, Development Version 404.
+
+# v0.8.13-alpha — Development Version 403
+
+## Development Version 403 — background-aware threshold and waveform polarity
+
+- Applies the composited-row foreground choice to layer numbers and the 2D/3D control.
+- Raises the dark-foreground luminance threshold to `0.42`, preserving light UI content on medium-bright custom colors.
+- Keeps blend-mode dropdown entries text-only.
+- Uses the opposite semantic foreground polarity for audio and linked-video waveforms.
+- Advances runtime/build/package metadata to Development Version 403.
+
+# v0.8.13-alpha — Development Version 402
+
+## Development Version 402 — MSVC clamp type fix
+
+- Fixes the ambiguous `std::clamp` call in `title-assets.h` by explicitly normalizing `QColor::alphaF()` to `double`.
+- Restores MSVC compilation for every translation unit including the shared header.
+- Retains all Development Version 401 background-aware layer-list and timeline behavior.
+
+# v0.8.13-alpha — Development Version 401
+
+## Development Version 401 — background-aware layer rows and timeline strips
+
+- Selects dark or light foregrounds from the active OBS palette using WCAG-style relative luminance and contrast against the actual composited background.
+- Recolors layer-list text and row icons dynamically for both unselected translucent rows and opaque selected rows.
+- Adds cached, background-aware layer-type icons to timeline strips and applies the same contrast model to waveforms, fades, locked-strip hatching and transition labels.
+- Preserves native OBS popup surfaces and updates immediately after OBS palette/style changes.
+- Advances runtime/build/package metadata to Development Version 401.
+
+## Development Version 400 — themed layer-type icons and complete appearance colors
+
+- Installs the supplied Text, Clock, Ticker, Shape, Image, Video, Audio, Empty, Adjustment, Color Solid, Camera and Light artwork as dedicated `currentColor` SVG assets.
+- Uses the same icon mapping in the Add Layer menu, Light submenu, layer-list type cell and Camera/Light timeline owner rows.
+- Rebuilds icon pixmaps when the OBS application palette/style changes and refreshes menu icons whenever the Add Layer menu opens.
+- Adds persisted Preferences > Appearance colors for Video, Audio, Empty, Adjustment, Color Solid, Camera and Light rows, with distinct defaults and explicit layer-type mapping.
+- Retains the Development Version 399 close Point-light text-shadow subdivision and all prior rendering behavior.
+- Advances runtime/build/package metadata and the source-test manifest to Development Version 400.
+
+# v0.8.13-alpha — Development Version 399
+
+## Development Version 399 — close Point-light text-shadow projection continuity
+
+- Subdivides close or high-angular-extent Text, Clock and Ticker casters into a reusable 32×32 UV grid for Point-light shadow-map rendering.
+- Prevents a wide text plane from being projected as only two triangles across several cube faces, eliminating diagonal/triangular shadow gaps below roughly 300 px of light-to-caster plane distance.
+- Leaves distant text, Shape/Image/Video casters, Spot/Parallel maps and normal receiver filtering unchanged, so the additional vertex work is restricted to the failing close-range path.
+- Stores one grid per GPU render session and releases it during session destruction instead of allocating geometry per frame.
+- Advances runtime/build/package metadata, GPU cache identities and the test-suite manifest to Development Version 399.
+
+# v0.8.13-alpha — Development Version 398
+
+## Development Version 398 — explicit planar shadows and continuous text coverage
+
+- Replaces the Spot/Parallel shadow writer and receiver matrix path with one explicit light-space basis and linear depth projection shared by both stages.
+- Removes backend-dependent matrix-layout and OpenGL/D3D clip-space assumptions that could publish a nominally valid but visually empty planar shadow map.
+- Uses projection centre/span values for fitted Parallel maps and the authored cone span for Spot maps, with exact matching UV/depth reconstruction on receiving layers.
+- Expands Text, Clock and Ticker conservative alpha sampling to a 4×4 projected footprint with half-texel dilation and a lower text-only cutoff, preventing interrupted glyph shadows after minification.
+- Retains Point-light cube-atlas projection, ordinary non-text caster cost, the `0.1 px` Source Size floor and all Development Version 396 performance changes.
+- Advances runtime/build/package metadata, GPU cache identities and the test-suite manifest to Development Version 398.
+
+# v0.8.13-alpha — Development Version 397
+
+## Development Version 397 — continuous text shadows and Source Size floor
+
+- Adds conservative projected-footprint alpha sampling to the shadow-map writer for Text, Clock and Ticker cutout casters, preventing thin glyph strokes from disappearing on alternating shadow-map rows during minification.
+- Leaves solid Shape, Image and Video casters on the existing single-alpha-sample path, limiting the additional texture work to text-like casters.
+- Enforces `0.1 px` as the minimum light Source Size in both editor property-panel implementations, JSON deserialization/keyframes, runtime light evaluation and editor light overlays.
+- Advances runtime/build/package metadata and the test-suite manifest to Development Version 397.
+- Retains the Development Version 396 static effect-cache preflight and conservative no-op elision behavior unchanged.
+
+# v0.8.13-alpha — Development Version 396
+
+## Development Version 396 — effects performance regression audit
+
+- Checks the resident static effect-output cache before resolving per-effect animation, acquiring effect-registry locks or performing shader lookup/queue checks.
+- Eliminates GPU passes for conservative identity states such as zero-radius blur, zero-opacity shadow/glow/overlay, identity brightness/contrast and saturation, and zero-strength distortion/detail effects.
+- Protects custom extensions from built-in no-op inference unless their extension ID maps back to a registered built-in effect.
+- Adds `effect_output_cache_hits`, `effect_output_cache_misses` and `effect_noop_passes_skipped` debug counters.
+- Keeps Motion Blur temporal sampling, transition blur composition, effect execution spaces and stack order unchanged.
+- Advances runtime/build/package metadata to Development Version 396 and adds a dedicated regression contract.
+
+# v0.8.13-alpha — Development Version 395
+
+## Development Version 395 — performance audit and hot-path reduction
+
+- Caches logging preferences/category state and writes through a persistent 64 KiB/250 ms buffer, removing repeated `QSettings` reads and per-line file open/close operations.
+- Makes every logging macro lazy, so disabled categories no longer build large `QString::arg()` diagnostic payloads.
+- Disables SourceTiming, SourcePresentation and RenderDiagnostics by default and avoids GPU-session diagnostic mutex snapshots unless those categories are explicitly enabled.
+- Stops classifying routine `QEvent::LayoutRequest` events as dock-layout transitions, preventing per-frame transport/UI changes from stopping and restarting editor presentation pacing.
+- Uses half-dimension cube faces for Point-light 3x2 atlases, reducing atlas pixel area and texture memory by 4x while leaving Spot/Parallel planar resolution unchanged.
+- Advances runtime/build/package metadata to Development Version 395 and adds a dedicated performance-audit contract.
 
 ## Development Version 394 — v0.8.13-alpha release and consolidated README
 

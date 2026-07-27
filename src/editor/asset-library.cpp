@@ -196,7 +196,7 @@ void AssetLibraryPanel::rebuildCategories()
 {
     const QString previous = category_filter_->currentData().toString();
     QStringList categories;
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : TitleDataStore::instance().title_snapshots()) {
         if (!title || !title->is_asset ||
             (filter_by_animation_ && title->asset_animated != animated_assets_))
             continue;
@@ -224,7 +224,7 @@ void AssetLibraryPanel::refreshList()
     const QString category = category_filter_->currentData().toString();
     list_->clear();
 
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : TitleDataStore::instance().title_snapshots()) {
         if (!title || !title->is_asset ||
             (filter_by_animation_ && title->asset_animated != animated_assets_))
             continue;

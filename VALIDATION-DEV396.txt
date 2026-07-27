@@ -1,0 +1,69 @@
+Broadcast Graphics Live v0.8.13-alpha - Development Version 396 validation
+==========================================================================
+
+Targeted current contracts/audits: 41/41 passed.
+- PASSED: tests/development_version_396_effect_performance_regression_contract_test.py
+- PASSED: tests/development_version_395_performance_audit_contract_test.py
+- PASSED: tests/development_version_373_light_layer_properties_contract_test.py
+- PASSED: tests/development_version_374_multi_light_shadows_scene_depth_contract_test.py
+- PASSED: tests/development_version_375_complete_3d_shadow_interactions_contract_test.py
+- PASSED: tests/development_version_376_msvc_shader_literal_split_contract_test.py
+- PASSED: tests/development_version_377_point_shadow_caster_receiver_contract_test.py
+- PASSED: tests/development_version_378_point_shadow_receiver_plane_contract_test.py
+- PASSED: tests/development_version_379_shared_point_cube_projection_contract_test.py
+- PASSED: tests/development_version_380_distance_stable_point_shadows_contract_test.py
+- PASSED: tests/development_version_381_pcss_contact_hardening_contract_test.py
+- PASSED: tests/development_version_382_shadow_runtime_recovery_contract_test.py
+- PASSED: tests/development_version_383_stable_multiscale_poisson_shadows_contract_test.py
+- PASSED: tests/development_version_384_restored_3d_shadow_visibility_contract_test.py
+- PASSED: tests/development_version_385_signed_point_shadow_clip_depth_contract_test.py
+- PASSED: tests/development_version_386_realtime_self_shadow_pcf_contract_test.py
+- PASSED: tests/development_version_387_compile_safe_realtime_self_shadow_contract_test.py
+- PASSED: tests/development_version_388_async_shader_compile_progress_contract_test.py
+- PASSED: tests/development_version_389_shader_screen_shadowmap_light_falloff_contract_test.py
+- PASSED: tests/development_version_390_shadowmap_motion_blur_open_contract_test.py
+- PASSED: tests/development_version_391_planar_shadowmap_contract_test.py
+- PASSED: tests/development_version_392_planar_shadow_clip_motion_transition_crash_contract_test.py
+- PASSED: tests/development_version_393_motion_transition_render_deadlock_contract_test.py
+- PASSED: tests/development_version_286_motion_blur_post_effects_contract_test.py
+- PASSED: tests/development_version_287_motion_blur_normalized_trail_contract_test.py
+- PASSED: tests/development_version_288_motion_blur_performance_audit_contract_test.py
+- PASSED: tests/development_version_289_source_motion_blur_frame_budget_contract_test.py
+- PASSED: tests/development_version_291_trim_shadow_motion_blur_alignment_contract_test.py
+- PASSED: tests/development_version_292_motion_blur_alpha_contract_test.py
+- PASSED: tests/development_version_294_motion_blur_quality_effect_stack_contract_test.py
+- PASSED: tests/development_version_295_motion_blur_full_shutter_contract_test.py
+- PASSED: tests/development_version_296_motion_blur_opaque_coverage_contract_test.py
+- PASSED: tests/development_version_297_motion_blur_occupancy_alpha_contract_test.py
+- PASSED: tests/development_version_328_persistence_motion_blur_bypass_contract_test.py
+- PASSED: tests/development_version_354_right_keyframes_top_tabs_effect_stack_switch_contract_test.py
+- PASSED: tests/effect_library_cleanup_textured_damage_revision_260_contract_test.py
+- PASSED: tests/optical_effects_and_noise_bindings_revision_223_contract_test.py
+- PASSED: tools/audit_source_presentation_lifecycle.py
+- PASSED: tools/audit_update_build_packaging.py
+- PASSED: tools/audit_development_105_branding_docs.py
+- PASSED: JSON manifest syntax
+
+CMake configure:
+- C and C++ compiler/toolchain detection completed successfully.
+- Configuration stopped at `find_package(libobs)` because this Linux container
+  does not include the OBS SDK/libobs CMake package.
+- No native OBS plugin binary is claimed; a Windows OBS/Qt/MSVC build remains
+  required before production deployment.
+
+Baseline-only non-gating checks:
+- Three historical contracts that hard-code Development Version 243 or an
+  obsolete Motion Blur sample expression fail identically in the original
+  Development Version 395 archive.
+- `tools/audit_gpu_pipeline.py` and `tools/audit_modularity_performance.py` also
+  retain their original Development Version 395 failures (asynchronous shader
+  expectations and pre-existing module-size limits respectively).
+
+Effects audit result:
+- Static effect-output cache hits occur before effect parameter resolution and
+  effect-registry/shader queue work.
+- Conservative identity effects are removed before shader acquisition and GPU
+  target allocation.
+- Custom extension semantics are preserved, and existing Outline, Zoom Blur and
+  damage/distortion zero-value behavior is intentionally not elided.
+- Motion Blur temporal paths and effect ordering remain unchanged.

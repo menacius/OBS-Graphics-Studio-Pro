@@ -26,6 +26,7 @@
 #include <thread>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 #include "layer-model.h"
 
 enum class TitleGraphicType : int {
@@ -480,7 +481,15 @@ public:
 
     /* CRUD */
     std::shared_ptr<Title> create_title(const std::string &name = "New Title");
+    /*
+     * Mutable title handles are store-owned and primarily used by the UI and
+     * cue state machine. They must never carry a lifetime mutex: handles are
+     * routinely retained by widgets and callbacks, and doing so can block the
+     * OBS graphics thread during source activation and shutdown. Render, audio
+     * and cache readers must use get_title_snapshot().
+     */
     std::shared_ptr<Title> get_title(const std::string &id) const;
+    std::shared_ptr<Title> get_title_snapshot(const std::string &id) const;
     void                   delete_title(const std::string &id);
     void                   rename_title(const std::string &id,
                                         const std::string &name);
@@ -502,6 +511,7 @@ public:
                                         TitleImportDiagnostics *diagnostics = nullptr);
 
     std::vector<std::shared_ptr<Title>> titles() const;
+    std::vector<std::shared_ptr<Title>> title_snapshots() const;
 
     /* Persistence */
     void load();
@@ -528,11 +538,32 @@ private:
         std::string path;
         uint64_t generation = 0;
     };
+    using TitleMutex = std::recursive_mutex;
+    struct TitleAccessRecord {
+        std::shared_ptr<Title> title;
+        std::shared_ptr<TitleMutex> mutex;
+    };
     void save_worker_loop() const;
+    std::shared_ptr<TitleMutex> title_mutex_locked(
+        const std::shared_ptr<Title> &title) const;
+    std::vector<TitleAccessRecord> title_access_records() const;
+    std::vector<std::shared_ptr<Title>> snapshot_authoritative_titles() const;
+    void publish_title_snapshots(
+        const std::vector<std::shared_ptr<Title>> &snapshots) const;
+    void clear_title_publications_locked();
     static bool write_snapshot_atomic(const std::vector<std::shared_ptr<Title>> &snapshot,
-                                      const std::string &path);
+                                       const std::string &path);
     mutable std::recursive_mutex         mutex_;
     std::vector<std::shared_ptr<Title>>  titles_;
+    /*
+     * Store-owned Title/Layer objects are mutable only behind their per-title
+     * mutex. Published snapshots are deep copies and may be shared freely by
+     * OBS render, cache, audio and provider threads.
+     */
+    mutable std::unordered_map<const Title *, std::shared_ptr<TitleMutex>>
+                                         title_mutexes_;
+    mutable std::unordered_map<std::string, std::shared_ptr<Title>>
+                                         published_titles_;
     std::string                          loaded_path_;
     /* Development Version 244: never rewrite an existing scene-collection
      * titles file into the new schema unless the previous on-disk payload

@@ -1,6 +1,7 @@
 #include "title-preferences.h"
 
 #include "title-data.h"
+#include "title-logger.h"
 #include "system-memory.h"
 
 #include <QSettings>
@@ -57,6 +58,20 @@ QString timeline_color_key(TitlePreferences::TimelineColorRole role)
         return QStringLiteral("objectLayer");
     case TitlePreferences::TimelineColorRole::ImageLayer:
         return QStringLiteral("imageLayer");
+    case TitlePreferences::TimelineColorRole::VideoLayer:
+        return QStringLiteral("videoLayer");
+    case TitlePreferences::TimelineColorRole::AudioLayer:
+        return QStringLiteral("audioLayer");
+    case TitlePreferences::TimelineColorRole::EmptyLayer:
+        return QStringLiteral("emptyLayer");
+    case TitlePreferences::TimelineColorRole::AdjustmentLayer:
+        return QStringLiteral("adjustmentLayer");
+    case TitlePreferences::TimelineColorRole::ColorSolidLayer:
+        return QStringLiteral("colorSolidLayer");
+    case TitlePreferences::TimelineColorRole::CameraLayer:
+        return QStringLiteral("cameraLayer");
+    case TitlePreferences::TimelineColorRole::LightLayer:
+        return QStringLiteral("lightLayer");
     case TitlePreferences::TimelineColorRole::GroupLayer:
         return QStringLiteral("groupLayer");
     case TitlePreferences::TimelineColorRole::Current:
@@ -276,6 +291,7 @@ void set_logging_enabled(bool enabled)
     settings.setValue(QString::fromUtf8(kLoggingEnabledKey), enabled);
     settings.endGroup();
     settings.sync();
+    TitleLogger::refreshConfiguration();
     notify_changed(nullptr);
 }
 
@@ -295,6 +311,7 @@ void set_logging_level(int level)
     settings.setValue(QString::fromUtf8(kLoggingLevelKey), std::clamp(level, 0, 5));
     settings.endGroup();
     settings.sync();
+    TitleLogger::refreshConfiguration();
     notify_changed(nullptr);
 }
 
@@ -314,6 +331,7 @@ void set_logging_mirror_to_obs(bool enabled)
     settings.setValue(QString::fromUtf8(kLoggingMirrorToObsKey), enabled);
     settings.endGroup();
     settings.sync();
+    TitleLogger::refreshConfiguration();
     notify_changed(nullptr);
 }
 
@@ -341,6 +359,7 @@ void set_logging_category_enabled(const QString &category, bool enabled)
     settings.endGroup();
     settings.endGroup();
     settings.sync();
+    TitleLogger::refreshConfiguration();
     notify_changed(nullptr);
 }
 
@@ -456,6 +475,20 @@ QColor default_timeline_color(TimelineColorRole role)
         return QColor(0x4f, 0x8f, 0x58);
     case TimelineColorRole::ImageLayer:
         return QColor(0x7d, 0x8b, 0x7f);
+    case TimelineColorRole::VideoLayer:
+        return QColor(0x8e, 0x5d, 0xcc);
+    case TimelineColorRole::AudioLayer:
+        return QColor(0x12, 0xb8, 0x86);
+    case TimelineColorRole::EmptyLayer:
+        return QColor(0x86, 0x8e, 0x96);
+    case TimelineColorRole::AdjustmentLayer:
+        return QColor(0xf0, 0x65, 0x95);
+    case TimelineColorRole::ColorSolidLayer:
+        return QColor(0xe8, 0x59, 0x0c);
+    case TimelineColorRole::CameraLayer:
+        return QColor(0x22, 0x8b, 0xe6);
+    case TimelineColorRole::LightLayer:
+        return QColor(0xfc, 0xc4, 0x19);
     case TimelineColorRole::GroupLayer:
         return QColor(0x65, 0x6f, 0xc8);
     case TimelineColorRole::Current:

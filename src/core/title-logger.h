@@ -31,6 +31,10 @@ bool categoryEnabled(const QString &category);
 bool wouldLog(TitleLogLevel level, const char *category);
 
 void log(TitleLogLevel level, const char *category, const QString &message);
+/* Writes a message after the caller has already checked wouldLog(). This keeps
+ * high-frequency macros from performing the settings/category lookup twice. */
+void logPrepared(TitleLogLevel level, const char *category, const QString &message);
+void refreshConfiguration();
 void error(const char *category, const QString &message);
 void warning(const char *category, const QString &message);
 void info(const char *category, const QString &message);
@@ -40,16 +44,28 @@ QString levelName(TitleLogLevel level);
 
 }
 
-#define BGL_LOG_ERROR(category, message) ::TitleLogger::error(category, message)
-#define BGL_LOG_WARNING(category, message) ::TitleLogger::warning(category, message)
-#define BGL_LOG_INFO(category, message) ::TitleLogger::info(category, message)
+#define BGL_LOG_ERROR(category, message)                                      \
+    do {                                                                      \
+        if (::TitleLogger::wouldLog(TitleLogLevel::Error, category))          \
+            ::TitleLogger::logPrepared(TitleLogLevel::Error, category, message); \
+    } while (false)
+#define BGL_LOG_WARNING(category, message)                                    \
+    do {                                                                      \
+        if (::TitleLogger::wouldLog(TitleLogLevel::Warning, category))        \
+            ::TitleLogger::logPrepared(TitleLogLevel::Warning, category, message); \
+    } while (false)
+#define BGL_LOG_INFO(category, message)                                       \
+    do {                                                                      \
+        if (::TitleLogger::wouldLog(TitleLogLevel::Info, category))           \
+            ::TitleLogger::logPrepared(TitleLogLevel::Info, category, message); \
+    } while (false)
 #define BGL_LOG_DEBUG(category, message)                                      \
     do {                                                                      \
         if (::TitleLogger::wouldLog(TitleLogLevel::Debug, category))          \
-            ::TitleLogger::debug(category, message);                          \
+            ::TitleLogger::logPrepared(TitleLogLevel::Debug, category, message); \
     } while (false)
 #define BGL_LOG_TRACE(category, message)                                      \
     do {                                                                      \
         if (::TitleLogger::wouldLog(TitleLogLevel::Trace, category))          \
-            ::TitleLogger::trace(category, message);                          \
+            ::TitleLogger::logPrepared(TitleLogLevel::Trace, category, message); \
     } while (false)

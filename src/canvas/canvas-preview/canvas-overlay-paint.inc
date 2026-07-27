@@ -529,8 +529,13 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
 
 void CanvasPreview::update_hover_layer(const QPointF &view_pt)
 {
+    const QPointF previous_mouse_view_pos = last_mouse_view_pos_;
+    const bool previous_mouse_inside_canvas = mouse_inside_canvas_;
     last_mouse_view_pos_ = view_pt;
     mouse_inside_canvas_ = title_ && canvas_view_rect().contains(view_pt);
+    const bool ruler_indicator_changed =
+        previous_mouse_inside_canvas != mouse_inside_canvas_ ||
+        previous_mouse_view_pos != last_mouse_view_pos_;
 
     std::string next_hover;
     if (mouse_inside_canvas_ && drag_mode_ == DragMode::None && !drawing_shape_ &&
@@ -564,6 +569,12 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
     }
 
     if (rulers_visible_) {
+        /* Rulers are composited into the cached GPU overlay. A QWidget update
+         * alone re-presents that cache and leaves the cursor marks at their old
+         * coordinates. Rebuild only the overlay (never the artwork frame) when
+         * the pointer position or its canvas membership changes. */
+        if (ruler_indicator_changed)
+            gpu_overlay_dirty_ = true;
         QRect ruler_dirty = ruler_top_rect().toAlignedRect().united(ruler_left_rect().toAlignedRect());
         if (!ruler_dirty.isEmpty()) {
             // Keep ruler cursor indicators in the same backing-store batch as

@@ -113,7 +113,7 @@ TitleDock::TitleDock(QWidget *parent)
     seen_store_revision_ = TitleDataStore::instance().revision();
     BGL_LOG_INFO("Dock", QStringLiteral(
         "Dock created titles=%1 revision=%2")
-        .arg(static_cast<int>(TitleDataStore::instance().titles().size()))
+        .arg(static_cast<int>(TitleDataStore::instance().title_snapshots().size()))
         .arg(static_cast<qulonglong>(seen_store_revision_)));
     live_refresh_timer_ = new QTimer(this);
     live_refresh_timer_->setInterval(100);
@@ -133,7 +133,7 @@ TitleDock::TitleDock(QWidget *parent)
         refresh_title_list_cue_visual_states();
 
         bool playlist_active = false;
-        for (const auto &candidate : TitleDataStore::instance().titles()) {
+        for (const auto &candidate : TitleDataStore::instance().title_snapshots()) {
             if (candidate && candidate->playlist_active) {
                 playlist_active = true;
                 break;
@@ -273,7 +273,7 @@ void TitleDock::update_live_text_cache_cell(const std::shared_ptr<Title> &title,
     button->setStyleSheet(QStringLiteral(
         "QToolButton{background:transparent;border:none;padding:0;}"
         "QToolButton:hover{background:transparent;border:none;}"));
-    button->disconnect();
+    QObject::disconnect(button, &QToolButton::clicked, nullptr, nullptr);
     connect(button, &QToolButton::clicked, this, [this, row]() {
         auto current_title = TitleDataStore::instance().get_title(selected_id());
         if (!current_title || row < 0 || row >= (int)current_title->live_text_rows.size())
@@ -843,6 +843,18 @@ void TitleDock::build_ui()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
+    auto *build_label = new QLabel(QStringLiteral(BGL_BUILD_DISPLAY), container_);
+    build_label->setObjectName(QStringLiteral("bglCurrentBuildLabel"));
+    build_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    build_label->setContentsMargins(8, 3, 8, 3);
+    build_label->setToolTip(QStringLiteral("Current Broadcast Graphics Live version"));
+    build_label->setAccessibleName(QStringLiteral("Broadcast Graphics Live current version"));
+    QFont build_font = build_label->font();
+    build_font.setPointSize(std::max(1, build_font.pointSize() - 1));
+    build_label->setFont(build_font);
+    build_label->setProperty("bglSecondaryText", true);
+    root->addWidget(build_label, 0);
+
     sections_ = new QSplitter(Qt::Vertical, container_);
     sections_->setChildrenCollapsible(false);
     root->addWidget(sections_, 1);
@@ -912,14 +924,6 @@ void TitleDock::build_ui()
     set_bold_label(template_lbl_);
     titles_header_layout_->addWidget(template_lbl_);
     titles_header_layout_->addStretch();
-    auto *build_label = new QLabel(QStringLiteral(BGL_BUILD_DISPLAY), titles_expanded_content_);
-    build_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    build_label->setToolTip(QStringLiteral("Delivery identifier for this package"));
-    QFont build_font = build_label->font();
-    build_font.setPointSize(std::max(1, build_font.pointSize() - 1));
-    build_label->setFont(build_font);
-    build_label->setProperty("bglSecondaryText", true);
-    titles_header_layout_->addWidget(build_label);
     template_layout->addLayout(titles_header_layout_);
     template_layout->addWidget(template_toolbar);
 

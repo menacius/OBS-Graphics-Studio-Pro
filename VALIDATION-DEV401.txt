@@ -1,0 +1,68 @@
+Broadcast Graphics Live v0.8.13-alpha
+Development Version 401 — Background-aware layer UI
+Validation date: 2026-07-20
+
+IMPLEMENTED SCOPE
+
+1. Layer-list rows
+   - The effective unselected row background is computed by compositing the
+     layer color at alpha 72 over the active OBS Window palette color.
+   - Selected rows use the opaque layer color.
+   - Text, carets, visibility/audio/lock/matte controls, blend-mode icons and
+     other row controls choose a dark or light semantic foreground from the
+     active OBS palette by comparing relative luminance and contrast.
+   - Selection changes immediately refresh row palettes and icon tinting.
+   - OBS PaletteChange, ApplicationPaletteChange and StyleChange rebuild the
+     row UI using the new theme palette.
+   - Combo-box popup views remain on their normal opaque OBS theme surfaces.
+
+2. Layer-type cells
+   - Supplied layer-type SVGs can be rendered with an explicit foreground.
+   - The icon/fallback abbreviation inside the colored type chip chooses its
+     foreground against the chip's own authored/default layer color.
+   - Rendered icon variants are cached by icon name and RGBA foreground.
+
+3. Timeline strips
+   - Each strip now displays its layer-type icon before the layer name.
+   - Strip label, icon, waveform, progress detail, fade curves, lock hatching
+     and outline use a foreground selected against the final strip color.
+   - Disabled/hidden labels use a muted blend derived from the same contrast
+     foreground.
+   - Transition overlays evaluate their alpha-composited color over the host
+     strip before choosing hatch, handle and label foregrounds.
+
+TARGETED SOURCE CONTRACTS — PASS
+
+- development_version_263_audio_sync_gui_gap_contract_test.py
+- audio_transport_waveform_regression_contract_test.py
+- development_version_368_layer_list_alignment_drag_empty_size_contract_test.py
+- development_version_370_layer_drop_color_rows_contract_test.py
+- development_version_372_custom_layer_colors_contract_test.py
+- development_version_400_layer_type_icons_colors_contract_test.py
+- development_version_401_background_aware_layer_ui_contract_test.py
+- timeline_layer_list_row_parity_revision_212_2_contract_test.py
+
+ADDITIONAL VALIDATION — PASS
+
+- tools/run_automated_test_suite.py --validate-only
+- python3 -m compileall -q tests
+
+BROAD HISTORICAL CONTRACT SUITE
+
+- tools/run_python_contract_tests.py result: 165/240 passed.
+- The remaining historical contracts include obsolete exact development-version
+  checks (for example Development Version 243/312) and old source-token or
+  documentation expectations. The final targeted contracts for every code
+  path touched by Development Version 401 were rerun after compatibility-token
+  preservation and all passed.
+
+NATIVE CONFIGURATION
+
+Command:
+  cmake -S . -B <clean-build-dir> -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+Result:
+  C and C++ compiler detection succeeded. Configuration stopped at
+  find_package(libobs) because libobsConfig.cmake / libobs-config.cmake and the
+  OBS SDK are not installed in the available Linux environment. Therefore this
+  package is source-validated but is not claimed as a native Windows build.

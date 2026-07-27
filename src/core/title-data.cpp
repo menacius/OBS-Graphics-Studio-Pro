@@ -3,6 +3,7 @@
  */
 
 #include "title-data.h"
+#include "title-snapshot.h"
 #include "title-serialization-schema.h"
 #include "extensions/effect-extension-catalog.h"
 #include "effects/effect-preset-catalog.h"
@@ -1339,10 +1340,114 @@ TitleDataStore &TitleDataStore::instance()
     return inst;
 }
 
-std::vector<std::shared_ptr<Title>> TitleDataStore::titles() const
+std::shared_ptr<TitleDataStore::TitleMutex>
+TitleDataStore::title_mutex_locked(const std::shared_ptr<Title> &title) const
+{
+    if (!title)
+        return nullptr;
+    auto &entry = title_mutexes_[title.get()];
+    if (!entry)
+        entry = std::make_shared<TitleMutex>();
+    return entry;
+}
+
+std::vector<TitleDataStore::TitleAccessRecord>
+TitleDataStore::title_access_records() const
+{
+    std::vector<TitleAccessRecord> records;
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    records.reserve(titles_.size());
+    for (const auto &title : titles_) {
+        if (title)
+            records.push_back({title, title_mutex_locked(title)});
+    }
+    return records;
+}
+
+std::vector<std::shared_ptr<Title>>
+TitleDataStore::snapshot_authoritative_titles() const
+{
+    const auto records = title_access_records();
+    std::vector<std::shared_ptr<Title>> snapshots;
+    snapshots.reserve(records.size());
+    for (const auto &record : records) {
+        if (!record.title || !record.mutex)
+            continue;
+        /*
+         * A caller commonly publishes while still holding its own edit lease.
+         * Never wait for a different title here: two source/UI threads can
+         * legitimately finish edits to different titles at the same time.
+         * The busy title retains its previous committed publication and its
+         * owning thread will publish the new state when that edit completes.
+         */
+        std::unique_lock<TitleMutex> title_lock(*record.mutex,
+                                                std::try_to_lock);
+        if (!title_lock.owns_lock())
+            continue;
+        snapshots.push_back(
+            std::make_shared<Title>(clone_title_snapshot(*record.title)));
+    }
+    return snapshots;
+}
+
+void TitleDataStore::publish_title_snapshots(
+    const std::vector<std::shared_ptr<Title>> &snapshots) const
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    return titles_;
+    std::unordered_set<std::string> live_ids;
+    live_ids.reserve(titles_.size());
+    for (const auto &title : titles_) {
+        if (title)
+            live_ids.insert(title->id);
+    }
+    for (auto it = published_titles_.begin(); it != published_titles_.end();) {
+        if (live_ids.find(it->first) == live_ids.end())
+            it = published_titles_.erase(it);
+        else
+            ++it;
+    }
+    for (const auto &snapshot : snapshots) {
+        if (!snapshot || live_ids.find(snapshot->id) == live_ids.end())
+            continue;
+        const auto current = std::find_if(
+            titles_.begin(), titles_.end(),
+            [&](const std::shared_ptr<Title> &title) {
+                return title && title->id == snapshot->id;
+            });
+        if (current != titles_.end())
+            published_titles_[snapshot->id] = snapshot;
+    }
+}
+
+void TitleDataStore::clear_title_publications_locked()
+{
+    published_titles_.clear();
+    title_mutexes_.clear();
+}
+
+std::vector<std::shared_ptr<Title>> TitleDataStore::titles() const
+{
+    const auto records = title_access_records();
+    std::vector<std::shared_ptr<Title>> result;
+    result.reserve(records.size());
+    for (const auto &record : records)
+        result.push_back(record.title);
+    return result;
+}
+
+std::vector<std::shared_ptr<Title>> TitleDataStore::title_snapshots() const
+{
+    std::vector<std::shared_ptr<Title>> snapshots;
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    snapshots.reserve(titles_.size());
+    for (const auto &title : titles_) {
+        if (!title)
+            continue;
+        const auto published = published_titles_.find(title->id);
+        if (published != published_titles_.end() && published->second)
+            snapshots.push_back(published->second);
+    }
+    return snapshots;
 }
 
 uint64_t TitleDataStore::on_change(ChangeCallback cb)
@@ -1367,16 +1472,17 @@ void TitleDataStore::remove_change_callback(uint64_t callback_id)
 
 void TitleDataStore::notify_change()
 {
-    touch_runtime_change();
+    const auto updated_snapshots = snapshot_authoritative_titles();
+    publish_title_snapshots(updated_snapshots);
+    revision_.fetch_add(1, std::memory_order_release);
+    const auto title_snapshot = title_snapshots();
 
     std::vector<ChangeCallback> callbacks;
-    std::vector<std::shared_ptr<Title>> title_snapshot;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         callbacks.reserve(change_cbs_.size());
         for (const auto &observer : change_cbs_)
             callbacks.push_back(observer.callback);
-        title_snapshot = titles_;
     }
 
     std::vector<ExternalDataSourceDefinition> provider_definitions;
@@ -1394,7 +1500,9 @@ void TitleDataStore::notify_change()
 
 void TitleDataStore::touch_runtime_change()
 {
-    revision_.fetch_add(1, std::memory_order_relaxed);
+    const auto snapshots = snapshot_authoritative_titles();
+    publish_title_snapshots(snapshots);
+    revision_.fetch_add(1, std::memory_order_release);
 }
 
 void ensure_live_text_row_ids(Title &title)
@@ -1851,13 +1959,30 @@ static std::string unique_title_name_locked(
     }
 }
 
+static std::vector<std::shared_ptr<Title>> ordered_published_titles_locked(
+    const std::vector<std::shared_ptr<Title>> &titles,
+    const std::unordered_map<std::string, std::shared_ptr<Title>> &published)
+{
+    std::vector<std::shared_ptr<Title>> result;
+    result.reserve(titles.size());
+    for (const auto &title : titles) {
+        if (!title)
+            continue;
+        const auto it = published.find(title->id);
+        if (it != published.end() && it->second)
+            result.push_back(it->second);
+    }
+    return result;
+}
+
 std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
 {
     auto t = std::make_shared<Title>();
     t->id = make_uuid();
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        t->name = unique_title_name_locked(titles_, name);
+        t->name = unique_title_name_locked(
+            ordered_published_titles_locked(titles_, published_titles_), name);
     }
     t->creation_date = current_iso_utc_string();
 
@@ -1883,17 +2008,64 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         titles_.push_back(t);
+        title_mutex_locked(t);
+        published_titles_[t->id] =
+            std::make_shared<Title>(clone_title_snapshot(*t));
     }
     notify_change();
-    return t;
+    return get_title(t->id);
 }
 
 std::shared_ptr<Title> TitleDataStore::get_title(const std::string &id) const
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    for (auto &t : titles_)
-        if (t->id == id) return t;
+    for (const auto &title : titles_) {
+        if (title && title->id == id)
+            return title;
+    }
     return nullptr;
+}
+
+std::shared_ptr<Title>
+TitleDataStore::get_title_snapshot(const std::string &id) const
+{
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const auto published = published_titles_.find(id);
+        if (published != published_titles_.end())
+            return published->second;
+    }
+
+    TitleAccessRecord record;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (const auto &title : titles_) {
+            if (title && title->id == id) {
+                record = {title, title_mutex_locked(title)};
+                break;
+            }
+        }
+    }
+    if (!record.title || !record.mutex)
+        return nullptr;
+
+    std::shared_ptr<Title> snapshot;
+    {
+        std::lock_guard<TitleMutex> title_lock(*record.mutex);
+        snapshot = std::make_shared<Title>(
+            clone_title_snapshot(*record.title));
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const auto current = std::find_if(
+            titles_.begin(), titles_.end(),
+            [&](const std::shared_ptr<Title> &title) {
+                return title == record.title;
+            });
+        if (current != titles_.end())
+            published_titles_[id] = snapshot;
+    }
+    return snapshot;
 }
 
 void TitleDataStore::delete_title(const std::string &id)
@@ -1901,12 +2073,18 @@ void TitleDataStore::delete_title(const std::string &id)
     bool deleted = false;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (const auto &title : titles_) {
+            if (title && title->id == id)
+                title_mutexes_.erase(title.get());
+        }
         const auto old_size = titles_.size();
         titles_.erase(
             std::remove_if(titles_.begin(), titles_.end(),
                            [&](auto &t){ return t && t->id == id; }),
             titles_.end());
         deleted = titles_.size() != old_size;
+        if (deleted)
+            published_titles_.erase(id);
     }
 
     if (deleted) {
@@ -1918,20 +2096,19 @@ void TitleDataStore::delete_title(const std::string &id)
 
 void TitleDataStore::rename_title(const std::string &id, const std::string &n)
 {
-    bool renamed = false;
+    auto title = get_title(id);
+    if (!title)
+        return;
+
+    std::string unique_name;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        for (auto &t : titles_) {
-            if (t && t->id == id) {
-                t->name = unique_title_name_locked(titles_, n, id);
-                renamed = true;
-                break;
-            }
-        }
+        unique_name = unique_title_name_locked(
+            ordered_published_titles_locked(titles_, published_titles_), n, id);
     }
 
-    if (renamed)
-        notify_change();
+    title->name = std::move(unique_name);
+    notify_change();
 }
 
 /* ── persistence ──────────────────────────────────────────────────── */
@@ -2226,6 +2403,7 @@ static json text_animator_stack_to_json(const TextAnimatorStack &stack)
             {"enabled", animator.enabled}, {"expanded", animator.expanded},
             {"blend_mode", (int)animator.blend_mode}, {"granularity", (int)animator.granularity},
             {"transform_as_unit", animator.transform_as_unit},
+            {"clip_to_unit_bounds", animator.clip_to_unit_bounds},
             {"change_behaviour", (int)animator.change_behaviour},
             {"playback_role", (int)animator.playback_role},
             {"local_time_offset", animator.local_time_offset},
@@ -2262,6 +2440,7 @@ static TextAnimatorStack text_animator_stack_from_json(const json &j)
         animator.blend_mode = (TextAnimatorBlendMode)std::clamp(json_int(item, "blend_mode", 0), 0, 2);
         animator.granularity = (TextAnimatorUnit)std::clamp(json_int(item, "granularity", 0), 0, (int)TextAnimatorUnit::Sentence);
         animator.transform_as_unit = json_bool(item, "transform_as_unit", false);
+        animator.clip_to_unit_bounds = json_bool(item, "clip_to_unit_bounds", false);
         animator.change_behaviour = (TextChangeBehaviour)std::clamp(json_int(item, "change_behaviour", 6), 0, 6);
         animator.playback_role = (TextAnimatorPlaybackRole)std::clamp(json_int(item, "playback_role", 0), 0, 3);
         animator.local_time_offset = std::clamp(finite_or(json_double(item, "local_time_offset", 0.0), 0.0),
@@ -3361,6 +3540,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
             {"stagger", transition.stagger},
             {"softness", transition.softness},
             {"reverse_order", transition.reverse_order},
+            {"text_slide_fade", transition.text_slide_fade},
+            {"text_slide_crop_to_unit_bounds",
+             transition.text_slide_crop_to_unit_bounds},
             {"blocks_columns", transition.blocks_columns},
             {"blocks_rows", transition.blocks_rows},
             {"random_seed", transition.random_seed},
@@ -4469,6 +4651,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             transition.stagger = std::clamp(finite_or(json_double(transition_json, "stagger", 0.35), 0.35), 0.0, 0.95);
             transition.softness = std::clamp(finite_or(json_double(transition_json, "softness", 0.0), 0.0), 0.0, 1.0);
             transition.reverse_order = json_bool(transition_json, "reverse_order", false);
+            transition.text_slide_fade = json_bool(
+                transition_json, "text_slide_fade", true);
+            transition.text_slide_crop_to_unit_bounds = json_bool(
+                transition_json, "text_slide_crop_to_unit_bounds", false);
             transition.blocks_columns = std::clamp(json_int(transition_json, "blocks_columns", 8), 1, 128);
             transition.blocks_rows = std::clamp(json_int(transition_json, "blocks_rows", 6), 1, 128);
             transition.random_seed = std::clamp(json_int(transition_json, "random_seed", 1), 0, 999999);
@@ -5554,7 +5740,7 @@ static TitleLight light_from_json(const json &j, size_t index)
     read_prop("color_g", light.color_g, 0.0, 255.0);
     read_prop("color_b", light.color_b, 0.0, 255.0);
     read_prop("intensity", light.intensity, 0.0, 100000.0);
-    read_prop("source_size", light.source_size, 0.0, 100000.0);
+    read_prop("source_size", light.source_size, 0.1, 100000.0);
     light.falloff = static_cast<TitleLightFalloff>(std::clamp(
         json_int(j, "falloff", static_cast<int>(TitleLightFalloff::InverseSquare)),
         static_cast<int>(TitleLightFalloff::None),
@@ -6395,7 +6581,6 @@ bool TitleDataStore::write_snapshot_atomic(
 
 void TitleDataStore::save() const
 {
-    std::vector<std::shared_ptr<Title>> snapshot;
     std::string path;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -6404,9 +6589,10 @@ void TitleDataStore::save() const
                 "Skipped save because the title store did not load successfully; refusing to rewrite the previous file in a new schema"));
             return;
         }
-        snapshot = titles_;
         path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
+    publish_title_snapshots(snapshot_authoritative_titles());
+    const auto snapshot = title_snapshots();
 
     /* Serialize synchronous and asynchronous writes. Otherwise a manual save
      * can race an outstanding background save through the same .tmp path. */
@@ -6476,21 +6662,10 @@ void TitleDataStore::save_async() const
                 "Skipped async save because the title store did not load successfully; refusing to rewrite the previous file in a new schema"));
             return;
         }
-        request->snapshot.reserve(titles_.size());
-        for (const auto &source : titles_) {
-            if (!source) {
-                request->snapshot.push_back(nullptr);
-                continue;
-            }
-            auto copy = std::make_shared<Title>(*source);
-            copy->layers.clear();
-            copy->layers.reserve(source->layers.size());
-            for (const auto &layer : source->layers)
-                copy->layers.push_back(layer ? std::make_shared<Layer>(*layer) : nullptr);
-            request->snapshot.push_back(std::move(copy));
-        }
         request->path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
+    publish_title_snapshots(snapshot_authoritative_titles());
+    request->snapshot = title_snapshots();
 
     uint64_t queued_generation = 0;
     {
@@ -7131,19 +7306,23 @@ std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             imported->name = unique_title_name_locked(
-                titles_, imported->name.empty() ? "Imported Title" : imported->name);
+                ordered_published_titles_locked(titles_, published_titles_),
+                imported->name.empty() ? "Imported Title" : imported->name);
             titles_.push_back(imported);
+            title_mutex_locked(imported);
+            published_titles_[imported->id] = clone_title_snapshot(imported);
         }
 
+        auto imported_title = get_title(imported->id);
         notify_change();
         save();
         BGL_LOG_INFO("ImportExport", QStringLiteral(
             "Imported title id=%1 name=%2 path=%3 layers=%4")
-            .arg(QString::fromStdString(imported->id),
-                 QString::fromStdString(imported->name),
+            .arg(QString::fromStdString(imported_title->id),
+                 QString::fromStdString(imported_title->name),
                  QString::fromStdString(path))
-            .arg(static_cast<int>(imported->layers.size())));
-        return imported;
+            .arg(static_cast<int>(imported_title->layers.size())));
+        return imported_title;
     } catch (const std::exception &e) {
         if (error) *error = e.what();
         BGL_LOG_ERROR("ImportExport", QStringLiteral(
@@ -7171,6 +7350,7 @@ void TitleDataStore::load()
             if (!preserved_existing_store) {
                 loaded_path_ = path;
                 titles_.clear();
+                clear_title_publications_locked();
                 persistence_ready_for_save_ = error == "Could not open the file.";
             }
         }
@@ -7236,7 +7416,14 @@ void TitleDataStore::load()
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             loaded_path_ = path;
+            clear_title_publications_locked();
             titles_ = std::move(loaded);
+            for (const auto &title : titles_) {
+                if (!title)
+                    continue;
+                title_mutex_locked(title);
+                published_titles_[title->id] = clone_title_snapshot(title);
+            }
             persistence_ready_for_save_ = true;
             loaded_count = titles_.size();
         }
@@ -7257,6 +7444,7 @@ void TitleDataStore::load()
             if (!preserved_existing_store) {
                 loaded_path_ = path;
                 titles_.clear();
+                clear_title_publications_locked();
                 persistence_ready_for_save_ = false;
             }
         }

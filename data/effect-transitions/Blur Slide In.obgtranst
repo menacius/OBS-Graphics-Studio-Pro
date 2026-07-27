@@ -11,5 +11,7 @@
   "offset": 65,
   "blur": 22,
   "stagger": 0.5,
+  "fade": true,
+  "cropToUnitBounds": false,
   "category": "Transitions/Text/Slide"
 }

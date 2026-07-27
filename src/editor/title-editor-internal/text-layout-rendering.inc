@@ -9,21 +9,26 @@ static QColor layer_type_color(LayerType type)
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::TickerLayer);
     case LayerType::SolidRect:
     case LayerType::Shape:
-    case LayerType::Empty:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
     case LayerType::Image:
-    case LayerType::Video:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer);
+    case LayerType::Video:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::VideoLayer);
+    case LayerType::Audio:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::AudioLayer);
+    case LayerType::Empty:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::EmptyLayer);
     case LayerType::Adjustment:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::AdjustmentLayer);
     case LayerType::ColorSolid:
-        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ColorSolidLayer);
+    case LayerType::Light:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::LightLayer);
     case LayerType::Group:
     case LayerType::Asset:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::GroupLayer);
     case LayerType::TransitionInput:
-        return type == LayerType::TransitionInput
-            ? TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer)
-            : TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::GroupLayer);
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer);
     }
     return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
 }
@@ -40,30 +45,66 @@ static QColor layer_color(const Layer &layer, int /*row*/)
     return layer_type_color(layer.type);
 }
 
+static const char *layer_type_icon_name(LayerType type)
+{
+    switch (type) {
+    case LayerType::Text: return "layer-type-text.svg";
+    case LayerType::Clock: return "layer-type-clock.svg";
+    case LayerType::Ticker: return "layer-type-ticker.svg";
+    case LayerType::SolidRect:
+    case LayerType::Shape: return "layer-type-shape.svg";
+    case LayerType::Image: return "layer-type-image.svg";
+    case LayerType::Video: return "layer-type-video.svg";
+    case LayerType::Audio: return "layer-type-audio.svg";
+    case LayerType::Empty: return "layer-type-empty.svg";
+    case LayerType::Adjustment: return "layer-type-adjustment.svg";
+    case LayerType::ColorSolid: return "layer-type-color-solid.svg";
+    case LayerType::Light: return "layer-type-light.svg";
+    case LayerType::Group:
+    case LayerType::Asset:
+    case LayerType::TransitionInput:
+        return nullptr;
+    }
+    return nullptr;
+}
+
 static QString layer_type_short(LayerType type)
 {
     switch (type) {
-    case LayerType::Text: return "T";
-    case LayerType::Clock: return "⏱";
-    case LayerType::Ticker: return "↔";
-    case LayerType::SolidRect: return "■";
-    case LayerType::Image: return "▧";
-    case LayerType::Video: return "▶";
-    case LayerType::Light: return "LGT";
-    case LayerType::Empty: return "E";
-    case LayerType::Shape: return "◆";
-    case LayerType::Adjustment: return "FX";
-    case LayerType::ColorSolid: return "■";
     case LayerType::Group: return "G";
     case LayerType::Asset: return "A";
     case LayerType::TransitionInput: return "A/B";
+    default: return QString();
     }
-    return "•";
 }
 
 static QIcon obs_icon(const char *file_name)
 {
     return bgl_icon(file_name);
+}
+
+static QIcon layer_type_icon(LayerType type, const QColor &foreground)
+{
+    const char *file_name = layer_type_icon_name(type);
+    if (!file_name)
+        return QIcon();
+
+    static QHash<QString, QIcon> cache;
+    const QString key = QStringLiteral("%1|%2")
+        .arg(QString::fromUtf8(file_name))
+        .arg(static_cast<qulonglong>(foreground.rgba()), 8, 16, QLatin1Char('0'));
+    const auto found = cache.constFind(key);
+    if (found != cache.constEnd())
+        return found.value();
+
+    const QIcon icon = bgl_icon(file_name, foreground);
+    cache.insert(key, icon);
+    return icon;
+}
+
+static QIcon layer_type_icon(LayerType type)
+{
+    return layer_type_icon(type, bgl_icon_color());
 }
 
 constexpr double kToolIconPi = 3.14159265358979323846;

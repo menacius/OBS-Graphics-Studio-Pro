@@ -2,11 +2,86 @@
 
 **Broadcast Graphics Live (BGL)** is a native C++/Qt broadcast-graphics plugin for OBS Studio. It combines a dockable title manager, layered 2D/3D editor, rich text, live data and cueing, audio/video layers, reusable assets, native Stinger transitions, GPU rendering, and RAM/disk prerendering without browser sources or a separate playout application.
 
-**Current source build:** `v0.8.13-alpha` · `Development Version 394`
+**Current source build:** `v0.8.14-alpha` · `Development Version 404`
 
-Development Version 394 starts the `v0.8.13-alpha` series and consolidates the work completed since Development Version 281. It retains the Development Version 393 Motion Blur/transition render-deadlock correction, the Development Version 392 crash containment and Spot/Parallel shadow projection fix, and the current 256–4096 px shadow-map range with a 2048 px default.
+Development Version 404 updates the plugin for OBS Studio 32.2.1 and focuses on editor/runtime stability. It removes tab icons, adds lower-left and lower-right dock targets, corrects cue/uncue state publication, prevents title-lifetime and shutdown deadlocks, keeps real-time rendering responsive under model contention, and updates canvas ruler cursor indicators without rerendering the artwork.
 
 ## Highlights since Development Version 281
+
+### Development Version 404 OBS 32.2.1 compatibility and stability
+
+- Rebuilds the native plugin against the OBS Studio 32.2.1 and matching Qt ABI.
+- Makes `build-windows.ps1` detect Qt 6.11.1 from the selected OBS SDK and reset stale mixed-ABI CMake caches automatically.
+- Removes icons from editor tabs and exposes lower-left and lower-right docking targets.
+- Shows `v0.8.14-alpha · Development Version 404` in a persistent header at the top of the main plugin dock.
+- Corrects cue/uncue cache-state gating so live output follows the requested title state.
+- Removes the title-lifetime mutex cycle that could freeze source activation, editor opening, and OBS shutdown.
+- Uses non-blocking model acquisition on the real-time source path so a transient edit cannot stall OBS rendering.
+- Avoids the expensive editor-startup blur-shader path and keeps large text blur on the bounded analytic SDF implementation.
+- Invalidates only the cached GPU overlay when the canvas pointer moves, keeping ruler cursor indicators real-time without rerendering title artwork.
+
+### Development Version 403 background-aware threshold and waveform polarity
+
+- Makes the layer number and the 2D/3D control use the same composited-row foreground selection as the rest of the layer list.
+- Switches to dark theme content only when relative luminance reaches `0.42`, keeping light text/icons on medium-bright custom colors.
+- Removes repeated icons from the layer blend-mode dropdown so its entries are text-only.
+- Draws audio and linked-video waveforms with the opposite dark/light semantic polarity from the strip label and layer-type icon.
+
+### Development Version 401 background-aware layer rows and timeline strips
+
+- Computes contrast from the actual row surface: OBS `Window` plus the translucent layer color, or the opaque selected-layer color.
+- Re-tints visibility, audio, lock, matte and expand controls whenever row selection or the OBS palette changes.
+- Uses the layer-color chip itself to choose the dark/light layer-type icon and fallback abbreviation.
+- Draws the same layer-type icon in timeline strips and chooses strip label, fade, lock hatch and transition text colors from the final strip background; Development Version 403 gives waveforms the opposite polarity.
+- Keeps popup menus and combo dropdowns on their native OBS theme surfaces while the closed controls remain readable over the colored row.
+
+### Development Version 400 layer-type icons and appearance colors
+
+- Uses the supplied Text, Clock, Ticker, Shape, Image, Video, Audio, Empty, Adjustment, Color Solid, Camera and Light SVGs consistently in the Add Layer menu and the layer-list type indicator.
+- Converts the artwork to `currentColor` and refreshes action/row pixmaps on OBS palette or style changes, so dark and light themes use the correct icon tint.
+- Adds dedicated configurable defaults under Preferences > Appearance for Video, Audio, Empty, Adjustment, Color Solid, Camera and Light rows.
+- Keeps Group, Asset and transition-input fallback labels where no replacement artwork was supplied.
+
+
+### Development Version 399 close Point-light text-shadow projection
+
+- Replaces the single two-triangle Point-shadow sprite with a reusable 32×32 UV grid only for close or very wide Text, Clock and Ticker casters.
+- Prevents large text planes from crossing Point cube-face eye planes as canvas-sized triangles, eliminating the sharp diagonal/triangular gaps that appeared when light-to-text Z distance fell below roughly 300 px.
+- Keeps ordinary Shape, Image and Video casters, distant text, Spot/Parallel maps and the receiver PCSS filter on their existing fast paths.
+- Reuses one GPU-resident grid per render session and destroys it with the session, avoiding per-frame vertex-buffer allocation.
+- Advances GPU and persistent visual cache identities so no shadow map generated by the old projection geometry is reused.
+
+### Development Version 398 planar shadows and text continuity
+
+- Uses the same explicit light-space basis, projection centre/span and linear depth normalization in both Spot/Parallel shadow-map generation and receiver sampling.
+- Removes the remaining dependency on backend-specific Qt matrix packing and OpenGL-versus-D3D clip conversion for planar shadows.
+- Expands conservative Text, Clock and Ticker shadow alpha coverage from five taps to a 4×4 projected footprint with a small half-texel dilation, eliminating thin-stroke gaps under minification.
+- Keeps Point-light cube-atlas projection and ordinary Shape, Image and Video caster cost unchanged.
+- Advances GPU and persistent visual cache identities so no stale planar or text-shadow output is reused.
+
+### Development Version 397 text-shadow continuity
+
+- Uses projected-footprint max-alpha sampling for Text, Clock and Ticker shadow casters so thin glyph stems and diagonals remain continuous after shadow-map minification.
+- Keeps Shape, Image and Video casters on the original single-sample shadow writer, avoiding a general shadow-rendering cost increase.
+- Enforces a `0.1 px` minimum Source Size in both property panels, loaded/keyframed light data, runtime evaluation and editor light visualization.
+- Invalidates visual/GPU cache identities for the corrected shadow writer while preserving the Development Version 396 effect-cache fast path.
+
+### Development Version 396 effects performance audit
+
+- Moves static effect-output cache validation ahead of per-effect animation resolution, shader-registry lookup and shader queue checks.
+- Skips conservative, mathematically neutral built-in effect states before shader acquisition and GPU render-target allocation.
+- Leaves custom extension shaders untouched unless their ID resolves to a registered built-in effect, avoiding unsafe assumptions about extension parameter semantics.
+- Adds debug performance counters for effect-output cache hits/misses and no-op passes removed.
+- Preserves the existing full/fast Motion Blur temporal paths and effect-stack ordering.
+
+### Development Version 395 performance audit
+
+- Reworked the logger around cached preferences, lazy message construction and a persistent buffered file handle instead of repeated `QSettings` reads and file open/close operations on hot paths.
+- Disabled verbose timing/presentation/render-diagnostic categories by default while retaining opt-in diagnostics through Preferences.
+- Avoided render-session diagnostic snapshots and associated mutex acquisition unless their log category is enabled.
+- Stopped treating ordinary `QEvent::LayoutRequest` traffic as a structural dock transition, preserving editor playback pacing while transport labels and controls update.
+- Reduced Point-light six-face atlas area by 4× at each authored quality setting; Spot and Parallel lights retain the selected 256–4096 px planar resolution.
+
 
 ### Vector stroke animation
 

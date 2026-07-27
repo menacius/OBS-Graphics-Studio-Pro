@@ -483,13 +483,14 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
 {
     std::vector<HotkeyDescriptor> descriptors;
     std::map<std::string, int> name_counts;
+    const auto titles = TitleDataStore::instance().title_snapshots();
 
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : titles) {
         if (title && !title->is_asset)
             ++name_counts[title_display_name(title)];
     }
 
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : titles) {
         if (!title || title->is_asset) continue;
 
         const std::string safe_title_id = hotkey_safe_id(title->id);

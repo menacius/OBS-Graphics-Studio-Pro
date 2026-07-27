@@ -10,5 +10,7 @@
   "direction": "up",
   "offset": 55,
   "stagger": 0.5,
+  "fade": true,
+  "cropToUnitBounds": false,
   "category": "Transitions/Text/Slide"
 }

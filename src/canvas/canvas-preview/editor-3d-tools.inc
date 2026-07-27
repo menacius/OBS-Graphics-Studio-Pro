@@ -1108,7 +1108,7 @@ void CanvasPreview::draw_light_layer_overlays(QPainter &p)
                                    light.type == TitleLightType::Spot ||
                                    light.type == TitleLightType::Parallel;
         const double authored_source_size = std::max(
-            0.0, light.source_size.evaluate(playhead_));
+            0.1, light.source_size.evaluate(playhead_));
         if (selected && finite_source && authored_source_size > 0.0001) {
             const double projection_width = std::max(
                 1.0, static_cast<double>(projection->width));

@@ -1014,6 +1014,9 @@ uniform int shadowEnabled0;
 uniform int shadowKind0;
 uniform float4x4 shadowViewProj0;
 uniform float3 shadowLightPosition0;
+uniform float4 shadowBasisRightCenterX0;
+uniform float4 shadowBasisUpCenterY0;
+uniform float3 shadowBasisForward0;
 uniform float shadowNear0;
 uniform float shadowFar0;
 uniform float2 shadowProjectionSpan0;
@@ -1026,6 +1029,9 @@ uniform int shadowEnabled1;
 uniform int shadowKind1;
 uniform float4x4 shadowViewProj1;
 uniform float3 shadowLightPosition1;
+uniform float4 shadowBasisRightCenterX1;
+uniform float4 shadowBasisUpCenterY1;
+uniform float3 shadowBasisForward1;
 uniform float shadowNear1;
 uniform float shadowFar1;
 uniform float2 shadowProjectionSpan1;
@@ -1038,6 +1044,9 @@ uniform int shadowEnabled2;
 uniform int shadowKind2;
 uniform float4x4 shadowViewProj2;
 uniform float3 shadowLightPosition2;
+uniform float4 shadowBasisRightCenterX2;
+uniform float4 shadowBasisUpCenterY2;
+uniform float3 shadowBasisForward2;
 uniform float shadowNear2;
 uniform float shadowFar2;
 uniform float2 shadowProjectionSpan2;
@@ -1050,6 +1059,9 @@ uniform int shadowEnabled3;
 uniform int shadowKind3;
 uniform float4x4 shadowViewProj3;
 uniform float3 shadowLightPosition3;
+uniform float4 shadowBasisRightCenterX3;
+uniform float4 shadowBasisUpCenterY3;
+uniform float3 shadowBasisForward3;
 uniform float shadowNear3;
 uniform float shadowFar3;
 uniform float2 shadowProjectionSpan3;
@@ -1434,24 +1446,36 @@ float shadow_linear_depth(float depth, int shadowKind,
 {
     float safeNear = max(nearPlane, 0.0001);
     float safeFar = max(farPlane, safeNear + 0.0001);
-    if (shadowKind == 1)
-        return safeNear * safeFar /
-            max(safeFar - depth * (safeFar - safeNear), 0.0001);
     return safeNear + depth * (safeFar - safeNear);
 }
 float planar_shadow_visibility(int shadowIndex, float3 worldPosition,
-                               float4x4 shadowMatrix, int shadowKind,
+                               int shadowKind, float3 lightPosition,
+                               float4 basisRightCenterX,
+                               float4 basisUpCenterY,
+                               float3 basisForward,
                                float nearPlane, float farPlane,
                                float2 projectionSpan, float darkness,
                                float bias, float softness, float sourceSize,
                                float2 texelSize)
 {
-    float4 shadowClip = mul(float4(worldPosition, 1.0), shadowMatrix);
-    if (shadowClip.w <= 0.000001)
+    float3 relative = worldPosition - lightPosition;
+    float depth = dot(relative, basisForward);
+    if (depth <= 0.000001)
         return 1.0;
-    float3 ndc = shadowClip.xyz / shadowClip.w;
-    float2 uv = float2(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
-    float receiverDepth = ndc.z * 0.5 + 0.5;
+    float2 localPoint = float2(dot(relative, basisRightCenterX.xyz),
+                               dot(relative, basisUpCenterY.xyz));
+    float2 projectionCenter = float2(basisRightCenterX.w,
+                                     basisUpCenterY.w);
+    float2 halfSpan = max(projectionSpan * 0.5,
+                          float2(0.0001, 0.0001));
+    float2 ndcXY = shadowKind == 1
+        ? (localPoint - projectionCenter) / max(halfSpan * depth,
+            float2(0.0001, 0.0001))
+        : (localPoint - projectionCenter) / halfSpan;
+    float2 uv = float2(ndcXY.x * 0.5 + 0.5,
+                       1.0 - (ndcXY.y * 0.5 + 0.5));
+    float receiverDepth = (depth - nearPlane) /
+        max(farPlane - nearPlane, 0.0001);
     if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0 ||
         receiverDepth <= 0.0 || receiverDepth >= 1.0)
         return 1.0;
@@ -1788,7 +1812,10 @@ float point_shadow_visibility(int shadowIndex, float3 worldPosition,
 }
 float shadow_visibility(int shadowIndex, float3 worldPosition,
                         float4x4 shadowMatrix, int enabled, int shadowKind,
-                        float3 shadowLightPosition, float shadowNear,
+                        float3 shadowLightPosition,
+                        float4 shadowBasisRightCenterX,
+                        float4 shadowBasisUpCenterY,
+                        float3 shadowBasisForward, float shadowNear,
                         float shadowFar, float2 shadowProjectionSpan,
                         float darkness, float bias, float softness,
                         float sourceSize, float2 texelSize)
@@ -1801,9 +1828,11 @@ float shadow_visibility(int shadowIndex, float3 worldPosition,
             shadowFar, darkness, bias, softness, sourceSize, texelSize);
     if (shadowKind == 1 || shadowKind == 3)
         return planar_shadow_visibility(
-            shadowIndex, worldPosition, shadowMatrix, shadowKind,
-            shadowNear, shadowFar, shadowProjectionSpan, darkness, bias,
-            softness, sourceSize, texelSize);
+            shadowIndex, worldPosition, shadowKind, shadowLightPosition,
+            shadowBasisRightCenterX, shadowBasisUpCenterY,
+            shadowBasisForward, shadowNear, shadowFar,
+            shadowProjectionSpan, darkness, bias, softness, sourceSize,
+            texelSize);
     return 1.0;
 }
 )"
@@ -1838,19 +1867,27 @@ float4 apply_material_lighting(float4 premultipliedColor, float2 uv)
 
     float shadowVisibility0 = shadow_visibility(0, worldPosition,
         shadowViewProj0, shadowEnabled0, shadowKind0, shadowLightPosition0,
-        shadowNear0, shadowFar0, shadowProjectionSpan0, shadowDarkness0,
+        shadowBasisRightCenterX0, shadowBasisUpCenterY0,
+        shadowBasisForward0, shadowNear0, shadowFar0,
+        shadowProjectionSpan0, shadowDarkness0,
         shadowBias0, shadowSoftness0, lightSourceSize0, shadowTexelSize0);
     float shadowVisibility1 = shadow_visibility(1, worldPosition,
         shadowViewProj1, shadowEnabled1, shadowKind1, shadowLightPosition1,
-        shadowNear1, shadowFar1, shadowProjectionSpan1, shadowDarkness1,
+        shadowBasisRightCenterX1, shadowBasisUpCenterY1,
+        shadowBasisForward1, shadowNear1, shadowFar1,
+        shadowProjectionSpan1, shadowDarkness1,
         shadowBias1, shadowSoftness1, lightSourceSize1, shadowTexelSize1);
     float shadowVisibility2 = shadow_visibility(2, worldPosition,
         shadowViewProj2, shadowEnabled2, shadowKind2, shadowLightPosition2,
-        shadowNear2, shadowFar2, shadowProjectionSpan2, shadowDarkness2,
+        shadowBasisRightCenterX2, shadowBasisUpCenterY2,
+        shadowBasisForward2, shadowNear2, shadowFar2,
+        shadowProjectionSpan2, shadowDarkness2,
         shadowBias2, shadowSoftness2, lightSourceSize2, shadowTexelSize2);
     float shadowVisibility3 = shadow_visibility(3, worldPosition,
         shadowViewProj3, shadowEnabled3, shadowKind3, shadowLightPosition3,
-        shadowNear3, shadowFar3, shadowProjectionSpan3, shadowDarkness3,
+        shadowBasisRightCenterX3, shadowBasisUpCenterY3,
+        shadowBasisForward3, shadowNear3, shadowFar3,
+        shadowProjectionSpan3, shadowDarkness3,
         shadowBias3, shadowSoftness3, lightSourceSize3, shadowTexelSize3);
 
     accumulate_light(lightPositionType0, lightDirectionIntensity0,
@@ -1926,10 +1963,20 @@ uniform float3 planeAxisU;
 uniform float3 planeAxisV;
 uniform float opacity;
 uniform float alphaCutoff;
+uniform int conservativeAlpha;
+uniform float2 sourceTexelSize;
 uniform int pointShadow;
 uniform int pointShadowFace;
 uniform float3 pointLightPosition;
 uniform float pointShadowFar;
+uniform int shadowKind;
+uniform float3 shadowRight;
+uniform float3 shadowUp;
+uniform float3 shadowForward;
+uniform float2 shadowProjectionCenter;
+uniform float2 shadowProjectionSpan;
+uniform float shadowNear;
+uniform float shadowFar;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 lightClip : TEXCOORD1; float3 worldPosition : TEXCOORD2; };
@@ -1963,15 +2010,29 @@ VertDataOut VSShadow(VertDataIn v)
                        faceDepth * faceProjection.z,
                        faceProjection.z);
     } else {
-        /* QMatrix4x4 perspective/orthographic projections produce OpenGL-style
-         * clip Z in -W..W. OBS' Windows renderer is D3D11, where clip Z must be
-         * 0..W. Passing the raw Qt clip position therefore discards Spot and
-         * Parallel casters before the pixel shader even though the draw call
-         * itself succeeds. Preserve the raw lightClip for normalized depth
-         * storage, but remap only the rasterizer position to D3D's range. */
-        o.pos = float4(o.lightClip.xy,
-                       o.lightClip.z * 0.5 + o.lightClip.w * 0.5,
-                       o.lightClip.w);
+        /* Spot and Parallel maps are projected explicitly in the same
+         * light-space basis used by the receiver. This avoids backend-specific
+         * matrix packing and OpenGL-vs-D3D clip conventions entirely. */
+        float3 relative = worldPosition - pointLightPosition;
+        float depth = dot(relative, shadowForward);
+        float2 localPoint = float2(dot(relative, shadowRight),
+                                   dot(relative, shadowUp));
+        float2 halfSpan = max(shadowProjectionSpan * 0.5,
+                              float2(0.0001, 0.0001));
+        float normalizedDepth = (depth - shadowNear) /
+            max(shadowFar - shadowNear, 0.0001);
+        float2 ndcXY;
+        if (shadowKind == 1) {
+            float safeDepth = max(depth, 0.000001);
+            ndcXY = (localPoint - shadowProjectionCenter) /
+                max(halfSpan * safeDepth, float2(0.0001, 0.0001));
+            o.pos = float4(ndcXY * safeDepth,
+                           normalizedDepth * safeDepth, safeDepth);
+        } else {
+            ndcXY = (localPoint - shadowProjectionCenter) / halfSpan;
+            o.pos = float4(ndcXY, normalizedDepth, 1.0);
+        }
+        o.lightClip = float4(ndcXY, normalizedDepth, 1.0);
     }
     o.uv = v.uv;
     o.worldPosition = worldPosition;
@@ -1979,12 +2040,34 @@ VertDataOut VSShadow(VertDataIn v)
 }
 float4 PSShadow(VertDataOut v) : TARGET
 {
-    float alpha = image.Sample(textureSampler, v.uv).a * opacity;
-    clip(alpha - alphaCutoff);
+    float alpha = image.Sample(textureSampler, v.uv).a;
+    if (conservativeAlpha != 0) {
+        /* Text/Clock/Ticker are alpha-cutout planes. Under strong shadow-map
+         * minification a five-point quincunx can still miss a thin diagonal or
+         * one-pixel stem between taps. Resolve a full 4x4 projected footprint
+         * only for text-like casters and retain the maximum alpha. The extra
+         * half-texel dilation closes coverage gaps without changing ordinary
+         * Shape/Image/Video shadow cost. */
+        float2 footprint = max(
+            float2(fwidth(v.uv.x), fwidth(v.uv.y)), sourceTexelSize);
+        float2 radius = footprint * 0.5 + sourceTexelSize * 0.5;
+        for (int sampleY = 0; sampleY < 4; ++sampleY) {
+            float offsetY = ((float)sampleY / 3.0 * 2.0 - 1.0) * radius.y;
+            for (int sampleX = 0; sampleX < 4; ++sampleX) {
+                float offsetX = ((float)sampleX / 3.0 * 2.0 - 1.0) * radius.x;
+                alpha = max(alpha, image.Sample(textureSampler,
+                    v.uv + float2(offsetX, offsetY)).a);
+            }
+        }
+    }
+    alpha *= opacity;
+    float effectiveCutoff = conservativeAlpha != 0
+        ? min(alphaCutoff, 0.0005) : alphaCutoff;
+    clip(alpha - effectiveCutoff);
     float depth = pointShadow != 0
         ? length(v.worldPosition - pointLightPosition) /
             max(pointShadowFar, 0.0001)
-        : v.lightClip.z / max(v.lightClip.w, 0.000001) * 0.5 + 0.5;
+        : v.lightClip.z;
     return float4(clamp(depth, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
 technique Draw { pass { vertex_shader = VSShadow(v); pixel_shader = PSShadow(v); } }
@@ -2418,6 +2501,7 @@ struct TitleGpuRenderSession {
         gs_texrender_t *primitive_targets[2] = {nullptr, nullptr};
         int primitive_active_target = -1;
         gs_texrender_t *effect_cache = nullptr;
+        uint64_t effect_cache_last_used = 0;
         /* Free-transform geometry is immutable for ordinary ticker playback.
          * Keep it GPU-resident and rebuild only when the quad, raster bounds or
          * evaluated transform actually changes. */
@@ -2465,6 +2549,8 @@ struct TitleGpuRenderSession {
         qint64 file_size = -1;
         uint32_t width = 0;
         uint32_t height = 0;
+        quint64 bytes = 0;
+        uint64_t last_used = 0;
     };
 
     struct AsyncReadbackSlot {

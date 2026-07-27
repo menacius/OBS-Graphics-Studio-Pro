@@ -89,6 +89,10 @@ struct LayerTransition {
     double stagger = 0.35;
     double softness = 0.0;
     bool reverse_order = false;
+    /* Text Slide/Blur Slide options. Fade preserves the historical default;
+     * unit cropping clips the moving unit to its authored Animate By bounds. */
+    bool text_slide_fade = true;
+    bool text_slide_crop_to_unit_bounds = false;
 
     /* Procedural/matte transition controls. */
     int blocks_columns = 8;

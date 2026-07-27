@@ -26,6 +26,8 @@ Text and image properties can be exposed to the Titles and Graphics dock. Cue ro
 
 Cue states include inactive, queued, active, and ending/outro. Runtime counters can show elapsed or remaining time according to playback mode. Uncue continues from the current frame and reaches the authored end before applying the configured end behavior.
 
+Cue and uncue publication is runtime state, not an authoring edit. Cache eligibility is evaluated against the requested cue snapshot and playback state before a cached frame is accepted. The title store returns shared ownership without holding a lifetime mutex for the duration of editor access; source activation and OBS shutdown therefore cannot wait on an editor-held title lease. If the editor briefly owns the model lock, the real-time source path retains its last valid presentation rather than blocking the OBS graphics thread.
+
 ## External data
 
 External data now has a provider-neutral core separate from the existing cue import/append workflow. A title can serialize named source definitions and typed fields, while `ExternalDataManager` owns runtime current values, source/field timestamps, and connection or error state. Current provider values are deliberately not written into title JSON.

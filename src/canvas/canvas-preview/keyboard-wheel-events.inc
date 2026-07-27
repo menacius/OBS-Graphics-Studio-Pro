@@ -20,6 +20,10 @@ void CanvasPreview::render_to_frame()
     render_in_progress_ = true;
     QElapsedTimer render_cost;
     render_cost.start();
+    const bool trace_render_diagnostics = TitleLogger::wouldLog(
+        TitleLogLevel::Trace, "RenderDiagnostics");
+    const bool warn_render_diagnostics = TitleLogger::wouldLog(
+        TitleLogLevel::Warning, "RenderDiagnostics");
 
     frame_image_ = QImage();
     frame_image_canvas_offset_ = QPoint();
@@ -32,7 +36,7 @@ void CanvasPreview::render_to_frame()
     std::size_t diagnostic_extrusion_layers = 0;
     std::size_t diagnostic_visible_lights = 0;
     QStringList diagnostic_extrusion_ids;
-    if (render_title) {
+    if (trace_render_diagnostics && render_title) {
         for (const auto &layer : render_title->layers) {
             if (!layer)
                 continue;
@@ -270,40 +274,42 @@ void CanvasPreview::render_to_frame()
             title_gpu_render_session_update(gpu_render_session_, *render_title,
                                             playhead_, gpu_model_revision_,
                                             transform_only_update);
-            TitleGpuRenderDiagnostics session_diagnostics;
-            const bool have_session_diagnostics =
-                title_gpu_render_session_get_diagnostics(
-                    gpu_render_session_, session_diagnostics);
-            BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
-                "stage=canvas-session-updated canvas=%1 request=%2 session=%3 playhead=%4 revision=%5 submittedCache=%6 preservePrevious=%7 adaptiveScale=%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 sessionDirty=%14 pendingRasters=%15 extrusionLayers=%16 depthRuns=%17 extrusionPasses=%18")
-                .arg(reinterpret_cast<quintptr>(this), 0, 16)
-                .arg(diagnostic_render_request)
-                .arg(reinterpret_cast<quintptr>(gpu_render_session_), 0, 16)
-                .arg(playhead_, 0, 'f', 9)
-                .arg(gpu_model_revision_)
-                .arg(submitted_cached_frame ? 1 : 0)
-                .arg(preserve_previous_cached_frame ? 1 : 0)
-                .arg(frame_image_preview_scale_, 0, 'f', 3)
-                .arg(have_session_diagnostics ? 1 : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.session_time : -1.0,
-                     0, 'f', 9)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.update_serial : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.render_serial : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.publish_serial : 0)
-                .arg(have_session_diagnostics &&
-                         session_diagnostics.frame_dirty ? 1 : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.pending_raster_count : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.extrusion_layer_count : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.hardware_depth_run_count : 0)
-                .arg(have_session_diagnostics
-                         ? session_diagnostics.extrusion_pass_count : 0));
+            if (trace_render_diagnostics) {
+                TitleGpuRenderDiagnostics session_diagnostics;
+                const bool have_session_diagnostics =
+                    title_gpu_render_session_get_diagnostics(
+                        gpu_render_session_, session_diagnostics);
+                BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+                    "stage=canvas-session-updated canvas=%1 request=%2 session=%3 playhead=%4 revision=%5 submittedCache=%6 preservePrevious=%7 adaptiveScale=%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 sessionDirty=%14 pendingRasters=%15 extrusionLayers=%16 depthRuns=%17 extrusionPasses=%18")
+                    .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                    .arg(diagnostic_render_request)
+                    .arg(reinterpret_cast<quintptr>(gpu_render_session_), 0, 16)
+                    .arg(playhead_, 0, 'f', 9)
+                    .arg(gpu_model_revision_)
+                    .arg(submitted_cached_frame ? 1 : 0)
+                    .arg(preserve_previous_cached_frame ? 1 : 0)
+                    .arg(frame_image_preview_scale_, 0, 'f', 3)
+                    .arg(have_session_diagnostics ? 1 : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.session_time : -1.0,
+                         0, 'f', 9)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.update_serial : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.render_serial : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.publish_serial : 0)
+                    .arg(have_session_diagnostics &&
+                             session_diagnostics.frame_dirty ? 1 : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.pending_raster_count : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.extrusion_layer_count : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.hardware_depth_run_count : 0)
+                    .arg(have_session_diagnostics
+                             ? session_diagnostics.extrusion_pass_count : 0));
+            }
         }
         if (!preserve_previous_cached_frame) {
             gpu_model_dirty_ = false;
@@ -331,38 +337,83 @@ void CanvasPreview::render_to_frame()
     ++render_cost_sample_count_;
 
     TitleGpuRenderDiagnostics final_session_diagnostics;
-    const bool have_final_session_diagnostics = gpu_render_session_ &&
-        title_gpu_render_session_get_diagnostics(
-            gpu_render_session_, final_session_diagnostics);
-    if (std::isfinite(diagnostics_last_prepared_playhead_) &&
-        std::abs(diagnostics_last_prepared_playhead_ - playhead_) < 1e-9) {
-        ++diagnostics_repeated_prepared_playhead_count_;
-    } else {
-        diagnostics_last_prepared_playhead_ = playhead_;
-        diagnostics_repeated_prepared_playhead_count_ = 1;
-        if (diagnostics_repeated_playhead_clock_.isValid())
-            diagnostics_repeated_playhead_clock_.restart();
-        else
-            diagnostics_repeated_playhead_clock_.start();
+    bool have_final_session_diagnostics = false;
+    if ((trace_render_diagnostics || warn_render_diagnostics) &&
+        gpu_render_session_) {
+        have_final_session_diagnostics =
+            title_gpu_render_session_get_diagnostics(
+                gpu_render_session_, final_session_diagnostics);
     }
-    const qint64 repeated_ms = diagnostics_repeated_playhead_clock_.isValid()
-        ? diagnostics_repeated_playhead_clock_.elapsed() : 0;
-    if (transport_playback_active_ &&
-        diagnostics_repeated_prepared_playhead_count_ >= 5 &&
-        repeated_ms >= 150) {
-        BGL_LOG_WARNING("RenderDiagnostics", QStringLiteral(
-            "stage=canvas-stall-suspect canvas=%1 request=%2 title=%3 playhead=%4 repeatedPrepared=%5 repeatedMs=%6 playheadRequests=%7 dirty=%8 playbackPending=%9 modelDirty=%10 revision=%11 sessionValid=%12 sessionTime=%13 sessionUpdate=%14 sessionRender=%15 sessionPublish=%16 publishedTime=%17 sessionDirty=%18 deferred=%19 pendingRasters=%20 extrusionLayers=%21 depthRuns=%22 extrusionPasses=%23")
+    if (warn_render_diagnostics) {
+        if (std::isfinite(diagnostics_last_prepared_playhead_) &&
+            std::abs(diagnostics_last_prepared_playhead_ - playhead_) < 1e-9) {
+            ++diagnostics_repeated_prepared_playhead_count_;
+        } else {
+            diagnostics_last_prepared_playhead_ = playhead_;
+            diagnostics_repeated_prepared_playhead_count_ = 1;
+            if (diagnostics_repeated_playhead_clock_.isValid())
+                diagnostics_repeated_playhead_clock_.restart();
+            else
+                diagnostics_repeated_playhead_clock_.start();
+        }
+        const qint64 repeated_ms = diagnostics_repeated_playhead_clock_.isValid()
+            ? diagnostics_repeated_playhead_clock_.elapsed() : 0;
+        if (transport_playback_active_ &&
+            diagnostics_repeated_prepared_playhead_count_ >= 5 &&
+            repeated_ms >= 150) {
+            BGL_LOG_WARNING("RenderDiagnostics", QStringLiteral(
+                "stage=canvas-stall-suspect canvas=%1 request=%2 title=%3 playhead=%4 repeatedPrepared=%5 repeatedMs=%6 playheadRequests=%7 dirty=%8 playbackPending=%9 modelDirty=%10 revision=%11 sessionValid=%12 sessionTime=%13 sessionUpdate=%14 sessionRender=%15 sessionPublish=%16 publishedTime=%17 sessionDirty=%18 deferred=%19 pendingRasters=%20 extrusionLayers=%21 depthRuns=%22 extrusionPasses=%23")
+                .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                .arg(diagnostic_render_request)
+                .arg(title_ ? QString::fromStdString(title_->id)
+                            : QStringLiteral("<none>"))
+                .arg(playhead_, 0, 'f', 9)
+                .arg(diagnostics_repeated_prepared_playhead_count_)
+                .arg(repeated_ms)
+                .arg(diagnostics_playhead_request_serial_)
+                .arg(dirty_ ? 1 : 0)
+                .arg(playback_frame_pending_ ? 1 : 0)
+                .arg(gpu_model_dirty_ ? 1 : 0)
+                .arg(gpu_model_revision_)
+                .arg(have_final_session_diagnostics ? 1 : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.session_time : -1.0,
+                     0, 'f', 9)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.update_serial : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.render_serial : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.publish_serial : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.last_published_time : -1.0,
+                     0, 'f', 9)
+                .arg(have_final_session_diagnostics &&
+                         final_session_diagnostics.frame_dirty ? 1 : 0)
+                .arg(have_final_session_diagnostics &&
+                         final_session_diagnostics.last_draw_deferred ? 1 : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.pending_raster_count : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.extrusion_layer_count : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.hardware_depth_run_count : 0)
+                .arg(have_final_session_diagnostics
+                         ? final_session_diagnostics.extrusion_pass_count : 0));
+            diagnostics_repeated_playhead_clock_.restart();
+        }
+    }
+    if (trace_render_diagnostics) {
+        BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
+            "stage=canvas-render-end canvas=%1 request=%2 session=%3 title=%4 playhead=%5 costMs=%6 scale=%7 revision=%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 publishedTime=%14 sessionDirty=%15 deferred=%16 rasters=%17 pending=%18 extrusionLayers=%19 lights=%20 depthRuns=%21 depthLayers=%22 extrusionPasses=%23")
             .arg(reinterpret_cast<quintptr>(this), 0, 16)
             .arg(diagnostic_render_request)
+            .arg(reinterpret_cast<quintptr>(gpu_render_session_), 0, 16)
             .arg(title_ ? QString::fromStdString(title_->id)
                         : QStringLiteral("<none>"))
             .arg(playhead_, 0, 'f', 9)
-            .arg(diagnostics_repeated_prepared_playhead_count_)
-            .arg(repeated_ms)
-            .arg(diagnostics_playhead_request_serial_)
-            .arg(dirty_ ? 1 : 0)
-            .arg(playback_frame_pending_ ? 1 : 0)
-            .arg(gpu_model_dirty_ ? 1 : 0)
+            .arg(cost_ms)
+            .arg(frame_image_preview_scale_, 0, 'f', 3)
             .arg(gpu_model_revision_)
             .arg(have_final_session_diagnostics ? 1 : 0)
             .arg(have_final_session_diagnostics
@@ -382,57 +433,20 @@ void CanvasPreview::render_to_frame()
             .arg(have_final_session_diagnostics &&
                      final_session_diagnostics.last_draw_deferred ? 1 : 0)
             .arg(have_final_session_diagnostics
+                     ? final_session_diagnostics.raster_count : 0)
+            .arg(have_final_session_diagnostics
                      ? final_session_diagnostics.pending_raster_count : 0)
             .arg(have_final_session_diagnostics
                      ? final_session_diagnostics.extrusion_layer_count : 0)
             .arg(have_final_session_diagnostics
+                     ? final_session_diagnostics.visible_light_layer_count : 0)
+            .arg(have_final_session_diagnostics
                      ? final_session_diagnostics.hardware_depth_run_count : 0)
             .arg(have_final_session_diagnostics
+                     ? final_session_diagnostics.hardware_depth_layer_count : 0)
+            .arg(have_final_session_diagnostics
                      ? final_session_diagnostics.extrusion_pass_count : 0));
-        diagnostics_repeated_playhead_clock_.restart();
     }
-    BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
-        "stage=canvas-render-end canvas=%1 request=%2 session=%3 title=%4 playhead=%5 costMs=%6 scale=%7 revision=%8 sessionValid=%9 sessionTime=%10 sessionUpdate=%11 sessionRender=%12 sessionPublish=%13 publishedTime=%14 sessionDirty=%15 deferred=%16 rasters=%17 pending=%18 extrusionLayers=%19 lights=%20 depthRuns=%21 depthLayers=%22 extrusionPasses=%23")
-        .arg(reinterpret_cast<quintptr>(this), 0, 16)
-        .arg(diagnostic_render_request)
-        .arg(reinterpret_cast<quintptr>(gpu_render_session_), 0, 16)
-        .arg(title_ ? QString::fromStdString(title_->id)
-                    : QStringLiteral("<none>"))
-        .arg(playhead_, 0, 'f', 9)
-        .arg(cost_ms)
-        .arg(frame_image_preview_scale_, 0, 'f', 3)
-        .arg(gpu_model_revision_)
-        .arg(have_final_session_diagnostics ? 1 : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.session_time : -1.0,
-             0, 'f', 9)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.update_serial : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.render_serial : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.publish_serial : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.last_published_time : -1.0,
-             0, 'f', 9)
-        .arg(have_final_session_diagnostics &&
-                 final_session_diagnostics.frame_dirty ? 1 : 0)
-        .arg(have_final_session_diagnostics &&
-                 final_session_diagnostics.last_draw_deferred ? 1 : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.raster_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.pending_raster_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.extrusion_layer_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.visible_light_layer_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.hardware_depth_run_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.hardware_depth_layer_count : 0)
-        .arg(have_final_session_diagnostics
-                 ? final_session_diagnostics.extrusion_pass_count : 0));
     BGL_LOG_TRACE("Performance", QStringLiteral(
         "Canvas frame prepared title=%1 time=%2 costMs=%3 scale=%4")
         .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
@@ -1182,10 +1196,16 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 {
     if (shutting_down_)
         return;
-    /* Artwork is presented through the editor-owned OBS GPU swap chain, so underlay/overlay QImage cache
-     * changes are not a prerequisite for rendering a dirty GPU frame. */
-    render_dirty_frame_if_due();
-    if (ensure_gpu_display()) {
+    /* Create the editor swapchain before a dirty render is allowed to queue its
+     * first-use shader compilation. gs_effect_create() owns OBS' global graphics
+     * context while the driver compiles; attempting gs_swapchain_create() after
+     * that point blocks this UI thread for the complete compile duration. */
+    const bool gpu_display_ready = ensure_gpu_display();
+    if (gpu_display_ready) {
+        /* Artwork is presented through the editor-owned OBS GPU swap chain, so
+         * underlay/overlay QImage cache changes are not a prerequisite for
+         * rendering a dirty GPU frame. */
+        render_dirty_frame_if_due();
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
         const QSize pixel_size(std::max(1, qRound(width() * dpr)),
                                std::max(1, qRound(height() * dpr)));
@@ -1203,6 +1223,22 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         const bool shader_compile_visible = gpu_render_session_ &&
             title_gpu_render_session_shader_compile_status(
                 gpu_render_session_, shader_compile_status);
+        if (shader_compile_visible) {
+            /* Texture upload and presentation also enter the same global OBS
+             * graphics context. Never wait for the compile worker from Qt's
+             * paint event: keep processing editor input and repaint once the
+             * worker releases the context. The already-created swapchain keeps
+             * its last stable frame (or remains blank on the very first open). */
+            if (gpu_display_) {
+                std::lock_guard<std::mutex> display_lock(gpu_display_->mutex);
+                gpu_display_->shader_compile_screen_active = true;
+            }
+            QTimer::singleShot(display_refresh_interval_ms_, this, [this]() {
+                if (!shutting_down_)
+                    update();
+            });
+            return;
+        }
         const QString shader_compile_key = shader_compile_visible
             ? QStringLiteral("%1|%2|%3|%4|%5")
                   .arg(shader_compile_status.active ? 1 : 0)

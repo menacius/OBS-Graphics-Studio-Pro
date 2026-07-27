@@ -54,6 +54,11 @@
      * a six-face 3x2 atlas in the same texture, avoiding cube-sampler and
      * texture-unit portability limits across OBS graphics backends. */
     std::array<gs_texrender_t *, 4> shadow_targets {};
+    /* A close Point light can make one wide text quad span several cube faces.
+     * The reusable UV grid keeps face clipping local to small cells instead of
+     * clipping two canvas-sized triangles across W=0, which produced the
+     * triangular gaps reported below roughly 300 px of caster distance. */
+    gs_vertbuffer_t *close_point_text_shadow_grid = nullptr;
     std::array<bool, 4> shadow_target_unavailable {};
     /* R32F is the preferred numeric depth surface. Some OBS graphics
      * backends/drivers expose the enum but cannot begin an R32F texrender with
@@ -80,6 +85,15 @@
      * 3 orthographic/Parallel. */
     std::array<int, 4> shadow_map_kind {};
     std::array<QVector3D, 4> shadow_light_positions {};
+    /* Spot/Parallel maps use an explicit light-space basis rather than a Qt
+     * projection matrix in the shader. This keeps writer and receiver math
+     * identical on D3D11/OpenGL/Metal and avoids backend matrix-layout or clip
+     * convention mismatches. */
+    std::array<QVector3D, 4> shadow_light_rights {};
+    std::array<QVector3D, 4> shadow_light_ups {};
+    std::array<QVector3D, 4> shadow_light_forwards {};
+    std::array<float, 4> shadow_projection_center_x {};
+    std::array<float, 4> shadow_projection_center_y {};
     std::array<float, 4> shadow_near_plane {0.01f, 0.01f, 0.01f, 0.01f};
     std::array<float, 4> shadow_far_plane {1.0f, 1.0f, 1.0f, 1.0f};
     /* Perspective entries store 2*tan(fov/2); orthographic entries store
@@ -174,8 +188,13 @@
      * texture that is still sampled by the currently published frame. */
     std::unordered_map<std::string, MaskTextureCacheEntry> mask_texture_cache;
     uint64_t mask_texture_cache_tick = 0;
+    quint64 mask_texture_cache_bytes = 0;
+    uint64_t effect_cache_tick = 0;
+    quint64 effect_cache_bytes = 0;
     std::unordered_map<std::string, GroupRenderDiagnostics> group_render_diagnostics;
     std::unordered_map<std::string, TransitionMatteTexture> transition_matte_textures;
+    uint64_t transition_matte_cache_tick = 0;
+    quint64 transition_matte_cache_bytes = 0;
 
     /* Keep presentation/cache blits isolated from layer-copy uniforms.
      * Reusing copy_effect here leaked the last layer's wipe/crop state into the
@@ -1061,13 +1080,12 @@ static QRect gpu_text_surface_rect(const Title &title, const Layer &layer,
     return surface;
 }
 
-/* Every ordinary text-like layer uses one shaped glyph pipeline. H/V Scale is
- * stored on the immutable glyph and applied to its baseline-relative GPU quad;
- * the same TextAnimatorEvaluation is consumed for manually-authored animators
- * and transition-managed animators. Do not route managed transitions through
- * QTextDocument: its font-size/stretch compensation has platform-dependent
- * width-face thresholds (for example a visible jump between V Scale 89% and
- * 90% on DirectWrite) and reintroduces the old tracking-like H Scale. */
+/* Static Text, Clock and Ticker layers use the exact Qt compatibility raster.
+ * Timeline text transitions use its shaped isolated-unit compositor as well:
+ * that path preserves fractional QPainter coverage while deriving every crop
+ * from painted alpha. Do not compensate for SDF aliasing by expanding glyph
+ * geometry here; layout metrics, transition-unit bounds and reveal extents must
+ * remain identical. Manually authored animators can still use the GPU path. */
 static bool layer_can_use_gpu_text_raster(const Layer &layer,
                                           double title_time,
                                           bool backend_available)
@@ -1081,17 +1099,23 @@ static bool layer_can_use_gpu_text_raster(const Layer &layer,
     if (!text_like)
         return false;
 
-    /* Static stroked text uses the exact compatibility compositor, which can
-     * merge all same-style glyph outlines into one continuous stroke. Animated
-     * text must remain on the unified per-glyph GPU path: the compatibility
-     * flattened adapter samples the complete precomposed text image through
-     * overlapping rectangular unit clips, so neighbouring glyphs can travel
-     * with the wrong unit and legacy text transitions visibly break. */
+    /* The GPU SDF path is reserved for geometry that must remain separable per
+     * glyph. Ordinary text-like layers deliberately share the same exact,
+     * anti-aliased raster path whether or not a stroke is enabled. */
+    if (!text_animator_stack_has_enabled_animators(layer.text_animators))
+        return false;
+
+    const bool has_managed_text_transition = std::any_of(
+        layer.text_animators.animators.begin(),
+        layer.text_animators.animators.end(),
+        [](const TextAnimator &animator) {
+            return animator.enabled && animator.transition_managed;
+        });
+    if (has_managed_text_transition)
+        return false;
+
     const double local_time = std::max(0.0, title_time - layer.in_time);
     if (layer_has_stroke_geometry_modifiers(layer, local_time))
-        return false;
-    if (max_rich_text_stroke_width(layer, local_time) > 0.0001 &&
-        !text_animator_stack_has_enabled_animators(layer.text_animators))
         return false;
 
     return true;
@@ -1730,6 +1754,7 @@ static bool upload_gpu_layer_raster(TitleGpuRenderSession *session,
             gs_texrender_destroy(entry.effect_cache);
         entry.effect_cache = nullptr;
         entry.effect_cache_key.clear();
+        entry.effect_cache_last_used = 0;
         if (entry.transform_grid)
             gs_vertexbuffer_destroy(entry.transform_grid);
         entry.transform_grid = nullptr;

@@ -117,7 +117,7 @@ static const char *stinger_get_name(void *)
 
 static std::shared_ptr<Title> selected_stinger(const std::string &id)
 {
-    auto title = TitleDataStore::instance().get_title(id);
+    auto title = TitleDataStore::instance().get_title_snapshot(id);
     if (!title || title->graphic_type != TitleGraphicType::Stinger)
         return {};
     return title;
@@ -444,7 +444,7 @@ static void stinger_update(void *private_data, obs_data_t *settings)
     const char *selected_id = obs_data_get_string(settings, kStingerTitleId);
     std::string new_id = selected_id ? selected_id : "";
     if (new_id.empty()) {
-        for (const auto &title : TitleDataStore::instance().titles()) {
+        for (const auto &title : TitleDataStore::instance().title_snapshots()) {
             if (title && !title->is_asset &&
                 title->graphic_type == TitleGraphicType::Stinger) {
                 new_id = title->id;
@@ -576,7 +576,7 @@ static obs_properties_t *stinger_properties(void *)
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
     bool found = false;
-    for (const auto &title : TitleDataStore::instance().titles()) {
+    for (const auto &title : TitleDataStore::instance().title_snapshots()) {
         if (!title || title->is_asset ||
             title->graphic_type != TitleGraphicType::Stinger)
             continue;

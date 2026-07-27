@@ -1,0 +1,46 @@
+Broadcast Graphics Live v0.8.13-alpha - Development Version 397 validation
+==========================================================================
+
+Targeted current contracts/audits: 42/42 passed.
+
+Shadow, lighting and rendering contracts
+----------------------------------------
+- PASSED: Development Version 397 text-shadow and Source Size contract.
+- PASSED: Development Version 373-393 current light, Point/Spot/Parallel
+  shadow, PCSS, shader-compile, Motion Blur/shadow and compositor contracts.
+- PASSED: Development Version 395 runtime performance-audit contract.
+- PASSED: Development Version 396 effect-performance regression contract.
+
+Motion Blur and effects contracts
+---------------------------------
+- PASSED: Development Version 286-289, 291-292, 294-297 and 328 current
+  Motion Blur/effect-stack contracts.
+- PASSED: Effect Stack UI, effect-library cleanup and optical/noise bindings.
+
+Packaging and structural audits
+-------------------------------
+- PASSED: source-presentation lifecycle audit.
+- PASSED: update/build/package naming and staging audit.
+- PASSED: branding/documentation inventory audit.
+- PASSED: test-suite manifest JSON syntax and Development Version 397
+  registration.
+
+CMake configure boundary
+------------------------
+- C and C++ compiler/toolchain detection completed successfully.
+- Configuration stopped at find_package(libobs), because this Linux container
+  does not include libobsConfig.cmake/libobs-config.cmake or the OBS SDK.
+- No native OBS plugin binary is claimed. A Windows OBS/Qt/MSVC build remains
+  required before production deployment.
+
+Implementation result
+---------------------
+- Text, Clock and Ticker casters use a five-fetch conservative projected-alpha
+  footprint in the shadow-map writer, preventing thin glyph strokes from being
+  dropped during shadow-map minification.
+- Shape, Image and Video casters retain the established single-alpha-fetch path.
+- Light Source Size is clamped to a minimum of 0.1 px in both property panels,
+  JSON-loaded static/keyframed values, runtime light evaluation and editor
+  light visualization.
+- Visual and GPU cache identities were advanced so old shadow output is not
+  reused after upgrading.

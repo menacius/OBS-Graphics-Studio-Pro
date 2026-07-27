@@ -1372,7 +1372,8 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
 
     auto draw_audio_waveform_lane = [&](const std::shared_ptr<Layer> &audio_layer,
                                         const QRect &lane_rect,
-                                        bool master_muted) {
+                                        bool master_muted,
+                                        const QColor &lane_foreground) {
         if (!audio_layer || audio_layer->type != LayerType::Audio ||
             lane_rect.width() <= 2 || lane_rect.height() <= 2)
             return;
@@ -1381,7 +1382,7 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         if (audio_layer->audio_waveform.size() >= 2) {
             p.save();
             p.setClipRect(lane_rect.adjusted(1, 1, -1, -1));
-            p.setPen(QPen(with_alpha(text, muted ? 65 : 190), 1));
+            p.setPen(QPen(with_alpha(lane_foreground, muted ? 65 : 190), 1));
             const int center_y = lane_rect.center().y();
             const int half_h = std::max(1, lane_rect.height() / 2 - 1);
             const int pairs = static_cast<int>(audio_layer->audio_waveform.size() / 2);
@@ -1423,16 +1424,16 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         if (audio_layer->audio_waveform_generating) {
             const int percent = std::clamp(audio_layer->audio_waveform_progress_percent, 0, 99);
             QRect progress_rect = lane_rect.adjusted(2, lane_rect.height() - 4, -2, -1);
-            p.fillRect(progress_rect, with_alpha(text, 45));
+            p.fillRect(progress_rect, with_alpha(lane_foreground, 45));
             QRect fill_rect = progress_rect;
             fill_rect.setWidth(std::max(1, progress_rect.width() * percent / 100));
-            p.fillRect(fill_rect, with_alpha(text, 150));
+            p.fillRect(fill_rect, with_alpha(lane_foreground, 150));
             if (lane_rect.height() >= 10) {
                 QString label = audio_layer->audio_waveform_progress_label.empty()
                     ? QString::fromStdString(audio_layer->name)
                     : QString::fromStdString(audio_layer->audio_waveform_progress_label);
                 label = QStringLiteral("%1% · %2").arg(percent).arg(label);
-                p.setPen(with_alpha(text, 160));
+                p.setPen(with_alpha(lane_foreground, 160));
                 p.drawText(lane_rect.adjusted(4, 0, -4, -4),
                            Qt::AlignVCenter | Qt::AlignLeft,
                            QFontMetrics(p.font()).elidedText(label, Qt::ElideRight,
@@ -1800,6 +1801,12 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                     bar_col = QColor(gray, gray, gray).darker(135);
                 }
                 if (sel) bar_col = bar_col.lighter(125);
+                const QColor strip_foreground =
+                    bgl_background_aware_foreground(bar_col, pal);
+                const QColor strip_muted_foreground =
+                    bgl_background_aware_muted_foreground(bar_col, pal);
+                const QColor strip_waveform_foreground =
+                    bgl_background_aware_opposite_foreground(bar_col, pal);
                 p.fillRect(strip_rect, bar_col);
                 if (layer->type == LayerType::Video) {
                     const auto streams = linked_audio_stream_layers(layer->id);
@@ -1812,20 +1819,24 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                             QRect lane_rect(strip_rect.left() + 2, lane_top,
                                             std::max(1, strip_rect.width() - 4),
                                             std::max(1, std::min(lane_h, strip_rect.bottom() - lane_top)));
-                            draw_audio_waveform_lane(streams[static_cast<size_t>(stream_i)],
-                                                     lane_rect, layer->audio_muted);
+                            draw_audio_waveform_lane(
+                                streams[static_cast<size_t>(stream_i)], lane_rect,
+                                layer->audio_muted, strip_waveform_foreground);
                         }
                     }
                 }
                 if (layer->type == LayerType::Audio && layer->audio_waveform.empty() && title_) {
                     refresh_audio_waveform_from_store(layer);
                     if (layer->audio_waveform.empty())
-                        draw_audio_waveform_lane(layer, strip_rect, false);
+                        draw_audio_waveform_lane(
+                            layer, strip_rect, false, strip_waveform_foreground);
                 }
                 if (layer->type == LayerType::Audio && layer->audio_waveform.size() >= 2 && strip_rect.width() > 2) {
                     p.save();
                     p.setClipRect(strip_rect.adjusted(1, 1, -1, -1));
-                    p.setPen(QPen(with_alpha(text, layer->audio_muted ? 70 : 190), 1));
+                    p.setPen(QPen(with_alpha(
+                        strip_waveform_foreground,
+                        layer->audio_muted ? 70 : 190), 1));
                     const int center_y = strip_rect.center().y();
                     const int half_h = std::max(1, strip_rect.height() / 2 - 3);
                     const int pairs = static_cast<int>(layer->audio_waveform.size() / 2);
@@ -1866,8 +1877,8 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                     const double fade_out = std::clamp(layer->audio_fade_out, 0.0, std::max(0.0, clip_duration - fade_in));
                     const int fade_in_x = time_to_x(layer->in_time + fade_in);
                     const int fade_out_x = time_to_x(layer->out_time - fade_out);
-                    const QColor fade_fill = with_alpha(text, 42);
-                    const QColor fade_line = with_alpha(text, 210);
+                    const QColor fade_fill = with_alpha(strip_foreground, 42);
+                    const QColor fade_line = with_alpha(strip_foreground, 210);
                     p.save();
                     p.setClipRect(strip_rect.adjusted(1, 1, -1, -1));
                     p.setPen(QPen(fade_line, 1.5));
@@ -1934,18 +1945,18 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 if (layer->locked) {
                     p.save();
                     p.setClipRect(strip_rect);
-                    p.setPen(QPen(with_alpha(dark, 170), 2));
+                    p.setPen(QPen(with_alpha(strip_foreground, 170), 2));
                     for (int lx = strip_rect.left() - strip_rect.height(); lx < strip_rect.right() + strip_rect.height(); lx += 8)
                         p.drawLine(lx, strip_rect.bottom(), lx + strip_rect.height(), strip_rect.top());
                     p.restore();
                 }
                 p.setBrush(Qt::NoBrush);
-                p.setPen(dark);
+                p.setPen(with_alpha(strip_foreground, 150));
                 p.drawRect(strip_rect);
 
                 /* Draw the normal layer label first so transition strips remain
                  * visually on top, like dedicated Premiere timeline items. */
-                p.setPen(layer->visible ? text : disabled_text);
+                p.setPen(layer->visible ? strip_foreground : strip_muted_foreground);
                 const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
                 QString display_name = QString::fromStdString(layer->name);
                 if (title_ && layer->type == LayerType::Group) {
@@ -1958,7 +1969,19 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 const QString layer_label = switches.isEmpty()
                     ? display_name
                     : QStringLiteral("%1    [%2]").arg(display_name, switches);
-                p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
+                int label_left = std::max(strip_rect.left(), 0) + 6;
+                const QIcon strip_icon =
+                    layer_type_icon(layer->type, strip_foreground);
+                if (!strip_icon.isNull() && strip_rect.width() >= 28) {
+                    const QSize icon_size(14, 14);
+                    const QRect icon_rect(
+                        label_left, strip_rect.center().y() - icon_size.height() / 2,
+                        icon_size.width(), icon_size.height());
+                    p.drawPixmap(icon_rect, strip_icon.pixmap(icon_size));
+                    label_left += icon_size.width() + 5;
+                }
+                p.drawText(label_left, y,
+                           std::max(1, strip_rect.right() - label_left - 5), rowh,
                            Qt::AlignVCenter, layer_label);
 
                 /* Premiere-style transition overlays live inside the layer
@@ -1972,26 +1995,35 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                         ? QColor(112, 76, 156) : QColor(54, 111, 151);
                     if (!transition.enabled)
                         transition_color = transition_color.darker(155);
-                    p.fillRect(transition_bounds, with_alpha(transition_color, 220));
+                    const QColor transition_fill =
+                        with_alpha(transition_color, 220);
+                    const QColor transition_background =
+                        bgl_composite_over(transition_fill, bar_col);
+                    const QColor transition_foreground =
+                        bgl_background_aware_foreground(transition_background, pal);
+                    p.fillRect(transition_bounds, transition_fill);
                     p.save();
                     p.setClipRect(transition_bounds);
-                    p.setPen(QPen(with_alpha(Qt::white, 45), 1));
+                    p.setPen(QPen(with_alpha(transition_foreground, 45), 1));
                     for (int hx = transition_bounds.left() - transition_bounds.height();
                          hx < transition_bounds.right() + transition_bounds.height(); hx += 7)
                         p.drawLine(hx, transition_bounds.bottom(), hx + transition_bounds.height(), transition_bounds.top());
                     p.restore();
-                    p.setPen(QPen(transition_selected ? highlighted_text : transition_color.lighter(170),
-                                  transition_selected ? 2 : 1));
+                    p.setPen(QPen(
+                        transition_selected
+                            ? bgl_background_aware_foreground(highlight, pal)
+                            : with_alpha(transition_foreground, 190),
+                        transition_selected ? 2 : 1));
                     p.setBrush(Qt::NoBrush);
                     p.drawRect(transition_bounds.adjusted(0, 0, -1, -1));
                     if (!layer->locked) {
                         const int handle_x = transition.edge == LayerTransitionEdge::In
                             ? transition_bounds.right() - 2 : transition_bounds.left();
                         p.fillRect(handle_x, transition_bounds.top(), 3, transition_bounds.height(),
-                                   with_alpha(Qt::white, 170));
+                                   with_alpha(transition_foreground, 170));
                     }
                     if (transition_bounds.width() >= 56) {
-                        p.setPen(Qt::white);
+                        p.setPen(transition_foreground);
                         const QString transition_name = QString::fromStdString(transition.display_name);
                         p.drawText(transition_bounds.adjusted(5, 0, -5, 0),
                                    Qt::AlignVCenter | Qt::AlignHCenter,

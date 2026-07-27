@@ -38,6 +38,8 @@ private:
     QDoubleSpinBox *offset_ = nullptr;
     QDoubleSpinBox *softness_ = nullptr;
     QCheckBox *reverse_order_ = nullptr;
+    QCheckBox *text_slide_fade_ = nullptr;
+    QCheckBox *text_slide_crop_to_unit_bounds_ = nullptr;
     QSpinBox *blocks_columns_ = nullptr;
     QSpinBox *blocks_rows_ = nullptr;
     QSpinBox *random_seed_ = nullptr;

@@ -61,6 +61,9 @@ enum class Counter : std::size_t {
     EffectSurfacePoolHits,
     EffectSurfacePoolMisses,
     EffectEmptyStackFastPaths,
+    EffectOutputCacheHits,
+    EffectOutputCacheMisses,
+    EffectNoOpPassesSkipped,
     BackgroundJobsActive,
     Count
 };
@@ -132,6 +135,9 @@ inline const char *counter_name(Counter counter)
     case Counter::EffectSurfacePoolHits: return "effect_surface_pool_hits";
     case Counter::EffectSurfacePoolMisses: return "effect_surface_pool_misses";
     case Counter::EffectEmptyStackFastPaths: return "effect_empty_stack_fast_paths";
+    case Counter::EffectOutputCacheHits: return "effect_output_cache_hits";
+    case Counter::EffectOutputCacheMisses: return "effect_output_cache_misses";
+    case Counter::EffectNoOpPassesSkipped: return "effect_noop_passes_skipped";
     case Counter::BackgroundJobsActive: return "background_jobs_active";
     case Counter::Count: break;
     }

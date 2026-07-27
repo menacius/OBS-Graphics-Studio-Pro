@@ -1,13 +1,13 @@
 #pragma once
 
 #ifndef PLUGIN_VERSION
-#define PLUGIN_VERSION "0.8.13-alpha"
+#define PLUGIN_VERSION "0.8.14-alpha"
 #endif
 
 // Manually assigned delivery identifier. Increment this once per delivered
 // package, never per local compile.
 #ifndef BGL_DEVELOPMENT_VERSION
-#define BGL_DEVELOPMENT_VERSION "394"
+#define BGL_DEVELOPMENT_VERSION "404"
 #endif
 #define BGL_DEVELOPMENT_DISPLAY "Development Version " BGL_DEVELOPMENT_VERSION
 #define BGL_BUILD_DISPLAY "v" PLUGIN_VERSION " · " BGL_DEVELOPMENT_DISPLAY

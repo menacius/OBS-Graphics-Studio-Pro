@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.13)
+project(broadcast-graphics-live VERSION 0.8.14)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "394")
+set(OBS_BGS_DEVELOPMENT_VERSION "404")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -183,6 +183,9 @@ if(OBS_SDK_DIR)
     "${OBS_SDK_DIR}/share/cmake/Qt6"
     "${OBS_SDK_DIR}/lib64/cmake/Qt6")
 
+  # Do not retain this discovery result across an OBS SDK change. A stale
+  # cached directory can mix two Qt minor-version ABIs in one translation unit.
+  unset(OBS_BGS_DISCOVERED_QT6_DIR CACHE)
   find_path(OBS_BGS_DISCOVERED_QT6_DIR
     NAMES Qt6Config.cmake
     HINTS ${OBS_BGS_QT6_HINTS}
@@ -940,6 +943,8 @@ if(OBS_BGS_BUILD_TESTS)
       src/text/text-animator-presets.cpp)
   target_include_directories(text_animator_system_test PRIVATE
       src src/timeline src/text src/transitions)
+  target_compile_options(text_animator_system_test PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
   add_test(NAME text_animator_system_test COMMAND text_animator_system_test)
 
   add_executable(text_animator_preset_io_test

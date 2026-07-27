@@ -2092,6 +2092,10 @@ TitleEditor::TitleEditor(QWidget *parent)
     setDockOptions(QMainWindow::AllowNestedDocks |
                    QMainWindow::AllowTabbedDocks |
                    QMainWindow::GroupedDragging);
+    /* The complete lower edge belongs to the bottom dock area. Nested docks can
+     * therefore split it horizontally into bottom-left and bottom-right slots. */
+    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
     build_ui();

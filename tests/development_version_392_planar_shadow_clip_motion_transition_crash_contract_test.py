@@ -28,15 +28,26 @@ assert "8192" not in prefs[prefs.index("shadow_map_size_px"):prefs.index("cache_
 assert "for (int size : {256, 512, 1024, 2048, 4096})" in advanced
 assert "shadow_map_size->setCurrentIndex(shadow_map_index >= 0 ? shadow_map_index : 3);" in advanced
 
-# Spot/Parallel use Qt OpenGL-style matrices but D3D11 requires 0..W clip Z.
+# Spot/Parallel either retain the accepted D3D clip remap or use the newer
+# explicit light-space projection shared by writer and receiver.
 shader = read("src/obs/title-source/gpu-effects-transitions.inc")
 shadow_start = shader.index("static constexpr const char *kGpuShadowMapEffect")
 shadow_end = shader.index("static constexpr const char *kGpuAdjustmentMixEffect", shadow_start)
 shadow = shader[shadow_start:shadow_end]
-assert "QMatrix4x4 perspective/orthographic projections produce OpenGL-style" in shadow
-assert "o.lightClip.z * 0.5 + o.lightClip.w * 0.5" in shadow
+legacy_clip = (
+    "QMatrix4x4 perspective/orthographic projections produce OpenGL-style" in shadow
+    and "o.lightClip.z * 0.5 + o.lightClip.w * 0.5" in shadow
+    and "v.lightClip.z / max(v.lightClip.w, 0.000001) * 0.5 + 0.5" in shadow
+)
+explicit_projection = all(token in shadow for token in (
+    "uniform float3 shadowRight;",
+    "uniform float3 shadowUp;",
+    "uniform float3 shadowForward;",
+    "float depth = dot(relative, shadowForward);",
+    "float normalizedDepth = (depth - shadowNear)",
+))
+assert legacy_clip or explicit_projection
 assert "o.pos = o.lightClip;" not in shadow
-assert "v.lightClip.z / max(v.lightClip.w, 0.000001) * 0.5 + 0.5" in shadow
 assert "if (pointShadow != 0)" in shadow
 
 presentation = read("src/obs/title-source/gpu-presentation-readback.inc")

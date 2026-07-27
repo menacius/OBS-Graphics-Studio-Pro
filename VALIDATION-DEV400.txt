@@ -1,0 +1,47 @@
+Broadcast Graphics Live v0.8.13-alpha - Development Version 400 validation
+============================================================================
+
+Implemented scope
+-----------------
+- Added the supplied Text, Clock, Ticker, Shape, Image, Video, Audio, Empty,
+  Adjustment, Color Solid, Camera and Light artwork as dedicated layer-type
+  SVG assets.
+- Normalized every supplied SVG to currentColor so bgl_icon() tints it from the
+  active OBS/Qt palette.
+- Applied the same artwork to Add Layer actions, all Light submenu actions,
+  layer-list type cells and Camera/Light timeline owner rows.
+- Added palette/style-change refresh for row and menu pixmaps; the Add Layer
+  menu also retints its actions immediately before display.
+- Added persisted Preferences > Appearance colors, distinct defaults and
+  explicit layer mappings for Video, Audio, Empty, Adjustment, Color Solid,
+  Camera and Light rows.
+- Retained Group, Asset and Transition Input fallback labels because no new
+  artwork for those types was supplied.
+- Retained Development Version 399 rendering and close-range Point-light text
+  shadow behavior unchanged.
+
+Focused verification
+--------------------
+- Development Version 397 text-shadow/Source Size contract: PASS.
+- Development Version 398 planar-shadow/text-continuity contract: PASS.
+- Development Version 399 close Point-light projection contract: PASS.
+- Development Version 400 icon/color/theme contract: PASS.
+- Development Version 373 Light properties contract: PASS.
+- Development Version 367 editor fixes contract: PASS.
+- Development Version 350 properties/audio/text-box contract: PASS.
+- Test-suite manifest validation: PASS.
+- All 12 new SVG files parse successfully and contain currentColor: PASS.
+
+Repository-wide source-suite boundary
+-------------------------------------
+- The inherited repository-wide source runner is not currently green: several
+  historical contracts still hard-code Development Version 243 or obsolete
+  README phrases, and the run exceeded its time budget. These stale failures
+  are outside Development Version 400 and are also present against the input
+  Development Version 399 source.
+
+Native-build boundary
+---------------------
+- CMake detects GCC 14.2 and parses the project until find_package(libobs).
+- Configuration stops because this Linux environment has no OBS/libobs SDK.
+- No native Windows OBS binary or in-OBS visual verification is claimed.

@@ -466,17 +466,32 @@ private:
         const TextAnimatorUnit granularity = stack.animators.front().granularity;
         const auto &units = unit_map.units(granularity);
         for (const TextAnimatorUnitRange &unit : units) {
-            if (unit.whitespace || unit.cluster_count == 0 ||
-                unit.cluster_begin >= evaluation.clusters.size())
+            std::vector<size_t> unit_clusters;
+            if (!unit.cluster_indices.empty()) {
+                for (size_t index : unit.cluster_indices) {
+                    if (index < layout.clusters.size())
+                        unit_clusters.push_back(index);
+                }
+            } else {
+                const size_t begin =
+                    std::min(unit.cluster_begin, layout.clusters.size());
+                const size_t end = std::min(
+                    begin + unit.cluster_count, layout.clusters.size());
+                for (size_t index = begin; index < end; ++index)
+                    unit_clusters.push_back(index);
+            }
+            if (unit.whitespace || unit_clusters.empty())
                 continue;
-            const size_t end = std::min(
-                unit.cluster_begin + unit.cluster_count,
-                layout.clusters.size());
-            const TextLayoutCluster &first = layout.clusters[unit.cluster_begin];
-            const TextLayoutCluster &last = layout.clusters[end - 1];
-            const qreal x = text_left + first.x;
-            const qreal width = std::max<qreal>(
-                0.0, last.x + last.width - first.x);
+            qreal unit_left = std::numeric_limits<qreal>::max();
+            qreal unit_right = std::numeric_limits<qreal>::lowest();
+            for (size_t index : unit_clusters) {
+                const TextLayoutCluster &cluster = layout.clusters[index];
+                unit_left = std::min<qreal>(unit_left, cluster.x);
+                unit_right = std::max<qreal>(
+                    unit_right, cluster.x + cluster.width);
+            }
+            const qreal x = text_left + unit_left;
+            const qreal width = std::max<qreal>(0.0, unit_right - unit_left);
             const QString fragment = QString::fromUtf8(
                 layout.text.data() + unit.byte_start,
                 static_cast<int>(unit.byte_length));
@@ -484,7 +499,7 @@ private:
                 continue;
 
             const TextAnimatorClusterState &state =
-                evaluation.clusters[unit.cluster_begin];
+                evaluation.clusters[unit_clusters.front()];
             const double reveal_opacity =
                 state.reveal_direction == TextRevealDirection::None
                     ? state.reveal : 1.0;
@@ -506,6 +521,13 @@ private:
             const double sy = state.scale_y * state.vertical_scale;
 
             painter.save();
+            if (state.has_unit_clip_bounds) {
+                painter.setClipRect(QRectF(
+                    text_left + state.unit_clip_x0,
+                    text_top + state.unit_clip_y0,
+                    state.unit_clip_x1 - state.unit_clip_x0,
+                    state.unit_clip_y1 - state.unit_clip_y0));
+            }
             painter.translate(
                 center.x() + state.position_x * preview_offset_scale,
                 center.y() + (state.position_y - state.baseline_shift) *
@@ -693,6 +715,16 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     reverse_order_->setChecked(transition.reverse_order);
     form->addRow(QString(), reverse_order_);
 
+    text_slide_fade_ = new BglSwitch(QStringLiteral("Fade"), this);
+    text_slide_fade_->setChecked(transition.text_slide_fade);
+    form->addRow(QString(), text_slide_fade_);
+
+    text_slide_crop_to_unit_bounds_ =
+        new BglSwitch(QStringLiteral("Crop in Character Bounds"), this);
+    text_slide_crop_to_unit_bounds_->setChecked(
+        transition.text_slide_crop_to_unit_bounds);
+    form->addRow(QString(), text_slide_crop_to_unit_bounds_);
+
     blocks_columns_ = new QSpinBox(this);
     blocks_columns_->setRange(1, 128);
     blocks_columns_->setValue(std::clamp(transition.blocks_columns, 1, 128));
@@ -799,6 +831,8 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     connect(offset_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
     connect(softness_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
     connect(reverse_order_, &QCheckBox::toggled, this, update);
+    connect(text_slide_fade_, &QCheckBox::toggled, this, update);
+    connect(text_slide_crop_to_unit_bounds_, &QCheckBox::toggled, this, update);
     connect(blocks_columns_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
     connect(blocks_rows_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
     connect(random_seed_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
@@ -846,6 +880,9 @@ void TransitionEditorDialog::update_model_from_controls()
     transition_.offset = offset_->value();
     transition_.softness = softness_->value() / 100.0;
     transition_.reverse_order = reverse_order_->isChecked();
+    transition_.text_slide_fade = text_slide_fade_->isChecked();
+    transition_.text_slide_crop_to_unit_bounds =
+        text_slide_crop_to_unit_bounds_->isChecked();
     transition_.blocks_columns = blocks_columns_->value();
     transition_.blocks_rows = blocks_rows_->value();
     transition_.random_seed = random_seed_->value();
@@ -893,6 +930,9 @@ void TransitionEditorDialog::update_control_visibility()
     const bool is_clock = transition_.type == LayerTransitionType::Clock;
     const bool is_iris = transition_.type == LayerTransitionType::Iris;
     const bool is_gradient = transition_.type == LayerTransitionType::GradientWipe;
+    const bool is_text_slide =
+        transition_.type == LayerTransitionType::TextSlide ||
+        transition_.type == LayerTransitionType::TextBlurSlide;
     const bool has_center = is_clock || is_iris || is_gradient;
     const bool has_rotation = is_clock || is_gradient;
     const bool has_aspect = is_iris || is_gradient;
@@ -901,6 +941,23 @@ void TransitionEditorDialog::update_control_visibility()
 
     for (QWidget *widget : std::initializer_list<QWidget *>{unit_label_, unit_, stagger_label_, stagger_, reverse_order_})
         widget->setVisible(text);
+    text_slide_fade_->setVisible(is_text_slide);
+    text_slide_crop_to_unit_bounds_->setVisible(is_text_slide);
+    switch (transition_.unit) {
+    case LayerTransitionUnit::Word:
+        text_slide_crop_to_unit_bounds_->setText(
+            QStringLiteral("Crop in Word Bounds"));
+        break;
+    case LayerTransitionUnit::Sentence:
+        text_slide_crop_to_unit_bounds_->setText(
+            QStringLiteral("Crop in Sentence Bounds"));
+        break;
+    case LayerTransitionUnit::Character:
+    default:
+        text_slide_crop_to_unit_bounds_->setText(
+            QStringLiteral("Crop in Character Bounds"));
+        break;
+    }
     for (QWidget *widget : std::initializer_list<QWidget *>{direction_label_, direction_}) widget->setVisible(has_direction);
     for (QWidget *widget : std::initializer_list<QWidget *>{blur_label_, blur_}) widget->setVisible(has_blur);
     for (QWidget *widget : std::initializer_list<QWidget *>{scale_label_, scale_}) widget->setVisible(has_scale);

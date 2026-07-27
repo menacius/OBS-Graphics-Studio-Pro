@@ -306,7 +306,7 @@ ExternalDataSettingsDialog::~ExternalDataSettingsDialog()
      * provider before Save. Restore the authoritative title-store set on both
      * Save and Cancel so no orphan provider survives the dialog. */
     std::vector<ExternalDataSourceDefinition> definitions;
-    for (const auto &candidate : TitleDataStore::instance().titles()) {
+    for (const auto &candidate : TitleDataStore::instance().title_snapshots()) {
         if (!candidate)
             continue;
         definitions.insert(definitions.end(),

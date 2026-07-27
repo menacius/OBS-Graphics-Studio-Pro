@@ -2,6 +2,7 @@
 #include "text-animator-presets.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -31,26 +32,20 @@ double legacy_transition_ease(double x, EasingType easing)
     return x;
 }
 
-double legacy_hidden_influence(bool exit_animation, double timeline_fraction,
-                               size_t rank, size_t count, double stagger,
-                               EasingType easing)
+double per_unit_hidden_influence(bool exit_animation,
+                                 double timeline_fraction,
+                                 size_t rank, size_t count, double stagger,
+                                 EasingType easing)
 {
-    const double global_progress = exit_animation
-        ? legacy_transition_ease(1.0 - timeline_fraction, easing)
-        : legacy_transition_ease(timeline_fraction, easing);
     const double delay = count <= 1 ? 0.0
         : stagger * static_cast<double>(rank) /
           static_cast<double>(count - 1);
     const double span = std::max(0.05, 1.0 - stagger);
-    double local = 1.0;
-    if (!exit_animation)
-        local = std::clamp((global_progress - delay) / span, 0.0, 1.0);
-    else {
-        const double out_phase = 1.0 - global_progress;
-        local = 1.0 - std::clamp((out_phase - delay) / span, 0.0, 1.0);
-    }
-    local = legacy_transition_ease(local, easing);
-    return 1.0 - local;
+    const double local = std::clamp(
+        (timeline_fraction - delay) / span, 0.0, 1.0);
+    return exit_animation
+        ? 1.0 - legacy_transition_ease(1.0 - local, easing)
+        : 1.0 - legacy_transition_ease(local, easing);
 }
 
 TextLayoutCluster cluster(size_t byte_start, size_t byte_length,
@@ -192,6 +187,57 @@ int main()
     assert(map.graphemes[2].byte_length == std::string("Ε\u0301").size());
     assert(map.graphemes[4].byte_length == std::string("👩‍💻").size());
 
+    /* A soft-wrapped line may not expose its break as a shaped whitespace
+     * cluster. The final word of one visual line and the first word of the
+     * next must still be separate Animate By units. */
+    TextLayoutData wrapped_words = layout_from_clusters({"LAST", "NEXT"});
+    wrapped_words.clusters[1].line_index = 1;
+    const TextAnimatorUnitMap wrapped_word_map =
+        build_text_animator_unit_map(wrapped_words);
+    assert(wrapped_word_map.words.size() == 2);
+    assert(wrapped_word_map.words[0].byte_start == 0);
+    assert(wrapped_word_map.words[1].byte_start == 4);
+
+    /* Mixed font runs can arrive from the shaping backend in allocation order
+     * rather than logical order. Word construction and stagger rank must use
+     * byte order, while retaining the real non-contiguous cluster membership. */
+    TextLayoutData scrambled_runs =
+        layout_from_clusters({"ONE", " ", "TWO", " ", "THREE"});
+    const std::vector<TextLayoutCluster> logical_run_clusters =
+        scrambled_runs.clusters;
+    scrambled_runs.clusters = {
+        logical_run_clusters[4], logical_run_clusters[3],
+        logical_run_clusters[0], logical_run_clusters[1],
+        logical_run_clusters[2]};
+    const TextAnimatorUnitMap scrambled_word_map =
+        build_text_animator_unit_map(scrambled_runs);
+    assert(scrambled_word_map.words.size() == 3);
+    assert(scrambled_word_map.words[0].byte_start == 0);
+    assert(scrambled_word_map.words[1].byte_start == 4);
+    assert(scrambled_word_map.words[2].byte_start == 8);
+    assert(scrambled_word_map.words[0].cluster_indices ==
+           std::vector<size_t>{2});
+    assert(scrambled_word_map.words[1].cluster_indices ==
+           std::vector<size_t>{4});
+    assert(scrambled_word_map.words[2].cluster_indices ==
+           std::vector<size_t>{0});
+    TextSelector logical_word_stagger =
+        all_selector(TextAnimatorUnit::Word);
+    logical_word_stagger.type = TextSelectorType::Staggered;
+    logical_word_stagger.exclude_whitespace = true;
+    logical_word_stagger.completion.static_value = 50.0;
+    logical_word_stagger.stagger_percent.static_value = 50.0;
+    logical_word_stagger.unit_easing = EasingType::Linear;
+    assert(near(evaluate_text_selector_for_cluster(
+        logical_word_stagger, scrambled_runs, scrambled_word_map, 2, 0.0),
+        0.0));
+    assert(near(evaluate_text_selector_for_cluster(
+        logical_word_stagger, scrambled_runs, scrambled_word_map, 4, 0.0),
+        0.5));
+    assert(near(evaluate_text_selector_for_cluster(
+        logical_word_stagger, scrambled_runs, scrambled_word_map, 0, 0.0),
+        1.0));
+
     /* Text-based selection uses Unicode-safe shaped units and recognises Greek
      * uppercase without treating continuation bytes as characters. */
     TextSelector greek_upper = all_selector();
@@ -304,6 +350,12 @@ int main()
     assert(migrated.selectors.size() == 1);
     assert(migrated.selectors.front().type == TextSelectorType::Staggered);
     assert(!migrated.selectors.front().completion.keyframes.empty());
+    for (const Keyframe &completion_key :
+         migrated.selectors.front().completion.keyframes) {
+        assert(completion_key.easing == EasingType::Linear);
+        assert(completion_key.temporal_mode ==
+               TemporalInterpolationMode::Linear);
+    }
     assert(migrated.transition_managed);
     assert(migrated.transition_id == legacy.id);
     assert(migrated.transform_as_unit);
@@ -322,6 +374,131 @@ int main()
     for (const TextAnimatorClusterState &state : revealed.clusters) {
         assert(near(state.opacity, 1.0));
         assert(near(state.position_x, 0.0));
+    }
+
+    LayerTransition cropped_slide = legacy;
+    cropped_slide.id = "cropped-slide";
+    cropped_slide.text_slide_fade = false;
+    cropped_slide.text_slide_crop_to_unit_bounds = true;
+    const TextAnimator cropped_slide_animator =
+        make_text_animator_from_legacy_transition(
+            cropped_slide, 0.0, 1.0, nullptr);
+    assert(cropped_slide_animator.clip_to_unit_bounds);
+    assert(std::none_of(
+        cropped_slide_animator.properties.begin(),
+        cropped_slide_animator.properties.end(),
+        [](const TextAnimatorProperty &property) {
+            return property.type == TextAnimatorPropertyType::Opacity;
+        }));
+    TextAnimatorStack cropped_slide_stack;
+    cropped_slide_stack.animators.push_back(cropped_slide_animator);
+    const TextAnimatorEvaluation cropped_slide_eval =
+        evaluate_text_animators(cropped_slide_stack, layout, 0.5);
+    assert(cropped_slide_eval.clusters.front().has_unit_clip_bounds);
+
+    /* A word or sentence may span more than one shaped visual line. Its
+     * animation remains one timing unit, but each cluster must be clipped to
+     * the unit fragment on its own line; one union rectangle would expose or
+     * suppress content from the other lines during a slide. */
+    TextLayoutData multiline_unit =
+        layout_from_clusters({"A", "B", "C", "D"});
+    multiline_unit.clusters[0].x = 100.0f;
+    multiline_unit.clusters[1].x = 110.0f;
+    multiline_unit.clusters[2].x = 20.0f;
+    multiline_unit.clusters[3].x = 30.0f;
+    multiline_unit.clusters[2].y = 30.0f;
+    multiline_unit.clusters[3].y = 30.0f;
+    multiline_unit.clusters[2].line_index = 1;
+    multiline_unit.clusters[3].line_index = 1;
+    multiline_unit.lines.clear();
+    TextLayoutLine multiline_first;
+    multiline_first.cluster_begin = 0;
+    multiline_first.cluster_count = 2;
+    TextLayoutLine multiline_second;
+    multiline_second.cluster_begin = 2;
+    multiline_second.cluster_count = 2;
+    multiline_unit.lines = {multiline_first, multiline_second};
+
+    for (const TextAnimatorUnit unit :
+         {TextAnimatorUnit::Word, TextAnimatorUnit::Sentence}) {
+        TextAnimatorStack multiline_crop_stack;
+        TextAnimator multiline_crop;
+        multiline_crop.id = "multiline-crop";
+        multiline_crop.granularity = unit;
+        multiline_crop.clip_to_unit_bounds = true;
+        multiline_crop_stack.animators.push_back(multiline_crop);
+        const TextAnimatorEvaluation multiline_crop_eval =
+            evaluate_text_animators(multiline_crop_stack, multiline_unit, 0.0);
+        const TextAnimatorClusterState &first_line =
+            multiline_crop_eval.clusters[0];
+        const TextAnimatorClusterState &second_line =
+            multiline_crop_eval.clusters[2];
+        assert(first_line.has_unit_clip_bounds);
+        assert(second_line.has_unit_clip_bounds);
+        assert(near(first_line.unit_clip_x0, 100.0));
+        assert(near(first_line.unit_clip_y0, 0.0));
+        assert(near(first_line.unit_clip_x1, 120.0));
+        assert(near(first_line.unit_clip_y1, 20.0));
+        assert(near(second_line.unit_clip_x0, 20.0));
+        assert(near(second_line.unit_clip_y0, 30.0));
+        assert(near(second_line.unit_clip_x1, 40.0));
+        assert(near(second_line.unit_clip_y1, 50.0));
+    }
+
+    /* Crop-enabled slide distance is run-aware. With one large and one small
+     * rich-text line, the authored offset remains a minimum, while the large
+     * glyph travels far enough to leave its own stationary crop completely. */
+    TextLayoutData mixed_size_unit = layout_from_clusters({"A", "B"});
+    mixed_size_unit.clusters[0].x = 100.0f;
+    mixed_size_unit.clusters[0].y = 0.0f;
+    mixed_size_unit.clusters[0].width = 50.0f;
+    mixed_size_unit.clusters[0].height = 200.0f;
+    mixed_size_unit.clusters[0].glyph_begin = 0;
+    mixed_size_unit.clusters[0].glyph_count = 1;
+    mixed_size_unit.clusters[1].x = 20.0f;
+    mixed_size_unit.clusters[1].y = 220.0f;
+    mixed_size_unit.clusters[1].width = 20.0f;
+    mixed_size_unit.clusters[1].height = 80.0f;
+    mixed_size_unit.clusters[1].line_index = 1;
+    mixed_size_unit.clusters[1].glyph_begin = 1;
+    mixed_size_unit.clusters[1].glyph_count = 1;
+    TextLayoutGlyph large_glyph;
+    large_glyph.cluster_index = 0;
+    large_glyph.ink_x = 100.0f;
+    large_glyph.ink_y = 10.0f;
+    large_glyph.ink_width = 50.0f;
+    large_glyph.ink_height = 180.0f;
+    TextLayoutGlyph small_glyph;
+    small_glyph.cluster_index = 1;
+    small_glyph.ink_x = 20.0f;
+    small_glyph.ink_y = 230.0f;
+    small_glyph.ink_width = 20.0f;
+    small_glyph.ink_height = 60.0f;
+    mixed_size_unit.glyphs = {large_glyph, small_glyph};
+
+    for (const TextAnimatorUnit unit :
+         {TextAnimatorUnit::Word, TextAnimatorUnit::Sentence}) {
+        for (const double direction : {-1.0, 1.0}) {
+            TextAnimatorStack mixed_size_stack;
+            TextAnimator mixed_size_slide;
+            mixed_size_slide.id = "mixed-size-crop";
+            mixed_size_slide.granularity = unit;
+            mixed_size_slide.clip_to_unit_bounds = true;
+            TextAnimatorProperty mixed_size_position;
+            mixed_size_position.type = TextAnimatorPropertyType::Position;
+            mixed_size_position.secondary.static_value = direction * 80.0;
+            mixed_size_slide.properties.push_back(mixed_size_position);
+            mixed_size_stack.animators.push_back(mixed_size_slide);
+            const TextAnimatorEvaluation mixed_size_eval =
+                evaluate_text_animators(
+                    mixed_size_stack, mixed_size_unit, 0.0);
+            assert(near(
+                mixed_size_eval.clusters[0].position_y,
+                direction * 191.0));
+            assert(near(
+                mixed_size_eval.clusters[1].position_y,
+                direction * 80.0));
+        }
     }
 
     /* Grouped unit transforms use one common shaped-unit origin. Without
@@ -380,8 +557,8 @@ int main()
     assert(near(evaluate_text_selector_for_cluster(
         staggered, layout, map, 9, 0.0), 0.0));
 
-    /* Compare the selector against the exact historical two-stage easing
-     * formula for every legacy easing mode and for both timeline edges. */
+    /* Completion stays linear; easing is applied independently after each
+     * Animate By unit's stagger delay for both timeline edges. */
     const EasingType easing_modes[] = {
         EasingType::Linear, EasingType::EaseIn, EasingType::EaseOut,
         EasingType::EaseInOut, EasingType::Bezier, EasingType::Hold};
@@ -404,7 +581,7 @@ int main()
                     const double actual = evaluate_text_selector_for_cluster(
                         exact_selector, layout, map,
                         visible_cluster_indices[rank], time);
-                    const double expected = legacy_hidden_influence(
+                    const double expected = per_unit_hidden_influence(
                         exit_animation, fraction, rank, 7,
                         exact.stagger, easing_mode);
                     if (!near(actual, expected, 1.0e-6)) {

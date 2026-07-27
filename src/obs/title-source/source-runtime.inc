@@ -515,8 +515,9 @@ void title_source_set_editor_title_snapshot(obs_source_t *source,
             return;
         data = it->second;
     }
+    auto snapshot = clone_title_snapshot(title);
     std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
-    data->editor_title_snapshot = title;
+    data->editor_title_snapshot = std::move(snapshot);
     data->source_audio_active_known = false;
     data->seen_audio_membership_revision = std::numeric_limits<uint64_t>::max();
     data->dirty = true;
@@ -540,9 +541,10 @@ bool enterPreview(obs_source_t *source, const std::shared_ptr<Title> &title,
 
     const double frozen_time = std::clamp(preview_time, 0.0,
                                           std::max(0.0, title->duration));
+    auto snapshot = clone_title_snapshot(title);
     {
         std::lock_guard<std::mutex> title_lock(data->editor_title_mutex);
-        data->editor_title_snapshot = title;
+        data->editor_title_snapshot = std::move(snapshot);
     }
     data->editor_transport_time.store(frozen_time, std::memory_order_release);
     data->editor_transport_reverse.store(false, std::memory_order_release);
@@ -638,7 +640,7 @@ static std::shared_ptr<Title> source_dimension_title_for_source(
         return nullptr;
     return data->editor_transport_controlled
         ? editor_title_snapshot_for_source(data)
-        : TitleDataStore::instance().get_title(data->title_id);
+        : TitleDataStore::instance().get_title_snapshot(data->title_id);
 }
 
 static bool title_has_audio_track(const std::shared_ptr<Title> &title)
@@ -1254,7 +1256,7 @@ static void set_scene_mask_property_defaults(obs_data_t *settings, const std::st
     if (!settings)
         return;
 
-    if (auto title = TitleDataStore::instance().get_title(title_id)) {
+    if (auto title = TitleDataStore::instance().get_title_snapshot(title_id)) {
         for (const auto &layer : scene_mask_layers(title)) {
             obs_data_set_default_double(settings, scene_mask_key(layer->id, "zoom_percent").c_str(), 100.0);
             obs_data_set_default_double(settings, scene_mask_key(layer->id, "x").c_str(), 0.0);
@@ -1271,7 +1273,7 @@ static void refresh_scene_mask_configs(TitleSourceData *data, obs_data_t *settin
 
     data->scene_masks.clear();
     set_scene_mask_property_defaults(settings, data->title_id);
-    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
+    if (auto title = TitleDataStore::instance().get_title_snapshot(data->title_id)) {
         for (const auto &layer : scene_mask_layers(title)) {
             TitleSourceData::SceneMaskConfig cfg;
             cfg.layer_id = layer->id;

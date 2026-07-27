@@ -202,7 +202,8 @@
                                           EffectBlendMode::Normal, 1.0, next))
                 frame = gs_texrender_get_texture(next);
         }
-        prune_gpu_mask_texture_cache(session);
+        prune_gpu_mask_texture_cache(session, frame);
+        prune_gpu_effect_output_cache(session, frame);
         session->last_error = nullptr;
         return frame;
     }
@@ -214,7 +215,8 @@
             ? session->final_texture : nullptr;
     }
     session->frame_dirty = false;
-    prune_gpu_mask_texture_cache(session);
+    prune_gpu_mask_texture_cache(session, published);
+    prune_gpu_effect_output_cache(session, published);
     session->last_error = nullptr;
     BGL_LOG_TRACE("RenderDiagnostics", QStringLiteral(
         "stage=session-render-end session=%1 render=%2 result=published time=%3 revision=%4 publish=%5 dirty=%6 depthRuns=%7 depthLayers=%8 extrusionPasses=%9")
@@ -491,6 +493,7 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         pair.second.transform_grid = nullptr;
         pair.second.transform_grid_key.clear();
     }
+    session->effect_cache_bytes = 0;
     if (session->text_renderer)
         session->text_renderer->reset();
     auto destroy_target = [](gs_texrender_t *&target) {
@@ -503,6 +506,9 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     destroy_target(session->depth_target);
     for (gs_texrender_t *&shadow_target : session->shadow_targets)
         destroy_target(shadow_target);
+    if (session->close_point_text_shadow_grid)
+        gs_vertexbuffer_destroy(session->close_point_text_shadow_grid);
+    session->close_point_text_shadow_grid = nullptr;
     destroy_target(session->presentation_targets[0]);
     destroy_target(session->presentation_targets[1]);
     destroy_target(session->layer_target);
@@ -542,11 +548,13 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         }
     }
     session->mask_texture_cache.clear();
+    session->mask_texture_cache_bytes = 0;
     for (auto &cached : session->transition_matte_textures) {
         if (cached.second.texture)
             gs_texture_destroy(cached.second.texture);
     }
     session->transition_matte_textures.clear();
+    session->transition_matte_cache_bytes = 0;
     /* submitted_final_texture/base_frame_texture are borrowed from the pool
      * whenever they have a cacheKey. Unkeyed temporary textures are owned
      * directly by the corresponding field. */

@@ -1403,6 +1403,13 @@ static bool apply_unified_text_animator_raster(
             -1.553343, 1.553343));
 
         painter.save();
+        if (state.has_unit_clip_bounds) {
+            painter.setClipRect(QRectF(
+                text_rect.left() + state.unit_clip_x0,
+                text_rect.top() + state.unit_clip_y0,
+                state.unit_clip_x1 - state.unit_clip_x0,
+                state.unit_clip_y1 - state.unit_clip_y0));
+        }
         painter.translate(center.x() + state.position_x,
                           center.y() + state.position_y -
                               state.baseline_shift);
@@ -1437,7 +1444,7 @@ static bool apply_unified_text_animator_raster(
             case TextRevealDirection::None:
                 break;
             }
-            painter.setClipRect(visible);
+            painter.setClipRect(visible, Qt::IntersectClip);
         }
 
         painter.setOpacity(opacity);
@@ -1479,15 +1486,14 @@ static bool apply_unified_text_animator_flattened(
         return false;
 
     struct RasterUnit {
-        size_t begin = 0;
-        size_t count = 0;
+        std::vector<size_t> cluster_indices;
     };
     std::vector<RasterUnit> units;
     constexpr size_t kMaxFlattenedUnits = 512;
     if (layout->clusters.size() <= kMaxFlattenedUnits) {
         units.reserve(layout->clusters.size());
         for (size_t index = 0; index < layout->clusters.size(); ++index)
-            units.push_back({index, 1});
+            units.push_back({{index}});
     } else {
         const TextAnimatorUnitMap unit_map = build_text_animator_unit_map(*layout);
         TextAnimatorUnit preferred = TextAnimatorUnit::Word;
@@ -1512,8 +1518,23 @@ static bool apply_unified_text_animator_flattened(
         if (!chosen)
             return false;
         units.reserve(chosen->size());
-        for (const TextAnimatorUnitRange &unit : *chosen)
-            units.push_back({unit.cluster_begin, unit.cluster_count});
+        for (const TextAnimatorUnitRange &unit : *chosen) {
+            RasterUnit raster_unit;
+            if (!unit.cluster_indices.empty()) {
+                for (size_t index : unit.cluster_indices) {
+                    if (index < layout->clusters.size())
+                        raster_unit.cluster_indices.push_back(index);
+                }
+            } else {
+                const size_t begin =
+                    std::min(unit.cluster_begin, layout->clusters.size());
+                const size_t end = std::min(
+                    begin + unit.cluster_count, layout->clusters.size());
+                for (size_t index = begin; index < end; ++index)
+                    raster_unit.cluster_indices.push_back(index);
+            }
+            units.push_back(std::move(raster_unit));
+        }
     }
 
     const QImage source = image.copy();
@@ -1555,15 +1576,15 @@ static bool apply_unified_text_animator_flattened(
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     for (const RasterUnit &unit : units) {
-        if (unit.count == 0 || unit.begin >= layout->clusters.size())
+        if (unit.cluster_indices.empty())
             continue;
-        const size_t end = std::min(
-            unit.begin + unit.count, layout->clusters.size());
         double x0 = std::numeric_limits<double>::max();
         double y0 = std::numeric_limits<double>::max();
         double x1 = std::numeric_limits<double>::lowest();
         double y1 = std::numeric_limits<double>::lowest();
-        for (size_t index = unit.begin; index < end; ++index) {
+        for (size_t index : unit.cluster_indices) {
+            if (index >= layout->clusters.size())
+                continue;
             const TextLayoutCluster &cluster = layout->clusters[index];
             x0 = std::min(x0, static_cast<double>(cluster.x));
             y0 = std::min(y0, static_cast<double>(cluster.y));
@@ -1572,7 +1593,8 @@ static bool apply_unified_text_animator_flattened(
         }
         if (!(x1 > x0 && y1 > y0))
             continue;
-        const TextAnimatorClusterState &state = evaluation.clusters[unit.begin];
+        const TextAnimatorClusterState &state =
+            evaluation.clusters[unit.cluster_indices.front()];
         const double reveal_opacity =
             state.reveal_direction == TextRevealDirection::None
                 ? state.reveal : 1.0;
@@ -1599,6 +1621,13 @@ static bool apply_unified_text_animator_flattened(
             -1.553343, 1.553343));
 
         painter.save();
+        if (state.has_unit_clip_bounds) {
+            painter.setClipRect(QRectF(
+                text_rect.left() + state.unit_clip_x0,
+                text_rect.top() + state.unit_clip_y0,
+                state.unit_clip_x1 - state.unit_clip_x0,
+                state.unit_clip_y1 - state.unit_clip_y0));
+        }
         painter.translate(center.x() + state.position_x,
                           center.y() + state.position_y - state.baseline_shift);
         painter.rotate(rotation);
@@ -1607,7 +1636,7 @@ static bool apply_unified_text_animator_flattened(
         painter.rotate(-state.skew_axis);
         painter.scale(sx, sy);
         painter.translate(-center.x(), -center.y());
-        painter.setClipRect(unit_clip);
+        painter.setClipRect(unit_clip, Qt::IntersectClip);
 
         if (state.has_reveal_bounds &&
             state.reveal_direction != TextRevealDirection::None) {

@@ -1,0 +1,41 @@
+Broadcast Graphics Live v0.8.13-alpha - Development Version 395 validation
+==========================================================================
+
+Targeted current contracts/audits: 28/28 passed.
+- PASSED: tests/development_version_373_light_layer_properties_contract_test.py
+- PASSED: tests/development_version_374_multi_light_shadows_scene_depth_contract_test.py
+- PASSED: tests/development_version_375_complete_3d_shadow_interactions_contract_test.py
+- PASSED: tests/development_version_376_msvc_shader_literal_split_contract_test.py
+- PASSED: tests/development_version_377_point_shadow_caster_receiver_contract_test.py
+- PASSED: tests/development_version_378_point_shadow_receiver_plane_contract_test.py
+- PASSED: tests/development_version_379_shared_point_cube_projection_contract_test.py
+- PASSED: tests/development_version_380_distance_stable_point_shadows_contract_test.py
+- PASSED: tests/development_version_381_pcss_contact_hardening_contract_test.py
+- PASSED: tests/development_version_382_shadow_runtime_recovery_contract_test.py
+- PASSED: tests/development_version_383_stable_multiscale_poisson_shadows_contract_test.py
+- PASSED: tests/development_version_384_restored_3d_shadow_visibility_contract_test.py
+- PASSED: tests/development_version_385_signed_point_shadow_clip_depth_contract_test.py
+- PASSED: tests/development_version_386_realtime_self_shadow_pcf_contract_test.py
+- PASSED: tests/development_version_387_compile_safe_realtime_self_shadow_contract_test.py
+- PASSED: tests/development_version_388_async_shader_compile_progress_contract_test.py
+- PASSED: tests/development_version_389_shader_screen_shadowmap_light_falloff_contract_test.py
+- PASSED: tests/development_version_390_shadowmap_motion_blur_open_contract_test.py
+- PASSED: tests/development_version_391_planar_shadowmap_contract_test.py
+- PASSED: tests/development_version_392_planar_shadow_clip_motion_transition_crash_contract_test.py
+- PASSED: tests/development_version_393_motion_transition_render_deadlock_contract_test.py
+- PASSED: tests/development_version_395_performance_audit_contract_test.py
+- PASSED: tests/development_version_293_editor_playback_performance_audit_contract_test.py
+- PASSED: tests/development_version_307_render_diagnostics_contract_test.py
+- PASSED: tests/audio_logging_contract_test.py
+- PASSED: tools/audit_source_presentation_lifecycle.py
+- PASSED: tools/audit_update_build_packaging.py
+- PASSED: tools/audit_development_105_branding_docs.py
+
+CMake configure:
+- Toolchain detection completed.
+- Configuration stopped at libobs discovery because the container does not include the OBS SDK/libobs CMake package.
+- A native Windows OBS/Qt/MSVC compile remains required before production deployment.
+
+Legacy runner note:
+- The source profile discovers every historical Python file rather than only the synchronized manifest set.
+- Several historical files hard-code Development Version 243 and fail unchanged in the supplied Development Version 394 baseline.

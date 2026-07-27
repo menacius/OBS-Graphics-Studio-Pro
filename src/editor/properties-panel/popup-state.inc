@@ -960,7 +960,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(light_form, bgl_tr("OBSTitles.LightBrightness"),
                  spn_light_intensity_);
 
-    spn_light_source_size_ = mk_dspin(0.0, 100000.0, 1.0);
+    spn_light_source_size_ = mk_dspin(0.1, 100000.0, 0.1);
     spn_light_source_size_->setDecimals(2);
     spn_light_source_size_->setSuffix(QStringLiteral(" px"));
     spn_light_source_size_->setToolTip(
@@ -985,6 +985,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_light_falloff_start_->setDecimals(2);
     spn_light_falloff_start_->setSuffix(QStringLiteral(" px"));
     /* Falloff Start is derived from Source Size and is intentionally not shown. */
+    spn_light_falloff_start_->hide();
     spn_light_falloff_distance_ = mk_dspin(0.001, 10000000.0, 10.0);
     spn_light_falloff_distance_->setDecimals(2);
     spn_light_falloff_distance_->setSuffix(QStringLiteral(" px"));
@@ -1980,8 +1981,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     appearance_emissive_intensity_label_ = add_appearance_row(
         2, btn_kf_material_emissive_intensity_, QStringLiteral("Emissive Intensity"),
         nullptr, spn_material_emissive_intensity_, emissive_intensity_drag_label);
-    add_appearance_row(3, btn_kf_appearance_stroke_, bgl_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
-                       spn_appearance_stroke_width_, btn_appearance_stroke_label_);
+    add_appearance_row(3, btn_kf_appearance_stroke_,
+                       bgl_tr("OBSTitles.Stroke"),
+                       btn_appearance_stroke_color_, spn_appearance_stroke_width_,
+                       btn_appearance_stroke_label_);
     add_appearance_row(4, btn_kf_appearance_opacity_, bgl_tr("OBSTitles.Opacity"), nullptr,
                        spn_appearance_opacity_);
     appearance_layout->addLayout(appearance_grid);

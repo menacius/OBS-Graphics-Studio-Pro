@@ -109,6 +109,7 @@ else:
 logger = (ROOT / "src/core/title-logger.cpp").read_text()
 category_keys = set(re.findall(r'\{QStringLiteral\("([^"]+)"\), QStringLiteral', logger))
 used = set(re.findall(r'BGL_LOG_(?:ERROR|WARNING|INFO|DEBUG|TRACE)\("([^"]+)"', all_code))
+used.update(re.findall(r'TitleLogger::log\([^,\n]+,\s*"([^"]+)"', all_code))
 if used <= category_keys and (category_keys - {"General"}) <= used:
     passes.append("all selectable logger categories have real instrumentation")
 else:
@@ -125,7 +126,7 @@ if not any("merge marker" in e for e in errors):
 
 development_match = re.search(
     r'set\(OBS_BGS_DEVELOPMENT_VERSION "([0-9]{3})"\)', cmake)
-if ('project(broadcast-graphics-live VERSION 0.8.13)' in cmake and
+if ('project(broadcast-graphics-live VERSION 0.8.14)' in cmake and
         'set(OBS_BGS_PRERELEASE "alpha")' in cmake and
         development_match):
     development_version = development_match.group(1)
@@ -135,7 +136,7 @@ if ('project(broadcast-graphics-live VERSION 0.8.13)' in cmake and
             f'Development Version {development_version}' in readme):
         passes.append(
             f"public/development version identity is synchronized at "
-            f"v0.8.13-alpha / {development_version}")
+            f"v0.8.14-alpha / {development_version}")
     else:
         errors.append("development version is not synchronized across CMake/build-info/README")
 else:

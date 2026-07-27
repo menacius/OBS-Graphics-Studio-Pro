@@ -16,6 +16,8 @@ Debug counters record parameter-resolution count/time, shader-cache hits/misses,
 
 During normal editing and scrubbing the editor can refresh up to the active monitor rate. During authored playback, frame advancement follows the project frame rate. Interactive quality can be reduced temporarily during high-frequency manipulation, then restored for the settled frame.
 
+The editor creates its swap chain before scheduling preview render work. Large text blur uses the bounded analytic SDF blur path instead of generating a dynamically expanded shader, preventing first-open shader compilation from stalling the UI.
+
 ### Interactive transforms and GPU model authority
 
 3D Move, Rotate, and Scale reuse resident layer rasters and update only the evaluated GPU transform snapshot while the gizmo is active. Duplicate pointer coordinates are discarded before they can create another model revision, and repeated input is coalesced into one pending presentation rather than an unbounded render queue. Active matrix drags are paced by the detected monitor interval; full raster/layout edits remain bounded by measured render cost.
@@ -111,6 +113,8 @@ Debug counters cover queue peaks, render/readback duration, notification coalesc
 ## Threading and lifetime contract
 
 Network access, media decode, waveform generation, cache compression, disk hydration/writes and proxy generation stay outside UI and render threads. Audio processing avoids blocking file/network operations. Jobs carry cancellation/generation state and must stop before a title, source or OBS graphics subsystem is destroyed. Repeated title open/close, audio deletion, proxy deletion and OBS shutdown must release workers, GPU resources and cached data without retained-growth trends.
+
+Store-owned `shared_ptr` instances provide title lifetime; no mutex is retained for the lifetime of an editor reference. Real-time source activation and presentation use bounded/non-blocking acquisition when editor work is in flight, preventing a model edit from becoming an OBS graphics-thread or shutdown deadlock.
 
 ## Text rendering and performance audit (Development Version 281)
 
